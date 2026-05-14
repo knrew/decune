@@ -1,0 +1,15 @@
+[package]
+authors     = ["knrew"]
+description = ""
+edition     = "2024"
+license     = "MIT"
+name        = "decune"
+publish     = false
+version     = "0.1.0"
+
+[dependencies]
+anyhow  = "1.0.102"
+bollard = "0.21.0"
+clap    = {features = ["derive"], version = "4.6.1"}
+serde   = {features = ["derive"], version = "1.0.228"}
+toml    = "1.1.2"

@@ -1,0 +1,44 @@
+name: Rust
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: 0 0 1 * *
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  rust:
+    name: Rust
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Cargo fmt
+        run: cargo fmt --all --check --verbose
+      - name: Cargo clippy
+        run: cargo clippy --workspace --all-features -- -D warnings
+      - name: Cargo check
+        run: cargo check --workspace --all-targets --all-features --verbose
+      - name: Cargo check release
+        run: cargo check --release --workspace --all-targets --all-features --verbose
+      - name: Cargo test
+        run: cargo test --workspace --all-features --no-fail-fast --verbose
+      - name: Cargo test release
+        run: cargo test --release --workspace --all-features --no-fail-fast --verbose

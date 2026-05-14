@@ -1,0 +1,51 @@
+name: Config Lint
+
+on:
+  push:
+  pull_request:
+  schedule:
+    - cron: 0 0 1 * *
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  toml:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      TAPLO_VERSION: 0.10.0
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Install taplo
+        run: |
+          mkdir -p "${RUNNER_TEMP}/bin"
+          curl -fsSL "https://github.com/tamasfe/taplo/releases/download/${TAPLO_VERSION}/taplo-linux-x86_64.gz" \
+            | gzip -d - > "${RUNNER_TEMP}/bin/taplo"
+          chmod +x "${RUNNER_TEMP}/bin/taplo"
+          echo "${RUNNER_TEMP}/bin" >> "${GITHUB_PATH}"
+      - name: Check TOML formatting
+        run: taplo fmt --check
+
+  yaml:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      YAMLLINT_VERSION: 1.38.0
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.14
+      - name: Install yamllint
+        run: pip install "yamllint==${YAMLLINT_VERSION}"
+      - name: Check YAML formatting
+        run: yamllint .
