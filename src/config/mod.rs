@@ -3,3 +3,6 @@ pub(crate) mod merge;
 pub(crate) mod path;
 pub(crate) mod schema;
 pub(crate) mod variables;
+
+#[allow(unused_imports)]
+pub(crate) use merge::{ConfigLayer, ConfigMergeInput, ResolvedConfig, resolve_config};
