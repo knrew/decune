@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
-use anyhow::{Result, bail};
+use anyhow::Result;
 use clap::{Args, Parser, Subcommand};
+
+use crate::error;
 
 #[derive(Debug, Parser)]
 #[command(
@@ -49,7 +51,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
 
 fn not_implemented(command: &str, args: WorkspaceArg) -> Result<()> {
     let _workspace = args.workspace;
-    bail!("Command '{command}' is not implemented yet")
+    Err(error::command_not_implemented(command))
 }
 
 #[cfg(test)]

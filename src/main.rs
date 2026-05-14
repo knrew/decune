@@ -2,12 +2,15 @@ mod cli;
 mod config;
 mod devcontainer;
 mod docker;
+mod error;
 mod host;
 mod state;
 mod ui;
 mod workspace;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
+
+use crate::error::ResultExt;
 
 fn main() {
     if let Err(error) = run() {
@@ -20,7 +23,7 @@ fn run() -> Result<()> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .context("Failed to initialize async runtime")?;
+        .with_resource_context("initialize async runtime", "tokio runtime")?;
 
     runtime.block_on(cli::run())
 }
