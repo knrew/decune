@@ -35,8 +35,16 @@ fn commands_fail_with_not_implemented_error() {
 
         assert!(!output.status.success(), "{command} should fail for now");
         assert!(
+            String::from_utf8_lossy(&output.stderr).contains("Error:"),
+            "{command} should format the top-level error"
+        );
+        assert!(
             String::from_utf8_lossy(&output.stderr).contains("not implemented"),
             "{command} should report that it is not implemented"
+        );
+        assert!(
+            output.stdout.is_empty(),
+            "{command} should not write command-result values to stdout"
         );
     }
 }
