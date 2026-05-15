@@ -366,7 +366,7 @@ impl CanonicalWriter {
         F: FnMut(&mut Self, &'a V),
     {
         let mut entries = entries.into_iter().collect::<Vec<_>>();
-        entries.sort_by(|(left_key, _), (right_key, _)| left_key.cmp(right_key));
+        entries.sort_by_key(|(key, _)| *key);
 
         self.output.push_str("map{");
         for (key, value) in entries {
