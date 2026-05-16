@@ -168,7 +168,8 @@ fn remove_trailing_commas(contents: &str) -> Result<String> {
         match bytes[index] {
             b'"' => copy_string(bytes, &mut output, &mut index),
             b',' if next_non_whitespace(bytes, index + 1)
-                .is_some_and(|byte| matches!(byte, b']' | b'}')) =>
+                .is_some_and(|byte| matches!(byte, b']' | b'}'))
+                && previous_non_whitespace(bytes, index).is_some_and(is_json_value_end) =>
             {
                 output.push(b' ');
                 index += 1;
@@ -209,6 +210,18 @@ fn next_non_whitespace(bytes: &[u8], start: usize) -> Option<u8> {
         .iter()
         .copied()
         .find(|byte| !byte.is_ascii_whitespace())
+}
+
+fn previous_non_whitespace(bytes: &[u8], end: usize) -> Option<u8> {
+    bytes[..end]
+        .iter()
+        .rev()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+}
+
+fn is_json_value_end(byte: u8) -> bool {
+    matches!(byte, b'"' | b']' | b'}' | b'0'..=b'9' | b'e' | b'E' | b'l')
 }
 
 fn is_line_ending(byte: u8) -> bool {
@@ -567,6 +580,15 @@ mod tests {
         let error = parse_str(r#"{"ports": [3000,,]}"#).unwrap_err();
 
         assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn leading_commas_are_rejected() {
+        for contents in [r#"[,]"#, r#"{,}"#, r#"[/* comment */,]"#] {
+            let error = parse_str(contents).unwrap_err();
+
+            assert!(!error.to_string().is_empty());
+        }
     }
 
     #[test]
