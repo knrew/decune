@@ -4,6 +4,8 @@ use std::collections::BTreeMap;
 
 use toml::Value;
 
+use crate::devcontainer::lifecycle::LifecycleDefinition;
+
 use crate::config::{
     schema::{
         RawAutoPortsConfig, RawCredentialsConfig, RawDecuneConfig, RawDotfileConfig,
@@ -33,6 +35,7 @@ pub(crate) struct ConfigLayer {
     pub(crate) mounts: Vec<LayerMount>,
     pub(crate) ports: Vec<LayerPort>,
     pub(crate) auto_ports: Option<LayerAutoPorts>,
+    pub(crate) devcontainer: Option<LayerDevcontainerMetadata>,
     pub(crate) credentials: LayerCredentials,
     pub(crate) hooks: LayerHooks,
 }
@@ -59,6 +62,7 @@ impl ConfigLayer {
                 .map(LayerPort::from_raw)
                 .collect(),
             auto_ports: raw.ports.auto.map(LayerAutoPorts::from_raw),
+            devcontainer: None,
             credentials: LayerCredentials::from_raw(raw.credentials),
             hooks: LayerHooks::from_raw(raw.hooks),
         }
@@ -188,6 +192,75 @@ impl LayerAutoPorts {
             on_auto_forward: raw.on_auto_forward.map(Into::into),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct LayerDevcontainerMetadata {
+    pub(crate) source: Option<LayerDevcontainerSource>,
+    pub(crate) override_feature_install_order: Vec<String>,
+    pub(crate) mounts: Vec<String>,
+    pub(crate) workspace_mount: Option<String>,
+    pub(crate) workspace_folder: Option<String>,
+    pub(crate) container_env: BTreeMap<String, String>,
+    pub(crate) remote_env: BTreeMap<String, String>,
+    pub(crate) remote_user: Option<String>,
+    pub(crate) container_user: Option<String>,
+    pub(crate) update_remote_user_uid: Option<bool>,
+    pub(crate) user_env_probe: Option<LayerUserEnvProbe>,
+    pub(crate) publish_ports: Vec<LayerPublishPort>,
+    pub(crate) port_attributes: BTreeMap<String, LayerPortAttributes>,
+    pub(crate) other_ports_attributes: Option<LayerPortAttributes>,
+    pub(crate) run_args: Vec<LayerRunArg>,
+    pub(crate) init: Option<bool>,
+    pub(crate) privileged: Option<bool>,
+    pub(crate) cap_add: Vec<String>,
+    pub(crate) security_opt: Vec<String>,
+    pub(crate) lifecycle: Option<LifecycleDefinition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LayerDevcontainerSource {
+    Image(String),
+    Dockerfile(LayerDevcontainerBuild),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerDevcontainerBuild {
+    pub(crate) dockerfile: String,
+    pub(crate) context: Option<String>,
+    pub(crate) args: BTreeMap<String, String>,
+    pub(crate) target: Option<String>,
+    pub(crate) cache_from: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayerUserEnvProbe {
+    None,
+    LoginShell,
+    InteractiveShell,
+    LoginInteractiveShell,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerPublishPort {
+    pub(crate) container: u16,
+    pub(crate) host: Option<u16>,
+    pub(crate) host_ip: Option<String>,
+    pub(crate) protocol: PortProtocol,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LayerPortAttributes {
+    pub(crate) label: Option<String>,
+    pub(crate) on_auto_forward: Option<OnAutoForward>,
+    pub(crate) require_local_port: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum LayerRunArg {
+    AddHost(String),
+    Dns(String),
+    DnsSearch(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

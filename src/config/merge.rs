@@ -6,10 +6,13 @@ pub(crate) use crate::config::{
 };
 
 use crate::config::{
-    layer::{LayerAutoPorts, LayerCredentials, LayerDotfile, LayerFeature, LayerMount, LayerPort},
+    layer::{
+        LayerAutoPorts, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile, LayerFeature,
+        LayerMount, LayerPort, LayerPortAttributes, LayerPublishPort,
+    },
     resolved::{
-        ResolvedAutoPorts, ResolvedCredentials, ResolvedDotfile, ResolvedFeature, ResolvedHooks,
-        ResolvedMount, ResolvedPort, ResolvedPorts,
+        ResolvedAutoPorts, ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile,
+        ResolvedFeature, ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
     },
 };
 
@@ -40,6 +43,7 @@ struct MergeAccumulator {
     mounts: Vec<ResolvedMount>,
     ports: Vec<ResolvedPort>,
     auto_ports: ResolvedAutoPorts,
+    devcontainer: ResolvedDevcontainer,
     credentials: ResolvedCredentials,
     hooks: ResolvedHooks,
 }
@@ -68,6 +72,10 @@ impl MergeAccumulator {
 
         if let Some(auto_ports) = layer.auto_ports {
             self.merge_auto_ports(auto_ports);
+        }
+
+        if let Some(devcontainer) = layer.devcontainer {
+            self.merge_devcontainer(devcontainer);
         }
 
         self.merge_credentials(layer.credentials);
@@ -203,6 +211,71 @@ impl MergeAccumulator {
         }
     }
 
+    fn merge_devcontainer(&mut self, devcontainer: LayerDevcontainerMetadata) {
+        if let Some(source) = devcontainer.source {
+            self.devcontainer.source = Some(source);
+        }
+
+        if !devcontainer.override_feature_install_order.is_empty() {
+            self.devcontainer.override_feature_install_order =
+                devcontainer.override_feature_install_order;
+        }
+        self.devcontainer.mounts.extend(devcontainer.mounts);
+        if let Some(workspace_mount) = devcontainer.workspace_mount {
+            self.devcontainer.workspace_mount = Some(workspace_mount);
+        }
+        if let Some(workspace_folder) = devcontainer.workspace_folder {
+            self.devcontainer.workspace_folder = Some(workspace_folder);
+        }
+        self.devcontainer
+            .container_env
+            .extend(devcontainer.container_env);
+        self.devcontainer.remote_env.extend(devcontainer.remote_env);
+        if let Some(remote_user) = devcontainer.remote_user {
+            self.devcontainer.remote_user = Some(remote_user);
+        }
+        if let Some(container_user) = devcontainer.container_user {
+            self.devcontainer.container_user = Some(container_user);
+        }
+        if let Some(update_remote_user_uid) = devcontainer.update_remote_user_uid {
+            self.devcontainer.update_remote_user_uid = Some(update_remote_user_uid);
+        }
+        if let Some(user_env_probe) = devcontainer.user_env_probe {
+            self.devcontainer.user_env_probe = Some(user_env_probe);
+        }
+
+        for port in devcontainer.publish_ports {
+            replace_by_identity(
+                &mut self.devcontainer.publish_ports,
+                port,
+                same_publish_port_identity,
+            );
+        }
+
+        self.devcontainer
+            .port_attributes
+            .extend(devcontainer.port_attributes);
+        merge_optional_port_attributes(
+            &mut self.devcontainer.other_ports_attributes,
+            devcontainer.other_ports_attributes,
+        );
+        self.devcontainer.run_args.extend(devcontainer.run_args);
+
+        if let Some(init) = devcontainer.init {
+            self.devcontainer.init = init;
+        }
+        if let Some(privileged) = devcontainer.privileged {
+            self.devcontainer.privileged = privileged;
+        }
+        self.devcontainer.cap_add.extend(devcontainer.cap_add);
+        self.devcontainer
+            .security_opt
+            .extend(devcontainer.security_opt);
+        if let Some(lifecycle) = devcontainer.lifecycle {
+            self.devcontainer.lifecycle = Some(lifecycle);
+        }
+    }
+
     fn into_resolved(self) -> ResolvedConfig {
         ResolvedConfig {
             shell: self.shell,
@@ -213,6 +286,7 @@ impl MergeAccumulator {
                 entries: self.ports,
                 auto: self.auto_ports,
             },
+            devcontainer: self.devcontainer,
             credentials: self.credentials,
             hooks: self.hooks,
         }
@@ -244,6 +318,36 @@ fn same_port_identity(left: &ResolvedPort, right: &ResolvedPort) -> bool {
     left.protocol == right.protocol
         && left.container == right.container
         && left.host_ip == right.host_ip
+}
+
+fn same_publish_port_identity(left: &LayerPublishPort, right: &LayerPublishPort) -> bool {
+    left.protocol == right.protocol
+        && left.container == right.container
+        && left.host_ip == right.host_ip
+}
+
+fn merge_optional_port_attributes(
+    target: &mut Option<LayerPortAttributes>,
+    source: Option<LayerPortAttributes>,
+) {
+    let Some(source) = source else {
+        return;
+    };
+
+    match target {
+        Some(target) => {
+            if source.label.is_some() {
+                target.label = source.label;
+            }
+            if source.on_auto_forward.is_some() {
+                target.on_auto_forward = source.on_auto_forward;
+            }
+            if source.require_local_port.is_some() {
+                target.require_local_port = source.require_local_port;
+            }
+        }
+        None => *target = Some(source),
+    }
 }
 
 #[cfg(test)]
