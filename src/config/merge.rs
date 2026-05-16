@@ -282,7 +282,7 @@ impl LayerAutoPorts {
             enabled: raw.enabled,
             min: raw.min,
             max: raw.max,
-            ignore: Some(raw.ignore),
+            ignore: raw.ignore,
             on_auto_forward: raw.on_auto_forward.map(Into::into),
         }
     }
@@ -314,7 +314,6 @@ pub(crate) enum OnAutoForward {
     Notify,
     Silent,
     Ignore,
-    OpenBrowser,
 }
 
 impl From<RawOnAutoForward> for OnAutoForward {
@@ -323,7 +322,7 @@ impl From<RawOnAutoForward> for OnAutoForward {
             RawOnAutoForward::Notify => Self::Notify,
             RawOnAutoForward::Silent => Self::Silent,
             RawOnAutoForward::Ignore => Self::Ignore,
-            RawOnAutoForward::OpenBrowser => Self::OpenBrowser,
+            RawOnAutoForward::OpenBrowser => Self::Notify,
         }
     }
 }
@@ -1001,5 +1000,48 @@ label = "public"
         assert_eq!(config.ports.entries[0].host, Some(13000));
         assert_eq!(config.ports.entries[0].label.as_deref(), Some("project"));
         assert_eq!(config.ports.entries[1].host, Some(23000));
+    }
+
+    #[test]
+    fn auto_ports_ignore_is_preserved_when_upper_layer_omits_it() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[ports.auto]
+ignore = [22]
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[ports.auto]
+enabled = false
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(!config.ports.auto.enabled);
+        assert_eq!(config.ports.auto.ignore, vec![22]);
+    }
+
+    #[test]
+    fn open_browser_on_auto_forward_resolves_to_notify() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[ports.auto]
+on_auto_forward = "openBrowser"
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.ports.auto.on_auto_forward, OnAutoForward::Notify);
     }
 }

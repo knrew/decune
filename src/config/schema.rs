@@ -172,8 +172,7 @@ pub(crate) struct RawAutoPortsConfig {
     pub(crate) enabled: Option<bool>,
     pub(crate) min: Option<u16>,
     pub(crate) max: Option<u16>,
-    #[serde(default)]
-    pub(crate) ignore: Vec<u16>,
+    pub(crate) ignore: Option<Vec<u16>>,
     pub(crate) on_auto_forward: Option<RawOnAutoForward>,
 }
 
