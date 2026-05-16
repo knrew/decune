@@ -214,10 +214,7 @@ fn write_hooks(writer: &mut CanonicalWriter, hooks: &[crate::config::merge::Reso
                 None => writer.none(),
             });
             writer.field("user", |writer| writer.option_string(hook.user.as_deref()));
-            writer.field("shell", |writer| match hook.shell {
-                Some(shell) => writer.bool(shell),
-                None => writer.none(),
-            });
+            writer.field("shell", |writer| writer.bool(hook.shell));
             writer.field("workdir", |writer| {
                 writer.option_string(hook.workdir.as_deref())
             });
@@ -658,6 +655,52 @@ version = "1"
         );
 
         assert_eq!(hash_for(&first), hash_for(&second));
+    }
+
+    #[test]
+    fn hook_shell_default_hashes_like_explicit_default() {
+        let implicit = resolved_config(
+            r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = "scripts/setup.sh"
+"#,
+        );
+        let explicit = resolved_config(
+            r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = "scripts/setup.sh"
+shell = true
+"#,
+        );
+
+        assert_eq!(hash_for(&implicit), hash_for(&explicit));
+    }
+
+    #[test]
+    fn hook_args_shell_default_hashes_like_explicit_default() {
+        let implicit = resolved_config(
+            r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = ["bash", "scripts/setup.sh"]
+"#,
+        );
+        let explicit = resolved_config(
+            r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = ["bash", "scripts/setup.sh"]
+shell = false
+"#,
+        );
+
+        assert_eq!(hash_for(&implicit), hash_for(&explicit));
     }
 
     #[test]

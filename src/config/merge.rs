@@ -604,17 +604,20 @@ pub(crate) struct LayerHook {
     pub(crate) command: Command,
     pub(crate) location: Option<HookLocation>,
     pub(crate) user: Option<String>,
-    pub(crate) shell: Option<bool>,
+    pub(crate) shell: bool,
     pub(crate) workdir: Option<String>,
 }
 
 impl LayerHook {
     fn from_raw(raw: RawHookConfig) -> Self {
+        let command = Command::from(raw.command);
+        let shell = raw.shell.unwrap_or(matches!(command, Command::Shell(_)));
+
         Self {
-            command: raw.command.into(),
+            command,
             location: raw.location.map(Into::into),
             user: raw.user,
-            shell: raw.shell,
+            shell,
             workdir: raw.workdir,
         }
     }
@@ -1098,18 +1101,62 @@ command = "project.sh"
                     command: Command::Shell("global.sh".to_owned()),
                     location: None,
                     user: None,
-                    shell: None,
+                    shell: true,
                     workdir: None,
                 },
                 LayerHook {
                     command: Command::Shell("project.sh".to_owned()),
                     location: None,
                     user: None,
-                    shell: None,
+                    shell: true,
                     workdir: None,
                 },
             ]
         );
+    }
+
+    #[test]
+    fn hook_shell_defaults_follow_command_form() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = "shell-form.sh"
+
+[[hooks.before_post_create]]
+command = ["bash", "args-form.sh"]
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.hooks.before_post_create[0].shell);
+        assert!(!config.hooks.before_post_create[1].shell);
+    }
+
+    #[test]
+    fn explicit_hook_shell_overrides_default() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = "shell-form.sh"
+shell = false
+
+[[hooks.before_post_create]]
+command = ["bash", "args-form.sh"]
+shell = true
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(!config.hooks.before_post_create[0].shell);
+        assert!(config.hooks.before_post_create[1].shell);
     }
 
     #[test]
