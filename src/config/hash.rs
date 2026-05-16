@@ -122,46 +122,8 @@ fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) 
                 });
             });
         });
-        writer.field("ports", |writer| {
-            writer.object("Ports", |writer| {
-                writer.field("entries", |writer| {
-                    writer.seq(config.ports.entries.iter(), |writer, port| {
-                        writer.object("Port", |writer| {
-                            writer.field("container", |writer| writer.u16(port.container));
-                            writer.field("host", |writer| match port.host {
-                                Some(host) => writer.u16(host),
-                                None => writer.none(),
-                            });
-                            writer.field("host_ip", |writer| writer.string(&port.host_ip));
-                            writer.field("protocol", |writer| {
-                                writer.string(port_protocol_name(port.protocol));
-                            });
-                            writer.field("require_local", |writer| {
-                                writer.bool(port.require_local);
-                            });
-                            writer.field("label", |writer| {
-                                writer.option_string(port.label.as_deref());
-                            });
-                        });
-                    });
-                });
-                writer.field("auto", |writer| {
-                    writer.object("AutoPorts", |writer| {
-                        writer.field("enabled", |writer| writer.bool(config.ports.auto.enabled));
-                        writer.field("min", |writer| writer.u16(config.ports.auto.min));
-                        writer.field("max", |writer| writer.u16(config.ports.auto.max));
-                        writer.field("ignore", |writer| {
-                            writer.seq(config.ports.auto.ignore.iter(), |writer, port| {
-                                writer.u16(*port);
-                            });
-                        });
-                        writer.field("on_auto_forward", |writer| {
-                            writer.string(on_auto_forward_name(config.ports.auto.on_auto_forward));
-                        });
-                    });
-                });
-            });
-        });
+        // forwarding は up 実行時の runtime 設定であり，container/image の再作成条件ではない．
+        let _ = &config.ports;
         writer.field("credentials", |writer| {
             writer.object("Credentials", |writer| {
                 writer.field("git", |writer| {
@@ -614,6 +576,42 @@ on_auto_forward = "openBrowser"
             OnAutoForward::Notify
         );
         assert_eq!(hash_for(&notify), hash_for(&open_browser));
+    }
+
+    #[test]
+    fn manual_forwarding_ports_do_not_change_hash() {
+        let no_ports = resolved_config("version = 1\n");
+        let with_port = resolved_config(
+            r#"
+version = 1
+
+[[ports]]
+container = 3000
+host = 3000
+label = "web"
+"#,
+        );
+
+        assert_eq!(hash_for(&no_ports), hash_for(&with_port));
+    }
+
+    #[test]
+    fn auto_forwarding_settings_do_not_change_hash() {
+        let default_auto = resolved_config("version = 1\n");
+        let custom_auto = resolved_config(
+            r#"
+version = 1
+
+[ports.auto]
+enabled = false
+min = 2000
+max = 9000
+ignore = [3000, 3001]
+on_auto_forward = "silent"
+"#,
+        );
+
+        assert_eq!(hash_for(&default_auto), hash_for(&custom_auto));
     }
 
     #[test]
