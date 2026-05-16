@@ -160,7 +160,7 @@ impl PathRoots {
     fn runtime_dir(&self, workspace_id: &str) -> PathBuf {
         match &self.xdg_runtime_dir {
             Some(runtime_root) => runtime_root.join("decune").join(workspace_id),
-            None => env::temp_dir()
+            None => PathBuf::from("/tmp")
                 .join(format!("decune-{}", self.uid))
                 .join(workspace_id),
         }
@@ -204,13 +204,20 @@ fn git_repository_root(path: &Path) -> Option<PathBuf> {
     }
 
     let stdout = String::from_utf8(output.stdout).ok()?;
-    let root = stdout.trim();
+    let root = git_stdout_line(&stdout);
 
     if root.is_empty() {
         None
     } else {
         Some(PathBuf::from(root))
     }
+}
+
+fn git_stdout_line(stdout: &str) -> &str {
+    stdout
+        .strip_suffix("\r\n")
+        .or_else(|| stdout.strip_suffix('\n'))
+        .unwrap_or(stdout)
 }
 
 fn workspace_basename(root: &Path) -> String {
@@ -267,7 +274,7 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs as unix_fs;
 
-    use super::{PathRoots, Workspace, WorkspacePaths, workspace_id};
+    use super::{PathRoots, Workspace, WorkspacePaths, git_stdout_line, workspace_id};
 
     fn fixture_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir()
@@ -319,6 +326,36 @@ mod tests {
         }
 
         let root = fixture_root("git-root");
+        let child = root.join("nested/project");
+        fs::create_dir_all(&child).unwrap();
+
+        let init = Command::new("git")
+            .arg("-C")
+            .arg(&root)
+            .arg("init")
+            .output()
+            .unwrap();
+        assert!(
+            init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&init.stderr)
+        );
+
+        let workspace = Workspace::resolve(&child).unwrap();
+
+        assert_eq!(workspace.root(), root.canonicalize().unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn git_repository_root_preserves_trailing_space_in_path() {
+        if Command::new("git").arg("--version").output().is_err() {
+            eprintln!("skipped: git is not available");
+            return;
+        }
+
+        let parent = fixture_root("git-root-with-trailing-space-parent");
+        let root = parent.join("repo-with-trailing-space ");
         let child = root.join("nested/project");
         fs::create_dir_all(&child).unwrap();
 
@@ -421,7 +458,7 @@ mod tests {
         );
         assert_eq!(
             paths.runtime_dir(),
-            std::env::temp_dir().join("decune-1000/abc123def456")
+            Path::new("/tmp/decune-1000/abc123def456")
         );
         assert_eq!(
             paths.cache_dir(),
@@ -431,6 +468,16 @@ mod tests {
             paths.global_config_path(),
             Path::new("/home/user/.config/decune/config.toml")
         );
+    }
+
+    #[test]
+    fn git_stdout_line_removes_only_line_ending() {
+        assert_eq!(
+            git_stdout_line("/tmp/repo-with-trailing-space \n"),
+            "/tmp/repo-with-trailing-space "
+        );
+        assert_eq!(git_stdout_line("/tmp/repo\r\n"), "/tmp/repo");
+        assert_eq!(git_stdout_line("\n"), "");
     }
 
     #[test]
