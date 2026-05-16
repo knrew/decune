@@ -486,7 +486,6 @@ fn on_auto_forward_name(value: OnAutoForward) -> &'static str {
         OnAutoForward::Notify => "notify",
         OnAutoForward::Silent => "silent",
         OnAutoForward::Ignore => "ignore",
-        OnAutoForward::OpenBrowser => "openBrowser",
     }
 }
 
@@ -546,7 +545,7 @@ fn push_hex_byte(output: &mut String, byte: u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::merge::{ConfigLayer, ConfigMergeInput, resolve_config};
+    use crate::config::merge::{ConfigLayer, ConfigMergeInput, OnAutoForward, resolve_config};
 
     fn resolved_config(contents: &str) -> ResolvedConfig {
         let raw = toml::from_str(contents).expect("test config should parse");
@@ -589,6 +588,32 @@ shell = "/bin/zsh"
         );
 
         assert_ne!(hash_for(&bash), hash_for(&zsh));
+    }
+
+    #[test]
+    fn open_browser_auto_forward_hashes_as_notify() {
+        let notify = resolved_config(
+            r#"
+version = 1
+
+[ports.auto]
+on_auto_forward = "notify"
+"#,
+        );
+        let open_browser = resolved_config(
+            r#"
+version = 1
+
+[ports.auto]
+on_auto_forward = "openBrowser"
+"#,
+        );
+
+        assert_eq!(
+            open_browser.ports.auto.on_auto_forward,
+            OnAutoForward::Notify
+        );
+        assert_eq!(hash_for(&notify), hash_for(&open_browser));
     }
 
     #[test]
