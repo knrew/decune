@@ -66,14 +66,47 @@ impl<'de> Deserialize<'de> for RawFeatureConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawDotfileConfig {
-    pub(crate) source: String,
+    pub(crate) enabled: Option<bool>,
+    pub(crate) source: Option<String>,
     pub(crate) target: String,
     pub(crate) read_only: Option<bool>,
     pub(crate) resolve_symlink: Option<bool>,
     pub(crate) on_conflict: Option<RawDotfileConflict>,
+}
+
+impl<'de> Deserialize<'de> for RawDotfileConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Helper {
+            enabled: Option<bool>,
+            source: Option<String>,
+            target: String,
+            read_only: Option<bool>,
+            resolve_symlink: Option<bool>,
+            on_conflict: Option<RawDotfileConflict>,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        let enabled = helper.enabled.unwrap_or(true);
+        if enabled && helper.source.is_none() {
+            return Err(D::Error::missing_field("source"));
+        }
+
+        Ok(Self {
+            enabled: helper.enabled,
+            source: helper.source,
+            target: helper.target,
+            read_only: helper.read_only,
+            resolve_symlink: helper.resolve_symlink,
+            on_conflict: helper.on_conflict,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -84,17 +117,52 @@ pub(crate) enum RawDotfileConflict {
     Backup,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawMountConfig {
+    pub(crate) enabled: Option<bool>,
     pub(crate) source: Option<String>,
     pub(crate) target: String,
-    #[serde(rename = "type")]
-    pub(crate) mount_type: RawMountType,
+    pub(crate) mount_type: Option<RawMountType>,
     pub(crate) read_only: Option<bool>,
     pub(crate) resolve_symlink: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_mount_create")]
     pub(crate) create: Option<RawMountCreate>,
+}
+
+impl<'de> Deserialize<'de> for RawMountConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        #[derive(Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Helper {
+            enabled: Option<bool>,
+            source: Option<String>,
+            target: String,
+            #[serde(rename = "type")]
+            mount_type: Option<RawMountType>,
+            read_only: Option<bool>,
+            resolve_symlink: Option<bool>,
+            #[serde(default, deserialize_with = "deserialize_mount_create")]
+            create: Option<RawMountCreate>,
+        }
+
+        let helper = Helper::deserialize(deserializer)?;
+        let enabled = helper.enabled.unwrap_or(true);
+        if enabled && helper.mount_type.is_none() {
+            return Err(D::Error::missing_field("type"));
+        }
+
+        Ok(Self {
+            enabled: helper.enabled,
+            source: helper.source,
+            target: helper.target,
+            mount_type: helper.mount_type,
+            read_only: helper.read_only,
+            resolve_symlink: helper.resolve_symlink,
+            create: helper.create,
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -152,6 +220,7 @@ impl<'de> Deserialize<'de> for RawPortsConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawPortConfig {
+    pub(crate) enabled: Option<bool>,
     pub(crate) container: u16,
     pub(crate) host: Option<u16>,
     pub(crate) host_ip: Option<String>,

@@ -129,7 +129,8 @@ pub(crate) struct ResolvedFeature {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LayerDotfile {
-    pub(crate) source: String,
+    pub(crate) enabled: bool,
+    pub(crate) source: Option<String>,
     pub(crate) target: String,
     pub(crate) read_only: bool,
     pub(crate) resolve_symlink: bool,
@@ -139,6 +140,7 @@ pub(crate) struct LayerDotfile {
 impl LayerDotfile {
     fn from_raw(raw: RawDotfileConfig) -> Self {
         Self {
+            enabled: raw.enabled.unwrap_or(true),
             source: raw.source,
             target: raw.target,
             read_only: raw.read_only.unwrap_or(true),
@@ -148,7 +150,14 @@ impl LayerDotfile {
     }
 }
 
-pub(crate) type ResolvedDotfile = LayerDotfile;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedDotfile {
+    pub(crate) source: String,
+    pub(crate) target: String,
+    pub(crate) read_only: bool,
+    pub(crate) resolve_symlink: bool,
+    pub(crate) on_conflict: DotfileConflict,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum DotfileConflict {
@@ -170,9 +179,10 @@ impl From<RawDotfileConflict> for DotfileConflict {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LayerMount {
+    pub(crate) enabled: bool,
     pub(crate) source: Option<String>,
     pub(crate) target: String,
-    pub(crate) mount_type: MountType,
+    pub(crate) mount_type: Option<MountType>,
     pub(crate) read_only: bool,
     pub(crate) resolve_symlink: bool,
     pub(crate) create: Option<MountCreate>,
@@ -181,9 +191,10 @@ pub(crate) struct LayerMount {
 impl LayerMount {
     fn from_raw(raw: RawMountConfig) -> Self {
         Self {
+            enabled: raw.enabled.unwrap_or(true),
             source: raw.source,
             target: raw.target,
-            mount_type: raw.mount_type.into(),
+            mount_type: raw.mount_type.map(Into::into),
             read_only: raw.read_only.unwrap_or(false),
             resolve_symlink: raw.resolve_symlink.unwrap_or(true),
             create: raw.create.map(Into::into),
@@ -191,7 +202,15 @@ impl LayerMount {
     }
 }
 
-pub(crate) type ResolvedMount = LayerMount;
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedMount {
+    pub(crate) source: Option<String>,
+    pub(crate) target: String,
+    pub(crate) mount_type: MountType,
+    pub(crate) read_only: bool,
+    pub(crate) resolve_symlink: bool,
+    pub(crate) create: Option<MountCreate>,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MountType {
@@ -231,6 +250,7 @@ pub(crate) struct ResolvedPorts {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LayerPort {
+    pub(crate) enabled: bool,
     pub(crate) container: u16,
     pub(crate) host: Option<u16>,
     pub(crate) host_ip: String,
@@ -242,6 +262,7 @@ pub(crate) struct LayerPort {
 impl LayerPort {
     fn from_raw(raw: RawPortConfig) -> Self {
         Self {
+            enabled: raw.enabled.unwrap_or(true),
             container: raw.container,
             host: raw.host,
             host_ip: raw.host_ip.unwrap_or_else(|| "127.0.0.1".to_owned()),
@@ -654,19 +675,15 @@ impl MergeAccumulator {
         }
 
         for dotfile in layer.dotfiles {
-            replace_by_identity(&mut self.dotfiles, dotfile, |left, right| {
-                left.target == right.target
-            });
+            self.merge_dotfile(dotfile);
         }
 
         for mount in layer.mounts {
-            replace_by_identity(&mut self.mounts, mount, |left, right| {
-                left.target == right.target
-            });
+            self.merge_mount(mount);
         }
 
         for port in layer.ports {
-            replace_by_identity(&mut self.ports, port, same_port_identity);
+            self.merge_port(port);
         }
 
         if let Some(auto_ports) = layer.auto_ports {
@@ -700,6 +717,64 @@ impl MergeAccumulator {
                 options: feature.options,
             });
         }
+    }
+
+    fn merge_dotfile(&mut self, dotfile: LayerDotfile) {
+        if !dotfile.enabled {
+            remove_by_identity(&mut self.dotfiles, |existing| {
+                existing.target == dotfile.target
+            });
+            return;
+        }
+
+        if let Some(source) = dotfile.source {
+            replace_by_identity(
+                &mut self.dotfiles,
+                ResolvedDotfile {
+                    source,
+                    target: dotfile.target,
+                    read_only: dotfile.read_only,
+                    resolve_symlink: dotfile.resolve_symlink,
+                    on_conflict: dotfile.on_conflict,
+                },
+                |left, right| left.target == right.target,
+            );
+        }
+    }
+
+    fn merge_mount(&mut self, mount: LayerMount) {
+        if !mount.enabled {
+            remove_by_identity(&mut self.mounts, |existing| existing.target == mount.target);
+            return;
+        }
+
+        if let Some(mount_type) = mount.mount_type {
+            replace_by_identity(
+                &mut self.mounts,
+                ResolvedMount {
+                    source: mount.source,
+                    target: mount.target,
+                    mount_type,
+                    read_only: mount.read_only,
+                    resolve_symlink: mount.resolve_symlink,
+                    create: mount.create,
+                },
+                |left, right| left.target == right.target,
+            );
+        }
+    }
+
+    fn merge_port(&mut self, port: LayerPort) {
+        if !port.enabled {
+            remove_by_identity(&mut self.ports, |existing| {
+                existing.protocol == port.protocol
+                    && existing.container == port.container
+                    && existing.host_ip == port.host_ip
+            });
+            return;
+        }
+
+        replace_by_identity(&mut self.ports, port, same_port_identity);
     }
 
     fn merge_auto_ports(&mut self, auto_ports: LayerAutoPorts) {
@@ -776,6 +851,13 @@ where
     } else {
         entries.push(entry);
     }
+}
+
+fn remove_by_identity<T, F>(entries: &mut Vec<T>, same_identity: F)
+where
+    F: Fn(&T) -> bool,
+{
+    entries.retain(|existing| !same_identity(existing));
 }
 
 fn same_port_identity(left: &ResolvedPort, right: &ResolvedPort) -> bool {
@@ -902,6 +984,89 @@ type = "bind"
         assert_eq!(config.mounts.len(), 1);
         assert_eq!(config.mounts[0].source.as_deref(), Some("/project"));
         assert!(!config.mounts[0].read_only);
+    }
+
+    #[test]
+    fn project_can_disable_global_mount_by_target() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[[mounts]]
+source = "/global"
+target = "/work"
+type = "bind"
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[mounts]]
+target = "/work"
+enabled = false
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.mounts.is_empty());
+    }
+
+    #[test]
+    fn project_can_disable_global_dotfile_by_target() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[[dotfiles]]
+source = "~/.config/nvim"
+target = ".config/nvim"
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[dotfiles]]
+target = ".config/nvim"
+enabled = false
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.dotfiles.is_empty());
+    }
+
+    #[test]
+    fn project_can_disable_global_port_by_identity() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+container = 3000
+host = 3000
+label = "global"
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+container = 3000
+enabled = false
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.ports.entries.is_empty());
     }
 
     #[test]
