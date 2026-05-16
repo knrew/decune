@@ -49,6 +49,11 @@ fn validate_version(config: &RawDecuneConfig, path: &Path) -> Result<()> {
 mod tests {
     use std::fs;
 
+    use crate::config::schema::{
+        RawCommand, RawDotfileConflict, RawGitHttpsMode, RawGithubCredentialsMode, RawHookLocation,
+        RawMountType, RawOnAutoForward, RawPortProtocol, RawSshAgentMode,
+    };
+
     use super::*;
 
     fn config_path(name: &str) -> std::path::PathBuf {
@@ -205,14 +210,77 @@ shell = false
         assert_eq!(config.version, Some(1));
         assert_eq!(config.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.features.len(), 2);
+        assert_eq!(
+            config
+                .features
+                .get("ghcr.io/devcontainers/features/github-cli:1")
+                .unwrap()
+                .options
+                .get("version")
+                .and_then(|value| value.as_str()),
+            Some("latest")
+        );
         assert_eq!(config.dotfiles.len(), 1);
+        assert_eq!(config.dotfiles[0].source.as_deref(), Some("~/.config/nvim"));
+        assert_eq!(config.dotfiles[0].target, ".config/nvim");
+        assert_eq!(config.dotfiles[0].read_only, Some(true));
+        assert_eq!(config.dotfiles[0].resolve_symlink, Some(true));
+        assert_eq!(
+            config.dotfiles[0].on_conflict,
+            Some(RawDotfileConflict::ReplaceSymlink)
+        );
         assert_eq!(config.mounts.len(), 1);
+        assert_eq!(config.mounts[0].source.as_deref(), Some("~/work"));
+        assert_eq!(config.mounts[0].target, "/workspaces/work");
+        assert_eq!(config.mounts[0].mount_type, Some(RawMountType::Bind));
+        assert_eq!(config.mounts[0].read_only, Some(false));
+        assert_eq!(config.mounts[0].resolve_symlink, Some(true));
+        assert_eq!(config.mounts[0].create, None);
         assert_eq!(config.ports.entries.len(), 1);
-        assert!(config.ports.auto.is_some());
-        assert!(config.credentials.git.is_some());
-        assert!(config.credentials.github.is_some());
+        assert_eq!(config.ports.entries[0].container, 3000);
+        assert_eq!(config.ports.entries[0].host, Some(3000));
+        assert_eq!(
+            config.ports.entries[0].host_ip.as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(config.ports.entries[0].protocol, Some(RawPortProtocol::Tcp));
+        assert_eq!(config.ports.entries[0].require_local, Some(false));
+        assert_eq!(config.ports.entries[0].label.as_deref(), Some("web"));
+        let auto = config.ports.auto.unwrap();
+        assert_eq!(auto.enabled, Some(true));
+        assert_eq!(auto.min, Some(1024));
+        assert_eq!(auto.max, Some(32768));
+        assert_eq!(auto.ignore, Some(vec![22, 2375, 2376]));
+        assert_eq!(auto.on_auto_forward, Some(RawOnAutoForward::Notify));
+        let git = config.credentials.git.unwrap();
+        assert_eq!(git.enabled, Some(true));
+        assert_eq!(git.copy_user, Some(true));
+        assert_eq!(git.copy_global_config, Some(false));
+        assert_eq!(git.https, Some(RawGitHttpsMode::HostHelper));
+        assert_eq!(git.ssh_agent, Some(RawSshAgentMode::Auto));
+        let github = config.credentials.github.unwrap();
+        assert_eq!(github.enabled, Some(true));
+        assert_eq!(github.mode, Some(RawGithubCredentialsMode::GhTokenFile));
+        assert_eq!(github.install_feature_if_missing, Some(true));
         assert_eq!(config.hooks.before_post_create.len(), 1);
+        assert_eq!(
+            config.hooks.before_post_create[0].command,
+            RawCommand::Shell("scripts/before-post-create.sh".to_owned())
+        );
+        assert_eq!(
+            config.hooks.before_post_create[0].location,
+            Some(RawHookLocation::Container)
+        );
+        assert_eq!(
+            config.hooks.before_post_create[0].user.as_deref(),
+            Some("remote")
+        );
+        assert_eq!(config.hooks.before_post_create[0].shell, Some(true));
         assert_eq!(config.hooks.after_post_start.len(), 1);
+        assert_eq!(
+            config.hooks.after_post_start[0].command,
+            RawCommand::Args(vec!["bash".to_owned(), "scripts/after-start.sh".to_owned()])
+        );
 
         let _ = fs::remove_file(path);
     }
@@ -265,6 +333,30 @@ target = "/work"
     }
 
     #[test]
+    fn enabled_bind_mount_requires_source() {
+        let path = config_path("bind-mount-requires-source");
+        fs::write(
+            &path,
+            r#"
+version = 1
+
+[[mounts]]
+target = "/work"
+type = "bind"
+"#,
+        )
+        .unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains("source"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn nested_typo_key_is_rejected() {
         let path = config_path("nested-typo");
         fs::write(
@@ -285,6 +377,53 @@ read_olny = true
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("read_olny"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn nested_credentials_typo_key_is_rejected() {
+        let path = config_path("nested-credentials-typo");
+        fs::write(
+            &path,
+            r#"
+version = 1
+
+[credentials.git]
+copy_usr = true
+"#,
+        )
+        .unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains("copy_usr"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn nested_hook_typo_key_is_rejected() {
+        let path = config_path("nested-hook-typo");
+        fs::write(
+            &path,
+            r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = "setup.sh"
+wrkdir = "/work"
+"#,
+        )
+        .unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains("wrkdir"));
 
         let _ = fs::remove_file(path);
     }

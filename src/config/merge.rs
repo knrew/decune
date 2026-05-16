@@ -1014,6 +1014,56 @@ enabled = false
     }
 
     #[test]
+    fn feature_can_be_readded_after_disable_in_later_layer() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool:1"]
+version = "global"
+"#,
+            )),
+            devcontainer: Some(raw_layer(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool:2"]
+enabled = false
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool:3"]
+version = "project"
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.features.len(), 1);
+        assert_eq!(config.features[0].id, "ghcr.io/example/features/tool:3");
+        assert_eq!(
+            config.features[0].options.get("version"),
+            Some(&Value::String("project".to_owned()))
+        );
+    }
+
+    #[test]
+    fn canonical_feature_id_preserves_registry_port() {
+        assert_eq!(
+            canonical_feature_id("localhost:5000/devcontainers/features/tool:1"),
+            "localhost:5000/devcontainers/features/tool"
+        );
+        assert_eq!(
+            canonical_feature_id("localhost:5000/devcontainers/features/tool@sha256:abcd"),
+            "localhost:5000/devcontainers/features/tool"
+        );
+    }
+
+    #[test]
     fn feature_options_merge_by_canonical_id() {
         let config = resolve_config(ConfigMergeInput {
             global: Some(raw_layer(
@@ -1081,6 +1131,69 @@ type = "bind"
         assert_eq!(config.mounts.len(), 1);
         assert_eq!(config.mounts[0].source.as_deref(), Some("/project"));
         assert!(!config.mounts[0].read_only);
+    }
+
+    #[test]
+    fn project_dotfile_replaces_same_target() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[[dotfiles]]
+source = "~/.config/nvim"
+target = ".config/nvim"
+read_only = true
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[dotfiles]]
+source = ".decune/nvim"
+target = ".config/nvim"
+read_only = false
+resolve_symlink = false
+on_conflict = "backup"
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.dotfiles.len(), 1);
+        assert_eq!(config.dotfiles[0].source, ".decune/nvim");
+        assert!(!config.dotfiles[0].read_only);
+        assert!(!config.dotfiles[0].resolve_symlink);
+        assert_eq!(config.dotfiles[0].on_conflict, DotfileConflict::Backup);
+    }
+
+    #[test]
+    fn dotfile_and_mount_defaults_are_documented() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[dotfiles]]
+source = "~/.config/git"
+target = ".config/git"
+
+[[mounts]]
+source = "/workspace"
+target = "/workspace"
+type = "bind"
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.dotfiles[0].read_only);
+        assert!(config.dotfiles[0].resolve_symlink);
+        assert_eq!(config.dotfiles[0].on_conflict, DotfileConflict::Fail);
+        assert!(!config.mounts[0].read_only);
+        assert!(config.mounts[0].resolve_symlink);
+        assert_eq!(config.mounts[0].create, None);
     }
 
     #[test]
@@ -1305,6 +1418,19 @@ shell = true
         });
 
         assert_eq!(config.shell.as_deref(), Some("/usr/bin/fish"));
+    }
+
+    #[test]
+    fn scalar_without_cli_follows_documented_layer_precedence() {
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(raw_layer("version = 1\nshell = '/bin/image'\n")),
+            global: Some(raw_layer("version = 1\nshell = '/bin/global'\n")),
+            devcontainer: Some(raw_layer("version = 1\nshell = '/bin/devcontainer'\n")),
+            project: Some(raw_layer("version = 1\nshell = '/bin/project'\n")),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.shell.as_deref(), Some("/bin/project"));
     }
 
     #[test]

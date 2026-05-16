@@ -136,6 +136,8 @@ where
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
+    use proptest::prelude::*;
+
     use super::*;
 
     fn context() -> VariableContext {
@@ -193,6 +195,24 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
     }
 
     #[test]
+    fn local_env_default_may_contain_colons() {
+        let expanded =
+            expand_with_env("${localEnv:DECUNE_MISSING:fallback:with:colon}", &[]).unwrap();
+
+        assert_eq!(expanded, "fallback:with:colon");
+    }
+
+    #[test]
+    fn empty_local_env_name_is_rejected() {
+        let error = expand_with_env("${localEnv:}", &[]).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "localEnv variable name must not be empty"
+        );
+    }
+
+    #[test]
     fn missing_local_env_without_default_is_rejected() {
         let error = expand_with_env("${localEnv:DECUNE_MISSING}", &[]).unwrap_err();
 
@@ -221,5 +241,12 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
                 .to_string()
                 .contains("Unclosed variable expression in config string")
         );
+    }
+
+    proptest! {
+        #[test]
+        fn strings_without_variable_opening_are_unchanged(input in "[^$]{0,128}") {
+            prop_assert_eq!(expand_with_env(&input, &[]).unwrap(), input);
+        }
     }
 }

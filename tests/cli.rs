@@ -1,50 +1,48 @@
-use std::process::Command;
+use assert_cmd::Command;
+use predicates::prelude::*;
 
 fn decune() -> Command {
-    Command::new(env!("CARGO_BIN_EXE_decune"))
+    Command::cargo_bin("decune").unwrap()
 }
 
 #[test]
 fn root_help_is_displayed() {
-    let output = decune().arg("--help").output().unwrap();
-
-    assert!(output.status.success());
-    assert!(
-        String::from_utf8_lossy(&output.stdout)
-            .contains("Run dev containers from the command line.")
-    );
+    decune()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "Run dev containers from the command line.",
+        ))
+        .stdout(predicate::str::contains("up"))
+        .stdout(predicate::str::contains("down"))
+        .stdout(predicate::str::contains("clean"))
+        .stdout(predicate::str::contains("rebuild"))
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]
 fn command_help_is_displayed() {
     for command in ["up", "down", "clean", "rebuild"] {
-        let output = decune().args([command, "--help"]).output().unwrap();
-
-        assert!(output.status.success(), "{command} --help should succeed");
-        assert!(
-            String::from_utf8_lossy(&output.stdout).contains("Workspace directory"),
-            "{command} --help should describe the workspace argument"
-        );
+        decune()
+            .args([command, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("Workspace directory"))
+            .stdout(predicate::str::contains("WORKSPACE"))
+            .stderr(predicate::str::is_empty());
     }
 }
 
 #[test]
 fn commands_fail_with_not_implemented_error() {
     for command in ["up", "down", "clean", "rebuild"] {
-        let output = decune().arg(command).output().unwrap();
-
-        assert!(!output.status.success(), "{command} should fail for now");
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("Error:"),
-            "{command} should format the top-level error"
-        );
-        assert!(
-            String::from_utf8_lossy(&output.stderr).contains("not implemented"),
-            "{command} should report that it is not implemented"
-        );
-        assert!(
-            output.stdout.is_empty(),
-            "{command} should not write command-result values to stdout"
-        );
+        decune()
+            .arg(command)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Error:"))
+            .stderr(predicate::str::contains("not implemented"));
     }
 }

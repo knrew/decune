@@ -471,6 +471,26 @@ mod tests {
     }
 
     #[test]
+    fn config_state_and_cache_roots_require_home_when_xdg_roots_are_missing() {
+        let roots = PathRoots {
+            home: None,
+            xdg_config_home: None,
+            xdg_state_home: None,
+            xdg_cache_home: None,
+            xdg_runtime_dir: None,
+            uid: 1000,
+        };
+
+        assert!(
+            WorkspacePaths::from_roots(Path::new("/workspace"), "abc123def456", &roots).is_err()
+        );
+        assert_eq!(
+            roots.runtime_dir("abc123def456"),
+            Path::new("/tmp/decune-1000/abc123def456")
+        );
+    }
+
+    #[test]
     fn git_stdout_line_removes_only_line_ending() {
         assert_eq!(
             git_stdout_line("/tmp/repo-with-trailing-space \n"),

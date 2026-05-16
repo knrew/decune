@@ -3,48 +3,27 @@ use std::{
     ffi::OsStr,
     fs, io,
     path::{Component, Path, PathBuf},
-    process,
-    sync::atomic::{AtomicU64, Ordering},
-    time::{SystemTime, UNIX_EPOCH},
 };
+
+use tempfile::TempDir;
 
 pub const DOCKER_TESTS_ENV: &str = "DECUNE_DOCKER_TESTS";
 
-static NEXT_WORKSPACE_ID: AtomicU64 = AtomicU64::new(0);
-
 #[derive(Debug)]
 pub struct TempWorkspace {
-    path: PathBuf,
+    directory: TempDir,
 }
 
 impl TempWorkspace {
     pub fn new() -> io::Result<Self> {
-        let temp_root = env::temp_dir();
-        let process_id = process::id();
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|duration| duration.as_nanos())
-            .unwrap_or(0);
-
-        for _ in 0..128 {
-            let sequence = NEXT_WORKSPACE_ID.fetch_add(1, Ordering::Relaxed);
-            let path = temp_root.join(format!("decune-test-{process_id}-{timestamp}-{sequence}"));
-
-            match fs::create_dir(&path) {
-                Ok(()) => return Ok(Self { path }),
-                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => continue,
-                Err(error) => return Err(error),
-            }
-        }
-
-        Err(io::Error::new(
-            io::ErrorKind::AlreadyExists,
-            "failed to create a unique temporary workspace",
-        ))
+        tempfile::Builder::new()
+            .prefix("decune-test-")
+            .tempdir()
+            .map(|directory| Self { directory })
     }
 
     pub fn path(&self) -> &Path {
-        &self.path
+        self.directory.path()
     }
 
     pub fn create_dir(&self, relative_path: impl AsRef<Path>) -> io::Result<PathBuf> {
@@ -82,13 +61,7 @@ impl TempWorkspace {
             ));
         }
 
-        Ok(self.path.join(relative_path))
-    }
-}
-
-impl Drop for TempWorkspace {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.path);
+        Ok(self.path().join(relative_path))
     }
 }
 
