@@ -750,6 +750,60 @@ shell = false
     }
 
     #[test]
+    fn dockerfile_path_change_changes_hash() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            build: Some(BuildHashInput {
+                dockerfile_path: Some(".devcontainer/Dockerfile".to_owned()),
+                ..BuildHashInput::default()
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            build: Some(BuildHashInput {
+                dockerfile_path: Some("Dockerfile".to_owned()),
+                ..BuildHashInput::default()
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn cli_flag_change_changes_hash() {
+        let config = resolved_config("version = 1\n");
+        let without_flag = config_hash(&ConfigHashInput::new(&config));
+        let with_flag = config_hash(&ConfigHashInput {
+            cli_flags: BTreeMap::from([("no_cache".to_owned(), Value::Boolean(true))]),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(without_flag, with_flag);
+    }
+
+    #[test]
+    fn cli_flag_key_order_does_not_change_hash() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            cli_flags: BTreeMap::from([
+                ("pull".to_owned(), Value::Boolean(true)),
+                ("rebuild".to_owned(), Value::Boolean(false)),
+            ]),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            cli_flags: BTreeMap::from([
+                ("rebuild".to_owned(), Value::Boolean(false)),
+                ("pull".to_owned(), Value::Boolean(true)),
+            ]),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
     fn feature_lock_order_does_not_change_hash() {
         let config = resolved_config("version = 1\n");
         let first = config_hash(&ConfigHashInput {

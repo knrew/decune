@@ -894,6 +894,100 @@ mod tests {
         ConfigLayer::from_raw_decune(raw_config(contents))
     }
 
+    fn shell_commands(hooks: &[LayerHook]) -> Vec<&str> {
+        hooks
+            .iter()
+            .map(|hook| match &hook.command {
+                Command::Shell(command) => command.as_str(),
+                Command::Args(_) => panic!("expected shell command"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn empty_input_resolves_documented_defaults() {
+        let config = resolve_config(ConfigMergeInput::default());
+
+        assert_eq!(config.shell, None);
+        assert!(config.features.is_empty());
+        assert!(config.dotfiles.is_empty());
+        assert!(config.mounts.is_empty());
+        assert!(config.ports.entries.is_empty());
+        assert!(config.ports.auto.enabled);
+        assert_eq!(config.ports.auto.min, 1024);
+        assert_eq!(config.ports.auto.max, 32768);
+        assert!(config.ports.auto.ignore.is_empty());
+        assert_eq!(config.ports.auto.on_auto_forward, OnAutoForward::Notify);
+        assert!(config.credentials.git.enabled);
+        assert!(config.credentials.git.copy_user);
+        assert!(!config.credentials.git.copy_global_config);
+        assert_eq!(config.credentials.git.https, GitHttpsMode::HostHelper);
+        assert_eq!(config.credentials.git.ssh_agent, SshAgentMode::Auto);
+        assert!(config.credentials.github.enabled);
+        assert_eq!(
+            config.credentials.github.mode,
+            GithubCredentialsMode::GhTokenFile
+        );
+        assert!(config.credentials.github.install_feature_if_missing);
+    }
+
+    #[test]
+    fn hooks_follow_documented_layer_order() {
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(raw_layer(
+                r#"
+version = 1
+
+[[hooks.before_initialize]]
+command = "image.sh"
+"#,
+            )),
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[[hooks.before_initialize]]
+command = "global.sh"
+"#,
+            )),
+            devcontainer: Some(raw_layer(
+                r#"
+version = 1
+
+[[hooks.before_initialize]]
+command = "devcontainer.sh"
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[hooks.before_initialize]]
+command = "project.sh"
+"#,
+            )),
+            cli: Some(raw_layer(
+                r#"
+version = 1
+
+[[hooks.before_initialize]]
+command = "cli.sh"
+"#,
+            )),
+        });
+
+        assert_eq!(
+            shell_commands(&config.hooks.before_initialize),
+            vec![
+                "image.sh",
+                "global.sh",
+                "devcontainer.sh",
+                "project.sh",
+                "cli.sh"
+            ]
+        );
+    }
+
     #[test]
     fn project_can_disable_global_feature_by_canonical_id() {
         let config = resolve_config(ConfigMergeInput {
@@ -1073,6 +1167,45 @@ enabled = false
     }
 
     #[test]
+    fn disabled_port_identity_ignores_host_port_but_keeps_host_ip_boundary() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+container = 3000
+host = 3000
+host_ip = "127.0.0.1"
+label = "loopback"
+
+[[ports]]
+container = 3000
+host = 3000
+host_ip = "0.0.0.0"
+label = "public"
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+container = 3000
+host = 13000
+host_ip = "127.0.0.1"
+enabled = false
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.ports.entries.len(), 1);
+        assert_eq!(config.ports.entries[0].host_ip, "0.0.0.0");
+        assert_eq!(config.ports.entries[0].label.as_deref(), Some("public"));
+    }
+
+    #[test]
     fn hooks_append_in_merge_order() {
         let config = resolve_config(ConfigMergeInput {
             global: Some(raw_layer(
@@ -1172,6 +1305,50 @@ shell = true
         });
 
         assert_eq!(config.shell.as_deref(), Some("/usr/bin/fish"));
+    }
+
+    #[test]
+    fn credentials_merge_fieldwise_by_precedence() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[credentials.git]
+enabled = false
+copy_user = false
+copy_global_config = true
+https = "off"
+ssh_agent = "required"
+
+[credentials.github]
+enabled = false
+mode = "off"
+install_feature_if_missing = false
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[credentials.git]
+https = "host-helper"
+
+[credentials.github]
+enabled = true
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(!config.credentials.git.enabled);
+        assert!(!config.credentials.git.copy_user);
+        assert!(config.credentials.git.copy_global_config);
+        assert_eq!(config.credentials.git.https, GitHttpsMode::HostHelper);
+        assert_eq!(config.credentials.git.ssh_agent, SshAgentMode::Required);
+        assert!(config.credentials.github.enabled);
+        assert_eq!(config.credentials.github.mode, GithubCredentialsMode::Off);
+        assert!(!config.credentials.github.install_feature_if_missing);
     }
 
     #[test]
