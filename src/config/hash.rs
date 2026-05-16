@@ -2,12 +2,15 @@
 
 use std::collections::BTreeMap;
 
-use sha2::{Digest, Sha256};
 use toml::Value;
 
-use crate::config::merge::{
-    Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, HookLocation, MountCreate,
-    MountType, OnAutoForward, PortProtocol, ResolvedConfig, SshAgentMode,
+use crate::config::{
+    canonical::{CanonicalWriter, sha256_hex},
+    resolved::{ResolvedConfig, ResolvedHook},
+    types::{
+        Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, HookLocation, MountCreate,
+        MountType, OnAutoForward, PortProtocol, SshAgentMode,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -205,7 +208,7 @@ fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) 
     });
 }
 
-fn write_hooks(writer: &mut CanonicalWriter, hooks: &[crate::config::merge::ResolvedHook]) {
+fn write_hooks(writer: &mut CanonicalWriter, hooks: &[ResolvedHook]) {
     writer.seq(hooks.iter(), |writer, hook| {
         writer.object("Hook", |writer| {
             writer.field("command", |writer| write_command(writer, &hook.command));
@@ -270,146 +273,6 @@ fn write_build_input(writer: &mut CanonicalWriter, build: &BuildHashInput) {
             writer.option_string(build.dockerignore_content_hash.as_deref());
         });
     });
-}
-
-#[derive(Debug, Default)]
-struct CanonicalWriter {
-    output: String,
-}
-
-impl CanonicalWriter {
-    fn finish(self) -> String {
-        self.output
-    }
-
-    fn object<F>(&mut self, name: &str, write_fields: F)
-    where
-        F: FnOnce(&mut Self),
-    {
-        self.output.push_str("object");
-        self.string(name);
-        self.output.push('[');
-        write_fields(self);
-        self.output.push(']');
-    }
-
-    fn field<F>(&mut self, name: &str, write_value: F)
-    where
-        F: FnOnce(&mut Self),
-    {
-        self.output.push_str("field");
-        self.string(name);
-        self.output.push('=');
-        write_value(self);
-        self.output.push(';');
-    }
-
-    fn seq<'a, T, I, F>(&mut self, values: I, mut write_value: F)
-    where
-        I: IntoIterator<Item = &'a T>,
-        T: 'a,
-        F: FnMut(&mut Self, &'a T),
-    {
-        self.output.push_str("seq[");
-        for value in values {
-            write_value(self, value);
-            self.output.push(';');
-        }
-        self.output.push(']');
-    }
-
-    fn map<'a, V, I, F>(&mut self, entries: I, mut write_value: F)
-    where
-        I: IntoIterator<Item = (&'a String, &'a V)>,
-        V: 'a,
-        F: FnMut(&mut Self, &'a V),
-    {
-        let mut entries = entries.into_iter().collect::<Vec<_>>();
-        entries.sort_by_key(|(key, _)| *key);
-
-        self.output.push_str("map{");
-        for (key, value) in entries {
-            self.string(key);
-            self.output.push('=');
-            write_value(self, value);
-            self.output.push(';');
-        }
-        self.output.push('}');
-    }
-
-    fn option_string(&mut self, value: Option<&str>) {
-        match value {
-            Some(value) => self.string(value),
-            None => self.none(),
-        }
-    }
-
-    fn string(&mut self, value: &str) {
-        self.output.push('s');
-        self.output.push_str(&value.len().to_string());
-        self.output.push(':');
-        self.output.push_str(value);
-    }
-
-    fn bool(&mut self, value: bool) {
-        if value {
-            self.output.push_str("b1");
-        } else {
-            self.output.push_str("b0");
-        }
-    }
-
-    fn u16(&mut self, value: u16) {
-        self.output.push('u');
-        self.output.push_str(&value.to_string());
-    }
-
-    fn i64(&mut self, value: i64) {
-        self.output.push('i');
-        self.output.push_str(&value.to_string());
-    }
-
-    fn f64(&mut self, value: f64) {
-        self.output.push('f');
-        push_hex_u64(&mut self.output, value.to_bits());
-    }
-
-    fn none(&mut self) {
-        self.output.push_str("none");
-    }
-
-    fn toml_value(&mut self, value: &Value) {
-        match value {
-            Value::String(value) => {
-                self.output.push_str("toml-string");
-                self.string(value);
-            }
-            Value::Integer(value) => {
-                self.output.push_str("toml-integer");
-                self.i64(*value);
-            }
-            Value::Float(value) => {
-                self.output.push_str("toml-float");
-                self.f64(*value);
-            }
-            Value::Boolean(value) => {
-                self.output.push_str("toml-boolean");
-                self.bool(*value);
-            }
-            Value::Datetime(value) => {
-                self.output.push_str("toml-datetime");
-                self.string(&value.to_string());
-            }
-            Value::Array(values) => {
-                self.output.push_str("toml-array");
-                self.seq(values.iter(), |writer, value| writer.toml_value(value));
-            }
-            Value::Table(values) => {
-                self.output.push_str("toml-table");
-                self.map(values.iter(), |writer, value| writer.toml_value(value));
-            }
-        }
-    }
 }
 
 fn dotfile_conflict_name(value: DotfileConflict) -> &'static str {
@@ -477,36 +340,15 @@ fn hook_location_name(value: HookLocation) -> &'static str {
     }
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
-    let digest = Sha256::digest(bytes);
-    let mut output = String::with_capacity(digest.len() * 2);
-
-    for byte in digest {
-        push_hex_byte(&mut output, byte);
-    }
-
-    output
-}
-
-fn push_hex_u64(output: &mut String, value: u64) {
-    for byte in value.to_be_bytes() {
-        push_hex_byte(output, byte);
-    }
-}
-
-fn push_hex_byte(output: &mut String, byte: u8) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-
-    output.push(HEX[(byte >> 4) as usize] as char);
-    output.push(HEX[(byte & 0x0f) as usize] as char);
-}
-
 #[cfg(test)]
 mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::config::merge::{ConfigLayer, ConfigMergeInput, OnAutoForward, resolve_config};
+    use crate::config::{
+        merge::{ConfigLayer, ConfigMergeInput, resolve_config},
+        types::OnAutoForward,
+    };
 
     fn resolved_config(contents: &str) -> ResolvedConfig {
         let raw = toml::from_str(contents).expect("test config should parse");
