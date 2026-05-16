@@ -152,6 +152,12 @@ impl<'de> Deserialize<'de> for RawMountConfig {
         if enabled && helper.mount_type.is_none() {
             return Err(D::Error::missing_field("type"));
         }
+        if enabled
+            && matches!(helper.mount_type, Some(RawMountType::Bind))
+            && helper.source.is_none()
+        {
+            return Err(D::Error::missing_field("source"));
+        }
 
         Ok(Self {
             enabled: helper.enabled,
@@ -349,11 +355,35 @@ pub(crate) enum RawHookLocation {
     Container,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(untagged)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RawCommand {
     Shell(String),
     Args(Vec<String>),
+}
+
+impl<'de> Deserialize<'de> for RawCommand {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        match Value::deserialize(deserializer)? {
+            Value::String(command) => Ok(Self::Shell(command)),
+            Value::Array(values) => {
+                let mut args = Vec::with_capacity(values.len());
+
+                for value in values {
+                    args.push(parse_value::<String, D::Error>(value)?);
+                }
+
+                if args.is_empty() {
+                    return Err(D::Error::custom("command array must not be empty"));
+                }
+
+                Ok(Self::Args(args))
+            }
+            _ => Err(D::Error::custom("expected string or string array command")),
+        }
+    }
 }
 
 fn deserialize_mount_create<'de, D>(deserializer: D) -> Result<Option<RawMountCreate>, D::Error>
@@ -414,6 +444,8 @@ where
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
 
     #[test]
@@ -453,7 +485,100 @@ min = 1024
         assert_eq!(config.ports.auto.unwrap().min, Some(1024));
     }
 
-    #[derive(Deserialize)]
+    #[rstest]
+    #[case(
+        r#"
+[[mounts]]
+source = "/tmp/work"
+target = "/work"
+type = "bind"
+"#
+    )]
+    #[case(
+        r#"
+[[mounts]]
+target = "/work"
+type = "bind"
+enabled = false
+"#
+    )]
+    fn mount_source_rules_accept_valid_shapes(#[case] mount_toml: &str) {
+        let config: RawDecuneConfig = toml::from_str(&format!("version = 1\n{mount_toml}"))
+            .expect("test config should parse");
+
+        assert_eq!(config.mounts.len(), 1);
+    }
+
+    #[test]
+    fn enabled_bind_mount_requires_source() {
+        let error = toml::from_str::<RawDecuneConfig>(
+            r#"
+version = 1
+
+[[mounts]]
+target = "/work"
+type = "bind"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("source"));
+    }
+
+    #[test]
+    fn empty_command_array_is_rejected() {
+        let error = toml::from_str::<CommandWrapper>("command = []").unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("command array must not be empty")
+        );
+    }
+
+    #[rstest]
+    #[case("fail", RawDotfileConflict::Fail)]
+    #[case("replace-symlink", RawDotfileConflict::ReplaceSymlink)]
+    #[case("backup", RawDotfileConflict::Backup)]
+    fn dotfile_conflict_values_are_supported(
+        #[case] input: &str,
+        #[case] expected: RawDotfileConflict,
+    ) {
+        let config: RawDecuneConfig = toml::from_str(&format!(
+            r#"
+version = 1
+
+[[dotfiles]]
+source = "~/.config/nvim"
+target = ".config/nvim"
+on_conflict = "{input}"
+"#
+        ))
+        .expect("test config should parse");
+
+        assert_eq!(config.dotfiles[0].on_conflict, Some(expected));
+    }
+
+    #[rstest]
+    #[case("notify", RawOnAutoForward::Notify)]
+    #[case("silent", RawOnAutoForward::Silent)]
+    #[case("ignore", RawOnAutoForward::Ignore)]
+    #[case("openBrowser", RawOnAutoForward::OpenBrowser)]
+    fn auto_forward_values_are_supported(#[case] input: &str, #[case] expected: RawOnAutoForward) {
+        let config: RawDecuneConfig = toml::from_str(&format!(
+            r#"
+version = 1
+
+[ports.auto]
+on_auto_forward = "{input}"
+"#
+        ))
+        .expect("test config should parse");
+
+        assert_eq!(config.ports.auto.unwrap().on_auto_forward, Some(expected));
+    }
+
+    #[derive(Debug, Deserialize)]
     struct CommandWrapper {
         command: RawCommand,
     }

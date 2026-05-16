@@ -503,6 +503,8 @@ fn push_hex_byte(output: &mut String, byte: u8) {
 
 #[cfg(test)]
 mod tests {
+    use proptest::prelude::*;
+
     use super::*;
     use crate::config::merge::{ConfigLayer, ConfigMergeInput, OnAutoForward, resolve_config};
 
@@ -750,6 +752,27 @@ shell = false
     }
 
     #[test]
+    fn dockerignore_content_hash_alone_changes_hash() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            build: Some(BuildHashInput {
+                dockerignore_content_hash: Some("sha256:first".to_owned()),
+                ..BuildHashInput::default()
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            build: Some(BuildHashInput {
+                dockerignore_content_hash: Some("sha256:second".to_owned()),
+                ..BuildHashInput::default()
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn dockerfile_path_change_changes_hash() {
         let config = resolved_config("version = 1\n");
         let first = config_hash(&ConfigHashInput {
@@ -834,5 +857,99 @@ shell = false
         });
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn feature_lock_digest_change_changes_hash() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            feature_locks: vec![FeatureLockHashEntry {
+                feature_id: "feature-a".to_owned(),
+                digest: "sha256:first".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            feature_locks: vec![FeatureLockHashEntry {
+                feature_id: "feature-a".to_owned(),
+                digest: "sha256:second".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn credentials_change_changes_hash() {
+        let enabled = resolved_config(
+            r#"
+version = 1
+
+[credentials.git]
+enabled = true
+"#,
+        );
+        let disabled = resolved_config(
+            r#"
+version = 1
+
+[credentials.git]
+enabled = false
+"#,
+        );
+
+        assert_ne!(hash_for(&enabled), hash_for(&disabled));
+    }
+
+    #[test]
+    fn hook_change_changes_hash() {
+        let first = resolved_config(
+            r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = "first.sh"
+"#,
+        );
+        let second = resolved_config(
+            r#"
+version = 1
+
+[[hooks.before_post_create]]
+command = "second.sh"
+"#,
+        );
+
+        assert_ne!(hash_for(&first), hash_for(&second));
+    }
+
+    proptest! {
+        #[test]
+        fn cli_flag_key_order_is_stable_for_generated_maps(
+            pairs in proptest::collection::vec(("[a-z]{1,8}", any::<bool>()), 0..16)
+        ) {
+            let config = resolved_config("version = 1\n");
+            let first_map = pairs
+                .iter()
+                .map(|(key, value)| (key.clone(), Value::Boolean(*value)))
+                .collect::<BTreeMap<_, _>>();
+            let second_map = first_map
+                .iter()
+                .rev()
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>();
+
+            let first = config_hash(&ConfigHashInput {
+                cli_flags: first_map,
+                ..ConfigHashInput::new(&config)
+            });
+            let second = config_hash(&ConfigHashInput {
+                cli_flags: second_map,
+                ..ConfigHashInput::new(&config)
+            });
+
+            prop_assert_eq!(first, second);
+        }
     }
 }

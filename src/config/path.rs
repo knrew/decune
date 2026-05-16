@@ -232,6 +232,20 @@ mod tests {
     }
 
     #[test]
+    fn tilde_requires_home_directory() {
+        let root = fixture_root("tilde-no-home");
+        let variables = variables(&root);
+        let options = project_options(&root, &variables).with_home_dir(None);
+
+        let error = resolve_host_path("~/missing-home", &options).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "HOME is not set; cannot expand ~ in config path"
+        );
+    }
+
+    #[test]
     fn variables_are_expanded_before_relative_resolution() {
         let root = fixture_root("variables");
         let source = root.join("tools");
@@ -258,6 +272,21 @@ mod tests {
 
         assert!(source.is_dir());
         assert_eq!(path, source.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn create_directory_rejects_existing_file() {
+        let root = fixture_root("create-directory-existing-file");
+        let variables = variables(&root);
+        let source = root.join("generated");
+        fs::write(&source, b"not a directory").unwrap();
+        let options = project_options(&root, &variables).with_create(PathCreate::Directory);
+
+        let error = resolve_host_path("generated/cache", &options).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to create host path directory"));
+        assert!(message.contains(&source.join("cache").display().to_string()));
     }
 
     #[test]
@@ -303,5 +332,20 @@ mod tests {
         let path = resolve_host_path("linked", &options).unwrap();
 
         assert_eq!(path, link);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn broken_symlink_is_rejected_with_context() {
+        let root = fixture_root("broken-symlink");
+        let link = root.join("linked");
+        unix_fs::symlink(root.join("missing"), &link).unwrap();
+        let variables = variables(&root);
+
+        let error = resolve_host_path("linked", &project_options(&root, &variables)).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to canonicalize host path"));
+        assert!(message.contains(&link.display().to_string()));
     }
 }
