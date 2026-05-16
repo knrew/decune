@@ -4,7 +4,6 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use jsonc_parser::{ParseOptions, parse_to_serde_value};
 use serde_json::Value;
 
 use crate::error::ResultExt;
@@ -88,21 +87,152 @@ pub(crate) fn parse_file(path: &Path) -> Result<Value> {
 
 #[allow(dead_code)]
 pub(crate) fn parse_str(contents: &str) -> Result<Value> {
-    parse_to_serde_value(contents, &devcontainer_parse_options())
-        .map_err(|error| anyhow!("{error}"))
+    let normalized = normalize_jsonc(contents)?;
+    serde_json::from_str(&normalized).map_err(|error| anyhow!("{error}"))
 }
 
-fn devcontainer_parse_options() -> ParseOptions {
-    // devcontainer.json は JSONC として扱うが，JSON5 風の拡張までは受け付けない．
-    ParseOptions {
-        allow_comments: true,
-        allow_loose_object_property_names: false,
-        allow_trailing_commas: true,
-        allow_missing_commas: false,
-        allow_single_quoted_strings: false,
-        allow_hexadecimal_numbers: false,
-        allow_unary_plus_numbers: false,
+fn normalize_jsonc(contents: &str) -> Result<String> {
+    remove_trailing_commas(&strip_jsonc_comments(contents)?)
+}
+
+fn strip_jsonc_comments(contents: &str) -> Result<String> {
+    let bytes = contents.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => copy_string(bytes, &mut output, &mut index),
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                output.extend_from_slice(b"  ");
+                index += 2;
+                while index < bytes.len() {
+                    let byte = bytes[index];
+                    if is_line_ending(byte) {
+                        output.push(byte);
+                    } else {
+                        output.push(b' ');
+                    }
+                    index += 1;
+                    if is_line_ending(byte) {
+                        break;
+                    }
+                }
+            }
+            b'/' if bytes.get(index + 1) == Some(&b'*') => {
+                let comment_start = index;
+                output.extend_from_slice(b"  ");
+                index += 2;
+                let mut closed = false;
+
+                while index < bytes.len() {
+                    if bytes[index] == b'*' && bytes.get(index + 1) == Some(&b'/') {
+                        output.extend_from_slice(b"  ");
+                        index += 2;
+                        closed = true;
+                        break;
+                    }
+
+                    let byte = bytes[index];
+                    if is_line_ending(byte) {
+                        output.push(byte);
+                    } else {
+                        output.push(b' ');
+                    }
+                    index += 1;
+                }
+
+                if !closed {
+                    let (line, column) = line_column(contents, comment_start);
+                    return Err(anyhow!(
+                        "Unterminated block comment in devcontainer metadata at line {line} column {column}"
+                    ));
+                }
+            }
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
     }
+
+    String::from_utf8(output).map_err(|error| anyhow!("{error}"))
+}
+
+fn remove_trailing_commas(contents: &str) -> Result<String> {
+    let bytes = contents.as_bytes();
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        match bytes[index] {
+            b'"' => copy_string(bytes, &mut output, &mut index),
+            b',' if next_non_whitespace(bytes, index + 1)
+                .is_some_and(|byte| matches!(byte, b']' | b'}')) =>
+            {
+                output.push(b' ');
+                index += 1;
+            }
+            byte => {
+                output.push(byte);
+                index += 1;
+            }
+        }
+    }
+
+    String::from_utf8(output).map_err(|error| anyhow!("{error}"))
+}
+
+fn copy_string(bytes: &[u8], output: &mut Vec<u8>, index: &mut usize) {
+    output.push(bytes[*index]);
+    *index += 1;
+
+    while *index < bytes.len() {
+        let byte = bytes[*index];
+        output.push(byte);
+        *index += 1;
+
+        if byte == b'\\' && *index < bytes.len() {
+            output.push(bytes[*index]);
+            *index += 1;
+            continue;
+        }
+
+        if byte == b'"' {
+            break;
+        }
+    }
+}
+
+fn next_non_whitespace(bytes: &[u8], start: usize) -> Option<u8> {
+    bytes[start..]
+        .iter()
+        .copied()
+        .find(|byte| !byte.is_ascii_whitespace())
+}
+
+fn is_line_ending(byte: u8) -> bool {
+    matches!(byte, b'\n' | b'\r')
+}
+
+fn line_column(contents: &str, byte_index: usize) -> (usize, usize) {
+    let mut line = 1;
+    let mut column = 1;
+
+    for (index, ch) in contents.char_indices() {
+        if index >= byte_index {
+            break;
+        }
+
+        if ch == '\n' {
+            line += 1;
+            column = 1;
+        } else {
+            column += 1;
+        }
+    }
+
+    (line, column)
 }
 
 fn resolve_explicit_path(workspace_root: &Path, explicit_config_path: &Path) -> Result<PathBuf> {
@@ -183,7 +313,7 @@ mod tests {
     use serde_json::json;
     use tempfile::TempDir;
 
-    use super::{DevcontainerJson, discover, parse_file, parse_str};
+    use super::{DevcontainerJson, discover, normalize_jsonc, parse_file, parse_str};
 
     #[test]
     fn primary_metadata_path_has_highest_priority() {
@@ -372,6 +502,84 @@ mod tests {
         let error = parse_str("{ image: \"ubuntu:24.04\" }").unwrap_err();
 
         assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn preserves_comment_like_tokens_inside_strings() {
+        let value = parse_str(
+            r#"
+            {
+              "url": "https://example.test/path",
+              "glob": "/* keep */",
+              "comma": "value,]"
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value["url"], json!("https://example.test/path"));
+        assert_eq!(value["glob"], json!("/* keep */"));
+        assert_eq!(value["comma"], json!("value,]"));
+    }
+
+    #[test]
+    fn removes_trailing_commas_after_comments() {
+        let value = parse_str(
+            r#"
+            {
+              "features": [
+                "ghcr.io/devcontainers/features/github-cli:1", // keep diff-friendly comma
+              ],
+              "containerEnv": {
+                "RUST_LOG": "debug", /* keep diff-friendly comma */
+              },
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(
+            value["features"][0],
+            json!("ghcr.io/devcontainers/features/github-cli:1")
+        );
+        assert_eq!(value["containerEnv"]["RUST_LOG"], json!("debug"));
+    }
+
+    #[test]
+    fn unterminated_block_comment_is_rejected_with_location() {
+        let error = parse_str("{\n  /* missing end\n  \"image\": \"ubuntu\"\n}").unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("Unterminated block comment"));
+        assert!(message.contains("line 2"));
+        assert!(message.contains("column 3"));
+    }
+
+    #[test]
+    fn hash_comments_are_rejected() {
+        let error = parse_str("{\n  # not jsonc\n  \"image\": \"ubuntu\"\n}").unwrap_err();
+
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn double_commas_are_rejected() {
+        let error = parse_str(r#"{"ports": [3000,,]}"#).unwrap_err();
+
+        assert!(!error.to_string().is_empty());
+    }
+
+    #[test]
+    fn normalization_keeps_line_numbers_for_json_errors() {
+        let normalized = normalize_jsonc("{\n  // comment\n  \"image\": \n}").unwrap();
+
+        assert_eq!(normalized.lines().count(), 4);
+        assert!(
+            serde_json::from_str::<serde_json::Value>(&normalized)
+                .unwrap_err()
+                .to_string()
+                .contains("line")
+        );
     }
 
     #[test]
