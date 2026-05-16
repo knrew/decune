@@ -114,6 +114,21 @@ mod tests {
     }
 
     #[test]
+    fn top_level_typo_key_is_rejected_with_key_and_path() {
+        let path = config_path("top-level-typo");
+        fs::write(&path, "version = 1\nshelll = '/bin/zsh'\n").unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains(&path.display().to_string()));
+        assert!(message.contains("shelll"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn spec_example_is_loaded() {
         let path = config_path("spec-example");
         fs::write(
@@ -198,6 +213,53 @@ shell = false
         assert!(config.credentials.github.is_some());
         assert_eq!(config.hooks.before_post_create.len(), 1);
         assert_eq!(config.hooks.after_post_start.len(), 1);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn enabled_dotfile_requires_source() {
+        let path = config_path("dotfile-requires-source");
+        fs::write(
+            &path,
+            r#"
+version = 1
+
+[[dotfiles]]
+target = ".config/nvim"
+"#,
+        )
+        .unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains("source"));
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn enabled_mount_requires_type() {
+        let path = config_path("mount-requires-type");
+        fs::write(
+            &path,
+            r#"
+version = 1
+
+[[mounts]]
+source = "/tmp/work"
+target = "/work"
+"#,
+        )
+        .unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains("type"));
 
         let _ = fs::remove_file(path);
     }
