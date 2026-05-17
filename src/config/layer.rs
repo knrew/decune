@@ -215,6 +215,7 @@ pub(crate) struct LayerDevcontainerMetadata {
     pub(crate) remote_user: Option<String>,
     pub(crate) container_user: Option<String>,
     pub(crate) update_remote_user_uid: Option<bool>,
+    pub(crate) override_command: Option<bool>,
     pub(crate) user_env_probe: Option<LayerUserEnvProbe>,
     pub(crate) publish_ports: Vec<LayerPublishPort>,
     pub(crate) port_attributes: BTreeMap<String, LayerPortAttributes>,

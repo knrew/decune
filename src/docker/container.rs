@@ -33,6 +33,8 @@ pub(crate) struct ContainerHostConfig {
 pub(crate) struct ContainerCreateSpec {
     pub(crate) image: String,
     pub(crate) name: String,
+    pub(crate) entrypoint: Option<Vec<String>>,
+    pub(crate) command: Option<Vec<String>>,
     pub(crate) labels: BTreeMap<String, String>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) working_dir: Option<String>,
@@ -47,6 +49,8 @@ pub(crate) fn create_container_body(spec: &ContainerCreateSpec) -> ContainerCrea
 
     ContainerCreateBody {
         image: Some(spec.image.clone()),
+        entrypoint: spec.entrypoint.clone(),
+        cmd: spec.command.clone(),
         labels: non_empty_map(spec.labels.clone()),
         env: non_empty_vec(env_entries(&spec.env)),
         working_dir: spec.working_dir.clone(),
@@ -55,6 +59,16 @@ pub(crate) fn create_container_body(spec: &ContainerCreateSpec) -> ContainerCrea
         host_config: Some(create_host_config(spec)),
         ..Default::default()
     }
+}
+
+pub(crate) fn devcontainer_keepalive_command() -> (Vec<String>, Vec<String>) {
+    (
+        vec!["/bin/sh".to_owned()],
+        vec![
+            "-c".to_owned(),
+            "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+        ],
+    )
 }
 
 pub(crate) async fn create_container(
@@ -274,8 +288,8 @@ mod tests {
     use super::workspace_container_list_options;
     use super::{
         ContainerCreateSpec, ContainerHostConfig, create_container, create_container_body,
-        is_container_already_started, is_container_already_stopped, is_container_not_found,
-        remove_container, start_container, stop_container,
+        devcontainer_keepalive_command, is_container_already_started, is_container_already_stopped,
+        is_container_not_found, remove_container, start_container, stop_container,
     };
 
     #[test]
@@ -302,6 +316,11 @@ mod tests {
         let spec = ContainerCreateSpec {
             image: "alpine:latest".to_owned(),
             name: "decune-project-abc123def456".to_owned(),
+            entrypoint: Some(vec!["/bin/sh".to_owned()]),
+            command: Some(vec![
+                "-c".to_owned(),
+                "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+            ]),
             labels: labels.clone(),
             env: BTreeMap::from([("WORKSPACE".to_owned(), "/workspaces/project".to_owned())]),
             working_dir: Some("/workspaces/project".to_owned()),
@@ -335,6 +354,14 @@ mod tests {
         let host_config = body.host_config.unwrap();
 
         assert_eq!(body.image.as_deref(), Some("alpine:latest"));
+        assert_eq!(body.entrypoint, Some(vec!["/bin/sh".to_owned()]));
+        assert_eq!(
+            body.cmd,
+            Some(vec![
+                "-c".to_owned(),
+                "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned()
+            ])
+        );
         assert_eq!(body.labels, Some(labels.into_iter().collect()));
         assert_eq!(
             body.env,
@@ -382,6 +409,8 @@ mod tests {
         let spec = ContainerCreateSpec {
             image: "alpine:latest".to_owned(),
             name: "decune-project-abc123def456".to_owned(),
+            entrypoint: None,
+            command: None,
             labels: BTreeMap::new(),
             env: BTreeMap::new(),
             working_dir: None,
@@ -414,6 +443,20 @@ mod tests {
         assert_eq!(bindings[0].host_ip.as_deref(), Some("127.0.0.1"));
         assert_eq!(bindings[1].host_port.as_deref(), Some("9090"));
         assert_eq!(bindings[1].host_ip.as_deref(), Some("0.0.0.0"));
+    }
+
+    #[test]
+    fn devcontainer_keepalive_command_exits_promptly_on_term() {
+        let (entrypoint, command) = devcontainer_keepalive_command();
+
+        assert_eq!(entrypoint, vec!["/bin/sh"]);
+        assert_eq!(command.len(), 2);
+        assert_eq!(command[0], "-c");
+
+        let script = &command[1];
+        assert!(script.contains("trap 'exit 0' TERM"));
+        assert!(script.contains("sleep 1 & wait $!"));
+        assert!(!script.contains("sleep 1000"));
     }
 
     #[test]
@@ -452,9 +495,12 @@ mod tests {
             let name = format!("decune-test-container-{}", std::process::id());
             remove_container(&client, &name, true, true).await.unwrap();
 
+            let (entrypoint, command) = devcontainer_keepalive_command();
             let spec = ContainerCreateSpec {
                 image: "alpine:3.20".to_owned(),
                 name: name.clone(),
+                entrypoint: Some(entrypoint),
+                command: Some(command),
                 labels: BTreeMap::from([
                     ("decune.managed".to_owned(), "true".to_owned()),
                     ("decune.workspace_id".to_owned(), "testworkspace".to_owned()),
@@ -471,6 +517,8 @@ mod tests {
             assert!(!id.is_empty());
 
             start_container(&client, &name).await.unwrap();
+            let inspect = client.raw().inspect_container(&name, None).await.unwrap();
+            assert_eq!(inspect.state.and_then(|state| state.running), Some(true));
             stop_container(&client, &name, 1).await.unwrap();
             stop_container(&client, &name, 1).await.unwrap();
             remove_container(&client, &name, true, true).await.unwrap();
