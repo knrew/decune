@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use toml::Value;
 
@@ -133,6 +134,32 @@ impl CanonicalWriter {
             Value::Table(values) => {
                 self.output.push_str("toml-table");
                 self.map(values.iter(), |writer, value| writer.toml_value(value));
+            }
+        }
+    }
+
+    pub(crate) fn json_value(&mut self, value: &JsonValue) {
+        match value {
+            JsonValue::Null => self.output.push_str("json-null"),
+            JsonValue::Bool(value) => {
+                self.output.push_str("json-bool");
+                self.bool(*value);
+            }
+            JsonValue::Number(value) => {
+                self.output.push_str("json-number");
+                self.string(&value.to_string());
+            }
+            JsonValue::String(value) => {
+                self.output.push_str("json-string");
+                self.string(value);
+            }
+            JsonValue::Array(values) => {
+                self.output.push_str("json-array");
+                self.seq(values.iter(), |writer, value| writer.json_value(value));
+            }
+            JsonValue::Object(values) => {
+                self.output.push_str("json-object");
+                self.map(values.iter(), |writer, value| writer.json_value(value));
             }
         }
     }

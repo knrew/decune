@@ -6,8 +6,9 @@ use toml::Value;
 
 use crate::config::{
     layer::{
-        LayerDevcontainerBuild, LayerDevcontainerSource, LayerHook, LayerHooks, LayerPort,
-        LayerPortAttributes, LayerPublishPort, LayerRunArg, LayerUserEnvProbe,
+        LayerDevcontainerBuild, LayerDevcontainerMount, LayerDevcontainerSource, LayerHook,
+        LayerHooks, LayerPort, LayerPortAttributes, LayerPublishPort, LayerRunArg,
+        LayerUserEnvProbe,
     },
     types::{
         DEFAULT_AUTO_PORT_MAX, DEFAULT_AUTO_PORT_MIN, DotfileConflict, GitHttpsMode,
@@ -86,7 +87,7 @@ impl Default for ResolvedAutoPorts {
 pub(crate) struct ResolvedDevcontainer {
     pub(crate) source: Option<ResolvedDevcontainerSource>,
     pub(crate) override_feature_install_order: Vec<String>,
-    pub(crate) mounts: Vec<String>,
+    pub(crate) mounts: Vec<ResolvedDevcontainerMount>,
     pub(crate) workspace_mount: Option<String>,
     pub(crate) workspace_folder: Option<String>,
     pub(crate) container_env: BTreeMap<String, String>,
@@ -108,6 +109,7 @@ pub(crate) struct ResolvedDevcontainer {
 
 pub(crate) type ResolvedDevcontainerSource = LayerDevcontainerSource;
 pub(crate) type ResolvedDevcontainerBuild = LayerDevcontainerBuild;
+pub(crate) type ResolvedDevcontainerMount = LayerDevcontainerMount;
 pub(crate) type ResolvedUserEnvProbe = LayerUserEnvProbe;
 pub(crate) type ResolvedPublishPort = LayerPublishPort;
 pub(crate) type ResolvedPortAttributes = LayerPortAttributes;

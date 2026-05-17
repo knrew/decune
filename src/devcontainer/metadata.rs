@@ -59,7 +59,7 @@ impl DevcontainerMetadata {
         &self.source
     }
 
-    pub(crate) fn mounts(&self) -> &[String] {
+    pub(crate) fn mounts(&self) -> &[DevcontainerMount] {
         &self.mounts
     }
 
@@ -218,7 +218,11 @@ impl DevcontainerMetadata {
         Ok(LayerDevcontainerMetadata {
             source: Some(devcontainer_source_to_layer(&self.source)),
             override_feature_install_order: self.override_feature_install_order.clone(),
-            mounts: self.mounts.clone(),
+            mounts: self
+                .mounts
+                .iter()
+                .map(DevcontainerMount::to_layer)
+                .collect(),
             workspace_mount: self.workspace_mount.clone(),
             workspace_folder: self.workspace_folder.clone(),
             container_env: self.container_env.clone(),
@@ -653,6 +657,7 @@ mod tests {
         types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward, PortProtocol},
     };
     use crate::devcontainer::lifecycle::{LifecycleCommand, LifecycleStage, WaitFor};
+    use crate::devcontainer::mounts::DevcontainerMount;
     use crate::devcontainer::ports::OnAutoForward;
     use toml::Value as TomlValue;
 
@@ -727,8 +732,43 @@ mod tests {
         );
         assert_eq!(
             metadata.mounts(),
-            &["source=decune-cache,target=/cache,type=volume".to_owned()]
+            &[DevcontainerMount::String(
+                "source=decune-cache,target=/cache,type=volume".to_owned()
+            )]
         );
+    }
+
+    #[test]
+    fn parses_object_mounts_without_interpreting_them() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "mounts": [
+                {
+                    "type": "bind",
+                    "source": "/host/cache",
+                    "target": "/cache",
+                    "readonly": true
+                }
+            ]
+        }))
+        .unwrap();
+
+        match &metadata.mounts()[0] {
+            DevcontainerMount::Object(values) => {
+                assert_eq!(values.get("type"), Some(&json!("bind")));
+                assert_eq!(values.get("source"), Some(&json!("/host/cache")));
+                assert_eq!(values.get("target"), Some(&json!("/cache")));
+                assert_eq!(values.get("readonly"), Some(&json!(true)));
+            }
+            DevcontainerMount::String(_) => panic!("expected object mount"),
+        }
+
+        let config = resolve_config(ConfigMergeInput {
+            devcontainer: Some(metadata.to_config_layer().unwrap()),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.devcontainer.mounts.len(), 1);
     }
 
     #[test]
@@ -825,6 +865,26 @@ mod tests {
     }
 
     #[test]
+    fn docker_compose_file_alone_is_rejected() {
+        let error = parse_metadata(json!({
+            "dockerComposeFile": "compose.yml"
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Docker Compose mode"));
+    }
+
+    #[test]
+    fn metadata_without_image_or_build_is_rejected() {
+        let error = parse_metadata(json!({
+            "features": {}
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("either image or build"));
+    }
+
+    #[test]
     fn image_and_build_are_rejected_together() {
         let error = parse_metadata(json!({
             "image": "ubuntu:24.04",
@@ -898,6 +958,45 @@ mod tests {
             .unwrap_err();
 
             assert!(error.to_string().contains("Unsupported runArgs option"));
+        }
+    }
+
+    #[test]
+    fn run_args_missing_values_are_rejected() {
+        for run_args in [
+            json!(["--cap-add"]),
+            json!(["--security-opt"]),
+            json!(["--add-host"]),
+            json!(["--dns"]),
+            json!(["--dns-search"]),
+        ] {
+            let error = parse_metadata(json!({
+                "image": "ubuntu:24.04",
+                "runArgs": run_args
+            }))
+            .unwrap_err();
+
+            assert!(error.to_string().contains("Missing value"));
+        }
+    }
+
+    #[test]
+    fn run_args_boolean_options_reject_values() {
+        for run_args in [
+            json!(["--init=true"]),
+            json!(["--privileged=false"]),
+            json!(["--init", "true"]),
+        ] {
+            let error = parse_metadata(json!({
+                "image": "ubuntu:24.04",
+                "runArgs": run_args
+            }))
+            .unwrap_err();
+
+            assert!(
+                error.to_string().contains("does not accept a value")
+                    || error.to_string().contains("Unsupported runArgs option")
+            );
         }
     }
 
