@@ -23,12 +23,19 @@ pub(crate) fn parse_metadata(value: Value) -> Result<DevcontainerMetadata> {
     let raw: RawDevcontainerMetadata = serde_json::from_value(value)
         .map_err(|error| anyhow!("Failed to parse devcontainer metadata schema: {error}"))?;
 
-    raw.validate()
+    raw.validate(SourceRequirement::Required)
+}
+
+pub(crate) fn parse_metadata_layer(value: Value) -> Result<DevcontainerMetadata> {
+    let raw: RawDevcontainerMetadata = serde_json::from_value(value)
+        .map_err(|error| anyhow!("Failed to parse devcontainer metadata schema: {error}"))?;
+
+    raw.validate(SourceRequirement::Optional)
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DevcontainerMetadata {
-    source: DevcontainerSource,
+    source: Option<DevcontainerSource>,
     features: BTreeMap<String, Value>,
     override_feature_install_order: Vec<String>,
     mounts: Vec<DevcontainerMount>,
@@ -55,8 +62,8 @@ pub(crate) struct DevcontainerMetadata {
 }
 
 impl DevcontainerMetadata {
-    pub(crate) fn source(&self) -> &DevcontainerSource {
-        &self.source
+    pub(crate) fn source(&self) -> Option<&DevcontainerSource> {
+        self.source.as_ref()
     }
 
     pub(crate) fn mounts(&self) -> &[DevcontainerMount] {
@@ -216,7 +223,7 @@ impl DevcontainerMetadata {
 
     fn to_devcontainer_layer(&self) -> Result<LayerDevcontainerMetadata> {
         Ok(LayerDevcontainerMetadata {
-            source: Some(devcontainer_source_to_layer(&self.source)),
+            source: self.source.as_ref().map(devcontainer_source_to_layer),
             override_feature_install_order: self.override_feature_install_order.clone(),
             mounts: self
                 .mounts
@@ -428,7 +435,7 @@ struct RawDevcontainerMetadata {
 }
 
 impl RawDevcontainerMetadata {
-    fn validate(self) -> Result<DevcontainerMetadata> {
+    fn validate(self, source_requirement: SourceRequirement) -> Result<DevcontainerMetadata> {
         if self.docker_compose_file.is_some() || self.service.is_some() {
             return Err(anyhow!(
                 "Docker Compose mode is not supported in decune v0.1"
@@ -442,13 +449,14 @@ impl RawDevcontainerMetadata {
                     "Devcontainer metadata must not specify both image and build"
                 ));
             }
-            (Some(image), None) => DevcontainerSource::Image(image),
-            (None, Some(build)) => DevcontainerSource::Dockerfile(build.validate()?),
-            (None, None) => {
+            (Some(image), None) => Some(DevcontainerSource::Image(image)),
+            (None, Some(build)) => Some(DevcontainerSource::Dockerfile(build.validate()?)),
+            (None, None) if source_requirement == SourceRequirement::Required => {
                 return Err(anyhow!(
                     "Devcontainer metadata must specify either image or build"
                 ));
             }
+            (None, None) => None,
         };
 
         Ok(DevcontainerMetadata {
@@ -513,6 +521,12 @@ impl RawDevcontainerMetadata {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SourceRequirement {
+    Required,
+    Optional,
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RawDevcontainerBuild {
@@ -553,10 +567,8 @@ fn normalize_run_args(values: &[String]) -> Result<Vec<DevcontainerRunArg>> {
             "--init" => args.push(DevcontainerRunArg::Init),
             "--privileged" => args.push(DevcontainerRunArg::Privileged),
             "--cap-add" | "--security-opt" | "--add-host" | "--dns" | "--dns-search" => {
-                let value = values
-                    .get(index + 1)
-                    .ok_or_else(|| anyhow!("Missing value for runArgs option {current}"))?;
-                args.push(run_arg_with_value(current, value.clone())?);
+                let value = required_run_arg_value(values, current, index)?;
+                args.push(run_arg_with_value(current, value)?);
                 index += 1;
             }
             _ => return Err(anyhow!("Unsupported runArgs option: {current}")),
@@ -566,6 +578,18 @@ fn normalize_run_args(values: &[String]) -> Result<Vec<DevcontainerRunArg>> {
     }
 
     Ok(args)
+}
+
+fn required_run_arg_value(values: &[String], option: &str, index: usize) -> Result<String> {
+    let value = values
+        .get(index + 1)
+        .ok_or_else(|| anyhow!("Missing value for runArgs option {option}"))?;
+
+    if value.is_empty() || value.starts_with('-') {
+        return Err(anyhow!("Missing value for runArgs option {option}"));
+    }
+
+    Ok(value.clone())
 }
 
 fn run_arg_with_value(option: &str, value: String) -> Result<DevcontainerRunArg> {
@@ -683,9 +707,9 @@ mod tests {
 
         assert_eq!(
             metadata.source(),
-            &DevcontainerSource::Image(
+            Some(&DevcontainerSource::Image(
                 "mcr.microsoft.com/devcontainers/rust:1-1-bookworm".to_owned()
-            )
+            ))
         );
         assert_eq!(metadata.workspace_folder(), Some("/workspaces/decune"));
         assert_eq!(
@@ -718,13 +742,13 @@ mod tests {
 
         assert_eq!(
             metadata.source(),
-            &DevcontainerSource::Dockerfile(DevcontainerBuild {
+            Some(&DevcontainerSource::Dockerfile(DevcontainerBuild {
                 dockerfile: "Dockerfile".to_owned(),
                 context: Some("..".to_owned()),
                 args: [("VARIANT".to_owned(), "bookworm".to_owned())].into(),
                 target: Some("dev".to_owned()),
                 cache_from: vec!["type=registry,ref=example.test/cache".to_owned()],
-            })
+            }))
         );
         assert_eq!(
             metadata.workspace_mount(),
@@ -885,6 +909,35 @@ mod tests {
     }
 
     #[test]
+    fn source_less_metadata_layer_is_accepted() {
+        let metadata = parse_metadata_layer(json!({
+            "containerEnv": {
+                "FEATURE_FLAG": "enabled"
+            },
+            "remoteUser": "vscode",
+            "postCreateCommand": "feature setup"
+        }))
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(metadata.to_config_layer().unwrap()),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.devcontainer.source.is_none());
+        assert_eq!(
+            config
+                .devcontainer
+                .container_env
+                .get("FEATURE_FLAG")
+                .map(String::as_str),
+            Some("enabled")
+        );
+        assert_eq!(config.devcontainer.remote_user.as_deref(), Some("vscode"));
+        assert!(config.devcontainer.lifecycle.is_some());
+    }
+
+    #[test]
     fn image_and_build_are_rejected_together() {
         let error = parse_metadata(json!({
             "image": "ubuntu:24.04",
@@ -969,6 +1022,25 @@ mod tests {
             json!(["--add-host"]),
             json!(["--dns"]),
             json!(["--dns-search"]),
+        ] {
+            let error = parse_metadata(json!({
+                "image": "ubuntu:24.04",
+                "runArgs": run_args
+            }))
+            .unwrap_err();
+
+            assert!(error.to_string().contains("Missing value"));
+        }
+    }
+
+    #[test]
+    fn run_args_value_options_reject_following_options_as_values() {
+        for run_args in [
+            json!(["--cap-add", "--init"]),
+            json!(["--security-opt", "--privileged"]),
+            json!(["--add-host", "--dns", "1.1.1.1"]),
+            json!(["--dns", "--dns-search", "example.test"]),
+            json!(["--dns-search", "--init"]),
         ] {
             let error = parse_metadata(json!({
                 "image": "ubuntu:24.04",
@@ -1195,7 +1267,7 @@ mod tests {
         );
         assert_eq!(config.devcontainer.remote_user.as_deref(), Some("vscode"));
         assert_eq!(config.devcontainer.container_user.as_deref(), Some("root"));
-        assert_eq!(config.devcontainer.update_remote_user_uid, Some(false));
+        assert!(!config.devcontainer.update_remote_user_uid);
         assert!(config.devcontainer.init);
         assert!(config.devcontainer.privileged);
         assert_eq!(config.devcontainer.cap_add, vec!["SYS_PTRACE"]);
