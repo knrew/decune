@@ -274,6 +274,7 @@ dependencies = [
  "assert_cmd",
  "bollard",
  "clap",
+ "futures-util",
  "libc",
  "predicates",
  "proptest",
