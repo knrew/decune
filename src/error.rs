@@ -3,7 +3,6 @@ use std::{fmt::Display, path::Path};
 use anyhow::{Context, Error, Result, anyhow};
 
 pub(crate) trait ResultExt<T> {
-    #[allow(dead_code)]
     fn with_path_context<P>(self, action: &'static str, path: P) -> Result<T>
     where
         P: AsRef<Path>;

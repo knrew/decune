@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::config::schema::{
     RawCommand, RawDotfileConflict, RawGitHttpsMode, RawGithubCredentialsMode, RawHookLocation,
     RawMountCreate, RawMountType, RawOnAutoForward, RawPortProtocol, RawSshAgentMode,
