@@ -59,16 +59,16 @@ jobs:
       matrix:
         include:
           - profile: debug
-            command: cargo check --workspace --all-targets --all-features --verbose
+            release_flag: ""
           - profile: release
-            command: cargo check --release --workspace --all-targets --all-features --verbose
+            release_flag: "--release"
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Cargo check
-        run: ${{ matrix.command }}
+        run: cargo check ${{ matrix.release_flag }} --workspace --all-targets --all-features --verbose
 
   test:
     name: test (${{ matrix.profile }})
@@ -80,23 +80,31 @@ jobs:
       matrix:
         include:
           - profile: debug
-            command: cargo test --workspace --all-features --no-fail-fast --verbose
+            release_flag: ""
           - profile: release
-            command: cargo test --release --workspace --all-features --no-fail-fast --verbose
+            release_flag: "--release"
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Cargo test
-        run: ${{ matrix.command }}
+        run: cargo test ${{ matrix.release_flag }} --workspace --all-features --no-fail-fast --verbose
 
   docker-integration:
-    name: Docker integration
+    name: Docker integration (${{ matrix.profile }})
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: debug
+            release_flag: ""
+          - profile: release
+            release_flag: "--release"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -107,4 +115,4 @@ jobs:
       - name: Cargo test with Docker
         env:
           DECUNE_DOCKER_TESTS: "1"
-        run: cargo test --workspace --all-features --no-fail-fast --verbose
+        run: cargo test ${{ matrix.release_flag }} --workspace --all-features --no-fail-fast --verbose
