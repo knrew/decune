@@ -246,17 +246,13 @@ pub(crate) fn workspace_container_list_options(workspace_id: &str) -> ListContai
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
-
-    use bollard::{
-        models::{ContainerCreateBody, HostConfig, PortBinding},
-        query_parameters::CreateContainerOptionsBuilder,
-    };
+    use std::{collections::BTreeMap, fs};
 
     use crate::{
         config::types::{MountType, PortProtocol},
         docker::{
             client::DockerClient,
+            exec::{ExecCommandSpec, exec_capture, exec_capture_output},
             image::{PullPolicy, ensure_image},
             mounts::DockerMountSpec,
             ports::DockerPublishPort,
@@ -507,7 +503,7 @@ mod tests {
     }
 
     #[test]
-    fn published_port_is_allocated_when_docker_tests_are_enabled() {
+    fn create_spec_mounts_read_only_bind_and_publishes_port_when_docker_tests_are_enabled() {
         if !docker_tests_enabled() {
             eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
             return;
@@ -520,33 +516,85 @@ mod tests {
 
         runtime.block_on(async {
             let client = DockerClient::connect_from_env().unwrap();
-            let name = format!("decune-test-publish-port-{}", std::process::id());
+            let name = format!("decune-test-create-spec-{}", std::process::id());
+            let host_directory = tempfile::tempdir().unwrap();
+            let host_file = host_directory.path().join("message.txt");
+            fs::write(&host_file, "mounted from host\n").unwrap();
+
             let result = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
                 remove_container(&client, &name, true, true).await?;
 
-                let mut port_bindings = std::collections::HashMap::new();
-                port_bindings.insert(
-                    "8080/tcp".to_owned(),
-                    Some(vec![PortBinding {
+                let (entrypoint, command) = devcontainer_keepalive_command();
+                let spec = ContainerCreateSpec {
+                    image: "alpine:3.20".to_owned(),
+                    name: name.clone(),
+                    entrypoint: Some(entrypoint),
+                    command: Some(command),
+                    labels: BTreeMap::from([
+                        ("decune.managed".to_owned(), "true".to_owned()),
+                        ("decune.workspace_id".to_owned(), "testworkspace".to_owned()),
+                    ]),
+                    env: BTreeMap::new(),
+                    working_dir: None,
+                    user: None,
+                    mounts: vec![DockerMountSpec {
+                        source: Some(host_directory.path().display().to_string()),
+                        target: "/mnt/decune-test".to_owned(),
+                        mount_type: MountType::Bind,
+                        read_only: true,
+                    }],
+                    publish_ports: vec![DockerPublishPort {
+                        container: 8080,
+                        host: None,
                         host_ip: Some("127.0.0.1".to_owned()),
-                        host_port: None,
-                    }]),
-                );
-                let options = CreateContainerOptionsBuilder::default().name(&name).build();
-                let body = ContainerCreateBody {
-                    image: Some("alpine:3.20".to_owned()),
-                    cmd: Some(vec!["sleep".to_owned(), "60".to_owned()]),
-                    exposed_ports: Some(vec!["8080/tcp".to_owned()]),
-                    host_config: Some(HostConfig {
-                        port_bindings: Some(port_bindings),
-                        ..Default::default()
-                    }),
-                    ..Default::default()
+                        protocol: PortProtocol::Tcp,
+                    }],
+                    host_config: ContainerHostConfig::default(),
                 };
 
-                client.raw().create_container(Some(options), body).await?;
+                create_container(&client, &spec).await?;
                 start_container(&client, &name).await?;
+
+                let read_output = exec_capture(
+                    &client,
+                    &name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /mnt/decune-test/message.txt".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(read_output.stdout).unwrap(),
+                    "mounted from host\n"
+                );
+
+                let write_output = exec_capture_output(
+                    &client,
+                    &name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "echo denied > /mnt/decune-test/new.txt".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_ne!(write_output.exit_code, 0);
+                assert!(!host_directory.path().join("new.txt").exists());
 
                 let inspect = client.raw().inspect_container(&name, None).await?;
                 let ports = inspect
