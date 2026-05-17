@@ -258,7 +258,7 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
             writer.option_string(devcontainer.container_user.as_deref());
         });
         writer.field("update_remote_user_uid", |writer| {
-            write_option_bool(writer, devcontainer.update_remote_user_uid);
+            writer.bool(devcontainer.update_remote_user_uid);
         });
         writer.field("user_env_probe", |writer| {
             match devcontainer.user_env_probe {
@@ -1082,6 +1082,25 @@ enabled = false
         );
 
         assert_ne!(hash_for(&enabled), hash_for(&disabled));
+    }
+
+    #[test]
+    fn update_remote_user_uid_change_changes_hash() {
+        let default_uid_sync = resolve_config(ConfigMergeInput::default());
+        let disabled_uid_sync = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    update_remote_user_uid: Some(false),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(default_uid_sync.devcontainer.update_remote_user_uid);
+        assert!(!disabled_uid_sync.devcontainer.update_remote_user_uid);
+        assert_ne!(hash_for(&default_uid_sync), hash_for(&disabled_uid_sync));
     }
 
     #[test]

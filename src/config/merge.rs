@@ -276,7 +276,7 @@ impl MergeAccumulator {
             self.devcontainer.container_user = Some(container_user);
         }
         if let Some(update_remote_user_uid) = devcontainer.update_remote_user_uid {
-            self.devcontainer.update_remote_user_uid = Some(update_remote_user_uid);
+            self.devcontainer.update_remote_user_uid = update_remote_user_uid;
         }
         if let Some(user_env_probe) = devcontainer.user_env_probe {
             self.devcontainer.user_env_probe = Some(user_env_probe);
@@ -467,6 +467,7 @@ mod tests {
         assert_eq!(config.ports.auto.max, 32768);
         assert!(config.ports.auto.ignore.is_empty());
         assert_eq!(config.ports.auto.on_auto_forward, OnAutoForward::Notify);
+        assert!(config.devcontainer.update_remote_user_uid);
         assert!(config.credentials.git.enabled);
         assert!(config.credentials.git.copy_user);
         assert!(!config.credentials.git.copy_global_config);

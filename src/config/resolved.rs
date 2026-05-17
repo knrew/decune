@@ -83,7 +83,7 @@ impl Default for ResolvedAutoPorts {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ResolvedDevcontainer {
     pub(crate) source: Option<ResolvedDevcontainerSource>,
     pub(crate) override_feature_install_order: Vec<String>,
@@ -94,7 +94,7 @@ pub(crate) struct ResolvedDevcontainer {
     pub(crate) remote_env: BTreeMap<String, String>,
     pub(crate) remote_user: Option<String>,
     pub(crate) container_user: Option<String>,
-    pub(crate) update_remote_user_uid: Option<bool>,
+    pub(crate) update_remote_user_uid: bool,
     pub(crate) user_env_probe: Option<ResolvedUserEnvProbe>,
     pub(crate) publish_ports: Vec<ResolvedPublishPort>,
     pub(crate) port_attributes: BTreeMap<String, ResolvedPortAttributes>,
@@ -105,6 +105,33 @@ pub(crate) struct ResolvedDevcontainer {
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
     pub(crate) lifecycle: Option<crate::devcontainer::lifecycle::LifecycleDefinition>,
+}
+
+impl Default for ResolvedDevcontainer {
+    fn default() -> Self {
+        Self {
+            source: None,
+            override_feature_install_order: Vec::new(),
+            mounts: Vec::new(),
+            workspace_mount: None,
+            workspace_folder: None,
+            container_env: BTreeMap::new(),
+            remote_env: BTreeMap::new(),
+            remote_user: None,
+            container_user: None,
+            update_remote_user_uid: true,
+            user_env_probe: None,
+            publish_ports: Vec::new(),
+            port_attributes: BTreeMap::new(),
+            other_ports_attributes: None,
+            run_args: Vec::new(),
+            init: false,
+            privileged: false,
+            cap_add: Vec::new(),
+            security_opt: Vec::new(),
+            lifecycle: None,
+        }
+    }
 }
 
 pub(crate) type ResolvedDevcontainerSource = LayerDevcontainerSource;
