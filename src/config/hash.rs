@@ -8,11 +8,11 @@ use crate::config::{
     canonical::{CanonicalWriter, sha256_hex},
     resolved::{
         ResolvedConfig, ResolvedDevcontainer, ResolvedDevcontainerSource, ResolvedHook,
-        ResolvedPortAttributes, ResolvedPublishPort, ResolvedRunArg, ResolvedUserEnvProbe,
+        ResolvedPublishPort, ResolvedRunArg, ResolvedUserEnvProbe,
     },
     types::{
         Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, HookLocation, MountCreate,
-        MountType, OnAutoForward, PortProtocol, SshAgentMode,
+        MountType, PortProtocol, SshAgentMode,
     },
 };
 use crate::devcontainer::lifecycle::{
@@ -268,17 +268,6 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
         writer.field("publish_ports", |writer| {
             writer.seq(devcontainer.publish_ports.iter(), write_publish_port);
         });
-        writer.field("port_attributes", |writer| {
-            writer.map(devcontainer.port_attributes.iter(), |writer, attributes| {
-                write_port_attributes(writer, attributes);
-            });
-        });
-        writer.field("other_ports_attributes", |writer| {
-            match &devcontainer.other_ports_attributes {
-                Some(attributes) => write_port_attributes(writer, attributes),
-                None => writer.none(),
-            }
-        });
         writer.field("run_args", |writer| {
             writer.seq(devcontainer.run_args.iter(), write_run_arg);
         });
@@ -344,23 +333,6 @@ fn write_publish_port(writer: &mut CanonicalWriter, port: &ResolvedPublishPort) 
         });
         writer.field("protocol", |writer| {
             writer.string(port_protocol_name(port.protocol));
-        });
-    });
-}
-
-fn write_port_attributes(writer: &mut CanonicalWriter, attributes: &ResolvedPortAttributes) {
-    writer.object("PortAttributes", |writer| {
-        writer.field("label", |writer| {
-            writer.option_string(attributes.label.as_deref());
-        });
-        writer.field("on_auto_forward", |writer| {
-            match attributes.on_auto_forward {
-                Some(value) => writer.string(on_auto_forward_name(value)),
-                None => writer.none(),
-            }
-        });
-        writer.field("require_local_port", |writer| {
-            write_option_bool(writer, attributes.require_local_port);
         });
     });
 }
@@ -566,14 +538,6 @@ fn wait_for_name(value: WaitFor) -> &'static str {
     }
 }
 
-fn on_auto_forward_name(value: OnAutoForward) -> &'static str {
-    match value {
-        OnAutoForward::Notify => "notify",
-        OnAutoForward::Silent => "silent",
-        OnAutoForward::Ignore => "ignore",
-    }
-}
-
 fn git_https_mode_name(value: GitHttpsMode) -> &'static str {
     match value {
         GitHttpsMode::Off => "off",
@@ -609,7 +573,7 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        layer::{LayerDevcontainerMetadata, LayerPublishPort},
+        layer::{LayerDevcontainerMetadata, LayerPortAttributes, LayerPublishPort},
         merge::{ConfigLayer, ConfigMergeInput, resolve_config},
         types::{OnAutoForward, PortProtocol},
     };
@@ -739,6 +703,35 @@ on_auto_forward = "silent"
         });
 
         assert_ne!(hash_for(&without_publish), hash_for(&with_publish));
+    }
+
+    #[test]
+    fn devcontainer_port_attributes_do_not_change_hash() {
+        let without_attributes = resolve_config(ConfigMergeInput::default());
+        let with_attributes = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    port_attributes: BTreeMap::from([(
+                        "3000".to_owned(),
+                        LayerPortAttributes {
+                            label: Some("web".to_owned()),
+                            on_auto_forward: Some(OnAutoForward::Silent),
+                            require_local_port: Some(true),
+                        },
+                    )]),
+                    other_ports_attributes: Some(LayerPortAttributes {
+                        label: Some("other".to_owned()),
+                        on_auto_forward: Some(OnAutoForward::Ignore),
+                        require_local_port: Some(false),
+                    }),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(hash_for(&without_attributes), hash_for(&with_attributes));
     }
 
     #[test]

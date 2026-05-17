@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use toml::Value;
 
-use crate::devcontainer::lifecycle::LifecycleDefinition;
+use crate::devcontainer::lifecycle::LayerLifecycleDefinition;
 
 use crate::config::{
     schema::{
@@ -215,7 +215,7 @@ pub(crate) struct LayerDevcontainerMetadata {
     pub(crate) privileged: Option<bool>,
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
-    pub(crate) lifecycle: Option<LifecycleDefinition>,
+    pub(crate) lifecycle: Option<LayerLifecycleDefinition>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

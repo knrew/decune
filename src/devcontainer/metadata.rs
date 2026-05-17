@@ -15,7 +15,7 @@ use crate::{
         },
         types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward, PortProtocol},
     },
-    devcontainer::lifecycle::parse_lifecycle_definition,
+    devcontainer::lifecycle::parse_lifecycle_layer_definition,
 };
 
 pub(crate) fn parse_metadata(value: Value) -> Result<DevcontainerMetadata> {
@@ -245,7 +245,7 @@ impl DevcontainerMetadata {
             privileged: self.privileged,
             cap_add: self.cap_add.clone(),
             security_opt: self.security_opt.clone(),
-            lifecycle: Some(parse_lifecycle_definition(&self.lifecycle)?),
+            lifecycle: parse_lifecycle_layer_definition(&self.lifecycle)?,
         })
     }
 }
@@ -836,6 +836,7 @@ mod tests {
         resolved::ResolvedPublishPort,
         types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward, PortProtocol},
     };
+    use crate::devcontainer::lifecycle::{LifecycleCommand, LifecycleStage, WaitFor};
     use toml::Value as TomlValue;
 
     use super::*;
@@ -1242,6 +1243,71 @@ mod tests {
         assert_eq!(config.devcontainer.cap_add, vec!["SYS_PTRACE"]);
         assert_eq!(config.devcontainer.security_opt, vec!["seccomp=unconfined"]);
         assert!(config.devcontainer.lifecycle.is_some());
+    }
+
+    #[test]
+    fn devcontainer_without_lifecycle_preserves_image_metadata_lifecycle() {
+        let image_metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "postCreateCommand": "image setup"
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+        let devcontainer = parse_metadata(json!({
+            "image": "ubuntu:24.04"
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(image_metadata),
+            devcontainer: Some(devcontainer),
+            ..ConfigMergeInput::default()
+        });
+
+        let lifecycle = config.devcontainer.lifecycle.as_ref().unwrap();
+        assert_eq!(
+            lifecycle.command(LifecycleStage::PostCreate),
+            Some(&LifecycleCommand::Shell("image setup".to_owned()))
+        );
+    }
+
+    #[test]
+    fn lifecycle_metadata_merges_commands_by_stage_and_wait_for_when_explicit() {
+        let image_metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "postCreateCommand": "image setup",
+            "waitFor": "postCreateCommand"
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+        let devcontainer = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "postStartCommand": "project start"
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(image_metadata),
+            devcontainer: Some(devcontainer),
+            ..ConfigMergeInput::default()
+        });
+
+        let lifecycle = config.devcontainer.lifecycle.as_ref().unwrap();
+        assert_eq!(
+            lifecycle.command(LifecycleStage::PostCreate),
+            Some(&LifecycleCommand::Shell("image setup".to_owned()))
+        );
+        assert_eq!(
+            lifecycle.command(LifecycleStage::PostStart),
+            Some(&LifecycleCommand::Shell("project start".to_owned()))
+        );
+        assert_eq!(lifecycle.wait_for(), WaitFor::PostCreate);
     }
 
     #[test]

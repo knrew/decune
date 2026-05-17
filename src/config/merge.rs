@@ -272,7 +272,10 @@ impl MergeAccumulator {
             .security_opt
             .extend(devcontainer.security_opt);
         if let Some(lifecycle) = devcontainer.lifecycle {
-            self.devcontainer.lifecycle = Some(lifecycle);
+            match &mut self.devcontainer.lifecycle {
+                Some(target) => target.merge_layer(lifecycle),
+                None => self.devcontainer.lifecycle = Some(lifecycle.into_resolved()),
+            }
         }
     }
 
@@ -323,6 +326,7 @@ fn same_port_identity(left: &ResolvedPort, right: &ResolvedPort) -> bool {
 fn same_publish_port_identity(left: &LayerPublishPort, right: &LayerPublishPort) -> bool {
     left.protocol == right.protocol
         && left.container == right.container
+        && left.host == right.host
         && left.host_ip == right.host_ip
 }
 
@@ -354,11 +358,11 @@ fn merge_optional_port_attributes(
 mod tests {
     use super::*;
     use crate::config::{
-        layer::{LayerHook, canonical_feature_id},
+        layer::{LayerDevcontainerMetadata, LayerHook, LayerPublishPort, canonical_feature_id},
         schema::RawDecuneConfig,
         types::{
             Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, OnAutoForward,
-            SshAgentMode,
+            PortProtocol, SshAgentMode,
         },
     };
     use toml::Value;
@@ -793,6 +797,42 @@ enabled = false
         assert_eq!(config.ports.entries.len(), 1);
         assert_eq!(config.ports.entries[0].host_ip, "0.0.0.0");
         assert_eq!(config.ports.entries[0].label.as_deref(), Some("public"));
+    }
+
+    #[test]
+    fn publish_port_identity_keeps_distinct_host_ports_for_same_container_port() {
+        let first = LayerPublishPort {
+            container: 80,
+            host: Some(8080),
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        };
+        let second = LayerPublishPort {
+            container: 80,
+            host: Some(9090),
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        };
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    publish_ports: vec![first.clone()],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    publish_ports: vec![second.clone()],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.devcontainer.publish_ports, vec![first, second]);
     }
 
     #[test]
