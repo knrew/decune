@@ -5,4 +5,5 @@ pub(crate) mod exec;
 pub(crate) mod image;
 pub(crate) mod mounts;
 pub(crate) mod ports;
+pub(crate) mod resource;
 pub(crate) mod user;
