@@ -281,6 +281,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_non_string_array_entries() {
+        let error =
+            parse_lifecycle_command(LifecycleStage::PostCreate, &json!(["echo", 1])).unwrap_err();
+
+        assert!(error.to_string().contains("postCreateCommand"));
+        assert!(error.to_string().contains("entries must be strings"));
+    }
+
+    #[test]
     fn parses_object_command_as_parallel_entries() {
         let command = parse_lifecycle_command(
             LifecycleStage::UpdateContent,
@@ -307,6 +316,26 @@ mod tests {
                 .into()
             )
         );
+    }
+
+    #[test]
+    fn rejects_empty_object_command() {
+        let error = parse_lifecycle_command(LifecycleStage::PostStart, &json!({})).unwrap_err();
+
+        assert!(error.to_string().contains("postStartCommand"));
+        assert!(error.to_string().contains("object must not be empty"));
+    }
+
+    #[test]
+    fn rejects_invalid_parallel_entry_type() {
+        let error = parse_lifecycle_command(
+            LifecycleStage::UpdateContent,
+            &json!({"api": {"nested": true}}),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("updateContentCommand"));
+        assert!(error.to_string().contains("parallel command entry api"));
     }
 
     #[test]
@@ -349,6 +378,13 @@ mod tests {
                 .to_string()
                 .contains("Unsupported waitFor lifecycle stage")
         );
+    }
+
+    #[test]
+    fn rejects_non_string_wait_for() {
+        let error = parse_wait_for(Some(&json!(["postCreateCommand"]))).unwrap_err();
+
+        assert!(error.to_string().contains("waitFor must be"));
     }
 
     #[test]

@@ -7,8 +7,9 @@ use toml::Value;
 use crate::config::{
     canonical::{CanonicalWriter, sha256_hex},
     resolved::{
-        ResolvedConfig, ResolvedDevcontainer, ResolvedDevcontainerSource, ResolvedHook,
-        ResolvedPublishPort, ResolvedRunArg, ResolvedUserEnvProbe,
+        ResolvedConfig, ResolvedDevcontainer, ResolvedDevcontainerMount,
+        ResolvedDevcontainerSource, ResolvedHook, ResolvedPublishPort, ResolvedRunArg,
+        ResolvedUserEnvProbe,
     },
     types::{
         Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, HookLocation, MountCreate,
@@ -231,7 +232,7 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
         });
         writer.field("mounts", |writer| {
             writer.seq(devcontainer.mounts.iter(), |writer, mount| {
-                writer.string(mount);
+                write_devcontainer_mount(writer, mount);
             });
         });
         writer.field("workspace_mount", |writer| {
@@ -288,6 +289,23 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
             None => writer.none(),
         });
     });
+}
+
+fn write_devcontainer_mount(writer: &mut CanonicalWriter, mount: &ResolvedDevcontainerMount) {
+    match mount {
+        ResolvedDevcontainerMount::String(value) => {
+            writer.object("DevcontainerMountString", |writer| {
+                writer.field("value", |writer| writer.string(value));
+            });
+        }
+        ResolvedDevcontainerMount::Object(values) => {
+            writer.object("DevcontainerMountObject", |writer| {
+                writer.field("value", |writer| {
+                    writer.map(values.iter(), |writer, value| writer.json_value(value));
+                });
+            });
+        }
+    }
 }
 
 fn write_devcontainer_source(writer: &mut CanonicalWriter, source: &ResolvedDevcontainerSource) {
@@ -573,7 +591,10 @@ mod tests {
 
     use super::*;
     use crate::config::{
-        layer::{LayerDevcontainerMetadata, LayerPortAttributes, LayerPublishPort},
+        layer::{
+            LayerDevcontainerMetadata, LayerDevcontainerMount, LayerPortAttributes,
+            LayerPublishPort,
+        },
         merge::{ConfigLayer, ConfigMergeInput, resolve_config},
         types::{OnAutoForward, PortProtocol},
     };
@@ -732,6 +753,46 @@ on_auto_forward = "silent"
         });
 
         assert_eq!(hash_for(&without_attributes), hash_for(&with_attributes));
+    }
+
+    #[test]
+    fn devcontainer_object_mount_hash_is_stable_by_key_order() {
+        let first = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    mounts: vec![LayerDevcontainerMount::Object(
+                        [
+                            ("type".to_owned(), serde_json::json!("bind")),
+                            ("source".to_owned(), serde_json::json!("/host")),
+                            ("target".to_owned(), serde_json::json!("/container")),
+                        ]
+                        .into(),
+                    )],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+        let second = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    mounts: vec![LayerDevcontainerMount::Object(
+                        [
+                            ("target".to_owned(), serde_json::json!("/container")),
+                            ("type".to_owned(), serde_json::json!("bind")),
+                            ("source".to_owned(), serde_json::json!("/host")),
+                        ]
+                        .into(),
+                    )],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(hash_for(&first), hash_for(&second));
     }
 
     #[test]

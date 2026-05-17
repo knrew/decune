@@ -17,6 +17,8 @@ pub(crate) enum OnAutoForward {
     Silent,
     Ignore,
     OpenBrowser,
+    OpenBrowserOnce,
+    OpenPreview,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -202,6 +204,74 @@ fn on_auto_forward_to_config(value: &OnAutoForward) -> ConfigOnAutoForward {
         OnAutoForward::Notify => ConfigOnAutoForward::Notify,
         OnAutoForward::Silent => ConfigOnAutoForward::Silent,
         OnAutoForward::Ignore => ConfigOnAutoForward::Ignore,
-        OnAutoForward::OpenBrowser => ConfigOnAutoForward::Notify,
+        OnAutoForward::OpenBrowser
+        | OnAutoForward::OpenBrowserOnce
+        | OnAutoForward::OpenPreview => ConfigOnAutoForward::Notify,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use crate::config::types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward};
+
+    use super::*;
+
+    #[test]
+    fn standard_on_auto_forward_values_are_accepted() {
+        for (input, expected) in [
+            ("notify", ConfigOnAutoForward::Notify),
+            ("silent", ConfigOnAutoForward::Silent),
+            ("ignore", ConfigOnAutoForward::Ignore),
+            ("openBrowser", ConfigOnAutoForward::Notify),
+            ("openBrowserOnce", ConfigOnAutoForward::Notify),
+            ("openPreview", ConfigOnAutoForward::Notify),
+        ] {
+            let attributes: DevcontainerPortAttributes =
+                serde_json::from_value(json!({"onAutoForward": input})).unwrap();
+            let layer = port_attributes_to_layer(&attributes);
+
+            assert_eq!(layer.on_auto_forward, Some(expected));
+        }
+    }
+
+    #[test]
+    fn unsupported_port_protocol_is_rejected() {
+        let error = forwarding_port_to_layer(
+            &DevcontainerPort::String("3000/udp".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Unsupported devcontainer port protocol")
+        );
+    }
+
+    #[test]
+    fn invalid_port_number_is_rejected() {
+        let error =
+            publish_port_to_layer(&DevcontainerPort::String("99999".to_owned())).unwrap_err();
+
+        assert!(error.to_string().contains("Invalid container port"));
+    }
+
+    #[test]
+    fn localhost_host_ip_is_normalized_for_forward_ports() {
+        let port = forwarding_port_to_layer(
+            &DevcontainerPort::String("localhost:5432".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap();
+
+        assert_eq!(port.port.host_ip, DEFAULT_PORT_HOST_IP);
+        assert_eq!(port.port.container, 5432);
+    }
+
+    fn empty_attributes() -> BTreeMap<String, DevcontainerPortAttributes> {
+        BTreeMap::new()
     }
 }

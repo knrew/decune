@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use serde_json::Value as JsonValue;
 use toml::Value;
 
 use crate::devcontainer::lifecycle::LayerLifecycleDefinition;
@@ -206,7 +207,7 @@ impl LayerAutoPorts {
 pub(crate) struct LayerDevcontainerMetadata {
     pub(crate) source: Option<LayerDevcontainerSource>,
     pub(crate) override_feature_install_order: Vec<String>,
-    pub(crate) mounts: Vec<String>,
+    pub(crate) mounts: Vec<LayerDevcontainerMount>,
     pub(crate) workspace_mount: Option<String>,
     pub(crate) workspace_folder: Option<String>,
     pub(crate) container_env: BTreeMap<String, String>,
@@ -239,6 +240,12 @@ pub(crate) struct LayerDevcontainerBuild {
     pub(crate) args: BTreeMap<String, String>,
     pub(crate) target: Option<String>,
     pub(crate) cache_from: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) enum LayerDevcontainerMount {
+    String(String),
+    Object(BTreeMap<String, JsonValue>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
