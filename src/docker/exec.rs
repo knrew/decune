@@ -45,6 +45,18 @@ pub(crate) async fn exec_capture(
     container: &str,
     spec: &ExecCommandSpec,
 ) -> Result<ExecOutput> {
+    let output = exec_capture_output(client, container, spec).await?;
+
+    ensure_success_output(container, &spec.command, &output)?;
+
+    Ok(output)
+}
+
+pub(crate) async fn exec_capture_output(
+    client: &DockerClient,
+    container: &str,
+    spec: &ExecCommandSpec,
+) -> Result<ExecOutput> {
     validate_exec_spec(spec)?;
 
     let exec_id = create_exec(client, container, spec, ExecAttachMode::Capture).await?;
@@ -53,8 +65,6 @@ pub(crate) async fn exec_capture(
     output.exit_code = inspect
         .exit_code
         .context("Failed to read Docker exec exit code")?;
-
-    ensure_success_exit(container, &spec.command, &inspect, &output)?;
 
     Ok(output)
 }
@@ -186,6 +196,19 @@ pub(crate) fn ensure_success_exit(
         .exit_code
         .context("Failed to read Docker exec exit code")?;
 
+    ensure_success_exit_code(container, command, exit_code, output)
+}
+
+fn ensure_success_output(container: &str, command: &[String], output: &ExecOutput) -> Result<()> {
+    ensure_success_exit_code(container, command, output.exit_code, output)
+}
+
+fn ensure_success_exit_code(
+    container: &str,
+    command: &[String],
+    exit_code: i64,
+    output: &ExecOutput,
+) -> Result<()> {
     if exit_code == 0 {
         return Ok(());
     }
@@ -246,7 +269,7 @@ mod tests {
 
     use super::{
         ExecAttachMode, ExecCommandSpec, ExecOutput, create_exec_options, ensure_success_exit,
-        exec_attach, exec_capture, start_exec_options,
+        exec_attach, exec_capture, exec_capture_output, start_exec_options,
     };
     use crate::docker::{
         client::DockerClient,
@@ -389,6 +412,153 @@ mod tests {
                 assert_eq!(output.exit_code, 0);
                 assert_eq!(String::from_utf8(output.stdout).unwrap(), "hello\n");
                 assert!(output.stderr.is_empty());
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn exec_capture_applies_command_context_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let name = test_container_name("exec-capture-context");
+            let result = async {
+                create_running_exec_test_container(&client, &name).await?;
+
+                let output = exec_capture(
+                    &client,
+                    &name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "printf '%s:%s:%s' \"$GREETING\" \"$(pwd)\" \"$(id -un)\"".to_owned(),
+                        ],
+                        user: Some("nobody".to_owned()),
+                        working_dir: Some("/tmp".to_owned()),
+                        env: BTreeMap::from([("GREETING".to_owned(), "hello".to_owned())]),
+                        tty: false,
+                    },
+                )
+                .await?;
+
+                assert_eq!(output.exit_code, 0);
+                assert_eq!(
+                    String::from_utf8(output.stdout).unwrap(),
+                    "hello:/tmp:nobody"
+                );
+                assert!(output.stderr.is_empty());
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn exec_capture_preserves_tty_console_output_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let name = test_container_name("exec-capture-tty");
+            let result = async {
+                create_running_exec_test_container(&client, &name).await?;
+
+                let output = exec_capture(
+                    &client,
+                    &name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "printf tty-output".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: true,
+                    },
+                )
+                .await?;
+
+                assert_eq!(output.exit_code, 0);
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "tty-output");
+                assert!(output.stderr.is_empty());
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn exec_capture_output_returns_non_zero_exit_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let name = test_container_name("exec-capture-output-nonzero");
+            let result = async {
+                create_running_exec_test_container(&client, &name).await?;
+
+                let output = exec_capture_output(
+                    &client,
+                    &name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "echo failure >&2; exit 7".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+
+                assert_eq!(output.exit_code, 7);
+                assert!(output.stdout.is_empty());
+                assert_eq!(String::from_utf8(output.stderr).unwrap(), "failure\n");
 
                 Ok(())
             }
