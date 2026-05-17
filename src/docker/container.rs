@@ -188,13 +188,16 @@ fn publish_port_bindings(publish_ports: &[DockerPublishPort]) -> Option<PortMap>
     let mut bindings = PortMap::new();
 
     for publish_port in publish_ports {
-        bindings.insert(
-            publish_port.key(),
-            Some(vec![PortBinding {
-                host_ip: publish_port.host_ip.clone(),
-                host_port: publish_port.host.map(|port| port.to_string()),
-            }]),
-        );
+        let binding = PortBinding {
+            host_ip: publish_port.host_ip.clone(),
+            host_port: publish_port.host.map(|port| port.to_string()),
+        };
+
+        bindings
+            .entry(publish_port.key())
+            .or_insert_with(|| Some(Vec::new()))
+            .get_or_insert_with(Vec::new)
+            .push(binding);
     }
 
     non_empty_map(bindings)
@@ -372,6 +375,45 @@ mod tests {
                 .as_deref(),
             Some("18080")
         );
+    }
+
+    #[test]
+    fn create_container_body_preserves_multiple_bindings_for_same_container_port() {
+        let spec = ContainerCreateSpec {
+            image: "alpine:latest".to_owned(),
+            name: "decune-project-abc123def456".to_owned(),
+            labels: BTreeMap::new(),
+            env: BTreeMap::new(),
+            working_dir: None,
+            user: None,
+            mounts: Vec::new(),
+            publish_ports: vec![
+                DockerPublishPort {
+                    container: 80,
+                    host: Some(8080),
+                    host_ip: Some("127.0.0.1".to_owned()),
+                    protocol: PortProtocol::Tcp,
+                },
+                DockerPublishPort {
+                    container: 80,
+                    host: Some(9090),
+                    host_ip: Some("0.0.0.0".to_owned()),
+                    protocol: PortProtocol::Tcp,
+                },
+            ],
+            host_config: ContainerHostConfig::default(),
+        };
+
+        let body = create_container_body(&spec);
+        let host_config = body.host_config.unwrap();
+        let port_bindings = host_config.port_bindings.unwrap();
+        let bindings = port_bindings.get("80/tcp").unwrap().as_ref().unwrap();
+
+        assert_eq!(bindings.len(), 2);
+        assert_eq!(bindings[0].host_port.as_deref(), Some("8080"));
+        assert_eq!(bindings[0].host_ip.as_deref(), Some("127.0.0.1"));
+        assert_eq!(bindings[1].host_port.as_deref(), Some("9090"));
+        assert_eq!(bindings[1].host_ip.as_deref(), Some("0.0.0.0"));
     }
 
     #[test]
