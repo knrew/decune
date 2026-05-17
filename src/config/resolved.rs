@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use toml::Value;
 
 use crate::config::{
-    layer::{LayerHook, LayerHooks, LayerPort},
+    layer::{
+        LayerDevcontainerBuild, LayerDevcontainerSource, LayerHook, LayerHooks, LayerPort,
+        LayerPortAttributes, LayerPublishPort, LayerRunArg, LayerUserEnvProbe,
+    },
     types::{
         DEFAULT_AUTO_PORT_MAX, DEFAULT_AUTO_PORT_MIN, DotfileConflict, GitHttpsMode,
         GithubCredentialsMode, MountCreate, MountType, OnAutoForward, SshAgentMode,
@@ -19,6 +22,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) dotfiles: Vec<ResolvedDotfile>,
     pub(crate) mounts: Vec<ResolvedMount>,
     pub(crate) ports: ResolvedPorts,
+    pub(crate) devcontainer: ResolvedDevcontainer,
     pub(crate) credentials: ResolvedCredentials,
     pub(crate) hooks: ResolvedHooks,
 }
@@ -77,6 +81,37 @@ impl Default for ResolvedAutoPorts {
         }
     }
 }
+
+#[derive(Debug, Clone, PartialEq, Default)]
+pub(crate) struct ResolvedDevcontainer {
+    pub(crate) source: Option<ResolvedDevcontainerSource>,
+    pub(crate) override_feature_install_order: Vec<String>,
+    pub(crate) mounts: Vec<String>,
+    pub(crate) workspace_mount: Option<String>,
+    pub(crate) workspace_folder: Option<String>,
+    pub(crate) container_env: BTreeMap<String, String>,
+    pub(crate) remote_env: BTreeMap<String, String>,
+    pub(crate) remote_user: Option<String>,
+    pub(crate) container_user: Option<String>,
+    pub(crate) update_remote_user_uid: Option<bool>,
+    pub(crate) user_env_probe: Option<ResolvedUserEnvProbe>,
+    pub(crate) publish_ports: Vec<ResolvedPublishPort>,
+    pub(crate) port_attributes: BTreeMap<String, ResolvedPortAttributes>,
+    pub(crate) other_ports_attributes: Option<ResolvedPortAttributes>,
+    pub(crate) run_args: Vec<ResolvedRunArg>,
+    pub(crate) init: bool,
+    pub(crate) privileged: bool,
+    pub(crate) cap_add: Vec<String>,
+    pub(crate) security_opt: Vec<String>,
+    pub(crate) lifecycle: Option<crate::devcontainer::lifecycle::LifecycleDefinition>,
+}
+
+pub(crate) type ResolvedDevcontainerSource = LayerDevcontainerSource;
+pub(crate) type ResolvedDevcontainerBuild = LayerDevcontainerBuild;
+pub(crate) type ResolvedUserEnvProbe = LayerUserEnvProbe;
+pub(crate) type ResolvedPublishPort = LayerPublishPort;
+pub(crate) type ResolvedPortAttributes = LayerPortAttributes;
+pub(crate) type ResolvedRunArg = LayerRunArg;
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ResolvedCredentials {

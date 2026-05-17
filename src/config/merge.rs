@@ -6,10 +6,13 @@ pub(crate) use crate::config::{
 };
 
 use crate::config::{
-    layer::{LayerAutoPorts, LayerCredentials, LayerDotfile, LayerFeature, LayerMount, LayerPort},
+    layer::{
+        LayerAutoPorts, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile, LayerFeature,
+        LayerForwardPort, LayerMount, LayerPort, LayerPortAttributes, LayerPublishPort,
+    },
     resolved::{
-        ResolvedAutoPorts, ResolvedCredentials, ResolvedDotfile, ResolvedFeature, ResolvedHooks,
-        ResolvedMount, ResolvedPort, ResolvedPorts,
+        ResolvedAutoPorts, ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile,
+        ResolvedFeature, ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
     },
 };
 
@@ -38,10 +41,33 @@ struct MergeAccumulator {
     features: Vec<ResolvedFeature>,
     dotfiles: Vec<ResolvedDotfile>,
     mounts: Vec<ResolvedMount>,
-    ports: Vec<ResolvedPort>,
+    ports: Vec<MergedPort>,
     auto_ports: ResolvedAutoPorts,
+    devcontainer: ResolvedDevcontainer,
     credentials: ResolvedCredentials,
     hooks: ResolvedHooks,
+}
+
+#[derive(Debug)]
+struct MergedPort {
+    port: ResolvedPort,
+    forward_attribute_keys: Vec<String>,
+}
+
+impl MergedPort {
+    fn plain(port: LayerPort) -> Self {
+        Self {
+            port,
+            forward_attribute_keys: Vec::new(),
+        }
+    }
+
+    fn forward(port: LayerForwardPort) -> Self {
+        Self {
+            port: port.port,
+            forward_attribute_keys: port.attribute_keys,
+        }
+    }
 }
 
 impl MergeAccumulator {
@@ -66,8 +92,16 @@ impl MergeAccumulator {
             self.merge_port(port);
         }
 
+        for port in layer.forward_ports {
+            self.merge_forward_port(port);
+        }
+
         if let Some(auto_ports) = layer.auto_ports {
             self.merge_auto_ports(auto_ports);
+        }
+
+        if let Some(devcontainer) = layer.devcontainer {
+            self.merge_devcontainer(devcontainer);
         }
 
         self.merge_credentials(layer.credentials);
@@ -147,14 +181,26 @@ impl MergeAccumulator {
     fn merge_port(&mut self, port: LayerPort) {
         if !port.enabled {
             remove_by_identity(&mut self.ports, |existing| {
-                existing.protocol == port.protocol
-                    && existing.container == port.container
-                    && existing.host_ip == port.host_ip
+                existing.port.protocol == port.protocol
+                    && existing.port.container == port.container
+                    && existing.port.host_ip == port.host_ip
             });
             return;
         }
 
-        replace_by_identity(&mut self.ports, port, same_port_identity);
+        replace_by_identity(
+            &mut self.ports,
+            MergedPort::plain(port),
+            same_merged_port_identity,
+        );
+    }
+
+    fn merge_forward_port(&mut self, port: LayerForwardPort) {
+        replace_by_identity(
+            &mut self.ports,
+            MergedPort::forward(port),
+            same_merged_port_identity,
+        );
     }
 
     fn merge_auto_ports(&mut self, auto_ports: LayerAutoPorts) {
@@ -203,18 +249,106 @@ impl MergeAccumulator {
         }
     }
 
-    fn into_resolved(self) -> ResolvedConfig {
+    fn merge_devcontainer(&mut self, devcontainer: LayerDevcontainerMetadata) {
+        if let Some(source) = devcontainer.source {
+            self.devcontainer.source = Some(source);
+        }
+
+        if !devcontainer.override_feature_install_order.is_empty() {
+            self.devcontainer.override_feature_install_order =
+                devcontainer.override_feature_install_order;
+        }
+        self.devcontainer.mounts.extend(devcontainer.mounts);
+        if let Some(workspace_mount) = devcontainer.workspace_mount {
+            self.devcontainer.workspace_mount = Some(workspace_mount);
+        }
+        if let Some(workspace_folder) = devcontainer.workspace_folder {
+            self.devcontainer.workspace_folder = Some(workspace_folder);
+        }
+        self.devcontainer
+            .container_env
+            .extend(devcontainer.container_env);
+        self.devcontainer.remote_env.extend(devcontainer.remote_env);
+        if let Some(remote_user) = devcontainer.remote_user {
+            self.devcontainer.remote_user = Some(remote_user);
+        }
+        if let Some(container_user) = devcontainer.container_user {
+            self.devcontainer.container_user = Some(container_user);
+        }
+        if let Some(update_remote_user_uid) = devcontainer.update_remote_user_uid {
+            self.devcontainer.update_remote_user_uid = Some(update_remote_user_uid);
+        }
+        if let Some(user_env_probe) = devcontainer.user_env_probe {
+            self.devcontainer.user_env_probe = Some(user_env_probe);
+        }
+
+        for port in devcontainer.publish_ports {
+            replace_by_identity(
+                &mut self.devcontainer.publish_ports,
+                port,
+                same_publish_port_identity,
+            );
+        }
+
+        self.devcontainer
+            .port_attributes
+            .extend(devcontainer.port_attributes);
+        merge_optional_port_attributes(
+            &mut self.devcontainer.other_ports_attributes,
+            devcontainer.other_ports_attributes,
+        );
+        self.devcontainer.run_args.extend(devcontainer.run_args);
+
+        if let Some(init) = devcontainer.init {
+            self.devcontainer.init = init;
+        }
+        if let Some(privileged) = devcontainer.privileged {
+            self.devcontainer.privileged = privileged;
+        }
+        self.devcontainer.cap_add.extend(devcontainer.cap_add);
+        self.devcontainer
+            .security_opt
+            .extend(devcontainer.security_opt);
+        if let Some(lifecycle) = devcontainer.lifecycle {
+            match &mut self.devcontainer.lifecycle {
+                Some(target) => target.merge_layer(lifecycle),
+                None => self.devcontainer.lifecycle = Some(lifecycle.into_resolved()),
+            }
+        }
+    }
+
+    fn into_resolved(mut self) -> ResolvedConfig {
+        self.apply_forward_port_attributes();
+
         ResolvedConfig {
             shell: self.shell,
             features: self.features,
             dotfiles: self.dotfiles,
             mounts: self.mounts,
             ports: ResolvedPorts {
-                entries: self.ports,
+                entries: self.ports.into_iter().map(|entry| entry.port).collect(),
                 auto: self.auto_ports,
             },
+            devcontainer: self.devcontainer,
             credentials: self.credentials,
             hooks: self.hooks,
+        }
+    }
+
+    fn apply_forward_port_attributes(&mut self) {
+        for entry in &mut self.ports {
+            if entry.forward_attribute_keys.is_empty() {
+                continue;
+            }
+
+            let attributes = attributes_for_keys(
+                &self.devcontainer.port_attributes,
+                &entry.forward_attribute_keys,
+            );
+            entry.port.label = attributes.and_then(|attributes| attributes.label.clone());
+            entry.port.require_local = attributes
+                .and_then(|attributes| attributes.require_local_port)
+                .unwrap_or(false);
         }
     }
 }
@@ -246,15 +380,57 @@ fn same_port_identity(left: &ResolvedPort, right: &ResolvedPort) -> bool {
         && left.host_ip == right.host_ip
 }
 
+fn same_merged_port_identity(left: &MergedPort, right: &MergedPort) -> bool {
+    same_port_identity(&left.port, &right.port)
+}
+
+fn attributes_for_keys<'a>(
+    attributes: &'a std::collections::BTreeMap<String, LayerPortAttributes>,
+    keys: &[String],
+) -> Option<&'a LayerPortAttributes> {
+    keys.iter().find_map(|key| attributes.get(key))
+}
+
+fn same_publish_port_identity(left: &LayerPublishPort, right: &LayerPublishPort) -> bool {
+    left.protocol == right.protocol
+        && left.container == right.container
+        && left.host == right.host
+        && left.host_ip == right.host_ip
+}
+
+fn merge_optional_port_attributes(
+    target: &mut Option<LayerPortAttributes>,
+    source: Option<LayerPortAttributes>,
+) {
+    let Some(source) = source else {
+        return;
+    };
+
+    match target {
+        Some(target) => {
+            if source.label.is_some() {
+                target.label = source.label;
+            }
+            if source.on_auto_forward.is_some() {
+                target.on_auto_forward = source.on_auto_forward;
+            }
+            if source.require_local_port.is_some() {
+                target.require_local_port = source.require_local_port;
+            }
+        }
+        None => *target = Some(source),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::config::{
-        layer::{LayerHook, canonical_feature_id},
+        layer::{LayerDevcontainerMetadata, LayerHook, LayerPublishPort, canonical_feature_id},
         schema::RawDecuneConfig,
         types::{
             Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, OnAutoForward,
-            SshAgentMode,
+            PortProtocol, SshAgentMode,
         },
     };
     use toml::Value;
@@ -689,6 +865,42 @@ enabled = false
         assert_eq!(config.ports.entries.len(), 1);
         assert_eq!(config.ports.entries[0].host_ip, "0.0.0.0");
         assert_eq!(config.ports.entries[0].label.as_deref(), Some("public"));
+    }
+
+    #[test]
+    fn publish_port_identity_keeps_distinct_host_ports_for_same_container_port() {
+        let first = LayerPublishPort {
+            container: 80,
+            host: Some(8080),
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        };
+        let second = LayerPublishPort {
+            container: 80,
+            host: Some(9090),
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        };
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    publish_ports: vec![first.clone()],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    publish_ports: vec![second.clone()],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.devcontainer.publish_ports, vec![first, second]);
     }
 
     #[test]

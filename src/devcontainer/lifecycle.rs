@@ -28,6 +28,28 @@ impl LifecycleDefinition {
     pub(crate) fn wait_for(&self) -> WaitFor {
         self.wait_for
     }
+
+    pub(crate) fn merge_layer(&mut self, layer: LayerLifecycleDefinition) {
+        self.commands.extend(layer.commands);
+        if let Some(wait_for) = layer.wait_for {
+            self.wait_for = wait_for;
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerLifecycleDefinition {
+    commands: BTreeMap<LifecycleStage, LifecycleCommand>,
+    wait_for: Option<WaitFor>,
+}
+
+impl LayerLifecycleDefinition {
+    pub(crate) fn into_resolved(self) -> LifecycleDefinition {
+        LifecycleDefinition {
+            commands: self.commands,
+            wait_for: self.wait_for.unwrap_or_default(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -114,6 +136,18 @@ pub(crate) fn parse_lifecycle_command(
 pub(crate) fn parse_lifecycle_definition(
     values: &BTreeMap<LifecycleProperty, Value>,
 ) -> Result<LifecycleDefinition> {
+    Ok(match parse_lifecycle_layer_definition(values)? {
+        Some(layer) => layer.into_resolved(),
+        None => LifecycleDefinition {
+            commands: BTreeMap::new(),
+            wait_for: WaitFor::default(),
+        },
+    })
+}
+
+pub(crate) fn parse_lifecycle_layer_definition(
+    values: &BTreeMap<LifecycleProperty, Value>,
+) -> Result<Option<LayerLifecycleDefinition>> {
     let mut commands = BTreeMap::new();
 
     for (property, value) in values {
@@ -125,10 +159,16 @@ pub(crate) fn parse_lifecycle_definition(
         commands.insert(stage, parse_lifecycle_command(stage, value)?);
     }
 
-    Ok(LifecycleDefinition {
-        commands,
-        wait_for: parse_wait_for(values.get(&LifecycleProperty::WaitFor))?,
-    })
+    let wait_for = values
+        .get(&LifecycleProperty::WaitFor)
+        .map(|value| parse_wait_for(Some(value)))
+        .transpose()?;
+
+    if commands.is_empty() && wait_for.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(LayerLifecycleDefinition { commands, wait_for }))
 }
 
 pub(crate) fn parse_wait_for(value: Option<&Value>) -> Result<WaitFor> {

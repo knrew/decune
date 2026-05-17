@@ -6,11 +6,17 @@ use toml::Value;
 
 use crate::config::{
     canonical::{CanonicalWriter, sha256_hex},
-    resolved::{ResolvedConfig, ResolvedHook},
+    resolved::{
+        ResolvedConfig, ResolvedDevcontainer, ResolvedDevcontainerSource, ResolvedHook,
+        ResolvedPublishPort, ResolvedRunArg, ResolvedUserEnvProbe,
+    },
     types::{
         Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, HookLocation, MountCreate,
-        MountType, OnAutoForward, PortProtocol, SshAgentMode,
+        MountType, PortProtocol, SshAgentMode,
     },
+};
+use crate::devcontainer::lifecycle::{
+    LifecycleCommand, LifecycleDefinition, LifecycleStage, WaitFor,
 };
 
 #[derive(Debug, Clone, PartialEq)]
@@ -127,6 +133,9 @@ fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) 
         });
         // forwarding は up 実行時の runtime 設定であり，container/image の再作成条件ではない．
         let _ = &config.ports;
+        writer.field("devcontainer", |writer| {
+            write_devcontainer(writer, &config.devcontainer);
+        });
         writer.field("credentials", |writer| {
             writer.object("Credentials", |writer| {
                 writer.field("git", |writer| {
@@ -206,6 +215,195 @@ fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) 
             });
         });
     });
+}
+
+fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevcontainer) {
+    writer.object("Devcontainer", |writer| {
+        writer.field("source", |writer| match &devcontainer.source {
+            Some(source) => write_devcontainer_source(writer, source),
+            None => writer.none(),
+        });
+        writer.field("override_feature_install_order", |writer| {
+            writer.seq(
+                devcontainer.override_feature_install_order.iter(),
+                |writer, feature| writer.string(feature),
+            );
+        });
+        writer.field("mounts", |writer| {
+            writer.seq(devcontainer.mounts.iter(), |writer, mount| {
+                writer.string(mount);
+            });
+        });
+        writer.field("workspace_mount", |writer| {
+            writer.option_string(devcontainer.workspace_mount.as_deref());
+        });
+        writer.field("workspace_folder", |writer| {
+            writer.option_string(devcontainer.workspace_folder.as_deref());
+        });
+        writer.field("container_env", |writer| {
+            writer.map(devcontainer.container_env.iter(), |writer, value| {
+                writer.string(value);
+            });
+        });
+        writer.field("remote_env", |writer| {
+            writer.map(devcontainer.remote_env.iter(), |writer, value| {
+                writer.string(value);
+            });
+        });
+        writer.field("remote_user", |writer| {
+            writer.option_string(devcontainer.remote_user.as_deref());
+        });
+        writer.field("container_user", |writer| {
+            writer.option_string(devcontainer.container_user.as_deref());
+        });
+        writer.field("update_remote_user_uid", |writer| {
+            write_option_bool(writer, devcontainer.update_remote_user_uid);
+        });
+        writer.field("user_env_probe", |writer| {
+            match devcontainer.user_env_probe {
+                Some(value) => writer.string(user_env_probe_name(value)),
+                None => writer.none(),
+            }
+        });
+        writer.field("publish_ports", |writer| {
+            writer.seq(devcontainer.publish_ports.iter(), write_publish_port);
+        });
+        writer.field("run_args", |writer| {
+            writer.seq(devcontainer.run_args.iter(), write_run_arg);
+        });
+        writer.field("init", |writer| writer.bool(devcontainer.init));
+        writer.field("privileged", |writer| writer.bool(devcontainer.privileged));
+        writer.field("cap_add", |writer| {
+            writer.seq(devcontainer.cap_add.iter(), |writer, capability| {
+                writer.string(capability);
+            });
+        });
+        writer.field("security_opt", |writer| {
+            writer.seq(devcontainer.security_opt.iter(), |writer, option| {
+                writer.string(option);
+            });
+        });
+        writer.field("lifecycle", |writer| match &devcontainer.lifecycle {
+            Some(lifecycle) => write_lifecycle(writer, lifecycle),
+            None => writer.none(),
+        });
+    });
+}
+
+fn write_devcontainer_source(writer: &mut CanonicalWriter, source: &ResolvedDevcontainerSource) {
+    match source {
+        ResolvedDevcontainerSource::Image(image) => {
+            writer.object("ImageSource", |writer| {
+                writer.field("image", |writer| writer.string(image));
+            });
+        }
+        ResolvedDevcontainerSource::Dockerfile(build) => {
+            writer.object("DockerfileSource", |writer| {
+                writer.field("dockerfile", |writer| writer.string(&build.dockerfile));
+                writer.field("context", |writer| {
+                    writer.option_string(build.context.as_deref());
+                });
+                writer.field("args", |writer| {
+                    writer.map(build.args.iter(), |writer, value| writer.string(value));
+                });
+                writer.field("target", |writer| {
+                    writer.option_string(build.target.as_deref());
+                });
+                writer.field("cache_from", |writer| {
+                    writer.seq(build.cache_from.iter(), |writer, entry| {
+                        writer.string(entry)
+                    });
+                });
+            });
+        }
+    }
+}
+
+fn write_publish_port(writer: &mut CanonicalWriter, port: &ResolvedPublishPort) {
+    writer.object("PublishPort", |writer| {
+        writer.field("container", |writer| {
+            writer.string(&port.container.to_string());
+        });
+        writer.field("host", |writer| match port.host {
+            Some(host) => writer.string(&host.to_string()),
+            None => writer.none(),
+        });
+        writer.field("host_ip", |writer| {
+            writer.option_string(port.host_ip.as_deref())
+        });
+        writer.field("protocol", |writer| {
+            writer.string(port_protocol_name(port.protocol));
+        });
+    });
+}
+
+fn write_run_arg(writer: &mut CanonicalWriter, run_arg: &ResolvedRunArg) {
+    match run_arg {
+        ResolvedRunArg::AddHost(value) => {
+            writer.object("AddHost", |writer| {
+                writer.field("value", |writer| writer.string(value))
+            });
+        }
+        ResolvedRunArg::Dns(value) => {
+            writer.object("Dns", |writer| {
+                writer.field("value", |writer| writer.string(value))
+            });
+        }
+        ResolvedRunArg::DnsSearch(value) => {
+            writer.object("DnsSearch", |writer| {
+                writer.field("value", |writer| writer.string(value));
+            });
+        }
+    }
+}
+
+fn write_lifecycle(writer: &mut CanonicalWriter, lifecycle: &LifecycleDefinition) {
+    writer.object("Lifecycle", |writer| {
+        for stage in [
+            LifecycleStage::Initialize,
+            LifecycleStage::OnCreate,
+            LifecycleStage::UpdateContent,
+            LifecycleStage::PostCreate,
+            LifecycleStage::PostStart,
+            LifecycleStage::PostAttach,
+        ] {
+            writer.field(lifecycle_stage_name(stage), |writer| {
+                match lifecycle.command(stage) {
+                    Some(command) => write_lifecycle_command(writer, command),
+                    None => writer.none(),
+                }
+            });
+        }
+        writer.field("wait_for", |writer| {
+            writer.string(wait_for_name(lifecycle.wait_for()));
+        });
+    });
+}
+
+fn write_lifecycle_command(writer: &mut CanonicalWriter, command: &LifecycleCommand) {
+    match command {
+        LifecycleCommand::Shell(command) => {
+            writer.object("LifecycleShell", |writer| {
+                writer.field("value", |writer| writer.string(command));
+            });
+        }
+        LifecycleCommand::Args(args) => {
+            writer.object("LifecycleArgs", |writer| {
+                writer.field("value", |writer| {
+                    writer.seq(args.iter(), |writer, arg| writer.string(arg));
+                });
+            });
+        }
+        LifecycleCommand::Parallel(commands) => {
+            writer.object("LifecycleParallel", |writer| {
+                writer.field("value", |writer| {
+                    writer.map(commands.iter(), |writer, command| {
+                        write_lifecycle_command(writer, command);
+                    });
+                });
+            });
+        }
+    }
 }
 
 fn write_hooks(writer: &mut CanonicalWriter, hooks: &[ResolvedHook]) {
@@ -297,17 +495,46 @@ fn mount_create_name(value: MountCreate) -> &'static str {
     }
 }
 
+fn write_option_bool(writer: &mut CanonicalWriter, value: Option<bool>) {
+    match value {
+        Some(value) => writer.bool(value),
+        None => writer.none(),
+    }
+}
+
+fn user_env_probe_name(value: ResolvedUserEnvProbe) -> &'static str {
+    match value {
+        ResolvedUserEnvProbe::None => "none",
+        ResolvedUserEnvProbe::LoginShell => "loginShell",
+        ResolvedUserEnvProbe::InteractiveShell => "interactiveShell",
+        ResolvedUserEnvProbe::LoginInteractiveShell => "loginInteractiveShell",
+    }
+}
+
 fn port_protocol_name(value: PortProtocol) -> &'static str {
     match value {
         PortProtocol::Tcp => "tcp",
     }
 }
 
-fn on_auto_forward_name(value: OnAutoForward) -> &'static str {
+fn lifecycle_stage_name(value: LifecycleStage) -> &'static str {
     match value {
-        OnAutoForward::Notify => "notify",
-        OnAutoForward::Silent => "silent",
-        OnAutoForward::Ignore => "ignore",
+        LifecycleStage::Initialize => "initializeCommand",
+        LifecycleStage::OnCreate => "onCreateCommand",
+        LifecycleStage::UpdateContent => "updateContentCommand",
+        LifecycleStage::PostCreate => "postCreateCommand",
+        LifecycleStage::PostStart => "postStartCommand",
+        LifecycleStage::PostAttach => "postAttachCommand",
+    }
+}
+
+fn wait_for_name(value: WaitFor) -> &'static str {
+    match value {
+        WaitFor::Initialize => "initializeCommand",
+        WaitFor::OnCreate => "onCreateCommand",
+        WaitFor::UpdateContent => "updateContentCommand",
+        WaitFor::PostCreate => "postCreateCommand",
+        WaitFor::PostStart => "postStartCommand",
     }
 }
 
@@ -346,8 +573,9 @@ mod tests {
 
     use super::*;
     use crate::config::{
+        layer::{LayerDevcontainerMetadata, LayerPortAttributes, LayerPublishPort},
         merge::{ConfigLayer, ConfigMergeInput, resolve_config},
-        types::OnAutoForward,
+        types::{OnAutoForward, PortProtocol},
     };
 
     fn resolved_config(contents: &str) -> ResolvedConfig {
@@ -453,6 +681,57 @@ on_auto_forward = "silent"
         );
 
         assert_eq!(hash_for(&default_auto), hash_for(&custom_auto));
+    }
+
+    #[test]
+    fn devcontainer_publish_ports_change_hash() {
+        let without_publish = resolve_config(ConfigMergeInput::default());
+        let with_publish = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    publish_ports: vec![LayerPublishPort {
+                        container: 8080,
+                        host: Some(8080),
+                        host_ip: Some("127.0.0.1".to_owned()),
+                        protocol: PortProtocol::Tcp,
+                    }],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_ne!(hash_for(&without_publish), hash_for(&with_publish));
+    }
+
+    #[test]
+    fn devcontainer_port_attributes_do_not_change_hash() {
+        let without_attributes = resolve_config(ConfigMergeInput::default());
+        let with_attributes = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    port_attributes: BTreeMap::from([(
+                        "3000".to_owned(),
+                        LayerPortAttributes {
+                            label: Some("web".to_owned()),
+                            on_auto_forward: Some(OnAutoForward::Silent),
+                            require_local_port: Some(true),
+                        },
+                    )]),
+                    other_ports_attributes: Some(LayerPortAttributes {
+                        label: Some("other".to_owned()),
+                        on_auto_forward: Some(OnAutoForward::Ignore),
+                        require_local_port: Some(false),
+                    }),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(hash_for(&without_attributes), hash_for(&with_attributes));
     }
 
     #[test]

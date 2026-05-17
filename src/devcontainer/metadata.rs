@@ -6,6 +6,18 @@ use anyhow::{Result, anyhow};
 use serde::Deserialize;
 use serde_json::Value;
 
+use crate::{
+    config::{
+        layer::{
+            ConfigLayer, LayerDevcontainerBuild, LayerDevcontainerMetadata,
+            LayerDevcontainerSource, LayerFeature, LayerForwardPort, LayerPort,
+            LayerPortAttributes, LayerPublishPort, LayerRunArg, LayerUserEnvProbe,
+        },
+        types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward, PortProtocol},
+    },
+    devcontainer::lifecycle::parse_lifecycle_layer_definition,
+};
+
 pub(crate) fn parse_metadata(value: Value) -> Result<DevcontainerMetadata> {
     let raw: RawDevcontainerMetadata = serde_json::from_value(value)
         .map_err(|error| anyhow!("Failed to parse devcontainer metadata schema: {error}"))?;
@@ -136,6 +148,350 @@ impl DevcontainerMetadata {
 
     pub(crate) fn unsupported_properties(&self) -> &BTreeMap<String, Value> {
         &self.unsupported_properties
+    }
+
+    pub(crate) fn to_config_layer(&self) -> Result<ConfigLayer> {
+        let mut layer = ConfigLayer {
+            features: self
+                .features
+                .iter()
+                .map(|(id, value)| feature_to_layer(id, value))
+                .collect::<Result<Vec<_>>>()?,
+            forward_ports: self
+                .forward_ports
+                .iter()
+                .map(|port| forwarding_port_to_layer(port, &self.ports_attributes))
+                .collect::<Result<Vec<_>>>()?,
+            devcontainer: Some(self.to_devcontainer_layer()?),
+            ..ConfigLayer::default()
+        };
+
+        for run_arg in &self.run_args {
+            match run_arg {
+                DevcontainerRunArg::Init => {
+                    if let Some(devcontainer) = &mut layer.devcontainer {
+                        devcontainer.init = Some(true);
+                    }
+                }
+                DevcontainerRunArg::Privileged => {
+                    if let Some(devcontainer) = &mut layer.devcontainer {
+                        devcontainer.privileged = Some(true);
+                    }
+                }
+                DevcontainerRunArg::CapAdd(capability) => {
+                    if let Some(devcontainer) = &mut layer.devcontainer {
+                        devcontainer.cap_add.push(capability.clone());
+                    }
+                }
+                DevcontainerRunArg::SecurityOpt(option) => {
+                    if let Some(devcontainer) = &mut layer.devcontainer {
+                        devcontainer.security_opt.push(option.clone());
+                    }
+                }
+                DevcontainerRunArg::AddHost(value) => {
+                    if let Some(devcontainer) = &mut layer.devcontainer {
+                        devcontainer
+                            .run_args
+                            .push(LayerRunArg::AddHost(value.clone()));
+                    }
+                }
+                DevcontainerRunArg::Dns(value) => {
+                    if let Some(devcontainer) = &mut layer.devcontainer {
+                        devcontainer.run_args.push(LayerRunArg::Dns(value.clone()));
+                    }
+                }
+                DevcontainerRunArg::DnsSearch(value) => {
+                    if let Some(devcontainer) = &mut layer.devcontainer {
+                        devcontainer
+                            .run_args
+                            .push(LayerRunArg::DnsSearch(value.clone()));
+                    }
+                }
+            }
+        }
+
+        Ok(layer)
+    }
+
+    fn to_devcontainer_layer(&self) -> Result<LayerDevcontainerMetadata> {
+        Ok(LayerDevcontainerMetadata {
+            source: Some(devcontainer_source_to_layer(&self.source)),
+            override_feature_install_order: self.override_feature_install_order.clone(),
+            mounts: self.mounts.clone(),
+            workspace_mount: self.workspace_mount.clone(),
+            workspace_folder: self.workspace_folder.clone(),
+            container_env: self.container_env.clone(),
+            remote_env: self.remote_env.clone(),
+            remote_user: self.remote_user.clone(),
+            container_user: self.container_user.clone(),
+            update_remote_user_uid: self.update_remote_user_uid,
+            user_env_probe: self.user_env_probe.as_ref().map(user_env_probe_to_layer),
+            publish_ports: self
+                .app_port
+                .iter()
+                .map(publish_port_to_layer)
+                .collect::<Result<Vec<_>>>()?,
+            port_attributes: self
+                .ports_attributes
+                .iter()
+                .map(|(key, attributes)| Ok((key.clone(), port_attributes_to_layer(attributes))))
+                .collect::<Result<BTreeMap<_, _>>>()?,
+            other_ports_attributes: self
+                .other_ports_attributes
+                .as_ref()
+                .map(port_attributes_to_layer),
+            run_args: Vec::new(),
+            init: self.init,
+            privileged: self.privileged,
+            cap_add: self.cap_add.clone(),
+            security_opt: self.security_opt.clone(),
+            lifecycle: parse_lifecycle_layer_definition(&self.lifecycle)?,
+        })
+    }
+}
+
+fn devcontainer_source_to_layer(source: &DevcontainerSource) -> LayerDevcontainerSource {
+    match source {
+        DevcontainerSource::Image(image) => LayerDevcontainerSource::Image(image.clone()),
+        DevcontainerSource::Dockerfile(build) => {
+            LayerDevcontainerSource::Dockerfile(LayerDevcontainerBuild {
+                dockerfile: build.dockerfile.clone(),
+                context: build.context.clone(),
+                args: build.args.clone(),
+                target: build.target.clone(),
+                cache_from: build.cache_from.clone(),
+            })
+        }
+    }
+}
+
+fn feature_to_layer(id: &str, value: &Value) -> Result<LayerFeature> {
+    let mut feature = LayerFeature::new(id.to_owned());
+
+    match value {
+        Value::Object(options) => {
+            feature.options = options
+                .iter()
+                .map(|(key, value)| Ok((key.clone(), json_to_toml(value)?)))
+                .collect::<Result<BTreeMap<_, _>>>()?;
+        }
+        Value::Bool(enabled) => {
+            feature.enabled = *enabled;
+        }
+        Value::Null => {}
+        _ => {
+            return Err(anyhow!(
+                "Feature {id} value must be an object, boolean, or null"
+            ));
+        }
+    }
+
+    Ok(feature)
+}
+
+fn json_to_toml(value: &Value) -> Result<toml::Value> {
+    match value {
+        Value::String(value) => Ok(toml::Value::String(value.clone())),
+        Value::Bool(value) => Ok(toml::Value::Boolean(*value)),
+        Value::Number(value) => {
+            if let Some(value) = value.as_i64() {
+                Ok(toml::Value::Integer(value))
+            } else if let Some(value) = value.as_f64() {
+                Ok(toml::Value::Float(value))
+            } else {
+                Err(anyhow!("JSON number cannot be represented as TOML"))
+            }
+        }
+        Value::Array(values) => values
+            .iter()
+            .map(json_to_toml)
+            .collect::<Result<Vec<_>>>()
+            .map(toml::Value::Array),
+        Value::Object(values) => values
+            .iter()
+            .map(|(key, value)| Ok((key.clone(), json_to_toml(value)?)))
+            .collect::<Result<toml::map::Map<_, _>>>()
+            .map(toml::Value::Table),
+        Value::Null => Err(anyhow!("JSON null cannot be represented as TOML")),
+    }
+}
+
+fn forwarding_port_to_layer(
+    port: &DevcontainerPort,
+    attributes: &BTreeMap<String, DevcontainerPortAttributes>,
+) -> Result<LayerForwardPort> {
+    let parsed = parse_port(port, PortMode::Forward)?;
+    let attribute_keys = attribute_keys_for_port(parsed.container, port);
+    let port_attributes = attributes_for_keys(attributes, &attribute_keys);
+
+    Ok(LayerForwardPort {
+        port: LayerPort {
+            enabled: true,
+            container: parsed.container,
+            host: parsed.host,
+            host_ip: parsed
+                .host_ip
+                .unwrap_or_else(|| DEFAULT_PORT_HOST_IP.to_owned()),
+            protocol: parsed.protocol,
+            require_local: port_attributes
+                .and_then(|attributes| attributes.require_local_port)
+                .unwrap_or(false),
+            label: port_attributes.and_then(|attributes| attributes.label.clone()),
+        },
+        attribute_keys,
+    })
+}
+
+fn publish_port_to_layer(port: &DevcontainerPort) -> Result<LayerPublishPort> {
+    let parsed = parse_port(port, PortMode::Publish)?;
+
+    Ok(LayerPublishPort {
+        container: parsed.container,
+        host: parsed.host,
+        host_ip: parsed.host_ip,
+        protocol: parsed.protocol,
+    })
+}
+
+fn attribute_keys_for_port(container_port: u16, original: &DevcontainerPort) -> Vec<String> {
+    let container_key = container_port.to_string();
+
+    match original {
+        DevcontainerPort::Number(_) => vec![container_key],
+        DevcontainerPort::String(value) if value == &container_key => vec![container_key],
+        DevcontainerPort::String(value) => vec![container_key, value.clone()],
+    }
+}
+
+fn attributes_for_keys<'a>(
+    attributes: &'a BTreeMap<String, DevcontainerPortAttributes>,
+    keys: &[String],
+) -> Option<&'a DevcontainerPortAttributes> {
+    keys.iter().find_map(|key| attributes.get(key))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedPort {
+    container: u16,
+    host: Option<u16>,
+    host_ip: Option<String>,
+    protocol: PortProtocol,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PortMode {
+    Forward,
+    Publish,
+}
+
+fn parse_port(port: &DevcontainerPort, mode: PortMode) -> Result<ParsedPort> {
+    match port {
+        DevcontainerPort::Number(container) => Ok(ParsedPort {
+            container: *container,
+            host: None,
+            host_ip: match mode {
+                PortMode::Forward => Some(DEFAULT_PORT_HOST_IP.to_owned()),
+                PortMode::Publish => None,
+            },
+            protocol: PortProtocol::Tcp,
+        }),
+        DevcontainerPort::String(value) => parse_port_string(value, mode),
+    }
+}
+
+fn parse_port_string(value: &str, mode: PortMode) -> Result<ParsedPort> {
+    let (value, protocol) = parse_port_protocol(value)?;
+    let segments = value.split(':').collect::<Vec<_>>();
+
+    match segments.as_slice() {
+        [container] => Ok(ParsedPort {
+            container: parse_u16_port(container, "container port")?,
+            host: None,
+            host_ip: match mode {
+                PortMode::Forward => Some(DEFAULT_PORT_HOST_IP.to_owned()),
+                PortMode::Publish => None,
+            },
+            protocol,
+        }),
+        [left, container] if is_port_number(left) => Ok(ParsedPort {
+            container: parse_u16_port(container, "container port")?,
+            host: Some(parse_u16_port(left, "host port")?),
+            host_ip: match mode {
+                PortMode::Forward => Some(DEFAULT_PORT_HOST_IP.to_owned()),
+                PortMode::Publish => None,
+            },
+            protocol,
+        }),
+        [host_ip, container] => Ok(ParsedPort {
+            container: parse_u16_port(container, "container port")?,
+            host: None,
+            host_ip: Some(normalize_host_ip(host_ip)?),
+            protocol,
+        }),
+        [host_ip, host, container] => Ok(ParsedPort {
+            container: parse_u16_port(container, "container port")?,
+            host: Some(parse_u16_port(host, "host port")?),
+            host_ip: Some(normalize_host_ip(host_ip)?),
+            protocol,
+        }),
+        _ => Err(anyhow!("Invalid devcontainer port specification: {value}")),
+    }
+}
+
+fn parse_port_protocol(value: &str) -> Result<(&str, PortProtocol)> {
+    match value.split_once('/') {
+        None => Ok((value, PortProtocol::Tcp)),
+        Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
+        Some((_, protocol)) => Err(anyhow!(
+            "Unsupported devcontainer port protocol: {protocol}"
+        )),
+    }
+}
+
+fn parse_u16_port(value: &str, label: &str) -> Result<u16> {
+    value
+        .parse()
+        .map_err(|error| anyhow!("Invalid {label} in devcontainer port {value}: {error}"))
+}
+
+fn is_port_number(value: &str) -> bool {
+    value.parse::<u16>().is_ok()
+}
+
+fn normalize_host_ip(value: &str) -> Result<String> {
+    match value {
+        "" => Err(anyhow!("Devcontainer port host IP must not be empty")),
+        "localhost" => Ok(DEFAULT_PORT_HOST_IP.to_owned()),
+        value => Ok(value.to_owned()),
+    }
+}
+
+fn user_env_probe_to_layer(value: &UserEnvProbe) -> LayerUserEnvProbe {
+    match value {
+        UserEnvProbe::None => LayerUserEnvProbe::None,
+        UserEnvProbe::LoginShell => LayerUserEnvProbe::LoginShell,
+        UserEnvProbe::InteractiveShell => LayerUserEnvProbe::InteractiveShell,
+        UserEnvProbe::LoginInteractiveShell => LayerUserEnvProbe::LoginInteractiveShell,
+    }
+}
+
+fn port_attributes_to_layer(attributes: &DevcontainerPortAttributes) -> LayerPortAttributes {
+    LayerPortAttributes {
+        label: attributes.label.clone(),
+        on_auto_forward: attributes
+            .on_auto_forward
+            .as_ref()
+            .map(on_auto_forward_to_config),
+        require_local_port: attributes.require_local_port,
+    }
+}
+
+fn on_auto_forward_to_config(value: &OnAutoForward) -> ConfigOnAutoForward {
+    match value {
+        OnAutoForward::Notify => ConfigOnAutoForward::Notify,
+        OnAutoForward::Silent => ConfigOnAutoForward::Silent,
+        OnAutoForward::Ignore => ConfigOnAutoForward::Ignore,
+        OnAutoForward::OpenBrowser => ConfigOnAutoForward::Notify,
     }
 }
 
@@ -483,6 +839,15 @@ where
 mod tests {
     use serde_json::json;
 
+    use crate::config::{
+        layer::{ConfigMergeInput, LayerFeature, LayerPort},
+        merge::resolve_config,
+        resolved::ResolvedPublishPort,
+        types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward, PortProtocol},
+    };
+    use crate::devcontainer::lifecycle::{LifecycleCommand, LifecycleStage, WaitFor};
+    use toml::Value as TomlValue;
+
     use super::*;
 
     #[test]
@@ -726,5 +1091,312 @@ mod tests {
 
             assert!(error.to_string().contains("Unsupported runArgs option"));
         }
+    }
+
+    #[test]
+    fn converts_forward_ports_to_forwarding_config_layer() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "forwardPorts": [3000, "127.0.0.1:5433:5432"],
+            "portsAttributes": {
+                "3000": {
+                    "label": "web",
+                    "requireLocalPort": true
+                },
+                "5432": {
+                    "label": "db"
+                }
+            }
+        }))
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            devcontainer: Some(metadata.to_config_layer().unwrap()),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config.ports.entries,
+            vec![
+                LayerPort {
+                    enabled: true,
+                    container: 3000,
+                    host: None,
+                    host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                    protocol: PortProtocol::Tcp,
+                    require_local: true,
+                    label: Some("web".to_owned()),
+                },
+                LayerPort {
+                    enabled: true,
+                    container: 5432,
+                    host: Some(5433),
+                    host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                    protocol: PortProtocol::Tcp,
+                    require_local: false,
+                    label: Some("db".to_owned()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn applies_later_port_attributes_to_earlier_forward_ports() {
+        let image_metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "forwardPorts": [3000]
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+        let devcontainer = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "portsAttributes": {
+                "3000": {
+                    "label": "web",
+                    "requireLocalPort": true
+                }
+            }
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(image_metadata),
+            devcontainer: Some(devcontainer),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config.ports.entries,
+            vec![LayerPort {
+                enabled: true,
+                container: 3000,
+                host: None,
+                host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                protocol: PortProtocol::Tcp,
+                require_local: true,
+                label: Some("web".to_owned()),
+            }]
+        );
+    }
+
+    #[test]
+    fn converts_app_port_to_publish_config_separately_from_forwarding() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "forwardPorts": [3000],
+            "appPort": [8080, "0.0.0.0:8443:443"]
+        }))
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            devcontainer: Some(metadata.to_config_layer().unwrap()),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.ports.entries.len(), 1);
+        assert_eq!(
+            config.devcontainer.publish_ports,
+            vec![
+                ResolvedPublishPort {
+                    container: 8080,
+                    host: None,
+                    host_ip: None,
+                    protocol: PortProtocol::Tcp,
+                },
+                ResolvedPublishPort {
+                    container: 443,
+                    host: Some(8443),
+                    host_ip: Some("0.0.0.0".to_owned()),
+                    protocol: PortProtocol::Tcp,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn converts_features_and_metadata_fields_to_config_layer() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "features": {
+                "ghcr.io/devcontainers/features/github-cli:1": {
+                    "version": "latest"
+                }
+            },
+            "containerEnv": {
+                "RUST_LOG": "debug"
+            },
+            "remoteEnv": {
+                "PATH": "/tools:${containerEnv:PATH}"
+            },
+            "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+            "workspaceFolder": "/workspace",
+            "remoteUser": "vscode",
+            "containerUser": "root",
+            "updateRemoteUserUID": false,
+            "userEnvProbe": "none",
+            "init": true,
+            "privileged": true,
+            "capAdd": ["SYS_PTRACE"],
+            "securityOpt": ["seccomp=unconfined"],
+            "postCreateCommand": "echo ready",
+            "waitFor": "postCreateCommand"
+        }))
+        .unwrap();
+
+        let layer = metadata.to_config_layer().unwrap();
+        assert_eq!(
+            layer.features,
+            vec![LayerFeature {
+                id: "ghcr.io/devcontainers/features/github-cli:1".to_owned(),
+                canonical_id: "ghcr.io/devcontainers/features/github-cli".to_owned(),
+                enabled: true,
+                options: [("version".to_owned(), TomlValue::String("latest".to_owned()))].into(),
+            }]
+        );
+
+        let config = resolve_config(ConfigMergeInput {
+            devcontainer: Some(layer),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config
+                .devcontainer
+                .container_env
+                .get("RUST_LOG")
+                .map(String::as_str),
+            Some("debug")
+        );
+        assert_eq!(
+            config
+                .devcontainer
+                .remote_env
+                .get("PATH")
+                .map(String::as_str),
+            Some("/tools:${containerEnv:PATH}")
+        );
+        assert_eq!(
+            config.devcontainer.workspace_mount.as_deref(),
+            Some("source=${localWorkspaceFolder},target=/workspace,type=bind")
+        );
+        assert_eq!(
+            config.devcontainer.workspace_folder.as_deref(),
+            Some("/workspace")
+        );
+        assert_eq!(config.devcontainer.remote_user.as_deref(), Some("vscode"));
+        assert_eq!(config.devcontainer.container_user.as_deref(), Some("root"));
+        assert_eq!(config.devcontainer.update_remote_user_uid, Some(false));
+        assert!(config.devcontainer.init);
+        assert!(config.devcontainer.privileged);
+        assert_eq!(config.devcontainer.cap_add, vec!["SYS_PTRACE"]);
+        assert_eq!(config.devcontainer.security_opt, vec!["seccomp=unconfined"]);
+        assert!(config.devcontainer.lifecycle.is_some());
+    }
+
+    #[test]
+    fn devcontainer_without_lifecycle_preserves_image_metadata_lifecycle() {
+        let image_metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "postCreateCommand": "image setup"
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+        let devcontainer = parse_metadata(json!({
+            "image": "ubuntu:24.04"
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(image_metadata),
+            devcontainer: Some(devcontainer),
+            ..ConfigMergeInput::default()
+        });
+
+        let lifecycle = config.devcontainer.lifecycle.as_ref().unwrap();
+        assert_eq!(
+            lifecycle.command(LifecycleStage::PostCreate),
+            Some(&LifecycleCommand::Shell("image setup".to_owned()))
+        );
+    }
+
+    #[test]
+    fn lifecycle_metadata_merges_commands_by_stage_and_wait_for_when_explicit() {
+        let image_metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "postCreateCommand": "image setup",
+            "waitFor": "postCreateCommand"
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+        let devcontainer = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "postStartCommand": "project start"
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(image_metadata),
+            devcontainer: Some(devcontainer),
+            ..ConfigMergeInput::default()
+        });
+
+        let lifecycle = config.devcontainer.lifecycle.as_ref().unwrap();
+        assert_eq!(
+            lifecycle.command(LifecycleStage::PostCreate),
+            Some(&LifecycleCommand::Shell("image setup".to_owned()))
+        );
+        assert_eq!(
+            lifecycle.command(LifecycleStage::PostStart),
+            Some(&LifecycleCommand::Shell("project start".to_owned()))
+        );
+        assert_eq!(lifecycle.wait_for(), WaitFor::PostCreate);
+    }
+
+    #[test]
+    fn preserves_port_attributes_for_automatic_forwarding() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "portsAttributes": {
+                "3000": {
+                    "label": "web",
+                    "onAutoForward": "silent",
+                    "requireLocalPort": true
+                }
+            },
+            "otherPortsAttributes": {
+                "onAutoForward": "ignore"
+            }
+        }))
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            devcontainer: Some(metadata.to_config_layer().unwrap()),
+            ..ConfigMergeInput::default()
+        });
+
+        let attributes = config.devcontainer.port_attributes.get("3000").unwrap();
+        assert_eq!(attributes.label.as_deref(), Some("web"));
+        assert_eq!(
+            attributes.on_auto_forward,
+            Some(ConfigOnAutoForward::Silent)
+        );
+        assert_eq!(attributes.require_local_port, Some(true));
+        assert_eq!(
+            config
+                .devcontainer
+                .other_ports_attributes
+                .as_ref()
+                .and_then(|attributes| attributes.on_auto_forward),
+            Some(ConfigOnAutoForward::Ignore)
+        );
     }
 }
