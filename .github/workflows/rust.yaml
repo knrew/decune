@@ -19,32 +19,77 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  rust:
-    name: Rust
+  fmt:
+    name: fmt
     runs-on: ubuntu-24.04
     permissions:
       contents: read
-    strategy:
-      fail-fast: false
     steps:
       - uses: actions/checkout@v6
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
       - name: Cargo fmt
         run: cargo fmt --all --check --verbose
+
+  clippy:
+    name: clippy
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
       - name: Cargo clippy
         run: cargo clippy --workspace --all-features -- -D warnings
+
+  check:
+    name: check (${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: debug
+            command: cargo check --workspace --all-targets --all-features --verbose
+          - profile: release
+            command: cargo check --release --workspace --all-targets --all-features --verbose
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
       - name: Cargo check
-        run: cargo check --workspace --all-targets --all-features --verbose
-      - name: Cargo check release
-        run: cargo check --release --workspace --all-targets --all-features --verbose
+        run: ${{ matrix.command }}
+
+  test:
+    name: test (${{ matrix.profile }})
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: debug
+            command: cargo test --workspace --all-features --no-fail-fast --verbose
+          - profile: release
+            command: cargo test --release --workspace --all-features --no-fail-fast --verbose
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
       - name: Cargo test
-        run: cargo test --workspace --all-features --no-fail-fast --verbose
-      - name: Cargo test release
-        run: cargo test --release --workspace --all-features --no-fail-fast --verbose
+        run: ${{ matrix.command }}
 
   docker-integration:
     name: Docker integration
