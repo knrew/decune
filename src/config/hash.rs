@@ -260,6 +260,9 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
         writer.field("update_remote_user_uid", |writer| {
             writer.bool(devcontainer.update_remote_user_uid);
         });
+        writer.field("override_command", |writer| {
+            writer.bool(devcontainer.override_command);
+        });
         writer.field("user_env_probe", |writer| {
             match devcontainer.user_env_probe {
                 Some(value) => writer.string(user_env_probe_name(value)),
@@ -1101,6 +1104,25 @@ enabled = false
         assert!(default_uid_sync.devcontainer.update_remote_user_uid);
         assert!(!disabled_uid_sync.devcontainer.update_remote_user_uid);
         assert_ne!(hash_for(&default_uid_sync), hash_for(&disabled_uid_sync));
+    }
+
+    #[test]
+    fn override_command_change_changes_hash() {
+        let default_override = resolve_config(ConfigMergeInput::default());
+        let disabled_override = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    override_command: Some(false),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(default_override.devcontainer.override_command);
+        assert!(!disabled_override.devcontainer.override_command);
+        assert_ne!(hash_for(&default_override), hash_for(&disabled_override));
     }
 
     #[test]

@@ -46,6 +46,7 @@ pub(crate) struct DevcontainerMetadata {
     remote_user: Option<String>,
     container_user: Option<String>,
     update_remote_user_uid: Option<bool>,
+    override_command: Option<bool>,
     user_env_probe: Option<UserEnvProbe>,
     forward_ports: Vec<DevcontainerPort>,
     ports_attributes: BTreeMap<String, DevcontainerPortAttributes>,
@@ -237,6 +238,7 @@ impl DevcontainerMetadata {
             remote_user: self.remote_user.clone(),
             container_user: self.container_user.clone(),
             update_remote_user_uid: self.update_remote_user_uid,
+            override_command: self.override_command,
             user_env_probe: self.user_env_probe.as_ref().map(user_env_probe_to_layer),
             publish_ports: self
                 .app_port
@@ -406,6 +408,7 @@ struct RawDevcontainerMetadata {
     container_user: Option<String>,
     #[serde(rename = "updateRemoteUserUID")]
     update_remote_user_uid: Option<bool>,
+    override_command: Option<bool>,
     user_env_probe: Option<UserEnvProbe>,
     #[serde(default)]
     forward_ports: Vec<DevcontainerPort>,
@@ -471,6 +474,7 @@ impl RawDevcontainerMetadata {
             remote_user: self.remote_user,
             container_user: self.container_user,
             update_remote_user_uid: self.update_remote_user_uid,
+            override_command: self.override_command,
             user_env_probe: self.user_env_probe,
             forward_ports: self.forward_ports,
             ports_attributes: self.ports_attributes,
@@ -1215,6 +1219,7 @@ mod tests {
             "remoteUser": "vscode",
             "containerUser": "root",
             "updateRemoteUserUID": false,
+            "overrideCommand": false,
             "userEnvProbe": "none",
             "init": true,
             "privileged": true,
@@ -1268,6 +1273,7 @@ mod tests {
         assert_eq!(config.devcontainer.remote_user.as_deref(), Some("vscode"));
         assert_eq!(config.devcontainer.container_user.as_deref(), Some("root"));
         assert!(!config.devcontainer.update_remote_user_uid);
+        assert!(!config.devcontainer.override_command);
         assert!(config.devcontainer.init);
         assert!(config.devcontainer.privileged);
         assert_eq!(config.devcontainer.cap_add, vec!["SYS_PTRACE"]);
