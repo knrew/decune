@@ -2,8 +2,9 @@
 
 use anyhow::{Context, Result, bail};
 use bollard::{
-    errors::Error as DockerError, models::CreateImageInfo,
-    query_parameters::CreateImageOptionsBuilder,
+    errors::Error as DockerError,
+    models::CreateImageInfo,
+    query_parameters::{CreateImageOptions, CreateImageOptionsBuilder},
 };
 use futures_util::TryStreamExt;
 
@@ -61,9 +62,7 @@ async fn local_image_presence(client: &DockerClient, image: &str) -> Result<Loca
 async fn pull_image(client: &DockerClient, image: &str) -> Result<()> {
     ui::info(&format!("Pulling Docker image: {image}"));
 
-    let options = CreateImageOptionsBuilder::default()
-        .from_image(image)
-        .build();
+    let options = create_image_options_for_pull(image);
     let stream = client.raw().create_image(Some(options), None, None);
     futures_util::pin_mut!(stream);
 
@@ -95,6 +94,25 @@ fn should_pull_image(policy: PullPolicy, presence: LocalImagePresence) -> bool {
             (policy, presence),
             (PullPolicy::Missing, LocalImagePresence::Missing)
         )
+}
+
+fn create_image_options_for_pull(image: &str) -> CreateImageOptions {
+    let mut builder = CreateImageOptionsBuilder::default().from_image(image);
+
+    if !image_reference_has_tag_or_digest(image) {
+        builder = builder.tag("latest");
+    }
+
+    builder.build()
+}
+
+fn image_reference_has_tag_or_digest(image: &str) -> bool {
+    if image.contains('@') {
+        return true;
+    }
+
+    let name = image.rsplit('/').next().unwrap_or(image);
+    name.contains(':')
 }
 
 fn is_image_not_found(error: &DockerError) -> bool {
@@ -137,8 +155,8 @@ mod tests {
     use crate::docker::client::DockerClient;
 
     use super::{
-        ImagePullOutcome, LocalImagePresence, PullPolicy, ensure_image, progress_line,
-        should_pull_image,
+        ImagePullOutcome, LocalImagePresence, PullPolicy, create_image_options_for_pull,
+        ensure_image, progress_line, should_pull_image,
     };
 
     #[test]
@@ -191,6 +209,46 @@ mod tests {
         };
 
         assert_eq!(progress_line(&event).as_deref(), Some("Pull complete"));
+    }
+
+    #[test]
+    fn pull_options_default_tagless_image_to_latest() {
+        let options = create_image_options_for_pull("ubuntu");
+
+        assert_eq!(options.from_image.as_deref(), Some("ubuntu"));
+        assert_eq!(options.tag.as_deref(), Some("latest"));
+    }
+
+    #[test]
+    fn pull_options_preserve_explicit_tag() {
+        let options = create_image_options_for_pull("ubuntu:24.04");
+
+        assert_eq!(options.from_image.as_deref(), Some("ubuntu:24.04"));
+        assert_eq!(options.tag, None);
+    }
+
+    #[test]
+    fn pull_options_default_registry_image_without_tag_to_latest() {
+        let options = create_image_options_for_pull("localhost:5000/team/image");
+
+        assert_eq!(
+            options.from_image.as_deref(),
+            Some("localhost:5000/team/image")
+        );
+        assert_eq!(options.tag.as_deref(), Some("latest"));
+    }
+
+    #[test]
+    fn pull_options_preserve_digest_reference() {
+        let options = create_image_options_for_pull(
+            "ubuntu@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        );
+
+        assert_eq!(
+            options.from_image.as_deref(),
+            Some("ubuntu@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
+        );
+        assert_eq!(options.tag, None);
     }
 
     #[test]
