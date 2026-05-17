@@ -10,8 +10,8 @@ use crate::{
     config::{
         layer::{
             ConfigLayer, LayerDevcontainerBuild, LayerDevcontainerMetadata,
-            LayerDevcontainerSource, LayerFeature, LayerPort, LayerPortAttributes,
-            LayerPublishPort, LayerRunArg, LayerUserEnvProbe,
+            LayerDevcontainerSource, LayerFeature, LayerForwardPort, LayerPort,
+            LayerPortAttributes, LayerPublishPort, LayerRunArg, LayerUserEnvProbe,
         },
         types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward, PortProtocol},
     },
@@ -157,7 +157,7 @@ impl DevcontainerMetadata {
                 .iter()
                 .map(|(id, value)| feature_to_layer(id, value))
                 .collect::<Result<Vec<_>>>()?,
-            ports: self
+            forward_ports: self
                 .forward_ports
                 .iter()
                 .map(|port| forwarding_port_to_layer(port, &self.ports_attributes))
@@ -319,22 +319,26 @@ fn json_to_toml(value: &Value) -> Result<toml::Value> {
 fn forwarding_port_to_layer(
     port: &DevcontainerPort,
     attributes: &BTreeMap<String, DevcontainerPortAttributes>,
-) -> Result<LayerPort> {
+) -> Result<LayerForwardPort> {
     let parsed = parse_port(port, PortMode::Forward)?;
-    let port_attributes = attributes_for_port(attributes, parsed.container, port);
+    let attribute_keys = attribute_keys_for_port(parsed.container, port);
+    let port_attributes = attributes_for_keys(attributes, &attribute_keys);
 
-    Ok(LayerPort {
-        enabled: true,
-        container: parsed.container,
-        host: parsed.host,
-        host_ip: parsed
-            .host_ip
-            .unwrap_or_else(|| DEFAULT_PORT_HOST_IP.to_owned()),
-        protocol: parsed.protocol,
-        require_local: port_attributes
-            .and_then(|attributes| attributes.require_local_port)
-            .unwrap_or(false),
-        label: port_attributes.and_then(|attributes| attributes.label.clone()),
+    Ok(LayerForwardPort {
+        port: LayerPort {
+            enabled: true,
+            container: parsed.container,
+            host: parsed.host,
+            host_ip: parsed
+                .host_ip
+                .unwrap_or_else(|| DEFAULT_PORT_HOST_IP.to_owned()),
+            protocol: parsed.protocol,
+            require_local: port_attributes
+                .and_then(|attributes| attributes.require_local_port)
+                .unwrap_or(false),
+            label: port_attributes.and_then(|attributes| attributes.label.clone()),
+        },
+        attribute_keys,
     })
 }
 
@@ -349,16 +353,21 @@ fn publish_port_to_layer(port: &DevcontainerPort) -> Result<LayerPublishPort> {
     })
 }
 
-fn attributes_for_port<'a>(
-    attributes: &'a BTreeMap<String, DevcontainerPortAttributes>,
-    container_port: u16,
-    original: &DevcontainerPort,
-) -> Option<&'a DevcontainerPortAttributes> {
+fn attribute_keys_for_port(container_port: u16, original: &DevcontainerPort) -> Vec<String> {
     let container_key = container_port.to_string();
-    attributes.get(&container_key).or_else(|| match original {
-        DevcontainerPort::Number(_) => None,
-        DevcontainerPort::String(value) => attributes.get(value),
-    })
+
+    match original {
+        DevcontainerPort::Number(_) => vec![container_key],
+        DevcontainerPort::String(value) if value == &container_key => vec![container_key],
+        DevcontainerPort::String(value) => vec![container_key, value.clone()],
+    }
+}
+
+fn attributes_for_keys<'a>(
+    attributes: &'a BTreeMap<String, DevcontainerPortAttributes>,
+    keys: &[String],
+) -> Option<&'a DevcontainerPortAttributes> {
+    keys.iter().find_map(|key| attributes.get(key))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1128,6 +1137,48 @@ mod tests {
                     label: Some("db".to_owned()),
                 },
             ]
+        );
+    }
+
+    #[test]
+    fn applies_later_port_attributes_to_earlier_forward_ports() {
+        let image_metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "forwardPorts": [3000]
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+        let devcontainer = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "portsAttributes": {
+                "3000": {
+                    "label": "web",
+                    "requireLocalPort": true
+                }
+            }
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: Some(image_metadata),
+            devcontainer: Some(devcontainer),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config.ports.entries,
+            vec![LayerPort {
+                enabled: true,
+                container: 3000,
+                host: None,
+                host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                protocol: PortProtocol::Tcp,
+                require_local: true,
+                label: Some("web".to_owned()),
+            }]
         );
     }
 

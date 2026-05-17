@@ -8,7 +8,7 @@ pub(crate) use crate::config::{
 use crate::config::{
     layer::{
         LayerAutoPorts, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile, LayerFeature,
-        LayerMount, LayerPort, LayerPortAttributes, LayerPublishPort,
+        LayerForwardPort, LayerMount, LayerPort, LayerPortAttributes, LayerPublishPort,
     },
     resolved::{
         ResolvedAutoPorts, ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile,
@@ -41,11 +41,33 @@ struct MergeAccumulator {
     features: Vec<ResolvedFeature>,
     dotfiles: Vec<ResolvedDotfile>,
     mounts: Vec<ResolvedMount>,
-    ports: Vec<ResolvedPort>,
+    ports: Vec<MergedPort>,
     auto_ports: ResolvedAutoPorts,
     devcontainer: ResolvedDevcontainer,
     credentials: ResolvedCredentials,
     hooks: ResolvedHooks,
+}
+
+#[derive(Debug)]
+struct MergedPort {
+    port: ResolvedPort,
+    forward_attribute_keys: Vec<String>,
+}
+
+impl MergedPort {
+    fn plain(port: LayerPort) -> Self {
+        Self {
+            port,
+            forward_attribute_keys: Vec::new(),
+        }
+    }
+
+    fn forward(port: LayerForwardPort) -> Self {
+        Self {
+            port: port.port,
+            forward_attribute_keys: port.attribute_keys,
+        }
+    }
 }
 
 impl MergeAccumulator {
@@ -68,6 +90,10 @@ impl MergeAccumulator {
 
         for port in layer.ports {
             self.merge_port(port);
+        }
+
+        for port in layer.forward_ports {
+            self.merge_forward_port(port);
         }
 
         if let Some(auto_ports) = layer.auto_ports {
@@ -155,14 +181,26 @@ impl MergeAccumulator {
     fn merge_port(&mut self, port: LayerPort) {
         if !port.enabled {
             remove_by_identity(&mut self.ports, |existing| {
-                existing.protocol == port.protocol
-                    && existing.container == port.container
-                    && existing.host_ip == port.host_ip
+                existing.port.protocol == port.protocol
+                    && existing.port.container == port.container
+                    && existing.port.host_ip == port.host_ip
             });
             return;
         }
 
-        replace_by_identity(&mut self.ports, port, same_port_identity);
+        replace_by_identity(
+            &mut self.ports,
+            MergedPort::plain(port),
+            same_merged_port_identity,
+        );
+    }
+
+    fn merge_forward_port(&mut self, port: LayerForwardPort) {
+        replace_by_identity(
+            &mut self.ports,
+            MergedPort::forward(port),
+            same_merged_port_identity,
+        );
     }
 
     fn merge_auto_ports(&mut self, auto_ports: LayerAutoPorts) {
@@ -279,19 +317,38 @@ impl MergeAccumulator {
         }
     }
 
-    fn into_resolved(self) -> ResolvedConfig {
+    fn into_resolved(mut self) -> ResolvedConfig {
+        self.apply_forward_port_attributes();
+
         ResolvedConfig {
             shell: self.shell,
             features: self.features,
             dotfiles: self.dotfiles,
             mounts: self.mounts,
             ports: ResolvedPorts {
-                entries: self.ports,
+                entries: self.ports.into_iter().map(|entry| entry.port).collect(),
                 auto: self.auto_ports,
             },
             devcontainer: self.devcontainer,
             credentials: self.credentials,
             hooks: self.hooks,
+        }
+    }
+
+    fn apply_forward_port_attributes(&mut self) {
+        for entry in &mut self.ports {
+            if entry.forward_attribute_keys.is_empty() {
+                continue;
+            }
+
+            let attributes = attributes_for_keys(
+                &self.devcontainer.port_attributes,
+                &entry.forward_attribute_keys,
+            );
+            entry.port.label = attributes.and_then(|attributes| attributes.label.clone());
+            entry.port.require_local = attributes
+                .and_then(|attributes| attributes.require_local_port)
+                .unwrap_or(false);
         }
     }
 }
@@ -321,6 +378,17 @@ fn same_port_identity(left: &ResolvedPort, right: &ResolvedPort) -> bool {
     left.protocol == right.protocol
         && left.container == right.container
         && left.host_ip == right.host_ip
+}
+
+fn same_merged_port_identity(left: &MergedPort, right: &MergedPort) -> bool {
+    same_port_identity(&left.port, &right.port)
+}
+
+fn attributes_for_keys<'a>(
+    attributes: &'a std::collections::BTreeMap<String, LayerPortAttributes>,
+    keys: &[String],
+) -> Option<&'a LayerPortAttributes> {
+    keys.iter().find_map(|key| attributes.get(key))
 }
 
 fn same_publish_port_identity(left: &LayerPublishPort, right: &LayerPublishPort) -> bool {

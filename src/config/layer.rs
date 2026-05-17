@@ -34,6 +34,7 @@ pub(crate) struct ConfigLayer {
     pub(crate) dotfiles: Vec<LayerDotfile>,
     pub(crate) mounts: Vec<LayerMount>,
     pub(crate) ports: Vec<LayerPort>,
+    pub(crate) forward_ports: Vec<LayerForwardPort>,
     pub(crate) auto_ports: Option<LayerAutoPorts>,
     pub(crate) devcontainer: Option<LayerDevcontainerMetadata>,
     pub(crate) credentials: LayerCredentials,
@@ -61,6 +62,7 @@ impl ConfigLayer {
                 .into_iter()
                 .map(LayerPort::from_raw)
                 .collect(),
+            forward_ports: Vec::new(),
             auto_ports: raw.ports.auto.map(LayerAutoPorts::from_raw),
             devcontainer: None,
             credentials: LayerCredentials::from_raw(raw.credentials),
@@ -171,6 +173,12 @@ impl LayerPort {
             label: raw.label,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerForwardPort {
+    pub(crate) port: LayerPort,
+    pub(crate) attribute_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
