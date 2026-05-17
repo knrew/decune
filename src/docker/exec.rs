@@ -48,7 +48,7 @@ pub(crate) async fn exec_capture(
     validate_exec_spec(spec)?;
 
     let exec_id = create_exec(client, container, spec, ExecAttachMode::Capture).await?;
-    let mut output = start_exec_and_capture_output(client, &exec_id, container).await?;
+    let mut output = start_exec_and_capture_output(client, &exec_id, container, spec.tty).await?;
     let inspect = inspect_exec(client, &exec_id, container).await?;
     output.exit_code = inspect
         .exit_code
@@ -67,11 +67,7 @@ pub(crate) async fn exec_attach(
     validate_exec_spec(spec)?;
 
     let exec_id = create_exec(client, container, spec, ExecAttachMode::Stream).await?;
-    let options = StartExecOptions {
-        detach: false,
-        tty: spec.tty,
-        output_capacity: None,
-    };
+    let options = start_exec_options(spec.tty);
     let results = client
         .raw()
         .start_exec(&exec_id, Some(options))
@@ -101,6 +97,14 @@ pub(crate) fn create_exec_options(
     }
 }
 
+fn start_exec_options(tty: bool) -> StartExecOptions {
+    StartExecOptions {
+        detach: false,
+        tty,
+        output_capacity: None,
+    }
+}
+
 async fn create_exec(
     client: &DockerClient,
     container: &str,
@@ -121,10 +125,12 @@ async fn start_exec_and_capture_output(
     client: &DockerClient,
     exec_id: &str,
     container: &str,
+    tty: bool,
 ) -> Result<ExecOutput> {
+    let options = start_exec_options(tty);
     let results = client
         .raw()
-        .start_exec(exec_id, None::<StartExecOptions>)
+        .start_exec(exec_id, Some(options))
         .await
         .with_context(|| format!("Failed to start Docker exec in container: {container}"))?;
 
@@ -236,7 +242,7 @@ mod tests {
 
     use super::{
         ExecAttachMode, ExecCommandSpec, ExecOutput, create_exec_options, ensure_success_exit,
-        exec_capture,
+        exec_capture, start_exec_options,
     };
     use crate::docker::{
         client::DockerClient,
@@ -293,6 +299,15 @@ mod tests {
         assert_eq!(options.attach_stdout, Some(true));
         assert_eq!(options.attach_stderr, Some(true));
         assert_eq!(options.tty, Some(true));
+    }
+
+    #[test]
+    fn start_exec_options_preserves_capture_tty() {
+        let options = start_exec_options(true);
+
+        assert!(!options.detach);
+        assert!(options.tty);
+        assert_eq!(options.output_capacity, None);
     }
 
     #[test]
