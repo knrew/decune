@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use bollard::models::{Mount, MountType as DockerMountType};
 
 use crate::config::types::MountType;

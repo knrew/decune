@@ -1,6 +1,5 @@
 use std::io::{self, Write};
 
-#[allow(dead_code)]
 pub(crate) fn info(message: &str) {
     write_stderr("Info", message);
 }
@@ -14,7 +13,6 @@ pub(crate) fn error(message: &str) {
     write_stderr("Error", message);
 }
 
-#[allow(dead_code)]
 pub(crate) fn done(message: &str) {
     write_stderr("Done", message);
 }

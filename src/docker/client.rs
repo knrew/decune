@@ -1,7 +1,6 @@
 use anyhow::{Error, Result};
 use bollard::{Docker, models::SystemVersion};
 
-#[allow(dead_code)]
 pub(crate) struct DockerClient {
     docker: Docker,
     endpoint: String,

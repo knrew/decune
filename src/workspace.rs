@@ -12,7 +12,6 @@ use crate::error::ResultExt;
 const FALLBACK_WORKSPACE_BASENAME: &str = "workspace";
 const WORKSPACE_ID_HEX_LEN: usize = 12;
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Workspace {
     root: PathBuf,
@@ -63,7 +62,6 @@ impl Workspace {
     }
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WorkspacePaths {
     state_dir: PathBuf,

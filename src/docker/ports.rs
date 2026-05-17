@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use crate::config::types::PortProtocol;
 
 #[derive(Debug, Clone, PartialEq, Eq)]

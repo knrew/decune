@@ -13,7 +13,6 @@ const ROOT_METADATA_PATH: &str = ".devcontainer.json";
 const DEVCONTAINER_DIRECTORY: &str = ".devcontainer";
 const METADATA_FILE_NAME: &str = "devcontainer.json";
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DevcontainerJson {
     path: PathBuf,
@@ -38,7 +37,6 @@ impl DevcontainerJson {
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn discover(
     workspace_root: &Path,
     explicit_config_path: Option<&Path>,
@@ -73,7 +71,6 @@ pub(crate) fn discover(
     }
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_file(path: &Path) -> Result<Value> {
     let contents =
         fs::read_to_string(path).with_path_context("read devcontainer metadata file", path)?;
@@ -85,7 +82,6 @@ pub(crate) fn parse_file(path: &Path) -> Result<Value> {
     })
 }
 
-#[allow(dead_code)]
 pub(crate) fn parse_str(contents: &str) -> Result<Value> {
     let normalized = normalize_jsonc(contents)?;
     serde_json::from_str(&normalized).map_err(|error| anyhow!("{error}"))
