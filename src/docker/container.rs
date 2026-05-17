@@ -258,6 +258,11 @@ pub(crate) fn workspace_container_list_options(workspace_id: &str) -> ListContai
 mod tests {
     use std::collections::BTreeMap;
 
+    use bollard::{
+        models::{ContainerCreateBody, HostConfig, PortBinding},
+        query_parameters::CreateContainerOptionsBuilder,
+    };
+
     use crate::{
         config::{
             layer::LayerRunArg,
@@ -445,36 +450,111 @@ mod tests {
 
         runtime.block_on(async {
             let client = DockerClient::connect_from_env().unwrap();
-            ensure_image(&client, "alpine:3.20", PullPolicy::Missing)
-                .await
-                .unwrap();
-
             let name = format!("decune-test-container-{}", std::process::id());
-            remove_container(&client, &name, true, true).await.unwrap();
+            let result = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                remove_container(&client, &name, true, true).await?;
 
-            let spec = ContainerCreateSpec {
-                image: "alpine:3.20".to_owned(),
-                name: name.clone(),
-                labels: BTreeMap::from([
-                    ("decune.managed".to_owned(), "true".to_owned()),
-                    ("decune.workspace_id".to_owned(), "testworkspace".to_owned()),
-                ]),
-                env: BTreeMap::new(),
-                working_dir: None,
-                user: None,
-                mounts: Vec::new(),
-                publish_ports: Vec::new(),
-                host_config: ContainerHostConfig::default(),
-            };
+                let spec = ContainerCreateSpec {
+                    image: "alpine:3.20".to_owned(),
+                    name: name.clone(),
+                    labels: BTreeMap::from([
+                        ("decune.managed".to_owned(), "true".to_owned()),
+                        ("decune.workspace_id".to_owned(), "testworkspace".to_owned()),
+                    ]),
+                    env: BTreeMap::new(),
+                    working_dir: None,
+                    user: None,
+                    mounts: Vec::new(),
+                    publish_ports: Vec::new(),
+                    host_config: ContainerHostConfig::default(),
+                };
 
-            let id = create_container(&client, &spec).await.unwrap();
-            assert!(!id.is_empty());
+                let id = create_container(&client, &spec).await?;
+                assert!(!id.is_empty());
 
-            start_container(&client, &name).await.unwrap();
-            stop_container(&client, &name, 1).await.unwrap();
-            stop_container(&client, &name, 1).await.unwrap();
-            remove_container(&client, &name, true, true).await.unwrap();
-            remove_container(&client, &name, true, true).await.unwrap();
+                start_container(&client, &name).await?;
+                stop_container(&client, &name, 1).await?;
+                stop_container(&client, &name, 1).await?;
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn published_port_is_allocated_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let name = format!("decune-test-publish-port-{}", std::process::id());
+            let result = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                remove_container(&client, &name, true, true).await?;
+
+                let mut port_bindings = std::collections::HashMap::new();
+                port_bindings.insert(
+                    "8080/tcp".to_owned(),
+                    Some(vec![PortBinding {
+                        host_ip: Some("127.0.0.1".to_owned()),
+                        host_port: None,
+                    }]),
+                );
+                let options = CreateContainerOptionsBuilder::default().name(&name).build();
+                let body = ContainerCreateBody {
+                    image: Some("alpine:3.20".to_owned()),
+                    cmd: Some(vec!["sleep".to_owned(), "60".to_owned()]),
+                    exposed_ports: Some(vec!["8080/tcp".to_owned()]),
+                    host_config: Some(HostConfig {
+                        port_bindings: Some(port_bindings),
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                };
+
+                client.raw().create_container(Some(options), body).await?;
+                start_container(&client, &name).await?;
+
+                let inspect = client.raw().inspect_container(&name, None).await?;
+                let ports = inspect
+                    .network_settings
+                    .and_then(|settings| settings.ports)
+                    .unwrap_or_default();
+                let bindings = ports
+                    .get("8080/tcp")
+                    .and_then(|bindings| bindings.as_ref())
+                    .expect("expected Docker to allocate a host port for 8080/tcp");
+                let binding = bindings
+                    .first()
+                    .expect("expected at least one published port binding");
+
+                assert_eq!(binding.host_ip.as_deref(), Some("127.0.0.1"));
+                assert!(
+                    binding
+                        .host_port
+                        .as_deref()
+                        .is_some_and(|port| !port.is_empty())
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
         });
     }
 

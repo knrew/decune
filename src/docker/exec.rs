@@ -235,14 +235,18 @@ fn output_tail(output: &[u8]) -> String {
 mod tests {
     use std::collections::BTreeMap;
 
+    use anyhow::{Result, bail};
     use bollard::{
+        container::LogOutput,
+        exec::StartExecResults,
         models::{ContainerCreateBody, ExecInspectResponse},
         query_parameters::CreateContainerOptionsBuilder,
     };
+    use futures_util::TryStreamExt;
 
     use super::{
         ExecAttachMode, ExecCommandSpec, ExecOutput, create_exec_options, ensure_success_exit,
-        exec_capture, start_exec_options,
+        exec_attach, exec_capture, start_exec_options,
     };
     use crate::docker::{
         client::DockerClient,
@@ -362,31 +366,36 @@ mod tests {
         runtime.block_on(async {
             let client = DockerClient::connect_from_env().unwrap();
             let name = test_container_name("exec-capture-stdout");
-            create_running_exec_test_container(&client, &name).await;
+            let result = async {
+                create_running_exec_test_container(&client, &name).await?;
 
-            let output = exec_capture(
-                &client,
-                &name,
-                &ExecCommandSpec {
-                    command: vec![
-                        "/bin/sh".to_owned(),
-                        "-c".to_owned(),
-                        "echo hello".to_owned(),
-                    ],
-                    user: None,
-                    working_dir: Some("/tmp".to_owned()),
-                    env: BTreeMap::new(),
-                    tty: false,
-                },
-            )
-            .await
-            .unwrap();
+                let output = exec_capture(
+                    &client,
+                    &name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "echo hello".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: Some("/tmp".to_owned()),
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
 
-            assert_eq!(output.exit_code, 0);
-            assert_eq!(String::from_utf8(output.stdout).unwrap(), "hello\n");
-            assert!(output.stderr.is_empty());
+                assert_eq!(output.exit_code, 0);
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "hello\n");
+                assert!(output.stderr.is_empty());
 
-            remove_container(&client, &name, true, true).await.unwrap();
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
         });
     }
 
@@ -405,39 +414,107 @@ mod tests {
         runtime.block_on(async {
             let client = DockerClient::connect_from_env().unwrap();
             let name = test_container_name("exec-capture-nonzero");
-            create_running_exec_test_container(&client, &name).await;
+            let result = async {
+                create_running_exec_test_container(&client, &name).await?;
 
-            let error = exec_capture(
-                &client,
-                &name,
-                &ExecCommandSpec {
-                    command: vec![
-                        "/bin/sh".to_owned(),
-                        "-c".to_owned(),
-                        "echo failure >&2; exit 7".to_owned(),
-                    ],
-                    user: None,
-                    working_dir: None,
-                    env: BTreeMap::new(),
-                    tty: false,
-                },
-            )
-            .await
-            .unwrap_err();
-            let message = format!("{error:#}");
+                let error = exec_capture(
+                    &client,
+                    &name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "echo failure >&2; exit 7".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
 
-            assert!(message.contains("exit code 7"));
-            assert!(message.contains("failure"));
+                assert!(message.contains("exit code 7"));
+                assert!(message.contains("failure"));
 
-            remove_container(&client, &name, true, true).await.unwrap();
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
         });
     }
 
-    async fn create_running_exec_test_container(client: &DockerClient, name: &str) {
-        ensure_image(client, "alpine:3.20", PullPolicy::Missing)
-            .await
+    #[test]
+    fn exec_attach_streams_stdout_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
             .unwrap();
-        remove_container(client, name, true, true).await.unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let name = test_container_name("exec-attach-stdout");
+            let result = async {
+                create_running_exec_test_container(&client, &name).await?;
+
+                let attached = exec_attach(
+                    &client,
+                    &name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "echo attached".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: Some("/tmp".to_owned()),
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+
+                let StartExecResults::Attached { mut output, .. } = attached.results else {
+                    bail!("Docker exec did not return an attached stream");
+                };
+                let mut stdout = Vec::new();
+                let mut stderr = Vec::new();
+                while let Some(log_output) = output.try_next().await? {
+                    match log_output {
+                        LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                            stdout.extend_from_slice(&message);
+                        }
+                        LogOutput::StdErr { message } => stderr.extend_from_slice(&message),
+                        LogOutput::StdIn { .. } => {}
+                    }
+                }
+
+                let inspect = client.raw().inspect_exec(&attached.id).await?;
+                assert_eq!(inspect.exit_code, Some(0));
+                assert_eq!(String::from_utf8(stdout).unwrap(), "attached\n");
+                assert!(stderr.is_empty());
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    async fn create_running_exec_test_container(client: &DockerClient, name: &str) -> Result<()> {
+        ensure_image(client, "alpine:3.20", PullPolicy::Missing).await?;
+        remove_container(client, name, true, true).await?;
 
         let options = CreateContainerOptionsBuilder::default().name(name).build();
         let body = ContainerCreateBody {
@@ -446,12 +523,10 @@ mod tests {
             ..Default::default()
         };
 
-        client
-            .raw()
-            .create_container(Some(options), body)
-            .await
-            .unwrap();
-        start_container(client, name).await.unwrap();
+        client.raw().create_container(Some(options), body).await?;
+        start_container(client, name).await?;
+
+        Ok(())
     }
 
     fn test_container_name(test_name: &str) -> String {
