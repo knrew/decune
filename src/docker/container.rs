@@ -64,7 +64,10 @@ pub(crate) fn create_container_body(spec: &ContainerCreateSpec) -> ContainerCrea
 pub(crate) fn devcontainer_keepalive_command() -> (Vec<String>, Vec<String>) {
     (
         vec!["/bin/sh".to_owned()],
-        vec!["-c".to_owned(), "while sleep 1000; do :; done".to_owned()],
+        vec![
+            "-c".to_owned(),
+            "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+        ],
     )
 }
 
@@ -316,7 +319,7 @@ mod tests {
             entrypoint: Some(vec!["/bin/sh".to_owned()]),
             command: Some(vec![
                 "-c".to_owned(),
-                "while sleep 1000; do :; done".to_owned(),
+                "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
             ]),
             labels: labels.clone(),
             env: BTreeMap::from([("WORKSPACE".to_owned(), "/workspaces/project".to_owned())]),
@@ -356,7 +359,7 @@ mod tests {
             body.cmd,
             Some(vec![
                 "-c".to_owned(),
-                "while sleep 1000; do :; done".to_owned()
+                "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned()
             ])
         );
         assert_eq!(body.labels, Some(labels.into_iter().collect()));
@@ -443,11 +446,17 @@ mod tests {
     }
 
     #[test]
-    fn devcontainer_keepalive_command_uses_portable_shell_loop() {
+    fn devcontainer_keepalive_command_exits_promptly_on_term() {
         let (entrypoint, command) = devcontainer_keepalive_command();
 
         assert_eq!(entrypoint, vec!["/bin/sh"]);
-        assert_eq!(command, vec!["-c", "while sleep 1000; do :; done"]);
+        assert_eq!(command.len(), 2);
+        assert_eq!(command[0], "-c");
+
+        let script = &command[1];
+        assert!(script.contains("trap 'exit 0' TERM"));
+        assert!(script.contains("sleep 1 & wait $!"));
+        assert!(!script.contains("sleep 1000"));
     }
 
     #[test]
