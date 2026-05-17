@@ -278,6 +278,9 @@ impl MergeAccumulator {
         if let Some(update_remote_user_uid) = devcontainer.update_remote_user_uid {
             self.devcontainer.update_remote_user_uid = update_remote_user_uid;
         }
+        if let Some(override_command) = devcontainer.override_command {
+            self.devcontainer.override_command = override_command;
+        }
         if let Some(user_env_probe) = devcontainer.user_env_probe {
             self.devcontainer.user_env_probe = Some(user_env_probe);
         }

@@ -12,12 +12,9 @@ use bollard::{
     },
 };
 
-use crate::{
-    config::layer::LayerRunArg,
-    docker::{
-        client::DockerClient, mounts::DockerMountSpec, ports::DockerPublishPort,
-        resource::managed_workspace_label_filters,
-    },
+use crate::docker::{
+    client::DockerClient, mounts::DockerMountSpec, ports::DockerPublishPort,
+    resource::managed_workspace_label_filters,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -26,13 +23,17 @@ pub(crate) struct ContainerHostConfig {
     pub(crate) privileged: bool,
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
-    pub(crate) run_args: Vec<LayerRunArg>,
+    pub(crate) extra_hosts: Vec<String>,
+    pub(crate) dns: Vec<String>,
+    pub(crate) dns_search: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ContainerCreateSpec {
     pub(crate) image: String,
     pub(crate) name: String,
+    pub(crate) entrypoint: Option<Vec<String>>,
+    pub(crate) command: Option<Vec<String>>,
     pub(crate) labels: BTreeMap<String, String>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) working_dir: Option<String>,
@@ -47,6 +48,8 @@ pub(crate) fn create_container_body(spec: &ContainerCreateSpec) -> ContainerCrea
 
     ContainerCreateBody {
         image: Some(spec.image.clone()),
+        entrypoint: spec.entrypoint.clone(),
+        cmd: spec.command.clone(),
         labels: non_empty_map(spec.labels.clone()),
         env: non_empty_vec(env_entries(&spec.env)),
         working_dir: spec.working_dir.clone(),
@@ -55,6 +58,16 @@ pub(crate) fn create_container_body(spec: &ContainerCreateSpec) -> ContainerCrea
         host_config: Some(create_host_config(spec)),
         ..Default::default()
     }
+}
+
+pub(crate) fn devcontainer_keepalive_command() -> (Vec<String>, Vec<String>) {
+    (
+        vec!["/bin/sh".to_owned()],
+        vec![
+            "-c".to_owned(),
+            "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+        ],
+    )
 }
 
 pub(crate) async fn create_container(
@@ -132,16 +145,14 @@ pub(crate) async fn remove_container(
 }
 
 fn create_host_config(spec: &ContainerCreateSpec) -> HostConfig {
-    let run_args = split_run_args(&spec.host_config.run_args);
-
     HostConfig {
         init: spec.host_config.init.then_some(true),
         privileged: spec.host_config.privileged.then_some(true),
         cap_add: non_empty_vec(spec.host_config.cap_add.clone()),
         security_opt: non_empty_vec(spec.host_config.security_opt.clone()),
-        extra_hosts: non_empty_vec(run_args.extra_hosts),
-        dns: non_empty_vec(run_args.dns),
-        dns_search: non_empty_vec(run_args.dns_search),
+        extra_hosts: non_empty_vec(spec.host_config.extra_hosts.clone()),
+        dns: non_empty_vec(spec.host_config.dns.clone()),
+        dns_search: non_empty_vec(spec.host_config.dns_search.clone()),
         mounts: non_empty_vec(
             spec.mounts
                 .iter()
@@ -151,27 +162,6 @@ fn create_host_config(spec: &ContainerCreateSpec) -> HostConfig {
         port_bindings: publish_port_bindings(&spec.publish_ports),
         ..Default::default()
     }
-}
-
-#[derive(Debug, Default)]
-struct SplitRunArgs {
-    extra_hosts: Vec<String>,
-    dns: Vec<String>,
-    dns_search: Vec<String>,
-}
-
-fn split_run_args(run_args: &[LayerRunArg]) -> SplitRunArgs {
-    let mut split = SplitRunArgs::default();
-
-    for run_arg in run_args {
-        match run_arg {
-            LayerRunArg::AddHost(value) => split.extra_hosts.push(value.clone()),
-            LayerRunArg::Dns(value) => split.dns.push(value.clone()),
-            LayerRunArg::DnsSearch(value) => split.dns_search.push(value.clone()),
-        }
-    }
-
-    split
 }
 
 fn env_entries(env: &BTreeMap<String, String>) -> Vec<String> {
@@ -264,10 +254,7 @@ mod tests {
     };
 
     use crate::{
-        config::{
-            layer::LayerRunArg,
-            types::{MountType, PortProtocol},
-        },
+        config::types::{MountType, PortProtocol},
         docker::{
             client::DockerClient,
             image::{PullPolicy, ensure_image},
@@ -279,8 +266,8 @@ mod tests {
     use super::workspace_container_list_options;
     use super::{
         ContainerCreateSpec, ContainerHostConfig, create_container, create_container_body,
-        is_container_already_started, is_container_already_stopped, is_container_not_found,
-        remove_container, start_container, stop_container,
+        devcontainer_keepalive_command, is_container_already_started, is_container_already_stopped,
+        is_container_not_found, remove_container, start_container, stop_container,
     };
 
     #[test]
@@ -307,6 +294,11 @@ mod tests {
         let spec = ContainerCreateSpec {
             image: "alpine:latest".to_owned(),
             name: "decune-project-abc123def456".to_owned(),
+            entrypoint: Some(vec!["/bin/sh".to_owned()]),
+            command: Some(vec![
+                "-c".to_owned(),
+                "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+            ]),
             labels: labels.clone(),
             env: BTreeMap::from([("WORKSPACE".to_owned(), "/workspaces/project".to_owned())]),
             working_dir: Some("/workspaces/project".to_owned()),
@@ -328,11 +320,9 @@ mod tests {
                 privileged: true,
                 cap_add: vec!["SYS_PTRACE".to_owned()],
                 security_opt: vec!["seccomp=unconfined".to_owned()],
-                run_args: vec![
-                    LayerRunArg::AddHost("host.docker.internal:host-gateway".to_owned()),
-                    LayerRunArg::Dns("1.1.1.1".to_owned()),
-                    LayerRunArg::DnsSearch("example.test".to_owned()),
-                ],
+                extra_hosts: vec!["host.docker.internal:host-gateway".to_owned()],
+                dns: vec!["1.1.1.1".to_owned()],
+                dns_search: vec!["example.test".to_owned()],
             },
         };
 
@@ -340,6 +330,14 @@ mod tests {
         let host_config = body.host_config.unwrap();
 
         assert_eq!(body.image.as_deref(), Some("alpine:latest"));
+        assert_eq!(body.entrypoint, Some(vec!["/bin/sh".to_owned()]));
+        assert_eq!(
+            body.cmd,
+            Some(vec![
+                "-c".to_owned(),
+                "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned()
+            ])
+        );
         assert_eq!(body.labels, Some(labels.into_iter().collect()));
         assert_eq!(
             body.env,
@@ -387,6 +385,8 @@ mod tests {
         let spec = ContainerCreateSpec {
             image: "alpine:latest".to_owned(),
             name: "decune-project-abc123def456".to_owned(),
+            entrypoint: None,
+            command: None,
             labels: BTreeMap::new(),
             env: BTreeMap::new(),
             working_dir: None,
@@ -419,6 +419,20 @@ mod tests {
         assert_eq!(bindings[0].host_ip.as_deref(), Some("127.0.0.1"));
         assert_eq!(bindings[1].host_port.as_deref(), Some("9090"));
         assert_eq!(bindings[1].host_ip.as_deref(), Some("0.0.0.0"));
+    }
+
+    #[test]
+    fn devcontainer_keepalive_command_exits_promptly_on_term() {
+        let (entrypoint, command) = devcontainer_keepalive_command();
+
+        assert_eq!(entrypoint, vec!["/bin/sh"]);
+        assert_eq!(command.len(), 2);
+        assert_eq!(command[0], "-c");
+
+        let script = &command[1];
+        assert!(script.contains("trap 'exit 0' TERM"));
+        assert!(script.contains("sleep 1 & wait $!"));
+        assert!(!script.contains("sleep 1000"));
     }
 
     #[test]
@@ -455,9 +469,12 @@ mod tests {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
                 remove_container(&client, &name, true, true).await?;
 
+                let (entrypoint, command) = devcontainer_keepalive_command();
                 let spec = ContainerCreateSpec {
                     image: "alpine:3.20".to_owned(),
                     name: name.clone(),
+                    entrypoint: Some(entrypoint),
+                    command: Some(command),
                     labels: BTreeMap::from([
                         ("decune.managed".to_owned(), "true".to_owned()),
                         ("decune.workspace_id".to_owned(), "testworkspace".to_owned()),
@@ -474,8 +491,11 @@ mod tests {
                 assert!(!id.is_empty());
 
                 start_container(&client, &name).await?;
+                let inspect = client.raw().inspect_container(&name, None).await?;
+                assert_eq!(inspect.state.and_then(|state| state.running), Some(true));
                 stop_container(&client, &name, 1).await?;
                 stop_container(&client, &name, 1).await?;
+                remove_container(&client, &name, true, true).await?;
 
                 Ok(())
             }
