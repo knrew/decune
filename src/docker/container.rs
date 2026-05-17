@@ -12,12 +12,9 @@ use bollard::{
     },
 };
 
-use crate::{
-    config::layer::LayerRunArg,
-    docker::{
-        client::DockerClient, mounts::DockerMountSpec, ports::DockerPublishPort,
-        resource::managed_workspace_label_filters,
-    },
+use crate::docker::{
+    client::DockerClient, mounts::DockerMountSpec, ports::DockerPublishPort,
+    resource::managed_workspace_label_filters,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -26,7 +23,9 @@ pub(crate) struct ContainerHostConfig {
     pub(crate) privileged: bool,
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
-    pub(crate) run_args: Vec<LayerRunArg>,
+    pub(crate) extra_hosts: Vec<String>,
+    pub(crate) dns: Vec<String>,
+    pub(crate) dns_search: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -146,16 +145,14 @@ pub(crate) async fn remove_container(
 }
 
 fn create_host_config(spec: &ContainerCreateSpec) -> HostConfig {
-    let run_args = split_run_args(&spec.host_config.run_args);
-
     HostConfig {
         init: spec.host_config.init.then_some(true),
         privileged: spec.host_config.privileged.then_some(true),
         cap_add: non_empty_vec(spec.host_config.cap_add.clone()),
         security_opt: non_empty_vec(spec.host_config.security_opt.clone()),
-        extra_hosts: non_empty_vec(run_args.extra_hosts),
-        dns: non_empty_vec(run_args.dns),
-        dns_search: non_empty_vec(run_args.dns_search),
+        extra_hosts: non_empty_vec(spec.host_config.extra_hosts.clone()),
+        dns: non_empty_vec(spec.host_config.dns.clone()),
+        dns_search: non_empty_vec(spec.host_config.dns_search.clone()),
         mounts: non_empty_vec(
             spec.mounts
                 .iter()
@@ -165,27 +162,6 @@ fn create_host_config(spec: &ContainerCreateSpec) -> HostConfig {
         port_bindings: publish_port_bindings(&spec.publish_ports),
         ..Default::default()
     }
-}
-
-#[derive(Debug, Default)]
-struct SplitRunArgs {
-    extra_hosts: Vec<String>,
-    dns: Vec<String>,
-    dns_search: Vec<String>,
-}
-
-fn split_run_args(run_args: &[LayerRunArg]) -> SplitRunArgs {
-    let mut split = SplitRunArgs::default();
-
-    for run_arg in run_args {
-        match run_arg {
-            LayerRunArg::AddHost(value) => split.extra_hosts.push(value.clone()),
-            LayerRunArg::Dns(value) => split.dns.push(value.clone()),
-            LayerRunArg::DnsSearch(value) => split.dns_search.push(value.clone()),
-        }
-    }
-
-    split
 }
 
 fn env_entries(env: &BTreeMap<String, String>) -> Vec<String> {
@@ -273,10 +249,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     use crate::{
-        config::{
-            layer::LayerRunArg,
-            types::{MountType, PortProtocol},
-        },
+        config::types::{MountType, PortProtocol},
         docker::{
             client::DockerClient,
             image::{PullPolicy, ensure_image},
@@ -342,11 +315,9 @@ mod tests {
                 privileged: true,
                 cap_add: vec!["SYS_PTRACE".to_owned()],
                 security_opt: vec!["seccomp=unconfined".to_owned()],
-                run_args: vec![
-                    LayerRunArg::AddHost("host.docker.internal:host-gateway".to_owned()),
-                    LayerRunArg::Dns("1.1.1.1".to_owned()),
-                    LayerRunArg::DnsSearch("example.test".to_owned()),
-                ],
+                extra_hosts: vec!["host.docker.internal:host-gateway".to_owned()],
+                dns: vec!["1.1.1.1".to_owned()],
+                dns_search: vec!["example.test".to_owned()],
             },
         };
 
