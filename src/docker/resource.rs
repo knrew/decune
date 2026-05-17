@@ -11,6 +11,8 @@ const CONFIG_HASH_LABEL: &str = "decune.config_hash";
 const VERSION_LABEL: &str = "decune.version";
 const DEVCONTAINER_LOCAL_FOLDER_LABEL: &str = "devcontainer.local_folder";
 const DEVCONTAINER_CONFIG_FILE_LABEL: &str = "devcontainer.config_file";
+const IMAGE_REPOSITORY_PREFIX: &str = "decune/";
+const DOCKER_REPOSITORY_NAME_MAX: usize = 255;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DockerResources {
@@ -30,6 +32,7 @@ impl DockerResources {
         let config_hash = config_hash.into();
         let workspace_root = workspace.root().display().to_string();
         let config_file = config_file.into();
+        let image_repository = docker_image_repository(&resource_basename, workspace.id());
         let labels = labels([
             (MANAGED_LABEL, "true".to_owned()),
             (WORKSPACE_LABEL, workspace_root.clone()),
@@ -42,7 +45,7 @@ impl DockerResources {
 
         Self {
             container_name: format!("decune-{resource_basename}-{}", workspace.id()),
-            image_tag: format!("decune/{resource_basename}:{config_hash}"),
+            image_tag: format!("{image_repository}:{config_hash}"),
             labels,
             config_hash,
         }
@@ -78,6 +81,29 @@ fn labels(entries: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
         .collect()
+}
+
+fn docker_image_repository(resource_basename: &str, workspace_id: &str) -> String {
+    let max_basename_len =
+        DOCKER_REPOSITORY_NAME_MAX - IMAGE_REPOSITORY_PREFIX.len() - 1 - workspace_id.len();
+    let basename = truncate_docker_name_segment(resource_basename, max_basename_len);
+
+    format!("{IMAGE_REPOSITORY_PREFIX}{basename}-{workspace_id}")
+}
+
+fn truncate_docker_name_segment(value: &str, max_len: usize) -> String {
+    let mut output = value.to_owned();
+    output.truncate(max_len);
+
+    while output.ends_with('-') {
+        output.pop();
+    }
+
+    if output.is_empty() {
+        "workspace".to_owned()
+    } else {
+        output
+    }
 }
 
 fn docker_name_segment(value: &str) -> String {
@@ -120,7 +146,7 @@ mod tests {
             .join("decune-docker-resource-tests")
             .join(std::process::id().to_string());
         let root = parent.join(name);
-        let _ = fs::remove_dir_all(&parent);
+        let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
     }
@@ -143,7 +169,11 @@ mod tests {
         );
         assert_eq!(
             resources.image_tag,
-            format!("decune/{}:abc123def456", workspace.basename())
+            format!(
+                "decune/{}-{}:abc123def456",
+                workspace.basename(),
+                workspace.id()
+            )
         );
         assert_eq!(resources.config_hash, "abc123def456");
         assert_eq!(resources.labels["decune.managed"], "true");
@@ -182,7 +212,36 @@ mod tests {
             resources.container_name,
             format!("decune-project-name-{}", workspace.id())
         );
-        assert_eq!(resources.image_tag, "decune/project-name:abc123");
+        assert_eq!(
+            resources.image_tag,
+            format!("decune/project-name-{}:abc123", workspace.id())
+        );
+    }
+
+    #[test]
+    fn fixture_roots_do_not_delete_sibling_workspaces() {
+        let first = fixture_root("first");
+        let second = fixture_root("second");
+
+        assert!(first.is_dir());
+        assert!(second.is_dir());
+    }
+
+    #[test]
+    fn image_repository_is_truncated_to_docker_name_limit() {
+        let root = fixture_root(&"a".repeat(249));
+        let workspace = Workspace::resolve(&root).unwrap();
+
+        let resources = DockerResources::from_workspace(
+            &workspace,
+            "abc123",
+            "/workspace/.devcontainer/devcontainer.json",
+        );
+        let repository = resources.image_tag.split(':').next().unwrap();
+
+        assert!(repository.len() <= 255, "{repository}");
+        assert!(repository.starts_with("decune/"));
+        assert!(repository.ends_with(workspace.id()));
     }
 
     #[test]
