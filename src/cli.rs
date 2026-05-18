@@ -216,7 +216,7 @@ fn parse_manual_port(value: &str) -> std::result::Result<ManualPort, String> {
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
             protocol,
         }),
-        [host, container] if is_port_number(host) => Ok(ManualPort {
+        [host, container] if is_numeric_port_candidate(host) => Ok(ManualPort {
             container: parse_u16_port(container, "container port", value)?,
             host: Some(parse_u16_port(host, "host port", value)?),
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
@@ -266,8 +266,8 @@ fn parse_u16_port(value: &str, label: &str, original: &str) -> std::result::Resu
         .map_err(|error| format!("invalid {label} in manual port {original}: {error}"))
 }
 
-fn is_port_number(value: &str) -> bool {
-    value.parse::<u16>().is_ok()
+fn is_numeric_port_candidate(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
 }
 
 fn normalize_host_ip(value: &str) -> std::result::Result<String, String> {
@@ -402,6 +402,13 @@ mod tests {
     fn invalid_manual_port_is_rejected() {
         let error =
             Cli::try_parse_from(["decune", "up", "--port", "127.0.0.1:abc:3000"]).unwrap_err();
+
+        assert!(error.to_string().contains("invalid host port"));
+    }
+
+    #[test]
+    fn numeric_manual_host_port_outside_u16_is_rejected() {
+        let error = Cli::try_parse_from(["decune", "up", "--port", "99999:3000"]).unwrap_err();
 
         assert!(error.to_string().contains("invalid host port"));
     }
