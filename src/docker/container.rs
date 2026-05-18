@@ -12,9 +12,14 @@ use bollard::{
     },
 };
 
-use crate::docker::{
-    client::DockerClient, mounts::DockerMountSpec, ports::DockerPublishPort,
-    resource::managed_workspace_label_filters,
+use crate::{
+    config::resolved::{ResolvedConfig, ResolvedRunArg},
+    docker::{
+        client::DockerClient,
+        mounts::DockerMountSpec,
+        ports::DockerPublishPort,
+        resource::{DockerResources, managed_workspace_label_filters},
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -41,6 +46,46 @@ pub(crate) struct ContainerCreateSpec {
     pub(crate) mounts: Vec<DockerMountSpec>,
     pub(crate) publish_ports: Vec<DockerPublishPort>,
     pub(crate) host_config: ContainerHostConfig,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ContainerCreateInput<'a> {
+    pub(crate) image: &'a str,
+    pub(crate) resources: &'a DockerResources,
+    pub(crate) config: &'a ResolvedConfig,
+    pub(crate) entrypoint: Option<Vec<String>>,
+    pub(crate) command: Option<Vec<String>>,
+    pub(crate) working_dir: Option<String>,
+    pub(crate) mounts: Vec<DockerMountSpec>,
+}
+
+impl ContainerCreateSpec {
+    pub(crate) fn from_resolved(input: ContainerCreateInput<'_>) -> Self {
+        Self {
+            image: input.image.to_owned(),
+            name: input.resources.container_name.clone(),
+            entrypoint: input.entrypoint,
+            command: input.command,
+            labels: input.resources.labels.clone(),
+            env: input.config.devcontainer.container_env.clone(),
+            working_dir: input.working_dir,
+            user: input.config.devcontainer.container_user.clone(),
+            mounts: input.mounts,
+            publish_ports: input
+                .config
+                .devcontainer
+                .publish_ports
+                .iter()
+                .map(|port| DockerPublishPort {
+                    container: port.container,
+                    host: port.host,
+                    host_ip: port.host_ip.clone(),
+                    protocol: port.protocol,
+                })
+                .collect(),
+            host_config: host_config_from_resolved(input.config),
+        }
+    }
 }
 
 pub(crate) fn create_container_body(spec: &ContainerCreateSpec) -> ContainerCreateBody {
@@ -164,6 +209,26 @@ fn create_host_config(spec: &ContainerCreateSpec) -> HostConfig {
     }
 }
 
+fn host_config_from_resolved(config: &ResolvedConfig) -> ContainerHostConfig {
+    let mut host_config = ContainerHostConfig {
+        init: config.devcontainer.init,
+        privileged: config.devcontainer.privileged,
+        cap_add: config.devcontainer.cap_add.clone(),
+        security_opt: config.devcontainer.security_opt.clone(),
+        ..ContainerHostConfig::default()
+    };
+
+    for run_arg in &config.devcontainer.run_args {
+        match run_arg {
+            ResolvedRunArg::AddHost(value) => host_config.extra_hosts.push(value.clone()),
+            ResolvedRunArg::Dns(value) => host_config.dns.push(value.clone()),
+            ResolvedRunArg::DnsSearch(value) => host_config.dns_search.push(value.clone()),
+        }
+    }
+
+    host_config
+}
+
 fn env_entries(env: &BTreeMap<String, String>) -> Vec<String> {
     env.iter()
         .map(|(key, value)| format!("{key}={value}"))
@@ -249,21 +314,28 @@ mod tests {
     use std::{collections::BTreeMap, fs};
 
     use crate::{
-        config::types::{MountType, PortProtocol},
+        config::{
+            layer::{LayerPublishPort, LayerRunArg},
+            resolved::ResolvedConfig,
+            types::{MountType, PortProtocol},
+        },
         docker::{
             client::DockerClient,
             exec::{ExecCommandSpec, exec_capture, exec_capture_output},
             image::{PullPolicy, ensure_image},
             mounts::DockerMountSpec,
             ports::DockerPublishPort,
+            resource::DockerResources,
         },
+        workspace::Workspace,
     };
 
     use super::workspace_container_list_options;
     use super::{
-        ContainerCreateSpec, ContainerHostConfig, create_container, create_container_body,
-        devcontainer_keepalive_command, is_container_already_started, is_container_already_stopped,
-        is_container_not_found, remove_container, start_container, stop_container,
+        ContainerCreateInput, ContainerCreateSpec, ContainerHostConfig, create_container,
+        create_container_body, devcontainer_keepalive_command, is_container_already_started,
+        is_container_already_stopped, is_container_not_found, remove_container, start_container,
+        stop_container,
     };
 
     #[test]
@@ -279,6 +351,114 @@ mod tests {
                 "decune.workspace_id=abc123def456".to_owned(),
             ])
         );
+    }
+
+    #[test]
+    fn create_spec_from_resolved_config_maps_devcontainer_runtime_fields() {
+        let workspace = test_workspace("resolved-create-spec");
+        let resources = DockerResources::from_workspace(
+            &workspace,
+            "config123",
+            workspace
+                .root()
+                .join(".devcontainer/devcontainer.json")
+                .display()
+                .to_string(),
+        );
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.container_env = BTreeMap::from([
+            ("RUST_LOG".to_owned(), "debug".to_owned()),
+            ("WORKSPACE".to_owned(), "/workspaces/project".to_owned()),
+        ]);
+        config.devcontainer.container_user = Some("vscode".to_owned());
+        config.devcontainer.publish_ports = vec![LayerPublishPort {
+            container: 8080,
+            host: Some(18080),
+            host_ip: Some("127.0.0.1".to_owned()),
+            protocol: PortProtocol::Tcp,
+        }];
+        config.devcontainer.init = true;
+        config.devcontainer.privileged = true;
+        config.devcontainer.cap_add = vec!["SYS_PTRACE".to_owned()];
+        config.devcontainer.security_opt = vec!["seccomp=unconfined".to_owned()];
+        config.devcontainer.run_args = vec![
+            LayerRunArg::AddHost("host.docker.internal:host-gateway".to_owned()),
+            LayerRunArg::Dns("1.1.1.1".to_owned()),
+            LayerRunArg::DnsSearch("example.test".to_owned()),
+        ];
+
+        let spec = ContainerCreateSpec::from_resolved(ContainerCreateInput {
+            image: "alpine:3.20",
+            resources: &resources,
+            config: &config,
+            entrypoint: Some(vec!["/bin/sh".to_owned()]),
+            command: Some(vec!["-c".to_owned(), "sleep 60".to_owned()]),
+            working_dir: Some("/workspaces/project".to_owned()),
+            mounts: vec![DockerMountSpec {
+                source: Some("/host/project".to_owned()),
+                target: "/workspaces/project".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+            }],
+        });
+
+        assert_eq!(spec.image, "alpine:3.20");
+        assert_eq!(spec.name, resources.container_name);
+        assert_eq!(spec.labels, resources.labels);
+        assert_eq!(spec.env, config.devcontainer.container_env);
+        assert_eq!(spec.user.as_deref(), Some("vscode"));
+        assert_eq!(spec.working_dir.as_deref(), Some("/workspaces/project"));
+        assert_eq!(spec.mounts.len(), 1);
+        assert_eq!(
+            spec.publish_ports,
+            vec![DockerPublishPort {
+                container: 8080,
+                host: Some(18080),
+                host_ip: Some("127.0.0.1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }]
+        );
+        assert!(spec.host_config.init);
+        assert!(spec.host_config.privileged);
+        assert_eq!(spec.host_config.cap_add, vec!["SYS_PTRACE"]);
+        assert_eq!(spec.host_config.security_opt, vec!["seccomp=unconfined"]);
+        assert_eq!(
+            spec.host_config.extra_hosts,
+            vec!["host.docker.internal:host-gateway"]
+        );
+        assert_eq!(spec.host_config.dns, vec!["1.1.1.1"]);
+        assert_eq!(spec.host_config.dns_search, vec!["example.test"]);
+    }
+
+    #[test]
+    fn create_spec_from_default_resolved_config_omits_optional_runtime_fields() {
+        let workspace = test_workspace("default-create-spec");
+        let resources = DockerResources::from_workspace(
+            &workspace,
+            "config123",
+            workspace
+                .root()
+                .join(".devcontainer/devcontainer.json")
+                .display()
+                .to_string(),
+        );
+
+        let spec = ContainerCreateSpec::from_resolved(ContainerCreateInput {
+            image: "alpine:3.20",
+            resources: &resources,
+            config: &ResolvedConfig::default(),
+            entrypoint: None,
+            command: None,
+            working_dir: None,
+            mounts: Vec::new(),
+        });
+
+        assert!(spec.env.is_empty());
+        assert!(spec.user.is_none());
+        assert!(spec.working_dir.is_none());
+        assert!(spec.mounts.is_empty());
+        assert!(spec.publish_ports.is_empty());
+        assert_eq!(spec.host_config, ContainerHostConfig::default());
     }
 
     #[test]
@@ -461,7 +641,7 @@ mod tests {
         runtime.block_on(async {
             let client = DockerClient::connect_from_env().unwrap();
             let name = format!("decune-test-container-{}", std::process::id());
-            let result = async {
+            let result: anyhow::Result<()> = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
                 remove_container(&client, &name, true, true).await?;
 
@@ -498,6 +678,101 @@ mod tests {
             .await;
 
             let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn workspace_container_label_filter_finds_only_managed_workspace_when_docker_tests_are_enabled()
+    {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let suffix = std::process::id();
+            let matching = format!("decune-test-label-matching-{suffix}");
+            let other_workspace = format!("decune-test-label-other-{suffix}");
+            let unmanaged = format!("decune-test-label-unmanaged-{suffix}");
+            let names = [&matching, &other_workspace, &unmanaged];
+
+            let result = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                for name in names {
+                    remove_container(&client, name, true, true).await?;
+                }
+
+                create_container(
+                    &client,
+                    &label_filter_test_spec(
+                        &matching,
+                        BTreeMap::from([
+                            ("decune.managed".to_owned(), "true".to_owned()),
+                            (
+                                "decune.workspace_id".to_owned(),
+                                "target-workspace".to_owned(),
+                            ),
+                        ]),
+                    ),
+                )
+                .await?;
+                create_container(
+                    &client,
+                    &label_filter_test_spec(
+                        &other_workspace,
+                        BTreeMap::from([
+                            ("decune.managed".to_owned(), "true".to_owned()),
+                            (
+                                "decune.workspace_id".to_owned(),
+                                "other-workspace".to_owned(),
+                            ),
+                        ]),
+                    ),
+                )
+                .await?;
+                create_container(
+                    &client,
+                    &label_filter_test_spec(
+                        &unmanaged,
+                        BTreeMap::from([(
+                            "decune.workspace_id".to_owned(),
+                            "target-workspace".to_owned(),
+                        )]),
+                    ),
+                )
+                .await?;
+
+                let containers = client
+                    .raw()
+                    .list_containers(Some(workspace_container_list_options("target-workspace")))
+                    .await?;
+                let listed_names = containers
+                    .into_iter()
+                    .flat_map(|container| container.names.unwrap_or_default())
+                    .collect::<Vec<_>>();
+
+                assert!(docker_names_contain(&listed_names, &matching));
+                assert!(!docker_names_contain(&listed_names, &other_workspace));
+                assert!(!docker_names_contain(&listed_names, &unmanaged));
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup: anyhow::Result<()> = async {
+                for name in names {
+                    remove_container(&client, name, true, true).await?;
+                }
+                Ok(())
+            }
+            .await;
             result.and(cleanup).unwrap();
         });
     }
@@ -631,6 +906,37 @@ mod tests {
             status_code,
             message: message.to_owned(),
         }
+    }
+
+    fn label_filter_test_spec(name: &str, labels: BTreeMap<String, String>) -> ContainerCreateSpec {
+        ContainerCreateSpec {
+            image: "alpine:3.20".to_owned(),
+            name: name.to_owned(),
+            entrypoint: Some(vec!["/bin/sh".to_owned()]),
+            command: Some(vec!["-c".to_owned(), "sleep 60".to_owned()]),
+            labels,
+            env: BTreeMap::new(),
+            working_dir: None,
+            user: None,
+            mounts: Vec::new(),
+            publish_ports: Vec::new(),
+            host_config: ContainerHostConfig::default(),
+        }
+    }
+
+    fn docker_names_contain(names: &[String], expected: &str) -> bool {
+        let expected = format!("/{expected}");
+        names.iter().any(|name| name == &expected)
+    }
+
+    fn test_workspace(name: &str) -> Workspace {
+        let directory = tempfile::Builder::new()
+            .prefix("decune-container-test-")
+            .tempdir()
+            .unwrap();
+        let root = directory.path().join(name);
+        fs::create_dir_all(&root).unwrap();
+        Workspace::resolve(&root).unwrap()
     }
 
     fn docker_tests_enabled() -> bool {
