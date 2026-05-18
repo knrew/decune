@@ -144,7 +144,7 @@ fn parse_port_string(value: &str, mode: PortMode) -> Result<ParsedPort> {
             },
             protocol,
         }),
-        [left, container] if is_port_number(left) => Ok(ParsedPort {
+        [left, container] if is_numeric_port_candidate(left) => Ok(ParsedPort {
             container: parse_u16_port(container, "container port")?,
             host: Some(parse_u16_port(left, "host port")?),
             host_ip: match mode {
@@ -185,8 +185,8 @@ fn parse_u16_port(value: &str, label: &str) -> Result<u16> {
         .map_err(|error| anyhow!("Invalid {label} in devcontainer port {value}: {error}"))
 }
 
-fn is_port_number(value: &str) -> bool {
-    value.parse::<u16>().is_ok()
+fn is_numeric_port_candidate(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
 }
 
 fn normalize_host_ip(value: &str) -> Result<String> {
@@ -255,6 +255,14 @@ mod tests {
             publish_port_to_layer(&DevcontainerPort::String("99999".to_owned())).unwrap_err();
 
         assert!(error.to_string().contains("Invalid container port"));
+    }
+
+    #[test]
+    fn numeric_host_port_outside_u16_is_rejected() {
+        let error =
+            publish_port_to_layer(&DevcontainerPort::String("99999:3000".to_owned())).unwrap_err();
+
+        assert!(error.to_string().contains("Invalid host port"));
     }
 
     #[test]
