@@ -6,6 +6,7 @@ mod error;
 mod host;
 mod state;
 mod ui;
+mod up;
 mod workspace;
 
 use anyhow::Result;
