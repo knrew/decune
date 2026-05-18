@@ -64,7 +64,7 @@ pub(crate) fn managed_workspace_label_filters(workspace_id: &str) -> BTreeMap<St
     filters
 }
 
-pub(crate) fn is_reusable_workspace_container(
+pub(crate) fn is_managed_workspace_container(
     labels: &BTreeMap<String, String>,
     workspace_id: &str,
 ) -> bool {
@@ -74,6 +74,12 @@ pub(crate) fn is_reusable_workspace_container(
         && labels
             .get(WORKSPACE_ID_LABEL)
             .is_some_and(|value| value == workspace_id)
+}
+
+pub(crate) fn has_config_hash(labels: &BTreeMap<String, String>, config_hash: &str) -> bool {
+    labels
+        .get(CONFIG_HASH_LABEL)
+        .is_some_and(|value| value == config_hash)
 }
 
 fn labels(entries: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, String> {
@@ -138,7 +144,8 @@ mod tests {
     use crate::workspace::Workspace;
 
     use super::{
-        DockerResources, is_reusable_workspace_container, managed_workspace_label_filters,
+        DockerResources, has_config_hash, is_managed_workspace_container,
+        managed_workspace_label_filters,
     };
 
     fn fixture_root(name: &str) -> PathBuf {
@@ -219,6 +226,24 @@ mod tests {
     }
 
     #[test]
+    fn container_name_keeps_long_sanitized_basename_without_docker_length_truncation() {
+        let basename = "a".repeat(249);
+        let root = fixture_root(&basename);
+        let workspace = Workspace::resolve(&root).unwrap();
+
+        let resources = DockerResources::from_workspace(
+            &workspace,
+            "abc123",
+            "/workspace/.devcontainer/devcontainer.json",
+        );
+
+        assert_eq!(
+            resources.container_name,
+            format!("decune-{basename}-{}", workspace.id())
+        );
+    }
+
+    #[test]
     fn fixture_roots_do_not_delete_sibling_workspaces() {
         let first = fixture_root("first");
         let second = fixture_root("second");
@@ -258,28 +283,48 @@ mod tests {
     }
 
     #[test]
-    fn reusable_container_predicate_rejects_other_tools_and_workspaces() {
+    fn managed_workspace_container_predicate_rejects_other_tools_and_workspaces() {
         let managed_labels = labels([
             ("decune.managed", "true"),
             ("decune.workspace_id", "abc123def456"),
             ("com.example.owner", "other"),
         ]);
 
-        assert!(is_reusable_workspace_container(
+        assert!(is_managed_workspace_container(
             &managed_labels,
             "abc123def456"
         ));
 
         let unmanaged = labels([("decune.workspace_id", "abc123def456")]);
-        assert!(!is_reusable_workspace_container(&unmanaged, "abc123def456"));
+        assert!(!is_managed_workspace_container(&unmanaged, "abc123def456"));
 
         let different_workspace = labels([
             ("decune.managed", "true"),
             ("decune.workspace_id", "different"),
         ]);
-        assert!(!is_reusable_workspace_container(
+        assert!(!is_managed_workspace_container(
             &different_workspace,
             "abc123def456"
+        ));
+    }
+
+    #[test]
+    fn config_hash_predicate_is_separate_from_workspace_ownership() {
+        let managed_labels = labels([
+            ("decune.managed", "true"),
+            ("decune.workspace_id", "abc123def456"),
+            ("decune.config_hash", "config-a"),
+        ]);
+
+        assert!(is_managed_workspace_container(
+            &managed_labels,
+            "abc123def456"
+        ));
+        assert!(has_config_hash(&managed_labels, "config-a"));
+        assert!(!has_config_hash(&managed_labels, "config-b"));
+        assert!(!has_config_hash(
+            &labels([("decune.managed", "true")]),
+            "config-a"
         ));
     }
 

@@ -278,6 +278,32 @@ mod tests {
         });
     }
 
+    #[test]
+    fn missing_policy_uses_local_image_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            ensure_image(&client, "hello-world:latest", PullPolicy::Always)
+                .await
+                .unwrap();
+
+            let outcome = ensure_image(&client, "hello-world:latest", PullPolicy::Missing)
+                .await
+                .unwrap();
+
+            assert_eq!(outcome, ImagePullOutcome::AlreadyPresent);
+        });
+    }
+
     fn docker_tests_enabled() -> bool {
         std::env::var_os("DECUNE_DOCKER_TESTS").is_some_and(|value| value == "1")
     }
