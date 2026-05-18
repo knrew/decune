@@ -667,10 +667,12 @@ mod tests {
                 assert!(!id.is_empty());
 
                 start_container(&client, &name).await?;
+                start_container(&client, &name).await?;
                 let inspect = client.raw().inspect_container(&name, None).await?;
                 assert_eq!(inspect.state.and_then(|state| state.running), Some(true));
                 stop_container(&client, &name, 1).await?;
                 stop_container(&client, &name, 1).await?;
+                remove_container(&client, &name, true, true).await?;
                 remove_container(&client, &name, true, true).await?;
 
                 Ok(())
