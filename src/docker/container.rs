@@ -2,15 +2,17 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use bollard::{
     errors::Error as DockerError,
     models::{ContainerCreateBody, HostConfig, PortBinding, PortMap},
     query_parameters::{
         CreateContainerOptionsBuilder, ListContainersOptions, ListContainersOptionsBuilder,
         RemoveContainerOptionsBuilder, StartContainerOptionsBuilder, StopContainerOptionsBuilder,
+        WaitContainerOptionsBuilder,
     },
 };
+use futures_util::TryStreamExt;
 
 use crate::{
     config::resolved::{ResolvedConfig, ResolvedRunArg},
@@ -155,7 +157,7 @@ pub(crate) async fn stop_container(
         .build();
 
     match client.raw().stop_container(container, Some(options)).await {
-        Ok(()) => Ok(()),
+        Ok(()) => wait_until_container_stopped(client, container).await,
         Err(error) if is_container_not_found(&error) || is_container_already_stopped(&error) => {
             Ok(())
         }
@@ -163,6 +165,24 @@ pub(crate) async fn stop_container(
             Err(error).with_context(|| format!("Failed to stop Docker container: {container}"))
         }
     }
+}
+
+async fn wait_until_container_stopped(client: &DockerClient, container: &str) -> Result<()> {
+    let options = WaitContainerOptionsBuilder::default()
+        .condition("not-running")
+        .build();
+    if client
+        .raw()
+        .wait_container(container, Some(options))
+        .try_next()
+        .await
+        .with_context(|| format!("Failed to wait for Docker container to stop: {container}"))?
+        .is_none()
+    {
+        bail!("Docker container stop wait ended without a response: {container}");
+    }
+
+    Ok(())
 }
 
 pub(crate) async fn remove_container(

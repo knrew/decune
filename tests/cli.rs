@@ -183,12 +183,7 @@ fn down_and_clean_manage_image_container_when_docker_tests_are_enabled() {
         runtime.block_on(async {
             let containers = workspace_containers(&workspace_root).await.unwrap();
             assert_eq!(containers.len(), 1);
-            assert!(
-                containers[0]
-                    .state
-                    .as_ref()
-                    .is_some_and(|state| state.to_string() == "exited")
-            );
+            assert_container_is_not_running(containers[0].id.as_deref().unwrap()).await;
         });
 
         decune()
@@ -313,6 +308,13 @@ async fn cleanup_workspace_containers(workspace_root: &Path) -> anyhow::Result<(
     }
 
     Ok(())
+}
+
+async fn assert_container_is_not_running(container_id: &str) {
+    let docker = Docker::connect_with_defaults().unwrap();
+    let inspect = docker.inspect_container(container_id, None).await.unwrap();
+
+    assert_eq!(inspect.state.and_then(|state| state.running), Some(false));
 }
 
 async fn create_term_marker_container(workspace_root: &Path) -> anyhow::Result<()> {
