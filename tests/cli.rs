@@ -1,10 +1,11 @@
 use assert_cmd::Command;
 use bollard::{
     Docker,
-    models::{ContainerCreateBody, ContainerSummary, HostConfig},
+    models::{ContainerCreateBody, ContainerSummary, HostConfig, VolumeCreateRequest},
     query_parameters::{
         CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-        RemoveContainerOptionsBuilder, StartContainerOptionsBuilder,
+        ListVolumesOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
+        StartContainerOptionsBuilder,
     },
 };
 use futures_util::TryStreamExt;
@@ -48,14 +49,17 @@ fn command_help_is_displayed() {
 }
 
 #[test]
-fn commands_fail_with_not_implemented_error() {
+fn rebuild_without_detach_reports_shell_attach_not_implemented() {
     decune()
         .arg("rebuild")
         .assert()
         .failure()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("Error:"))
-        .stderr(predicate::str::contains("not implemented"));
+        .stderr(predicate::str::contains(
+            "Shell attach is not implemented yet",
+        ))
+        .stderr(predicate::str::contains("--detach"));
 }
 
 #[test]
@@ -275,6 +279,117 @@ fn clean_force_stops_running_container_before_removal_when_docker_tests_are_enab
     }
 }
 
+#[test]
+fn rebuild_recreates_container_and_preserves_managed_volume_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    let volume_name = format!("decune-rebuild-test-{}", workspace_id(&workspace_root));
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_volumes(&workspace_root).await.unwrap();
+        create_managed_volume(&workspace_root, &volume_name)
+            .await
+            .unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let first_id = runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert_eq!(containers.len(), 1);
+            containers[0].id.clone().unwrap()
+        });
+
+        decune()
+            .args(["rebuild", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Removed existing dev container for rebuild",
+            ))
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert_eq!(containers.len(), 1);
+            assert_ne!(containers[0].id.as_deref(), Some(first_id.as_str()));
+            assert!(
+                containers[0]
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.to_string() == "running")
+            );
+
+            let volumes = workspace_volumes(&workspace_root).await.unwrap();
+            assert_eq!(volumes, vec![volume_name.clone()]);
+        });
+
+        let second_id = runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            containers[0].id.clone().unwrap()
+        });
+
+        decune()
+            .args(["up", "--detach", "--rebuild"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Removed existing dev container for rebuild",
+            ))
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert_eq!(containers.len(), 1);
+            assert_ne!(containers[0].id.as_deref(), Some(second_id.as_str()));
+
+            let volumes = workspace_volumes(&workspace_root).await.unwrap();
+            assert_eq!(volumes, vec![volume_name.clone()]);
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let volume_cleanup = cleanup_workspace_volumes(&workspace_root).await;
+        container_cleanup.and(volume_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 async fn workspace_containers(workspace_root: &Path) -> anyhow::Result<Vec<ContainerSummary>> {
     let docker = Docker::connect_with_defaults()?;
     let mut filters = HashMap::new();
@@ -315,6 +430,63 @@ async fn assert_container_is_not_running(container_id: &str) {
     let inspect = docker.inspect_container(container_id, None).await.unwrap();
 
     assert_eq!(inspect.state.and_then(|state| state.running), Some(false));
+}
+
+async fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
+    let docker = Docker::connect_with_defaults()?;
+    let mut filters = HashMap::new();
+    filters.insert(
+        "label".to_owned(),
+        vec![
+            "decune.managed=true".to_owned(),
+            format!("decune.workspace={}", workspace_root.display()),
+        ],
+    );
+    let options = ListVolumesOptionsBuilder::default()
+        .filters(&filters)
+        .build();
+
+    Ok(docker
+        .list_volumes(Some(options))
+        .await?
+        .volumes
+        .unwrap_or_default()
+        .into_iter()
+        .map(|volume| volume.name)
+        .collect())
+}
+
+async fn cleanup_workspace_volumes(workspace_root: &Path) -> anyhow::Result<()> {
+    let docker = Docker::connect_with_defaults()?;
+    let options = RemoveVolumeOptionsBuilder::default().force(true).build();
+
+    for volume in workspace_volumes(workspace_root).await? {
+        docker.remove_volume(&volume, Some(options.clone())).await?;
+    }
+
+    Ok(())
+}
+
+async fn create_managed_volume(workspace_root: &Path, volume_name: &str) -> anyhow::Result<()> {
+    let docker = Docker::connect_with_defaults()?;
+    let workspace_id = workspace_id(workspace_root);
+    let labels = HashMap::from([
+        ("decune.managed".to_owned(), "true".to_owned()),
+        (
+            "decune.workspace".to_owned(),
+            workspace_root.display().to_string(),
+        ),
+        ("decune.workspace_id".to_owned(), workspace_id),
+    ]);
+    let request = VolumeCreateRequest {
+        name: Some(volume_name.to_owned()),
+        labels: Some(labels),
+        ..Default::default()
+    };
+
+    docker.create_volume(request).await?;
+
+    Ok(())
 }
 
 async fn create_term_marker_container(workspace_root: &Path) -> anyhow::Result<()> {
