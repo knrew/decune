@@ -44,15 +44,13 @@ fn command_help_is_displayed() {
 
 #[test]
 fn commands_fail_with_not_implemented_error() {
-    for command in ["down", "clean", "rebuild"] {
-        decune()
-            .arg(command)
-            .assert()
-            .failure()
-            .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("Error:"))
-            .stderr(predicate::str::contains("not implemented"));
-    }
+    decune()
+        .arg("rebuild")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Error:"))
+        .stderr(predicate::str::contains("not implemented"));
 }
 
 #[test]
@@ -123,6 +121,101 @@ fn up_detach_creates_and_reuses_image_container_when_docker_tests_are_enabled() 
                     .is_some_and(|state| state.to_string() == "running")
             );
         });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn down_and_clean_manage_image_container_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success();
+
+        decune()
+            .arg("down")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Stopped dev container"));
+
+        runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert_eq!(containers.len(), 1);
+            assert!(
+                containers[0]
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.to_string() == "exited")
+            );
+        });
+
+        decune()
+            .args(["clean", "--force"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Cleaned dev container resources"));
+
+        runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert!(containers.is_empty());
+        });
+
+        decune()
+            .arg("down")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "No dev container found for this workspace",
+            ));
+
+        decune()
+            .args(["clean", "--force"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Cleaned dev container resources"));
     });
 
     runtime.block_on(async {

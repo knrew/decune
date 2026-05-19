@@ -2,6 +2,7 @@ mod cli;
 mod config;
 mod devcontainer;
 mod docker;
+mod down;
 mod error;
 mod host;
 mod state;

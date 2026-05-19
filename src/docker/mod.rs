@@ -7,3 +7,4 @@ pub(crate) mod mounts;
 pub(crate) mod ports;
 pub(crate) mod resource;
 pub(crate) mod user;
+pub(crate) mod volume;
