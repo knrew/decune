@@ -8,6 +8,7 @@ use crate::config::{
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
 use crate::error;
+use crate::up::{UpOptions, run_detached_up};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -131,14 +132,14 @@ pub(crate) async fn run() -> Result<()> {
 
 async fn run_cli(cli: Cli) -> Result<()> {
     match cli.command {
-        Commands::Up(args) => run_up(args),
+        Commands::Up(args) => run_up(args).await,
         Commands::Rebuild(args) => run_rebuild(args),
         Commands::Down(args) => run_down(args),
         Commands::Clean(args) => run_clean(args),
     }
 }
 
-fn run_up(args: UpArgs) -> Result<()> {
+async fn run_up(args: UpArgs) -> Result<()> {
     let UpArgs {
         config,
         detach,
@@ -149,10 +150,25 @@ fn run_up(args: UpArgs) -> Result<()> {
         ports,
         workspace,
     } = args;
-    let _cli_layer = cli_config_layer(ports, no_auto_forward);
-    let _runtime_options = (config, detach, rebuild, no_cache, pull);
 
-    not_implemented("up", workspace)
+    if !detach {
+        anyhow::bail!("Shell attach is not implemented yet; pass --detach");
+    }
+    if rebuild {
+        anyhow::bail!("up --rebuild is not implemented yet; use decune rebuild after M4-T04");
+    }
+    if no_cache {
+        anyhow::bail!("up --no-cache is not supported for image-based containers yet");
+    }
+
+    run_detached_up(UpOptions {
+        workspace,
+        config_path: config,
+        cli_layer: cli_config_layer(ports, no_auto_forward),
+        pull,
+    })
+    .await?;
+    Ok(())
 }
 
 fn run_rebuild(args: RebuildArgs) -> Result<()> {
