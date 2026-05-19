@@ -19,6 +19,8 @@ use crate::{
     workspace::Workspace,
 };
 
+const DEFAULT_STOP_TIMEOUT_SECONDS: i32 = 10;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DownOptions {
     pub(crate) workspace: PathBuf,
@@ -67,6 +69,7 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
     for container in containers {
+        stop_container(&client, &container.id, DEFAULT_STOP_TIMEOUT_SECONDS).await?;
         remove_container(&client, &container.id, true, true).await?;
         ui::done(&format!("Removed dev container: {}", container.name));
     }
