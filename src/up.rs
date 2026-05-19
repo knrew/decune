@@ -14,7 +14,8 @@ use crate::{
         client::DockerClient,
         container::{
             ContainerCreateInput, ContainerCreateSpec, create_container,
-            devcontainer_keepalive_command, start_container, workspace_container_list_options,
+            devcontainer_keepalive_command, remove_container, start_container,
+            workspace_container_list_options,
         },
         image::{PullPolicy, ensure_image},
         mounts::DockerMountSpec,
@@ -177,7 +178,7 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
                 mounts: plan.mounts,
             });
             let container_id = create_container(&client, &spec).await?;
-            start_container(&client, &plan.resources.container_name).await?;
+            start_new_container(&client, &plan.resources.container_name).await?;
             ui::done(&format!(
                 "Started dev container: {}",
                 plan.resources.container_name
@@ -205,6 +206,21 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
                 container_name: name,
                 reused: true,
             })
+        }
+    }
+}
+
+async fn start_new_container(client: &DockerClient, container_name: &str) -> Result<()> {
+    match start_container(client, container_name).await {
+        Ok(()) => Ok(()),
+        Err(start_error) => {
+            let cleanup = remove_container(client, container_name, true, true).await;
+            match cleanup {
+                Ok(()) => Err(start_error),
+                Err(cleanup_error) => Err(start_error.context(format!(
+                    "Failed to remove Docker container after start failure: {container_name}: {cleanup_error:#}"
+                ))),
+            }
         }
     }
 }
@@ -314,7 +330,8 @@ mod tests {
 
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
-        decide_existing_container, default_workspace_folder, run_detached_up,
+        decide_existing_container, default_workspace_folder, list_workspace_containers,
+        run_detached_up,
     };
 
     #[test]
@@ -501,6 +518,66 @@ mod tests {
                 .await?;
                 assert_eq!(second.container_name, container_name);
                 assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_detach_removes_new_container_when_start_fails_if_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-start-failure-cleanup");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "containerUser": "decune-missing-user"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                })
+                .await
+                .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Failed to start Docker container")
+                );
+
+                let containers = list_workspace_containers(&client, workspace.id()).await?;
+                assert!(
+                    !containers
+                        .iter()
+                        .any(|container| container.name == container_name)
+                );
 
                 Ok(())
             }
