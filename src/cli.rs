@@ -7,6 +7,7 @@ use crate::config::{
     layer::{ConfigLayer, LayerAutoPorts, LayerPort},
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
+use crate::down::{CleanOptions, DownOptions};
 use crate::error;
 use crate::up::{UpOptions, run_detached_up};
 
@@ -134,8 +135,8 @@ async fn run_cli(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Up(args) => run_up(args).await,
         Commands::Rebuild(args) => run_rebuild(args),
-        Commands::Down(args) => run_down(args),
-        Commands::Clean(args) => run_clean(args),
+        Commands::Down(args) => run_down(args).await,
+        Commands::Clean(args) => run_clean(args).await,
     }
 }
 
@@ -187,22 +188,29 @@ fn run_rebuild(args: RebuildArgs) -> Result<()> {
     not_implemented("rebuild", workspace)
 }
 
-fn run_down(args: DownArgs) -> Result<()> {
+async fn run_down(args: DownArgs) -> Result<()> {
     let DownArgs { timeout, workspace } = args;
-    let _timeout = timeout;
 
-    not_implemented("down", workspace)
+    crate::down::run_down(DownOptions {
+        workspace,
+        timeout_seconds: timeout,
+    })
+    .await
 }
 
-fn run_clean(args: CleanArgs) -> Result<()> {
+async fn run_clean(args: CleanArgs) -> Result<()> {
     let CleanArgs {
         images,
         force,
         workspace,
     } = args;
-    let _options = (images, force);
 
-    not_implemented("clean", workspace)
+    crate::down::run_clean(CleanOptions {
+        workspace,
+        images,
+        force,
+    })
+    .await
 }
 
 fn not_implemented(command: &str, workspace: PathBuf) -> Result<()> {

@@ -50,6 +50,12 @@ impl DockerResources {
             config_hash,
         }
     }
+
+    pub(crate) fn image_repository_for_workspace(workspace: &Workspace) -> String {
+        let resource_basename = docker_name_segment(workspace.basename());
+
+        docker_image_repository(&resource_basename, workspace.id())
+    }
 }
 
 pub(crate) fn managed_workspace_label_filters(workspace_id: &str) -> BTreeMap<String, Vec<String>> {

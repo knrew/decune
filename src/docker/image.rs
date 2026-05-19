@@ -1,10 +1,15 @@
 #![allow(dead_code)]
 
+use std::collections::HashMap;
+
 use anyhow::{Context, Result, bail};
 use bollard::{
     errors::Error as DockerError,
     models::CreateImageInfo,
-    query_parameters::{CreateImageOptions, CreateImageOptionsBuilder},
+    query_parameters::{
+        CreateImageOptions, CreateImageOptionsBuilder, ListImagesOptionsBuilder,
+        RemoveImageOptionsBuilder,
+    },
 };
 use futures_util::TryStreamExt;
 
@@ -47,6 +52,57 @@ pub(crate) async fn ensure_image(
     } else {
         Ok(ImagePullOutcome::AlreadyPresent)
     }
+}
+
+pub(crate) async fn workspace_image_tags(
+    client: &DockerClient,
+    image_repository: &str,
+) -> Result<Vec<String>> {
+    let mut filters = HashMap::new();
+    filters.insert(
+        "reference".to_owned(),
+        vec![format!("{image_repository}:*")],
+    );
+    let options = ListImagesOptionsBuilder::default()
+        .all(true)
+        .filters(&filters)
+        .build();
+    let images = client
+        .raw()
+        .list_images(Some(options))
+        .await
+        .with_context(|| format!("Failed to list Docker images: {image_repository}"))?;
+    let repo_tags = images
+        .into_iter()
+        .flat_map(|image| image.repo_tags)
+        .collect::<Vec<_>>();
+
+    Ok(image_tags_for_repository(repo_tags, image_repository))
+}
+
+pub(crate) async fn remove_image(client: &DockerClient, image: &str, force: bool) -> Result<()> {
+    let options = RemoveImageOptionsBuilder::default()
+        .force(force)
+        .noprune(false)
+        .build();
+
+    match client.raw().remove_image(image, Some(options), None).await {
+        Ok(_) => Ok(()),
+        Err(error) if is_image_not_found(&error) => Ok(()),
+        Err(error) => Err(error).with_context(|| format!("Failed to remove Docker image: {image}")),
+    }
+}
+
+pub(crate) fn image_tags_for_repository(
+    repo_tags: impl IntoIterator<Item = String>,
+    image_repository: &str,
+) -> Vec<String> {
+    let prefix = format!("{image_repository}:");
+
+    repo_tags
+        .into_iter()
+        .filter(|tag| tag.starts_with(&prefix))
+        .collect()
 }
 
 async fn local_image_presence(client: &DockerClient, image: &str) -> Result<LocalImagePresence> {
@@ -156,7 +212,7 @@ mod tests {
 
     use super::{
         ImagePullOutcome, LocalImagePresence, PullPolicy, create_image_options_for_pull,
-        ensure_image, progress_line, should_pull_image,
+        ensure_image, image_tags_for_repository, progress_line, should_pull_image,
     };
 
     #[test]
@@ -249,6 +305,27 @@ mod tests {
             Some("ubuntu@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
         );
         assert_eq!(options.tag, None);
+    }
+
+    #[test]
+    fn image_tags_for_repository_selects_only_decune_workspace_repository_tags() {
+        let tags = image_tags_for_repository(
+            vec![
+                "decune/project-abc123:hash1".to_owned(),
+                "decune/project-abc123:hash2".to_owned(),
+                "decune/project-other:hash1".to_owned(),
+                "alpine:3.20".to_owned(),
+            ],
+            "decune/project-abc123",
+        );
+
+        assert_eq!(
+            tags,
+            vec![
+                "decune/project-abc123:hash1".to_owned(),
+                "decune/project-abc123:hash2".to_owned(),
+            ]
+        );
     }
 
     #[test]
