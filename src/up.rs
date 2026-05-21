@@ -12,8 +12,8 @@ use crate::{
     devcontainer::{json::DevcontainerJson, metadata::parse_metadata},
     docker::{
         build::{
-            DockerBuildInput, ResolvedBuildContext, build_hash_input, build_image,
-            resolve_build_context,
+            DockerBuildInput, DockerBuildOptions, ResolvedBuildContext, build_hash_input,
+            build_image, resolve_build_context,
         },
         client::DockerClient,
         container::{
@@ -52,6 +52,7 @@ pub(crate) enum ExistingContainerDecision {
 pub(crate) struct UpPlan {
     pub(crate) image: String,
     pub(crate) build_context: Option<ResolvedBuildContext>,
+    pub(crate) build_options: DockerBuildOptions,
     pub(crate) resources: DockerResources,
     pub(crate) config: ResolvedConfig,
     pub(crate) workspace_folder: String,
@@ -65,6 +66,7 @@ pub(crate) struct UpOptions {
     pub(crate) cli_layer: ConfigLayer,
     pub(crate) pull: bool,
     pub(crate) rebuild: bool,
+    pub(crate) no_cache: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -133,8 +135,8 @@ pub(crate) fn build_up_plan(
         project: Some(project_layer),
         cli: Some(cli_layer),
     });
-    let build_context =
-        dockerfile_build_context(workspace.root(), devcontainer_json.path(), &config)?;
+    let (build_context, build_options) =
+        dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
     let mut hash_input = ConfigHashInput::new(&config);
     if let Some(context) = &build_context {
         hash_input.build = Some(build_hash_input(context)?);
@@ -156,6 +158,7 @@ pub(crate) fn build_up_plan(
     Ok(UpPlan {
         image,
         build_context,
+        build_options,
         resources,
         config,
         workspace_folder,
@@ -177,11 +180,11 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
 
     match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
         ExistingContainerDecision::Create => {
-            create_detached_container(&client, plan, options.pull).await
+            create_detached_container(&client, plan, options.pull, options.no_cache).await
         }
         ExistingContainerDecision::Recreate { containers } => {
             recreate_existing_containers(&client, &containers).await?;
-            create_detached_container(&client, plan, options.pull).await
+            create_detached_container(&client, plan, options.pull, options.no_cache).await
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
             ui::done(&format!("Reusing running dev container: {name}"));
@@ -223,14 +226,19 @@ async fn create_detached_container(
     client: &DockerClient,
     plan: UpPlan,
     pull: bool,
+    no_cache: bool,
 ) -> Result<UpOutcome> {
     if let Some(context) = plan.build_context.clone() {
+        let mut build_options = plan.build_options.clone();
+        build_options.pull = pull;
+        build_options.no_cache = no_cache;
         build_image(
             client,
             DockerBuildInput {
                 image_tag: plan.image.clone(),
                 labels: plan.resources.labels.clone().into_iter().collect(),
                 context,
+                options: build_options,
             },
         )
         .await?;
@@ -299,18 +307,26 @@ fn image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<
     }
 }
 
-fn dockerfile_build_context(
+fn dockerfile_build_input(
     workspace_root: &Path,
     devcontainer_file: &Path,
     config: &ResolvedConfig,
-) -> Result<Option<ResolvedBuildContext>> {
+) -> Result<(Option<ResolvedBuildContext>, DockerBuildOptions)> {
     match &config.devcontainer.source {
-        Some(ResolvedDevcontainerSource::Dockerfile(build)) => Ok(Some(resolve_build_context(
-            workspace_root,
-            devcontainer_file,
-            build,
-        )?)),
-        _ => Ok(None),
+        Some(ResolvedDevcontainerSource::Dockerfile(build)) => Ok((
+            Some(resolve_build_context(
+                workspace_root,
+                devcontainer_file,
+                build,
+            )?),
+            DockerBuildOptions {
+                build_args: build.args.clone(),
+                target: build.target.clone(),
+                cache_from: build.cache_from.clone(),
+                ..DockerBuildOptions::default()
+            },
+        )),
+        _ => Ok((None, DockerBuildOptions::default())),
     }
 }
 
@@ -554,7 +570,12 @@ mod tests {
             r#"
             {
               "build": {
-                "dockerfile": "Dockerfile"
+                "dockerfile": "Dockerfile",
+                "args": {
+                  "VARIANT": "bookworm"
+                },
+                "target": "dev",
+                "cacheFrom": "type=registry,ref=example.test/cache:latest"
               }
             }
             "#,
@@ -578,6 +599,20 @@ mod tests {
             build_context.dockerfile_in_context,
             PathBuf::from("Dockerfile")
         );
+        assert_eq!(
+            plan.build_options
+                .build_args
+                .get("VARIANT")
+                .map(String::as_str),
+            Some("bookworm")
+        );
+        assert_eq!(plan.build_options.target.as_deref(), Some("dev"));
+        assert_eq!(
+            plan.build_options.cache_from,
+            vec!["type=registry,ref=example.test/cache:latest"]
+        );
+        assert!(!plan.build_options.no_cache);
+        assert!(!plan.build_options.pull);
     }
 
     #[test]
@@ -647,6 +682,7 @@ mod tests {
                     cli_layer: ConfigLayer::default(),
                     pull: false,
                     rebuild: false,
+                    no_cache: false,
                 })
                 .await?;
                 assert_eq!(first.container_name, container_name);
@@ -664,6 +700,7 @@ mod tests {
                     cli_layer: ConfigLayer::default(),
                     pull: false,
                     rebuild: false,
+                    no_cache: false,
                 })
                 .await?;
                 assert_eq!(second.container_name, container_name);
@@ -714,6 +751,7 @@ mod tests {
                     cli_layer: ConfigLayer::default(),
                     pull: false,
                     rebuild: false,
+                    no_cache: false,
                 })
                 .await
                 .unwrap_err();

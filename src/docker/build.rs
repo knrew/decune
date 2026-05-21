@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashMap},
     fs,
     io::Read,
     os::unix::fs::PermissionsExt,
@@ -26,6 +27,16 @@ pub(crate) struct DockerBuildInput {
     pub(crate) image_tag: String,
     pub(crate) labels: std::collections::HashMap<String, String>,
     pub(crate) context: ResolvedBuildContext,
+    pub(crate) options: DockerBuildOptions,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct DockerBuildOptions {
+    pub(crate) build_args: BTreeMap<String, String>,
+    pub(crate) target: Option<String>,
+    pub(crate) cache_from: Vec<String>,
+    pub(crate) no_cache: bool,
+    pub(crate) pull: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -182,13 +193,37 @@ pub(crate) fn tar_contains_path(tar: &[u8], path: &str) -> bool {
 
 fn build_image_options(input: &DockerBuildInput) -> BuildImageOptions {
     let labels = input.labels.clone();
-    BuildImageOptionsBuilder::default()
+    let mut builder = BuildImageOptionsBuilder::default()
         .dockerfile(&path_for_docker(&input.context.dockerfile_in_context))
         .t(&input.image_tag)
         .labels(&labels)
         .rm(true)
         .forcerm(true)
-        .build()
+        .nocache(input.options.no_cache);
+
+    if !input.options.build_args.is_empty() {
+        let build_args = input
+            .options
+            .build_args
+            .iter()
+            .map(|(key, value)| (key.clone(), value.clone()))
+            .collect::<HashMap<_, _>>();
+        builder = builder.buildargs(&build_args);
+    }
+
+    if let Some(target) = &input.options.target {
+        builder = builder.target(target);
+    }
+
+    if !input.options.cache_from.is_empty() {
+        builder = builder.cachefrom(&input.options.cache_from);
+    }
+
+    if input.options.pull {
+        builder = builder.pull("true");
+    }
+
+    builder.build()
 }
 
 fn handle_build_info(image_tag: &str, info: BuildInfo) -> Result<()> {
@@ -578,12 +613,15 @@ fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{collections::HashMap, fs, path::Path};
 
     use crate::config::layer::LayerDevcontainerBuild;
     use tempfile::TempDir;
 
-    use super::{create_build_context_tar, resolve_build_context, tar_contains_path};
+    use super::{
+        DockerBuildInput, DockerBuildOptions, build_image_options, create_build_context_tar,
+        resolve_build_context, tar_contains_path,
+    };
 
     #[test]
     fn build_context_defaults_to_devcontainer_directory() {
@@ -696,6 +734,49 @@ mod tests {
         assert!(text.contains("included-content"));
         assert!(!text.contains("excluded-secret"));
         assert!(!text.contains("excluded-cache"));
+    }
+
+    #[test]
+    fn build_image_options_include_devcontainer_build_options() {
+        let input = docker_build_input(DockerBuildOptions {
+            build_args: [("VARIANT".to_owned(), "bookworm".to_owned())].into(),
+            target: Some("dev".to_owned()),
+            cache_from: vec!["type=registry,ref=example.test/cache:latest".to_owned()],
+            no_cache: true,
+            pull: true,
+        });
+
+        let options = build_image_options(&input);
+
+        assert_eq!(
+            options.buildargs,
+            Some(HashMap::from([(
+                "VARIANT".to_owned(),
+                "bookworm".to_owned()
+            )]))
+        );
+        assert_eq!(options.target, "dev");
+        assert_eq!(
+            options.cachefrom,
+            Some(vec![
+                "type=registry,ref=example.test/cache:latest".to_owned()
+            ])
+        );
+        assert!(options.nocache);
+        assert_eq!(options.pull.as_deref(), Some("true"));
+    }
+
+    #[test]
+    fn build_image_options_omit_empty_optional_build_options() {
+        let input = docker_build_input(DockerBuildOptions::default());
+
+        let options = build_image_options(&input);
+
+        assert_eq!(options.buildargs, None);
+        assert_eq!(options.target, "");
+        assert_eq!(options.cachefrom, None);
+        assert!(!options.nocache);
+        assert_eq!(options.pull, None);
     }
 
     #[test]
@@ -879,5 +960,30 @@ mod tests {
             .prefix(&format!("decune-docker-build-{name}-"))
             .tempdir()
             .unwrap()
+    }
+
+    fn docker_build_input(options: DockerBuildOptions) -> DockerBuildInput {
+        let temp = tempdir("options");
+        let root = temp.path();
+        let context_dir = root.join(".devcontainer");
+        fs::create_dir_all(&context_dir).unwrap();
+        fs::write(context_dir.join("Dockerfile"), "FROM alpine\n").unwrap();
+        let build = LayerDevcontainerBuild {
+            dockerfile: "Dockerfile".to_owned(),
+            context: None,
+            args: Default::default(),
+            target: None,
+            cache_from: Vec::new(),
+        };
+        let context =
+            resolve_build_context(root, &root.join(".devcontainer/devcontainer.json"), &build)
+                .unwrap();
+
+        DockerBuildInput {
+            image_tag: "decune/test:options".to_owned(),
+            labels: HashMap::new(),
+            context,
+            options,
+        }
     }
 }
