@@ -1185,7 +1185,7 @@ mod tests {
             vec![
                 ResolvedPublishPort {
                     container: 8080,
-                    host: None,
+                    host: Some(8080),
                     host_ip: None,
                     protocol: PortProtocol::Tcp,
                 },

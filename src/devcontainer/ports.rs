@@ -119,7 +119,10 @@ fn parse_port(port: &DevcontainerPort, mode: PortMode) -> Result<ParsedPort> {
     match port {
         DevcontainerPort::Number(container) => Ok(ParsedPort {
             container: *container,
-            host: None,
+            host: match mode {
+                PortMode::Forward => None,
+                PortMode::Publish => Some(*container),
+            },
             host_ip: match mode {
                 PortMode::Forward => Some(DEFAULT_PORT_HOST_IP.to_owned()),
                 PortMode::Publish => None,
@@ -255,6 +258,36 @@ mod tests {
             publish_port_to_layer(&DevcontainerPort::String("99999".to_owned())).unwrap_err();
 
         assert!(error.to_string().contains("Invalid container port"));
+    }
+
+    #[test]
+    fn numeric_app_port_publishes_the_same_host_port() {
+        let port = publish_port_to_layer(&DevcontainerPort::Number(8080)).unwrap();
+
+        assert_eq!(
+            port,
+            LayerPublishPort {
+                container: 8080,
+                host: Some(8080),
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }
+        );
+    }
+
+    #[test]
+    fn string_app_port_without_host_uses_ephemeral_host_port() {
+        let port = publish_port_to_layer(&DevcontainerPort::String("8080".to_owned())).unwrap();
+
+        assert_eq!(
+            port,
+            LayerPublishPort {
+                container: 8080,
+                host: None,
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }
+        );
     }
 
     #[test]
