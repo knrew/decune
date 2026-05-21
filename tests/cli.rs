@@ -142,6 +142,93 @@ fn up_detach_creates_and_reuses_image_container_when_docker_tests_are_enabled() 
 }
 
 #[test]
+fn up_detach_rejects_changed_create_config_without_replacing_container_when_docker_tests_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let first_id = runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert_eq!(containers.len(), 1);
+            containers[0].id.clone().unwrap()
+        });
+
+        workspace
+            .write_file(
+                ".devcontainer/devcontainer.json",
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "containerEnv": {
+                    "DECUNE_CHANGED_CONFIG": "1"
+                  }
+                }
+                "#,
+            )
+            .unwrap();
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Run decune rebuild"));
+
+        runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert_eq!(containers.len(), 1);
+            assert_eq!(containers[0].id.as_deref(), Some(first_id.as_str()));
+            assert!(
+                containers[0]
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.to_string() == "running")
+            );
+        });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn down_and_clean_manage_image_container_when_docker_tests_are_enabled() {
     if support::skip_unless_docker_tests_enabled() {
         return;
@@ -190,6 +277,31 @@ fn down_and_clean_manage_image_container_when_docker_tests_are_enabled() {
             assert_container_is_not_running(containers[0].id.as_deref().unwrap()).await;
         });
 
+        let stopped_id = runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            containers[0].id.clone().unwrap()
+        });
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started existing dev container"));
+
+        runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert_eq!(containers.len(), 1);
+            assert_eq!(containers[0].id.as_deref(), Some(stopped_id.as_str()));
+            assert!(
+                containers[0]
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.to_string() == "running")
+            );
+        });
+
         decune()
             .args(["clean", "--force"])
             .arg(&workspace_root)
@@ -220,6 +332,107 @@ fn down_and_clean_manage_image_container_when_docker_tests_are_enabled() {
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Cleaned dev container resources"));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_uses_explicit_config_and_applies_create_settings_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer/explicit").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/explicit/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "containerEnv": {
+                "DECUNE_EXPLICIT_CONFIG": "enabled"
+              },
+              "runArgs": [
+                "--add-host", "decune.example:127.0.0.1",
+                "--dns", "1.1.1.1"
+              ]
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args([
+                "up",
+                "--detach",
+                "--config",
+                ".devcontainer/explicit/devcontainer.json",
+            ])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            let config = inspect.config.expect("container config should exist");
+            let host_config = inspect
+                .host_config
+                .expect("container host config should exist");
+            let env = config.env.unwrap_or_default();
+
+            assert!(
+                env.iter()
+                    .any(|entry| entry == "DECUNE_EXPLICIT_CONFIG=enabled")
+            );
+            assert!(
+                host_config
+                    .extra_hosts
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|entry| entry == "decune.example:127.0.0.1")
+            );
+            assert!(
+                host_config
+                    .dns
+                    .unwrap_or_default()
+                    .iter()
+                    .any(|entry| entry == "1.1.1.1")
+            );
+        });
     });
 
     runtime.block_on(async {
@@ -430,6 +643,22 @@ async fn assert_container_is_not_running(container_id: &str) {
     let inspect = docker.inspect_container(container_id, None).await.unwrap();
 
     assert_eq!(inspect.state.and_then(|state| state.running), Some(false));
+}
+
+async fn inspect_single_workspace_container(
+    workspace_root: &Path,
+) -> anyhow::Result<bollard::models::ContainerInspectResponse> {
+    let docker = Docker::connect_with_defaults()?;
+    let containers = workspace_containers(workspace_root).await?;
+
+    anyhow::ensure!(containers.len() == 1, "expected one workspace container");
+
+    let id = containers[0]
+        .id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("workspace container did not include an id"))?;
+
+    Ok(docker.inspect_container(id, None).await?)
 }
 
 async fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
