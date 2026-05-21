@@ -154,14 +154,13 @@ async fn run_up(args: UpArgs) -> Result<()> {
     if !detach {
         anyhow::bail!("Shell attach is not implemented yet; pass --detach");
     }
-    let _no_cache = no_cache;
-
     run_detached_up(UpOptions {
         workspace,
         config_path: config,
         cli_layer: cli_config_layer(ports, no_auto_forward),
         pull,
         rebuild,
+        no_cache,
     })
     .await?;
     Ok(())
@@ -181,7 +180,7 @@ async fn run_rebuild(args: RebuildArgs) -> Result<()> {
     if !detach {
         anyhow::bail!("Shell attach is not implemented yet; pass --detach");
     }
-    let _deferred_options = (no_cache, update_features);
+    let _update_features = update_features;
 
     run_detached_up(UpOptions {
         workspace,
@@ -189,6 +188,7 @@ async fn run_rebuild(args: RebuildArgs) -> Result<()> {
         cli_layer: cli_config_layer(ports, false),
         pull,
         rebuild: true,
+        no_cache,
     })
     .await?;
     Ok(())

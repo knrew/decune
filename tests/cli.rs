@@ -156,7 +156,11 @@ fn up_detach_builds_dockerfile_container_and_honors_dockerignore_when_docker_tes
             r#"
             {
               "build": {
-                "dockerfile": "Dockerfile"
+                "dockerfile": "Dockerfile",
+                "args": {
+                  "EXPECTED": "from-arg"
+                },
+                "target": "dev"
               }
             }
             "#,
@@ -166,9 +170,15 @@ fn up_detach_builds_dockerfile_container_and_honors_dockerignore_when_docker_tes
         .write_file(
             ".devcontainer/Dockerfile",
             r#"
-            FROM alpine:3.20
+            FROM alpine:3.20 AS base
+            ARG EXPECTED
+            RUN test "$EXPECTED" = "from-arg"
             COPY . /context
             RUN test -f /context/app.txt && test ! -e /context/secret.env
+            FROM base AS dev
+            RUN true
+            FROM alpine:3.20 AS unused
+            RUN false
             "#,
         )
         .unwrap();
