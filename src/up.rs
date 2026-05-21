@@ -11,6 +11,10 @@ use crate::{
     },
     devcontainer::{json::DevcontainerJson, metadata::parse_metadata},
     docker::{
+        build::{
+            DockerBuildInput, ResolvedBuildContext, build_hash_input, build_image,
+            resolve_build_context,
+        },
         client::DockerClient,
         container::{
             ContainerCreateInput, ContainerCreateSpec, create_container,
@@ -47,6 +51,7 @@ pub(crate) enum ExistingContainerDecision {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UpPlan {
     pub(crate) image: String,
+    pub(crate) build_context: Option<ResolvedBuildContext>,
     pub(crate) resources: DockerResources,
     pub(crate) config: ResolvedConfig,
     pub(crate) workspace_folder: String,
@@ -128,13 +133,19 @@ pub(crate) fn build_up_plan(
         project: Some(project_layer),
         cli: Some(cli_layer),
     });
-    let image = image_source(&config)?;
-    let hash = config_hash(&ConfigHashInput::new(&config));
+    let build_context =
+        dockerfile_build_context(workspace.root(), devcontainer_json.path(), &config)?;
+    let mut hash_input = ConfigHashInput::new(&config);
+    if let Some(context) = &build_context {
+        hash_input.build = Some(build_hash_input(context)?);
+    }
+    let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
         workspace,
         hash,
         devcontainer_json.path().display().to_string(),
     );
+    let image = image_source(&config, &resources)?;
     let workspace_folder = config
         .devcontainer
         .workspace_folder
@@ -144,6 +155,7 @@ pub(crate) fn build_up_plan(
 
     Ok(UpPlan {
         image,
+        build_context,
         resources,
         config,
         workspace_folder,
@@ -212,16 +224,28 @@ async fn create_detached_container(
     plan: UpPlan,
     pull: bool,
 ) -> Result<UpOutcome> {
-    ensure_image(
-        client,
-        &plan.image,
-        if pull {
-            PullPolicy::Always
-        } else {
-            PullPolicy::Missing
-        },
-    )
-    .await?;
+    if let Some(context) = plan.build_context.clone() {
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: plan.image.clone(),
+                labels: plan.resources.labels.clone().into_iter().collect(),
+                context,
+            },
+        )
+        .await?;
+    } else {
+        ensure_image(
+            client,
+            &plan.image,
+            if pull {
+                PullPolicy::Always
+            } else {
+                PullPolicy::Missing
+            },
+        )
+        .await?;
+    }
 
     let (entrypoint, command) = if plan.config.devcontainer.override_command {
         let (entrypoint, command) = devcontainer_keepalive_command();
@@ -267,13 +291,26 @@ async fn start_new_container(client: &DockerClient, container_name: &str) -> Res
     }
 }
 
-fn image_source(config: &ResolvedConfig) -> Result<String> {
+fn image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
-        Some(ResolvedDevcontainerSource::Dockerfile(_)) => {
-            bail!("Dockerfile-based devcontainers are not supported yet")
-        }
+        Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
         None => bail!("Devcontainer image is required"),
+    }
+}
+
+fn dockerfile_build_context(
+    workspace_root: &Path,
+    devcontainer_file: &Path,
+    config: &ResolvedConfig,
+) -> Result<Option<ResolvedBuildContext>> {
+    match &config.devcontainer.source {
+        Some(ResolvedDevcontainerSource::Dockerfile(build)) => Ok(Some(resolve_build_context(
+            workspace_root,
+            devcontainer_file,
+            build,
+        )?)),
+        _ => Ok(None),
     }
 }
 
@@ -479,6 +516,7 @@ mod tests {
         let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
         assert_eq!(plan.image, "alpine:3.20");
+        assert!(plan.build_context.is_none());
         assert_eq!(plan.workspace_folder, "/workspace");
         assert_eq!(plan.mounts.len(), 1);
         assert_eq!(
@@ -503,8 +541,14 @@ mod tests {
     }
 
     #[test]
-    fn build_up_plan_rejects_dockerfile_source_for_m4() {
+    fn build_up_plan_uses_dockerfile_source_and_build_context() {
         let workspace = test_workspace("dockerfile-plan");
+        fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+        fs::write(
+            workspace.root().join(".devcontainer/Dockerfile"),
+            "FROM alpine\n",
+        )
+        .unwrap();
         write_devcontainer(
             &workspace,
             r#"
@@ -516,13 +560,56 @@ mod tests {
             "#,
         );
 
-        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("Dockerfile-based devcontainers are not supported")
+        assert_eq!(plan.image, plan.resources.image_tag);
+        let build_context = plan
+            .build_context
+            .expect("build context should be resolved");
+        assert_eq!(
+            build_context.context_dir,
+            workspace.root().join(".devcontainer")
         );
+        assert_eq!(
+            build_context.dockerfile_path,
+            workspace.root().join(".devcontainer/Dockerfile")
+        );
+        assert_eq!(
+            build_context.dockerfile_in_context,
+            PathBuf::from("Dockerfile")
+        );
+    }
+
+    #[test]
+    fn build_up_plan_hash_changes_when_dockerfile_content_changes() {
+        let workspace = test_workspace("dockerfile-hash-plan");
+        fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+        fs::write(
+            workspace.root().join(".devcontainer/Dockerfile"),
+            "FROM alpine\n",
+        )
+        .unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              }
+            }
+            "#,
+        );
+
+        let first = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::write(
+            workspace.root().join(".devcontainer/Dockerfile"),
+            "FROM alpine\nRUN true\n",
+        )
+        .unwrap();
+        let second = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_ne!(first.resources.config_hash, second.resources.config_hash);
+        assert_ne!(first.image, second.image);
     }
 
     #[test]
