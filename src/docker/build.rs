@@ -107,8 +107,23 @@ pub(crate) fn create_build_context_tar(context: &ResolvedBuildContext) -> Result
         &rules,
         &mut entries,
     )?;
+    entries.push(context.dockerfile_in_context.clone());
+    if let Some(dockerignore_path) = &context.dockerignore_path {
+        let dockerignore_in_context = dockerignore_path
+            .strip_prefix(&context.context_dir)
+            .with_context(|| {
+                format!(
+                    ".dockerignore must be inside build context: {} is outside {}",
+                    dockerignore_path.display(),
+                    context.context_dir.display()
+                )
+            })?
+            .to_path_buf();
+        entries.push(dockerignore_in_context);
+    }
 
     entries.sort();
+    entries.dedup();
     for relative_path in entries {
         append_tar_entry(&mut output, &context.context_dir, &relative_path)?;
     }
@@ -258,7 +273,7 @@ fn collect_context_entries(
             .with_context(|| format!("Failed to inspect build context path: {}", path.display()))?;
         let is_dir = metadata.is_dir();
 
-        if !rules.is_ignored(relative_path, is_dir) {
+        if !rules.is_ignored(relative_path) {
             entries.push(relative_path.to_path_buf());
         }
 
@@ -294,11 +309,11 @@ impl DockerignoreRules {
         Self { rules }
     }
 
-    fn is_ignored(&self, path: &Path, is_dir: bool) -> bool {
+    fn is_ignored(&self, path: &Path) -> bool {
         let path = path_for_docker(path);
         self.rules
             .iter()
-            .filter(|rule| rule.matches(&path, is_dir))
+            .filter(|rule| rule.matches(&path))
             .fold(false, |_, rule| !rule.negated)
     }
 }
@@ -307,14 +322,17 @@ impl DockerignoreRules {
 struct DockerignoreRule {
     pattern: String,
     negated: bool,
-    directory_only: bool,
-    has_slash: bool,
 }
 
 impl DockerignoreRule {
     fn parse(line: &str) -> Option<Self> {
-        let mut line = line.trim_end_matches('\r').trim();
-        if line.is_empty() || line.starts_with('#') {
+        let line = line.trim_end_matches('\r');
+        if line.starts_with('#') {
+            return None;
+        }
+
+        let mut line = line.trim();
+        if line.is_empty() {
             return None;
         }
 
@@ -324,32 +342,28 @@ impl DockerignoreRule {
         }
 
         let line = line.trim_start_matches('/');
-        let directory_only = line.ends_with('/');
         let pattern = line.trim_end_matches('/').to_owned();
-        if pattern.is_empty() {
+        if pattern.is_empty() || pattern == "." {
             return None;
         }
 
-        Some(Self {
-            has_slash: pattern.contains('/'),
-            pattern,
-            negated,
-            directory_only,
-        })
+        Some(Self { pattern, negated })
     }
 
-    fn matches(&self, path: &str, is_dir: bool) -> bool {
-        if self.directory_only && !is_dir && !path.starts_with(&format!("{}/", self.pattern)) {
-            return false;
+    fn matches(&self, path: &str) -> bool {
+        if glob_match(&self.pattern, path) {
+            return true;
         }
 
-        if self.has_slash {
-            glob_match(&self.pattern, path)
-                || path.strip_prefix(&format!("{}/", self.pattern)).is_some()
-        } else {
-            path.split('/')
-                .any(|component| glob_match(&self.pattern, component))
+        let mut parent = path;
+        while let Some((next_parent, _)) = parent.rsplit_once('/') {
+            if glob_match(&self.pattern, next_parent) {
+                return true;
+            }
+            parent = next_parent;
         }
+
+        false
     }
 }
 
@@ -535,8 +549,15 @@ fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
     match pattern.split_first() {
         None => text.is_empty(),
         Some((&b'*', rest)) => {
-            glob_match_bytes(rest, text)
-                || (!text.is_empty() && glob_match_bytes(pattern, &text[1..]))
+            if let Some((&b'*', rest)) = rest.split_first() {
+                glob_match_bytes(rest, text)
+                    || (!text.is_empty() && glob_match_bytes(pattern, &text[1..]))
+            } else {
+                glob_match_bytes(rest, text)
+                    || (!text.is_empty()
+                        && text[0] != b'/'
+                        && glob_match_bytes(pattern, &text[1..]))
+            }
         }
         Some((&b'?', rest)) => {
             !text.is_empty() && text[0] != b'/' && glob_match_bytes(rest, &text[1..])
@@ -693,6 +714,90 @@ mod tests {
 
         assert!(!tar_contains_path(&tar, "tmp/cache.txt"));
         assert!(tar_contains_path(&tar, "tmp/keep.txt"));
+    }
+
+    #[test]
+    fn dockerignore_keeps_build_metadata_when_ignore_rule_matches_everything() {
+        let temp = tempdir("dockerignore-build-metadata");
+        let root = temp.path();
+        let devcontainer_file = root.join(".devcontainer/devcontainer.json");
+        let context_dir = root.join(".devcontainer");
+        fs::create_dir_all(&context_dir).unwrap();
+        fs::write(context_dir.join("Dockerfile"), "FROM alpine\n").unwrap();
+        fs::write(context_dir.join("app.txt"), "excluded-content\n").unwrap();
+        fs::write(context_dir.join(".dockerignore"), "*\n").unwrap();
+        let build = LayerDevcontainerBuild {
+            dockerfile: "Dockerfile".to_owned(),
+            context: None,
+            args: Default::default(),
+            target: None,
+            cache_from: Vec::new(),
+        };
+        let context = resolve_build_context(&root, &devcontainer_file, &build).unwrap();
+
+        let tar = create_build_context_tar(&context).unwrap();
+
+        assert!(tar_contains_path(&tar, "Dockerfile"));
+        assert!(tar_contains_path(&tar, ".dockerignore"));
+        assert!(!tar_contains_path(&tar, "app.txt"));
+    }
+
+    #[test]
+    fn dockerignore_glob_star_does_not_cross_path_separator() {
+        let temp = tempdir("dockerignore-glob-star");
+        let root = temp.path();
+        let devcontainer_file = root.join(".devcontainer/devcontainer.json");
+        let context_dir = root.join(".devcontainer");
+        fs::create_dir_all(context_dir.join("foo/bar")).unwrap();
+        fs::write(context_dir.join("Dockerfile"), "FROM alpine\n").unwrap();
+        fs::write(context_dir.join("foo/root.txt"), "excluded-root\n").unwrap();
+        fs::write(context_dir.join("foo/bar/baz.txt"), "included-nested\n").unwrap();
+        fs::write(context_dir.join(".dockerignore"), "foo/*.txt\n").unwrap();
+        let build = LayerDevcontainerBuild {
+            dockerfile: "Dockerfile".to_owned(),
+            context: None,
+            args: Default::default(),
+            target: None,
+            cache_from: Vec::new(),
+        };
+        let context = resolve_build_context(&root, &devcontainer_file, &build).unwrap();
+
+        let tar = create_build_context_tar(&context).unwrap();
+
+        assert!(!tar_contains_path(&tar, "foo/root.txt"));
+        assert!(tar_contains_path(&tar, "foo/bar/baz.txt"));
+    }
+
+    #[test]
+    fn dockerignore_trailing_slash_matches_like_docker() {
+        let temp = tempdir("dockerignore-trailing-slash");
+        let root = temp.path();
+        let devcontainer_file = root.join(".devcontainer/devcontainer.json");
+        let context_dir = root.join(".devcontainer");
+        fs::create_dir_all(context_dir.join("node_modules")).unwrap();
+        fs::create_dir_all(context_dir.join("app/node_modules")).unwrap();
+        fs::write(context_dir.join("Dockerfile"), "FROM alpine\n").unwrap();
+        fs::write(context_dir.join("node_modules/pkg.json"), "excluded-root\n").unwrap();
+        fs::write(
+            context_dir.join("app/node_modules/pkg.json"),
+            "included-nested\n",
+        )
+        .unwrap();
+        fs::write(context_dir.join(".dockerignore"), "node_modules/\n").unwrap();
+        let build = LayerDevcontainerBuild {
+            dockerfile: "Dockerfile".to_owned(),
+            context: None,
+            args: Default::default(),
+            target: None,
+            cache_from: Vec::new(),
+        };
+        let context = resolve_build_context(&root, &devcontainer_file, &build).unwrap();
+
+        let tar = create_build_context_tar(&context).unwrap();
+
+        assert!(!tar_contains_path(&tar, "node_modules/pkg.json"));
+        assert!(tar_contains_path(&tar, "app/node_modules"));
+        assert!(tar_contains_path(&tar, "app/node_modules/pkg.json"));
     }
 
     #[cfg(unix)]
