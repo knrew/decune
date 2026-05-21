@@ -14,7 +14,7 @@ use crate::{
         client::DockerClient,
         container::{
             ContainerCreateInput, ContainerCreateSpec, create_container,
-            devcontainer_keepalive_command, remove_container, start_container,
+            devcontainer_keepalive_command, remove_container, start_container, stop_container,
             workspace_container_list_options,
         },
         image::{PullPolicy, ensure_image},
@@ -26,6 +26,7 @@ use crate::{
 };
 
 const CONFIG_HASH_LABEL: &str = "decune.config_hash";
+const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpContainerSummary {
@@ -38,6 +39,7 @@ pub(crate) struct UpContainerSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ExistingContainerDecision {
     Create,
+    Recreate { containers: Vec<UpContainerSummary> },
     ReuseRunning { id: String, name: String },
     StartStopped { id: String, name: String },
 }
@@ -57,6 +59,7 @@ pub(crate) struct UpOptions {
     pub(crate) config_path: Option<PathBuf>,
     pub(crate) cli_layer: ConfigLayer,
     pub(crate) pull: bool,
+    pub(crate) rebuild: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -69,7 +72,18 @@ pub(crate) struct UpOutcome {
 pub(crate) fn decide_existing_container(
     containers: &[UpContainerSummary],
     expected_config_hash: &str,
+    rebuild: bool,
 ) -> Result<ExistingContainerDecision> {
+    if rebuild {
+        return if containers.is_empty() {
+            Ok(ExistingContainerDecision::Create)
+        } else {
+            Ok(ExistingContainerDecision::Recreate {
+                containers: containers.to_vec(),
+            })
+        };
+    }
+
     let Some(container) = containers.first() else {
         return Ok(ExistingContainerDecision::Create);
     };
@@ -149,46 +163,13 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     let client = DockerClient::connect_from_env()?;
     let containers = list_workspace_containers(&client, workspace.id()).await?;
 
-    match decide_existing_container(&containers, &plan.resources.config_hash)? {
+    match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
         ExistingContainerDecision::Create => {
-            ensure_image(
-                &client,
-                &plan.image,
-                if options.pull {
-                    PullPolicy::Always
-                } else {
-                    PullPolicy::Missing
-                },
-            )
-            .await?;
-
-            let (entrypoint, command) = if plan.config.devcontainer.override_command {
-                let (entrypoint, command) = devcontainer_keepalive_command();
-                (Some(entrypoint), Some(command))
-            } else {
-                (None, None)
-            };
-            let spec = ContainerCreateSpec::from_resolved(ContainerCreateInput {
-                image: &plan.image,
-                resources: &plan.resources,
-                config: &plan.config,
-                entrypoint,
-                command,
-                working_dir: Some(plan.workspace_folder.clone()),
-                mounts: plan.mounts,
-            });
-            let container_id = create_container(&client, &spec).await?;
-            start_new_container(&client, &plan.resources.container_name).await?;
-            ui::done(&format!(
-                "Started dev container: {}",
-                plan.resources.container_name
-            ));
-
-            Ok(UpOutcome {
-                container_id,
-                container_name: plan.resources.container_name,
-                reused: false,
-            })
+            create_detached_container(&client, plan, options.pull).await
+        }
+        ExistingContainerDecision::Recreate { containers } => {
+            recreate_existing_containers(&client, &containers).await?;
+            create_detached_container(&client, plan, options.pull).await
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
             ui::done(&format!("Reusing running dev container: {name}"));
@@ -208,6 +189,67 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
             })
         }
     }
+}
+
+async fn recreate_existing_containers(
+    client: &DockerClient,
+    containers: &[UpContainerSummary],
+) -> Result<()> {
+    for container in containers {
+        stop_container(client, &container.id, REBUILD_STOP_TIMEOUT_SECONDS).await?;
+        remove_container(client, &container.id, true, false).await?;
+        ui::done(&format!(
+            "Removed existing dev container for rebuild: {}",
+            container.name
+        ));
+    }
+
+    Ok(())
+}
+
+async fn create_detached_container(
+    client: &DockerClient,
+    plan: UpPlan,
+    pull: bool,
+) -> Result<UpOutcome> {
+    ensure_image(
+        client,
+        &plan.image,
+        if pull {
+            PullPolicy::Always
+        } else {
+            PullPolicy::Missing
+        },
+    )
+    .await?;
+
+    let (entrypoint, command) = if plan.config.devcontainer.override_command {
+        let (entrypoint, command) = devcontainer_keepalive_command();
+        (Some(entrypoint), Some(command))
+    } else {
+        (None, None)
+    };
+    let spec = ContainerCreateSpec::from_resolved(ContainerCreateInput {
+        image: &plan.image,
+        resources: &plan.resources,
+        config: &plan.config,
+        entrypoint,
+        command,
+        working_dir: Some(plan.workspace_folder.clone()),
+        mounts: plan.mounts,
+    });
+    let container_id = create_container(client, &spec).await?;
+    start_new_container(client, &plan.resources.container_name).await?;
+    ui::done(&format!(
+        "Started dev container: {}",
+        plan.resources.container_name
+    ));
+
+    Ok(UpOutcome {
+        container_id,
+        container_name: plan.resources.container_name,
+        reused: false,
+    })
 }
 
 async fn start_new_container(client: &DockerClient, container_name: &str) -> Result<()> {
@@ -336,7 +378,7 @@ mod tests {
 
     #[test]
     fn existing_container_decision_creates_when_no_container_exists() {
-        let decision = decide_existing_container(&[], "hash123").unwrap();
+        let decision = decide_existing_container(&[], "hash123", false).unwrap();
 
         assert_eq!(decision, ExistingContainerDecision::Create);
     }
@@ -350,7 +392,7 @@ mod tests {
             running: true,
         };
 
-        let decision = decide_existing_container(&[container], "hash123").unwrap();
+        let decision = decide_existing_container(&[container], "hash123", false).unwrap();
 
         assert_eq!(
             decision,
@@ -370,7 +412,7 @@ mod tests {
             running: false,
         };
 
-        let decision = decide_existing_container(&[container], "hash123").unwrap();
+        let decision = decide_existing_container(&[container], "hash123", false).unwrap();
 
         assert_eq!(
             decision,
@@ -390,9 +432,28 @@ mod tests {
             running: true,
         };
 
-        let error = decide_existing_container(&[container], "new-hash").unwrap_err();
+        let error = decide_existing_container(&[container], "new-hash", false).unwrap_err();
 
         assert!(error.to_string().contains("Run decune rebuild"));
+    }
+
+    #[test]
+    fn existing_container_decision_recreates_when_rebuild_is_requested() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            config_hash: Some("old-hash".to_owned()),
+            running: true,
+        };
+
+        let decision = decide_existing_container(&[container.clone()], "new-hash", true).unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
     }
 
     #[test]
@@ -498,6 +559,7 @@ mod tests {
                     config_path: None,
                     cli_layer: ConfigLayer::default(),
                     pull: false,
+                    rebuild: false,
                 })
                 .await?;
                 assert_eq!(first.container_name, container_name);
@@ -514,6 +576,7 @@ mod tests {
                     config_path: None,
                     cli_layer: ConfigLayer::default(),
                     pull: false,
+                    rebuild: false,
                 })
                 .await?;
                 assert_eq!(second.container_name, container_name);
@@ -563,6 +626,7 @@ mod tests {
                     config_path: None,
                     cli_layer: ConfigLayer::default(),
                     pull: false,
+                    rebuild: false,
                 })
                 .await
                 .unwrap_err();

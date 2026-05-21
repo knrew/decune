@@ -8,7 +8,6 @@ use crate::config::{
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
 use crate::down::{CleanOptions, DownOptions};
-use crate::error;
 use crate::up::{UpOptions, run_detached_up};
 
 #[derive(Debug, Parser)]
@@ -134,7 +133,7 @@ pub(crate) async fn run() -> Result<()> {
 async fn run_cli(cli: Cli) -> Result<()> {
     match cli.command {
         Commands::Up(args) => run_up(args).await,
-        Commands::Rebuild(args) => run_rebuild(args),
+        Commands::Rebuild(args) => run_rebuild(args).await,
         Commands::Down(args) => run_down(args).await,
         Commands::Clean(args) => run_clean(args).await,
     }
@@ -155,24 +154,20 @@ async fn run_up(args: UpArgs) -> Result<()> {
     if !detach {
         anyhow::bail!("Shell attach is not implemented yet; pass --detach");
     }
-    if rebuild {
-        anyhow::bail!("up --rebuild is not implemented yet; use decune rebuild after M4-T04");
-    }
-    if no_cache {
-        anyhow::bail!("up --no-cache is not supported for image-based containers yet");
-    }
+    let _no_cache = no_cache;
 
     run_detached_up(UpOptions {
         workspace,
         config_path: config,
         cli_layer: cli_config_layer(ports, no_auto_forward),
         pull,
+        rebuild,
     })
     .await?;
     Ok(())
 }
 
-fn run_rebuild(args: RebuildArgs) -> Result<()> {
+async fn run_rebuild(args: RebuildArgs) -> Result<()> {
     let RebuildArgs {
         config,
         detach,
@@ -182,10 +177,21 @@ fn run_rebuild(args: RebuildArgs) -> Result<()> {
         ports,
         workspace,
     } = args;
-    let _cli_layer = cli_config_layer(ports, false);
-    let _runtime_options = (config, detach, no_cache, pull, update_features);
 
-    not_implemented("rebuild", workspace)
+    if !detach {
+        anyhow::bail!("Shell attach is not implemented yet; pass --detach");
+    }
+    let _deferred_options = (no_cache, update_features);
+
+    run_detached_up(UpOptions {
+        workspace,
+        config_path: config,
+        cli_layer: cli_config_layer(ports, false),
+        pull,
+        rebuild: true,
+    })
+    .await?;
+    Ok(())
 }
 
 async fn run_down(args: DownArgs) -> Result<()> {
@@ -211,11 +217,6 @@ async fn run_clean(args: CleanArgs) -> Result<()> {
         force,
     })
     .await
-}
-
-fn not_implemented(command: &str, workspace: PathBuf) -> Result<()> {
-    let _workspace = workspace;
-    Err(error::command_not_implemented(command))
 }
 
 fn cli_config_layer(ports: Vec<ManualPort>, no_auto_forward: bool) -> ConfigLayer {
