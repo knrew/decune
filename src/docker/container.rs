@@ -171,18 +171,19 @@ async fn wait_until_container_stopped(client: &DockerClient, container: &str) ->
     let options = WaitContainerOptionsBuilder::default()
         .condition("not-running")
         .build();
-    if client
+
+    match client
         .raw()
         .wait_container(container, Some(options))
         .try_next()
         .await
-        .with_context(|| format!("Failed to wait for Docker container to stop: {container}"))?
-        .is_none()
     {
-        bail!("Docker container stop wait ended without a response: {container}");
+        Ok(Some(_)) => Ok(()),
+        Ok(None) => bail!("Docker container stop wait ended without a response: {container}"),
+        Err(error) if is_container_wait_exit_status(&error) => Ok(()),
+        Err(error) => Err(error)
+            .with_context(|| format!("Failed to wait for Docker container to stop: {container}")),
     }
-
-    Ok(())
 }
 
 pub(crate) async fn remove_container(
@@ -311,6 +312,10 @@ fn is_container_already_stopped(error: &DockerError) -> bool {
     docker_status_code(error) == Some(304)
 }
 
+fn is_container_wait_exit_status(error: &DockerError) -> bool {
+    matches!(error, DockerError::DockerContainerWaitError { .. })
+}
+
 fn docker_status_code(error: &DockerError) -> Option<u16> {
     match error {
         DockerError::DockerResponseServerError { status_code, .. } => Some(*status_code),
@@ -354,8 +359,8 @@ mod tests {
     use super::{
         ContainerCreateInput, ContainerCreateSpec, ContainerHostConfig, create_container,
         create_container_body, devcontainer_keepalive_command, is_container_already_started,
-        is_container_already_stopped, is_container_not_found, remove_container, start_container,
-        stop_container,
+        is_container_already_stopped, is_container_not_found, is_container_wait_exit_status,
+        remove_container, start_container, stop_container,
     };
 
     #[test]
@@ -640,9 +645,20 @@ mod tests {
         assert!(is_container_not_found(&not_found));
         assert!(is_container_already_started(&not_modified));
         assert!(is_container_already_stopped(&not_modified));
+        assert!(!is_container_wait_exit_status(&not_modified));
         assert!(!is_container_not_found(&conflict));
         assert!(!is_container_already_started(&conflict));
         assert!(!is_container_already_stopped(&conflict));
+    }
+
+    #[test]
+    fn wait_exit_status_is_not_treated_as_stop_failure() {
+        let killed_after_timeout = bollard::errors::Error::DockerContainerWaitError {
+            error: String::new(),
+            code: 137,
+        };
+
+        assert!(is_container_wait_exit_status(&killed_after_timeout));
     }
 
     #[test]
@@ -694,6 +710,58 @@ mod tests {
                 stop_container(&client, &name, 1).await?;
                 remove_container(&client, &name, true, true).await?;
                 remove_container(&client, &name, true, true).await?;
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn stop_container_ignores_non_zero_wait_status_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let name = format!("decune-test-stop-nonzero-{}", std::process::id());
+            let result: anyhow::Result<()> = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                remove_container(&client, &name, true, true).await?;
+
+                let spec = ContainerCreateSpec {
+                    image: "alpine:3.20".to_owned(),
+                    name: name.clone(),
+                    entrypoint: Some(vec!["/bin/sh".to_owned()]),
+                    command: Some(vec![
+                        "-c".to_owned(),
+                        "trap 'exit 1' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+                    ]),
+                    labels: BTreeMap::from([
+                        ("decune.managed".to_owned(), "true".to_owned()),
+                        ("decune.workspace_id".to_owned(), "testworkspace".to_owned()),
+                    ]),
+                    env: BTreeMap::new(),
+                    working_dir: None,
+                    user: None,
+                    mounts: Vec::new(),
+                    publish_ports: Vec::new(),
+                    host_config: ContainerHostConfig::default(),
+                };
+
+                create_container(&client, &spec).await?;
+                start_container(&client, &name).await?;
+                stop_container(&client, &name, 1).await?;
 
                 Ok(())
             }
