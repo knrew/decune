@@ -145,7 +145,12 @@ fn docker_name_segment(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::PathBuf,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     use crate::workspace::Workspace;
 
@@ -154,10 +159,14 @@ mod tests {
         managed_workspace_label_filters,
     };
 
+    static NEXT_FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
+
     fn fixture_root(name: &str) -> PathBuf {
+        let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
         let parent = std::env::temp_dir()
             .join("decune-docker-resource-tests")
-            .join(std::process::id().to_string());
+            .join(std::process::id().to_string())
+            .join(fixture_id.to_string());
         let root = parent.join(name);
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
