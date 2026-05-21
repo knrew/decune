@@ -4,8 +4,9 @@ use bollard::{
     models::{ContainerCreateBody, ContainerSummary, HostConfig, VolumeCreateRequest},
     query_parameters::{
         CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-        ListVolumesOptionsBuilder, RemoveContainerOptionsBuilder, RemoveVolumeOptionsBuilder,
-        StartContainerOptionsBuilder,
+        ListImagesOptionsBuilder, ListVolumesOptionsBuilder, RemoveContainerOptionsBuilder,
+        RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder, StartContainerOptionsBuilder,
+        TagImageOptionsBuilder,
     },
 };
 use futures_util::TryStreamExt;
@@ -493,6 +494,192 @@ fn clean_force_stops_running_container_before_removal_when_docker_tests_are_enab
 }
 
 #[test]
+fn clean_force_removes_state_and_runtime_directories_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let state_home = path_roots.path().join("state");
+    let runtime_home = path_roots.path().join("runtime");
+    let workspace_id = workspace_id(&workspace_root);
+    let state_dir = state_home.join("decune").join(&workspace_id);
+    let runtime_dir = runtime_home.join("decune").join(&workspace_id);
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(&runtime_dir).unwrap();
+    fs::write(state_dir.join("state.toml"), "version = 1\n").unwrap();
+    fs::write(runtime_dir.join("socket"), "").unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["clean", "--force"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .env("XDG_RUNTIME_DIR", &runtime_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Cleaned dev container resources"));
+
+        assert!(!state_dir.exists());
+        assert!(!runtime_dir.exists());
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn clean_images_removes_workspace_images_only_when_requested_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let image_repository = workspace_image_repository(&workspace_root);
+    let image_tag = format!("{image_repository}:clean-test");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+        create_workspace_image_tag(&workspace_root, "clean-test")
+            .await
+            .unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["clean", "--force"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Cleaned dev container resources"));
+
+        runtime.block_on(async {
+            let images = workspace_images(&workspace_root).await.unwrap();
+            assert_eq!(images, vec![image_tag.clone()]);
+        });
+
+        decune()
+            .args(["clean", "--force", "--images"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Cleaned dev container resources"));
+
+        runtime.block_on(async {
+            let images = workspace_images(&workspace_root).await.unwrap();
+            assert!(images.is_empty());
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_publishes_app_port_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "appPort": ["8080"]
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            let ports = inspect
+                .network_settings
+                .and_then(|settings| settings.ports)
+                .unwrap_or_default();
+            let bindings = ports
+                .get("8080/tcp")
+                .and_then(|bindings| bindings.as_ref())
+                .expect("expected appPort to publish 8080/tcp");
+            let binding = bindings
+                .first()
+                .expect("expected at least one published appPort binding");
+
+            assert!(
+                binding
+                    .host_port
+                    .as_deref()
+                    .is_some_and(|port| !port.is_empty())
+            );
+        });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn rebuild_recreates_container_and_preserves_managed_volume_when_docker_tests_are_enabled() {
     if support::skip_unless_docker_tests_enabled() {
         return;
@@ -696,6 +883,60 @@ async fn cleanup_workspace_volumes(workspace_root: &Path) -> anyhow::Result<()> 
     Ok(())
 }
 
+async fn workspace_images(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
+    let docker = Docker::connect_with_defaults()?;
+    let image_repository = workspace_image_repository(workspace_root);
+    let mut filters = HashMap::new();
+    filters.insert(
+        "reference".to_owned(),
+        vec![format!("{image_repository}:*")],
+    );
+    let options = ListImagesOptionsBuilder::default()
+        .all(true)
+        .filters(&filters)
+        .build();
+    let mut images = docker
+        .list_images(Some(options))
+        .await?
+        .into_iter()
+        .flat_map(|image| image.repo_tags)
+        .filter(|tag| tag.starts_with(&format!("{image_repository}:")))
+        .collect::<Vec<_>>();
+    images.sort();
+    Ok(images)
+}
+
+async fn cleanup_workspace_images(workspace_root: &Path) -> anyhow::Result<()> {
+    let docker = Docker::connect_with_defaults()?;
+    let options = RemoveImageOptionsBuilder::default()
+        .force(true)
+        .noprune(false)
+        .build();
+
+    for image in workspace_images(workspace_root).await? {
+        docker
+            .remove_image(&image, Some(options.clone()), None)
+            .await?;
+    }
+
+    Ok(())
+}
+
+async fn create_workspace_image_tag(workspace_root: &Path, tag: &str) -> anyhow::Result<String> {
+    let docker = Docker::connect_with_defaults()?;
+    ensure_alpine_image(&docker).await?;
+
+    let image_repository = workspace_image_repository(workspace_root);
+    let options = TagImageOptionsBuilder::default()
+        .repo(&image_repository)
+        .tag(tag)
+        .build();
+
+    docker.tag_image("alpine:3.20", Some(options)).await?;
+
+    Ok(format!("{image_repository}:{tag}"))
+}
+
 async fn create_managed_volume(workspace_root: &Path, volume_name: &str) -> anyhow::Result<()> {
     let docker = Docker::connect_with_defaults()?;
     let workspace_id = workspace_id(workspace_root);
@@ -782,6 +1023,44 @@ fn workspace_id(root: &Path) -> String {
     }
 
     id
+}
+
+fn workspace_image_repository(root: &Path) -> String {
+    let basename = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("workspace");
+
+    format!(
+        "decune/{}-{}",
+        docker_name_segment(basename),
+        workspace_id(root)
+    )
+}
+
+fn docker_name_segment(value: &str) -> String {
+    let mut output = String::new();
+    let mut previous_was_separator = true;
+
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            output.push(character);
+            previous_was_separator = false;
+        } else if !previous_was_separator {
+            output.push('-');
+            previous_was_separator = true;
+        }
+    }
+
+    while output.ends_with('-') {
+        output.pop();
+    }
+
+    if output.is_empty() {
+        "workspace".to_owned()
+    } else {
+        output
+    }
 }
 
 fn push_hex_byte(output: &mut String, byte: u8) {
