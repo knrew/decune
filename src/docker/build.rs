@@ -550,6 +550,14 @@ fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
         None => text.is_empty(),
         Some((&b'*', rest)) => {
             if let Some((&b'*', rest)) = rest.split_first() {
+                let matches_zero_directories = rest
+                    .strip_prefix(b"/")
+                    .is_some_and(|rest| glob_match_bytes(rest, text));
+
+                if matches_zero_directories {
+                    return true;
+                }
+
                 glob_match_bytes(rest, text)
                     || (!text.is_empty() && glob_match_bytes(pattern, &text[1..]))
             } else {
@@ -766,6 +774,42 @@ mod tests {
 
         assert!(!tar_contains_path(&tar, "foo/root.txt"));
         assert!(tar_contains_path(&tar, "foo/bar/baz.txt"));
+    }
+
+    #[test]
+    fn dockerignore_double_star_slash_matches_root_files() {
+        let temp = tempdir("dockerignore-double-star-root");
+        let root = temp.path();
+        let devcontainer_file = root.join(".devcontainer/devcontainer.json");
+        let context_dir = root.join(".devcontainer");
+        fs::create_dir_all(context_dir.join("config")).unwrap();
+        fs::write(context_dir.join("Dockerfile"), "FROM alpine\n").unwrap();
+        fs::write(context_dir.join("secret.env"), "excluded-root-secret\n").unwrap();
+        fs::write(
+            context_dir.join("config/secret.env"),
+            "excluded-nested-secret\n",
+        )
+        .unwrap();
+        fs::write(context_dir.join("app.txt"), "included-content\n").unwrap();
+        fs::write(context_dir.join(".dockerignore"), "**/*.env\n").unwrap();
+        let build = LayerDevcontainerBuild {
+            dockerfile: "Dockerfile".to_owned(),
+            context: None,
+            args: Default::default(),
+            target: None,
+            cache_from: Vec::new(),
+        };
+        let context = resolve_build_context(&root, &devcontainer_file, &build).unwrap();
+
+        let tar = create_build_context_tar(&context).unwrap();
+
+        assert!(!tar_contains_path(&tar, "secret.env"));
+        assert!(!tar_contains_path(&tar, "config/secret.env"));
+        assert!(tar_contains_path(&tar, "app.txt"));
+        let text = String::from_utf8_lossy(&tar);
+        assert!(!text.contains("excluded-root-secret"));
+        assert!(!text.contains("excluded-nested-secret"));
+        assert!(text.contains("included-content"));
     }
 
     #[test]
