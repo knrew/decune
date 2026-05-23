@@ -483,17 +483,30 @@ fn run_host_parallel(
         })
         .collect::<Vec<_>>();
 
+    let mut first_error = None;
     for handle in handles {
         match handle.join() {
-            Ok(result) => result?,
-            Err(_) => bail!(
-                "Lifecycle stage {} failed because a host command thread panicked",
-                stage.property_name()
-            ),
+            Ok(Ok(())) => {}
+            Ok(Err(error)) => {
+                if first_error.is_none() {
+                    first_error = Some(error);
+                }
+            }
+            Err(_) => {
+                if first_error.is_none() {
+                    first_error = Some(anyhow!(
+                        "Lifecycle stage {} failed because a host command thread panicked",
+                        stage.property_name()
+                    ));
+                }
+            }
         }
     }
 
-    Ok(())
+    match first_error {
+        Some(error) => Err(error),
+        None => Ok(()),
+    }
 }
 
 async fn run_container_process(
@@ -515,7 +528,7 @@ async fn run_container_process(
             command: command.clone(),
             user: Some(user),
             working_dir: Some(working_dir),
-            env: BTreeMap::new(),
+            env: lifecycle_process_env(context),
             tty: false,
         },
     )
@@ -523,6 +536,10 @@ async fn run_container_process(
     .with_context(|| format!("Failed to run lifecycle stage {stage_name}"))?;
 
     ensure_lifecycle_success(stage_name, &command, output)
+}
+
+fn lifecycle_process_env(context: &LifecycleRunContext<'_>) -> BTreeMap<String, String> {
+    context.config.devcontainer.remote_env.clone()
 }
 
 fn run_host_process(stage_name: &str, argv: &[String], workdir: &Path) -> Result<()> {
@@ -1063,6 +1080,36 @@ mod tests {
             ])),
             vec!["bash", "-lc", "echo ready"]
         );
+    }
+
+    #[test]
+    fn host_parallel_lifecycle_waits_for_all_siblings_after_failure() {
+        let workspace = tempfile::Builder::new()
+            .prefix("decune-host-parallel-lifecycle-")
+            .tempdir()
+            .unwrap();
+        let marker = workspace.path().join("slow-finished");
+        let command = LifecycleCommand::Parallel(BTreeMap::from([
+            (
+                "a_fail".to_owned(),
+                LifecycleCommand::Shell("exit 7".to_owned()),
+            ),
+            (
+                "z_slow".to_owned(),
+                LifecycleCommand::Shell("sleep 1; printf done > slow-finished".to_owned()),
+            ),
+        ]));
+
+        let error = run_host_lifecycle_command_value(
+            workspace.path(),
+            LifecycleStage::Initialize,
+            &command,
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("Lifecycle stage initializeCommand.a_fail failed"));
+        assert!(marker.exists());
     }
 
     #[test]

@@ -1003,6 +1003,76 @@ mod tests {
     }
 
     #[test]
+    fn up_detach_applies_remote_env_to_lifecycle_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-lifecycle-remote-env");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "remoteEnv": {
+                    "DECUNE_REMOTE_ENV_SENTINEL": "from-remote-env"
+                  },
+                  "postAttachCommand": "test \"$DECUNE_REMOTE_ENV_SENTINEL\" = from-remote-env && printf '%s' \"$DECUNE_REMOTE_ENV_SENTINEL\" >/tmp/decune-remote-env"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-remote-env".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "from-remote-env");
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn up_detach_removes_new_container_when_start_fails_if_docker_tests_are_enabled() {
         if !docker_tests_enabled() {
             eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
