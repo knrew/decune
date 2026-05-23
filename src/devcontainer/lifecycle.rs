@@ -185,7 +185,7 @@ pub(crate) struct LifecycleRunContext<'a> {
 
 struct ResolvedLifecycleRunContext<'a> {
     run: LifecycleRunContext<'a>,
-    process_env: BTreeMap<String, String>,
+    remote_process_env: BTreeMap<String, String>,
 }
 
 pub(crate) fn lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
@@ -260,7 +260,7 @@ pub(crate) async fn run_container_lifecycle(
     start_host_daemon()?;
     refresh_decune_setup()?;
     let context = ResolvedLifecycleRunContext {
-        process_env: resolve_exec_env(
+        remote_process_env: resolve_exec_env(
             context.client,
             context.container,
             &context.remote_user.user,
@@ -543,9 +543,9 @@ async fn run_container_process(
         context.run.container,
         &ExecCommandSpec {
             command: command.clone(),
-            user: Some(user),
+            user: Some(user.clone()),
             working_dir: Some(working_dir),
-            env: lifecycle_process_env(context),
+            env: lifecycle_process_env(context, &user),
             tty: false,
         },
     )
@@ -555,8 +555,33 @@ async fn run_container_process(
     ensure_lifecycle_success(stage_name, &command, output)
 }
 
-fn lifecycle_process_env(context: &ResolvedLifecycleRunContext<'_>) -> BTreeMap<String, String> {
-    context.process_env.clone()
+fn lifecycle_process_env(
+    context: &ResolvedLifecycleRunContext<'_>,
+    user: &str,
+) -> BTreeMap<String, String> {
+    if same_container_user(user, &context.run.remote_user.user) {
+        return context.remote_process_env.clone();
+    }
+
+    context.run.config.devcontainer.remote_env.clone()
+}
+
+fn same_container_user(left: &str, right: &str) -> bool {
+    let left = docker_user_lookup_key(left);
+    let right = docker_user_lookup_key(right);
+
+    left == right || (is_root_user(left) && is_root_user(right))
+}
+
+fn docker_user_lookup_key(user: &str) -> &str {
+    user.split_once(':')
+        .map(|(name, _)| name)
+        .unwrap_or(user)
+        .trim()
+}
+
+fn is_root_user(user: &str) -> bool {
+    matches!(user, "root" | "0")
 }
 
 fn run_host_process(stage_name: &str, argv: &[String], workdir: &Path) -> Result<()> {
@@ -1182,5 +1207,12 @@ mod tests {
             host_hook_workdir(workspace_root, &absolute_hook),
             PathBuf::from("/tmp")
         );
+    }
+
+    #[test]
+    fn same_container_user_matches_group_suffix_and_root_alias() {
+        assert!(same_container_user("vscode", "vscode:shared"));
+        assert!(same_container_user("root", "0"));
+        assert!(!same_container_user("root", "vscode"));
     }
 }
