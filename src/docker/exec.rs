@@ -1,16 +1,23 @@
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, pin::Pin};
 
 use anyhow::{Context, Result, bail};
 use bollard::{
+    Docker,
     container::LogOutput,
     exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     models::ExecInspectResponse,
+    query_parameters::ResizeExecOptionsBuilder,
 };
 use futures_util::TryStreamExt;
+use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
-use crate::{config::resolved::ResolvedUserEnvProbe, docker::client::DockerClient};
+use crate::{
+    config::resolved::ResolvedUserEnvProbe,
+    docker::client::DockerClient,
+    terminal::{self, RawTerminalGuard},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecAttachMode {
@@ -88,6 +95,53 @@ pub(crate) async fn exec_attach(
         id: exec_id,
         results,
     })
+}
+
+pub(crate) async fn exec_attach_stdio(
+    client: &DockerClient,
+    container: &str,
+    spec: &ExecCommandSpec,
+) -> Result<i64> {
+    let attached = exec_attach(client, container, spec).await?;
+
+    run_attached_exec_stdio(client, container, spec, attached).await
+}
+
+pub(crate) async fn run_attached_exec_stdio(
+    client: &DockerClient,
+    container: &str,
+    spec: &ExecCommandSpec,
+    attached: AttachedExec,
+) -> Result<i64> {
+    let exec_id = attached.id.clone();
+    let StartExecResults::Attached { output, input } = attached.results else {
+        bail!("Docker exec did not attach stdio in container: {container}");
+    };
+
+    let _raw_terminal = spec
+        .tty
+        .then(RawTerminalGuard::enter_stdin_if_tty)
+        .transpose()?;
+    if spec.tty {
+        resize_exec_to_terminal(client.raw(), &exec_id).await?;
+    }
+
+    let input_task = tokio::spawn(copy_stdin_to_exec(input));
+    let resize_task = spec
+        .tty
+        .then(|| spawn_resize_loop(client.raw().clone(), exec_id.clone()));
+
+    let stream_result = stream_exec_output(container, output).await;
+    input_task.abort();
+    if let Some(resize_task) = resize_task {
+        resize_task.abort();
+    }
+    stream_result?;
+
+    let inspect = inspect_exec(client, &exec_id, container).await?;
+    inspect
+        .exit_code
+        .context("Failed to read Docker exec exit code")
 }
 
 pub(crate) async fn resolve_exec_env(
@@ -221,6 +275,118 @@ async fn inspect_exec(
         .await
         .with_context(|| format!("Failed to inspect Docker exec in container: {container}"))
 }
+
+async fn copy_stdin_to_exec(mut input: Pin<Box<dyn AsyncWrite + Send>>) -> Result<()> {
+    let mut stdin = tokio::io::stdin();
+    let mut buffer = [0_u8; 8192];
+
+    loop {
+        let read = stdin
+            .read(&mut buffer)
+            .await
+            .context("Failed to read from stdin")?;
+        if read == 0 {
+            input
+                .shutdown()
+                .await
+                .context("Failed to close Docker exec stdin")?;
+            return Ok(());
+        }
+
+        input
+            .write_all(&buffer[..read])
+            .await
+            .context("Failed to write to Docker exec stdin")?;
+    }
+}
+
+async fn stream_exec_output(
+    container: &str,
+    mut output: Pin<
+        Box<
+            dyn futures_util::Stream<Item = std::result::Result<LogOutput, bollard::errors::Error>>
+                + Send,
+        >,
+    >,
+) -> Result<()> {
+    let mut stdout = tokio::io::stdout();
+    let mut stderr = tokio::io::stderr();
+
+    while let Some(log_output) = output
+        .try_next()
+        .await
+        .with_context(|| format!("Failed to read Docker exec stream in container: {container}"))?
+    {
+        match log_output {
+            LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                stdout
+                    .write_all(&message)
+                    .await
+                    .context("Failed to write Docker exec stdout")?;
+                stdout.flush().await.context("Failed to flush stdout")?;
+            }
+            LogOutput::StdErr { message } => {
+                stderr
+                    .write_all(&message)
+                    .await
+                    .context("Failed to write Docker exec stderr")?;
+                stderr.flush().await.context("Failed to flush stderr")?;
+            }
+            LogOutput::StdIn { .. } => {}
+        }
+    }
+
+    Ok(())
+}
+
+async fn resize_exec_to_terminal(docker: &Docker, exec_id: &str) -> Result<()> {
+    let Some(size) = terminal::current_size() else {
+        return Ok(());
+    };
+
+    docker
+        .resize_exec(
+            exec_id,
+            ResizeExecOptionsBuilder::default()
+                .h(size.height)
+                .w(size.width)
+                .build(),
+        )
+        .await
+        .context("Failed to resize Docker exec TTY")
+}
+
+fn spawn_resize_loop(docker: Docker, exec_id: String) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        watch_terminal_resize(docker, exec_id).await;
+    })
+}
+
+#[cfg(unix)]
+async fn watch_terminal_resize(docker: Docker, exec_id: String) {
+    let Ok(mut signal) =
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::window_change())
+    else {
+        return;
+    };
+
+    while signal.recv().await.is_some() {
+        if let Some(size) = terminal::current_size() {
+            let _ = docker
+                .resize_exec(
+                    &exec_id,
+                    ResizeExecOptionsBuilder::default()
+                        .h(size.height)
+                        .w(size.width)
+                        .build(),
+                )
+                .await;
+        }
+    }
+}
+
+#[cfg(not(unix))]
+async fn watch_terminal_resize(_docker: Docker, _exec_id: String) {}
 
 pub(crate) fn ensure_success_exit(
     container: &str,

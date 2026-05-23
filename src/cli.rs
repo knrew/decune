@@ -8,7 +8,7 @@ use crate::config::{
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
 use crate::down::{CleanOptions, DownOptions};
-use crate::up::{UpOptions, run_detached_up};
+use crate::up::{UpOptions, run_attached_up, run_detached_up};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -125,12 +125,12 @@ impl FromStr for ManualPort {
     }
 }
 
-pub(crate) async fn run() -> Result<()> {
+pub(crate) async fn run() -> Result<i32> {
     let cli = Cli::parse();
     run_cli(cli).await
 }
 
-async fn run_cli(cli: Cli) -> Result<()> {
+async fn run_cli(cli: Cli) -> Result<i32> {
     match cli.command {
         Commands::Up(args) => run_up(args).await,
         Commands::Rebuild(args) => run_rebuild(args).await,
@@ -139,7 +139,7 @@ async fn run_cli(cli: Cli) -> Result<()> {
     }
 }
 
-async fn run_up(args: UpArgs) -> Result<()> {
+async fn run_up(args: UpArgs) -> Result<i32> {
     let UpArgs {
         config,
         detach,
@@ -151,22 +151,24 @@ async fn run_up(args: UpArgs) -> Result<()> {
         workspace,
     } = args;
 
-    if !detach {
-        anyhow::bail!("Shell attach is not implemented yet; pass --detach");
-    }
-    run_detached_up(UpOptions {
+    let options = UpOptions {
         workspace,
         config_path: config,
         cli_layer: cli_config_layer(ports, no_auto_forward),
         pull,
         rebuild,
         no_cache,
-    })
-    .await?;
-    Ok(())
+    };
+
+    if detach {
+        run_detached_up(options).await?;
+        return Ok(0);
+    }
+
+    run_attached_up(options).await
 }
 
-async fn run_rebuild(args: RebuildArgs) -> Result<()> {
+async fn run_rebuild(args: RebuildArgs) -> Result<i32> {
     let RebuildArgs {
         config,
         detach,
@@ -177,34 +179,37 @@ async fn run_rebuild(args: RebuildArgs) -> Result<()> {
         workspace,
     } = args;
 
-    if !detach {
-        anyhow::bail!("Shell attach is not implemented yet; pass --detach");
-    }
     let _update_features = update_features;
 
-    run_detached_up(UpOptions {
+    let options = UpOptions {
         workspace,
         config_path: config,
         cli_layer: cli_config_layer(ports, false),
         pull,
         rebuild: true,
         no_cache,
-    })
-    .await?;
-    Ok(())
+    };
+
+    if detach {
+        run_detached_up(options).await?;
+        return Ok(0);
+    }
+
+    run_attached_up(options).await
 }
 
-async fn run_down(args: DownArgs) -> Result<()> {
+async fn run_down(args: DownArgs) -> Result<i32> {
     let DownArgs { timeout, workspace } = args;
 
     crate::down::run_down(DownOptions {
         workspace,
         timeout_seconds: timeout,
     })
-    .await
+    .await?;
+    Ok(0)
 }
 
-async fn run_clean(args: CleanArgs) -> Result<()> {
+async fn run_clean(args: CleanArgs) -> Result<i32> {
     let CleanArgs {
         images,
         force,
@@ -216,7 +221,8 @@ async fn run_clean(args: CleanArgs) -> Result<()> {
         images,
         force,
     })
-    .await
+    .await?;
+    Ok(0)
 }
 
 fn cli_config_layer(ports: Vec<ManualPort>, no_auto_forward: bool) -> ConfigLayer {

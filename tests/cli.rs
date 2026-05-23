@@ -50,33 +50,6 @@ fn command_help_is_displayed() {
 }
 
 #[test]
-fn rebuild_without_detach_reports_shell_attach_not_implemented() {
-    decune()
-        .arg("rebuild")
-        .assert()
-        .failure()
-        .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains("Error:"))
-        .stderr(predicate::str::contains(
-            "Shell attach is not implemented yet",
-        ))
-        .stderr(predicate::str::contains("--detach"));
-}
-
-#[test]
-fn up_without_detach_reports_shell_attach_not_implemented() {
-    decune()
-        .arg("up")
-        .assert()
-        .failure()
-        .stdout(predicate::str::is_empty())
-        .stderr(predicate::str::contains(
-            "Shell attach is not implemented yet",
-        ))
-        .stderr(predicate::str::contains("--detach"));
-}
-
-#[test]
 fn up_detach_creates_and_reuses_image_container_when_docker_tests_are_enabled() {
     if support::skip_unless_docker_tests_enabled() {
         return;
@@ -135,6 +108,77 @@ fn up_detach_creates_and_reuses_image_container_when_docker_tests_are_enabled() 
 
     runtime.block_on(async {
         cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_attaches_configured_shell_and_returns_shell_exit_code_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '#!/bin/sh\nexit 7\n' >/usr/local/bin/decune-exit-7 \
+              && chmod +x /usr/local/bin/decune-exit-7
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-exit-7"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("up")
+            .arg(&workspace_root)
+            .assert()
+            .code(7)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("Shell attach is not implemented").not());
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
     });
 
     if let Err(payload) = result {
