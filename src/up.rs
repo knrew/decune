@@ -1168,6 +1168,99 @@ mod tests {
     }
 
     #[test]
+    fn up_detach_probes_env_with_remote_user_shell_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-lifecycle-user-env-probe-login-shell");
+            fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+            fs::write(
+                workspace.root().join(".devcontainer/Dockerfile"),
+                r#"
+                FROM alpine:3.20
+                RUN printf '%s\n' \
+                  '#!/bin/sh' \
+                  'export DECUNE_LOGIN_SHELL_ENV=from-login-shell' \
+                  'exec /bin/sh "$@"' \
+                  >/usr/local/bin/decune-probe-shell \
+                  && chmod +x /usr/local/bin/decune-probe-shell \
+                  && adduser -D -s /usr/local/bin/decune-probe-shell decune
+                "#,
+            )
+            .unwrap();
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "build": {
+                    "dockerfile": "Dockerfile"
+                  },
+                  "remoteUser": "decune",
+                  "userEnvProbe": "loginShell",
+                  "postAttachCommand": [
+                    "/bin/sh",
+                    "-c",
+                    "test \"$DECUNE_LOGIN_SHELL_ENV\" = from-login-shell && printf '%s' \"$DECUNE_LOGIN_SHELL_ENV\" >/tmp/decune-login-shell-env-probe"
+                  ]
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let image = plan.image.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-login-shell-env-probe".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "from-login-shell");
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn up_detach_removes_new_container_when_start_fails_if_docker_tests_are_enabled() {
         if !docker_tests_enabled() {
             eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");

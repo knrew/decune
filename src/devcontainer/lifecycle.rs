@@ -264,6 +264,7 @@ pub(crate) async fn run_container_lifecycle(
             context.client,
             context.container,
             &context.remote_user.user,
+            context.remote_user.shell.as_deref(),
             &context.config.devcontainer.remote_env,
             context.config.devcontainer.user_env_probe,
         )

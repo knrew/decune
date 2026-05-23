@@ -94,12 +94,14 @@ pub(crate) async fn resolve_exec_env(
     client: &DockerClient,
     container: &str,
     user: &str,
+    user_shell: Option<&str>,
     remote_env: &BTreeMap<String, String>,
     user_env_probe: Option<ResolvedUserEnvProbe>,
 ) -> Result<BTreeMap<String, String>> {
-    let Some(command) =
-        user_env_probe_command(user_env_probe.unwrap_or(ResolvedUserEnvProbe::None))
-    else {
+    let Some(command) = user_env_probe_command(
+        user_env_probe.unwrap_or(ResolvedUserEnvProbe::None),
+        user_shell,
+    ) else {
         return Ok(remote_env.clone());
     };
 
@@ -267,19 +269,22 @@ fn validate_exec_spec(spec: &ExecCommandSpec) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn user_env_probe_command(probe: ResolvedUserEnvProbe) -> Option<Vec<String>> {
+pub(crate) fn user_env_probe_command(
+    probe: ResolvedUserEnvProbe,
+    user_shell: Option<&str>,
+) -> Option<Vec<String>> {
     let flags = match probe {
         ResolvedUserEnvProbe::None => return None,
         ResolvedUserEnvProbe::LoginShell => "-lc",
         ResolvedUserEnvProbe::InteractiveShell => "-ic",
         ResolvedUserEnvProbe::LoginInteractiveShell => "-lic",
     };
+    let shell = user_shell
+        .map(str::trim)
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or("/bin/sh");
 
-    Some(vec![
-        "/bin/sh".to_owned(),
-        flags.to_owned(),
-        "env".to_owned(),
-    ])
+    Some(vec![shell.to_owned(), flags.to_owned(), "env".to_owned()])
 }
 
 pub(crate) fn parse_env_probe_output(output: &str) -> Result<BTreeMap<String, String>> {
@@ -418,13 +423,16 @@ mod tests {
 
     #[test]
     fn user_env_probe_none_has_no_command() {
-        assert_eq!(user_env_probe_command(ResolvedUserEnvProbe::None), None);
+        assert_eq!(
+            user_env_probe_command(ResolvedUserEnvProbe::None, None),
+            None
+        );
     }
 
     #[test]
     fn user_env_probe_modes_map_to_shell_flags() {
         assert_eq!(
-            user_env_probe_command(ResolvedUserEnvProbe::LoginShell),
+            user_env_probe_command(ResolvedUserEnvProbe::LoginShell, None),
             Some(vec![
                 "/bin/sh".to_owned(),
                 "-lc".to_owned(),
@@ -432,7 +440,7 @@ mod tests {
             ])
         );
         assert_eq!(
-            user_env_probe_command(ResolvedUserEnvProbe::InteractiveShell),
+            user_env_probe_command(ResolvedUserEnvProbe::InteractiveShell, None),
             Some(vec![
                 "/bin/sh".to_owned(),
                 "-ic".to_owned(),
@@ -440,10 +448,22 @@ mod tests {
             ])
         );
         assert_eq!(
-            user_env_probe_command(ResolvedUserEnvProbe::LoginInteractiveShell),
+            user_env_probe_command(ResolvedUserEnvProbe::LoginInteractiveShell, None),
             Some(vec![
                 "/bin/sh".to_owned(),
                 "-lic".to_owned(),
+                "env".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn user_env_probe_uses_remote_user_login_shell() {
+        assert_eq!(
+            user_env_probe_command(ResolvedUserEnvProbe::LoginShell, Some("/bin/bash")),
+            Some(vec![
+                "/bin/bash".to_owned(),
+                "-lc".to_owned(),
                 "env".to_owned()
             ])
         );
