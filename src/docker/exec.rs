@@ -10,7 +10,7 @@ use bollard::{
 };
 use futures_util::TryStreamExt;
 
-use crate::docker::client::DockerClient;
+use crate::{config::resolved::ResolvedUserEnvProbe, docker::client::DockerClient};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecAttachMode {
@@ -88,6 +88,42 @@ pub(crate) async fn exec_attach(
         id: exec_id,
         results,
     })
+}
+
+pub(crate) async fn resolve_exec_env(
+    client: &DockerClient,
+    container: &str,
+    user: &str,
+    user_shell: Option<&str>,
+    remote_env: &BTreeMap<String, String>,
+    user_env_probe: Option<ResolvedUserEnvProbe>,
+) -> Result<BTreeMap<String, String>> {
+    let Some(command) = user_env_probe_command(
+        user_env_probe.unwrap_or(ResolvedUserEnvProbe::None),
+        user_shell,
+    ) else {
+        return Ok(remote_env.clone());
+    };
+
+    let output = exec_capture(
+        client,
+        container,
+        &ExecCommandSpec {
+            command,
+            user: Some(user.to_owned()),
+            working_dir: None,
+            env: BTreeMap::new(),
+            tty: false,
+        },
+    )
+    .await
+    .with_context(|| format!("Failed to probe user environment in container: {container}"))?;
+    let stdout = String::from_utf8(output.stdout).with_context(|| {
+        format!("User environment probe returned non-UTF-8 output in container: {container}")
+    })?;
+    let probe_env = parse_env_probe_output(&stdout)?;
+
+    Ok(merge_probe_env(probe_env, remote_env))
 }
 
 pub(crate) fn create_exec_options(
@@ -233,6 +269,48 @@ fn validate_exec_spec(spec: &ExecCommandSpec) -> Result<()> {
     Ok(())
 }
 
+pub(crate) fn user_env_probe_command(
+    probe: ResolvedUserEnvProbe,
+    user_shell: Option<&str>,
+) -> Option<Vec<String>> {
+    let flags = match probe {
+        ResolvedUserEnvProbe::None => return None,
+        ResolvedUserEnvProbe::LoginShell => "-lc",
+        ResolvedUserEnvProbe::InteractiveShell => "-ic",
+        ResolvedUserEnvProbe::LoginInteractiveShell => "-lic",
+    };
+    let shell = user_shell
+        .map(str::trim)
+        .filter(|shell| !shell.is_empty())
+        .unwrap_or("/bin/sh");
+
+    Some(vec![shell.to_owned(), flags.to_owned(), "env".to_owned()])
+}
+
+pub(crate) fn parse_env_probe_output(output: &str) -> Result<BTreeMap<String, String>> {
+    let mut env = BTreeMap::new();
+
+    for line in output.lines() {
+        let Some((key, value)) = line.split_once('=') else {
+            continue;
+        };
+        if key.is_empty() {
+            continue;
+        }
+        env.insert(key.to_owned(), value.to_owned());
+    }
+
+    Ok(env)
+}
+
+pub(crate) fn merge_probe_env(
+    mut probe_env: BTreeMap<String, String>,
+    remote_env: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    probe_env.extend(remote_env.clone());
+    probe_env
+}
+
 fn env_entries(env: &BTreeMap<String, String>) -> Vec<String> {
     env.iter()
         .map(|(key, value)| format!("{key}={value}"))
@@ -273,8 +351,10 @@ mod tests {
 
     use super::{
         ExecAttachMode, ExecCommandSpec, ExecOutput, create_exec_options, ensure_success_exit,
-        exec_attach, exec_capture, exec_capture_output, start_exec_options,
+        exec_attach, exec_capture, exec_capture_output, merge_probe_env, parse_env_probe_output,
+        start_exec_options, user_env_probe_command,
     };
+    use crate::config::resolved::ResolvedUserEnvProbe;
     use crate::docker::{
         client::DockerClient,
         container::{remove_container, start_container},
@@ -339,6 +419,91 @@ mod tests {
         assert!(!options.detach);
         assert!(options.tty);
         assert_eq!(options.output_capacity, None);
+    }
+
+    #[test]
+    fn user_env_probe_none_has_no_command() {
+        assert_eq!(
+            user_env_probe_command(ResolvedUserEnvProbe::None, None),
+            None
+        );
+    }
+
+    #[test]
+    fn user_env_probe_modes_map_to_shell_flags() {
+        assert_eq!(
+            user_env_probe_command(ResolvedUserEnvProbe::LoginShell, None),
+            Some(vec![
+                "/bin/sh".to_owned(),
+                "-lc".to_owned(),
+                "env".to_owned()
+            ])
+        );
+        assert_eq!(
+            user_env_probe_command(ResolvedUserEnvProbe::InteractiveShell, None),
+            Some(vec![
+                "/bin/sh".to_owned(),
+                "-ic".to_owned(),
+                "env".to_owned()
+            ])
+        );
+        assert_eq!(
+            user_env_probe_command(ResolvedUserEnvProbe::LoginInteractiveShell, None),
+            Some(vec![
+                "/bin/sh".to_owned(),
+                "-lic".to_owned(),
+                "env".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn user_env_probe_uses_remote_user_login_shell() {
+        assert_eq!(
+            user_env_probe_command(ResolvedUserEnvProbe::LoginShell, Some("/bin/bash")),
+            Some(vec![
+                "/bin/bash".to_owned(),
+                "-lc".to_owned(),
+                "env".to_owned()
+            ])
+        );
+    }
+
+    #[test]
+    fn parses_env_probe_output_as_key_value_lines() {
+        let output = parse_env_probe_output(
+            "PATH=/usr/local/bin:/usr/bin\nEMPTY=\nNO_EQUALS\nSHELL=/bin/sh\n",
+        )
+        .unwrap();
+
+        assert_eq!(
+            output.get("PATH").map(String::as_str),
+            Some("/usr/local/bin:/usr/bin")
+        );
+        assert_eq!(output.get("EMPTY").map(String::as_str), Some(""));
+        assert_eq!(output.get("SHELL").map(String::as_str), Some("/bin/sh"));
+        assert!(!output.contains_key("NO_EQUALS"));
+    }
+
+    #[test]
+    fn remote_env_overrides_probe_env() {
+        let merged = merge_probe_env(
+            BTreeMap::from([
+                ("PATH".to_owned(), "/usr/bin".to_owned()),
+                ("FROM_PROBE".to_owned(), "yes".to_owned()),
+            ]),
+            &BTreeMap::from([
+                ("PATH".to_owned(), "/workspace/bin".to_owned()),
+                ("FROM_REMOTE".to_owned(), "yes".to_owned()),
+            ]),
+        );
+
+        assert_eq!(
+            merged.get("PATH").map(String::as_str),
+            Some("/workspace/bin")
+        );
+        assert_eq!(merged.get("FROM_PROBE").map(String::as_str), Some("yes"));
+        assert_eq!(merged.get("FROM_REMOTE").map(String::as_str), Some("yes"));
     }
 
     #[test]

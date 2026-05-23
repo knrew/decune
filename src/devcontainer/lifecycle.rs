@@ -18,7 +18,7 @@ use crate::{
     devcontainer::metadata::LifecycleProperty,
     docker::{
         client::DockerClient,
-        exec::{ExecCommandSpec, ExecOutput, exec_capture_output},
+        exec::{ExecCommandSpec, ExecOutput, exec_capture_output, resolve_exec_env},
         user::ResolvedRemoteUser,
     },
 };
@@ -183,6 +183,11 @@ pub(crate) struct LifecycleRunContext<'a> {
     pub(crate) remote_user: &'a ResolvedRemoteUser,
 }
 
+struct ResolvedLifecycleRunContext<'a> {
+    run: LifecycleRunContext<'a>,
+    remote_process_env: BTreeMap<String, String>,
+}
+
 pub(crate) fn lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
     match path {
         LifecycleRunPath::New => vec![
@@ -254,6 +259,18 @@ pub(crate) async fn run_container_lifecycle(
 ) -> Result<()> {
     start_host_daemon()?;
     refresh_decune_setup()?;
+    let context = ResolvedLifecycleRunContext {
+        remote_process_env: resolve_exec_env(
+            context.client,
+            context.container,
+            &context.remote_user.user,
+            context.remote_user.shell.as_deref(),
+            &context.config.devcontainer.remote_env,
+            context.config.devcontainer.user_env_probe,
+        )
+        .await?,
+        run: context,
+    };
 
     match path {
         LifecycleRunPath::New => {
@@ -305,7 +322,7 @@ pub(crate) async fn run_container_lifecycle(
 }
 
 async fn run_container_stage(
-    context: &LifecycleRunContext<'_>,
+    context: &ResolvedLifecycleRunContext<'_>,
     before_hook: HookStage,
     lifecycle_stage: LifecycleStage,
 ) -> Result<()> {
@@ -317,10 +334,10 @@ async fn run_container_stage(
 }
 
 async fn run_lifecycle_stage(
-    context: &LifecycleRunContext<'_>,
+    context: &ResolvedLifecycleRunContext<'_>,
     stage: LifecycleStage,
 ) -> Result<()> {
-    let Some(lifecycle) = &context.config.devcontainer.lifecycle else {
+    let Some(lifecycle) = &context.run.config.devcontainer.lifecycle else {
         return Ok(());
     };
     let Some(command) = lifecycle.command(stage) else {
@@ -364,10 +381,10 @@ fn run_hook_stage_without_container(
     Ok(())
 }
 
-async fn run_hook_stage(context: &LifecycleRunContext<'_>, stage: HookStage) -> Result<()> {
-    for hook in hooks_for_stage(context.config, stage) {
+async fn run_hook_stage(context: &ResolvedLifecycleRunContext<'_>, stage: HookStage) -> Result<()> {
+    for hook in hooks_for_stage(context.run.config, stage) {
         match hook.location.unwrap_or_else(|| stage.default_location()) {
-            HookLocation::Host => run_host_hook(context.workspace_root, stage, hook)?,
+            HookLocation::Host => run_host_hook(context.run.workspace_root, stage, hook)?,
             HookLocation::Container => run_container_hook(context, stage, hook).await?,
         }
     }
@@ -408,7 +425,7 @@ fn run_host_lifecycle_command_value(
 }
 
 async fn run_container_lifecycle_command(
-    context: &LifecycleRunContext<'_>,
+    context: &ResolvedLifecycleRunContext<'_>,
     stage: LifecycleStage,
     command: &LifecycleCommand,
 ) -> Result<()> {
@@ -454,16 +471,16 @@ fn run_host_hook(workspace_root: &Path, stage: HookStage, hook: &ResolvedHook) -
 }
 
 async fn run_container_hook(
-    context: &LifecycleRunContext<'_>,
+    context: &ResolvedLifecycleRunContext<'_>,
     stage: HookStage,
     hook: &ResolvedHook,
 ) -> Result<()> {
     let argv = hook_command_argv(&hook.command, hook.shell);
-    let user = hook_user(context.remote_user, hook);
+    let user = hook_user(context.run.remote_user, hook);
     let workdir = hook
         .workdir
         .clone()
-        .unwrap_or_else(|| context.workspace_folder.to_owned());
+        .unwrap_or_else(|| context.run.workspace_folder.to_owned());
 
     run_container_process(context, stage.property_name(), argv, Some((user, workdir))).await
 }
@@ -510,25 +527,25 @@ fn run_host_parallel(
 }
 
 async fn run_container_process(
-    context: &LifecycleRunContext<'_>,
+    context: &ResolvedLifecycleRunContext<'_>,
     stage_name: &str,
     command: Vec<String>,
     hook_context: Option<(String, String)>,
 ) -> Result<()> {
     let (user, working_dir) = hook_context.unwrap_or_else(|| {
         (
-            context.remote_user.user.clone(),
-            context.workspace_folder.to_owned(),
+            context.run.remote_user.user.clone(),
+            context.run.workspace_folder.to_owned(),
         )
     });
     let output = exec_capture_output(
-        context.client,
-        context.container,
+        context.run.client,
+        context.run.container,
         &ExecCommandSpec {
             command: command.clone(),
-            user: Some(user),
+            user: Some(user.clone()),
             working_dir: Some(working_dir),
-            env: lifecycle_process_env(context),
+            env: lifecycle_process_env(context, &user),
             tty: false,
         },
     )
@@ -538,8 +555,33 @@ async fn run_container_process(
     ensure_lifecycle_success(stage_name, &command, output)
 }
 
-fn lifecycle_process_env(context: &LifecycleRunContext<'_>) -> BTreeMap<String, String> {
-    context.config.devcontainer.remote_env.clone()
+fn lifecycle_process_env(
+    context: &ResolvedLifecycleRunContext<'_>,
+    user: &str,
+) -> BTreeMap<String, String> {
+    if same_container_user(user, &context.run.remote_user.user) {
+        return context.remote_process_env.clone();
+    }
+
+    context.run.config.devcontainer.remote_env.clone()
+}
+
+fn same_container_user(left: &str, right: &str) -> bool {
+    let left = docker_user_lookup_key(left);
+    let right = docker_user_lookup_key(right);
+
+    left == right || (is_root_user(left) && is_root_user(right))
+}
+
+fn docker_user_lookup_key(user: &str) -> &str {
+    user.split_once(':')
+        .map(|(name, _)| name)
+        .unwrap_or(user)
+        .trim()
+}
+
+fn is_root_user(user: &str) -> bool {
+    matches!(user, "root" | "0")
 }
 
 fn run_host_process(stage_name: &str, argv: &[String], workdir: &Path) -> Result<()> {
@@ -1165,5 +1207,12 @@ mod tests {
             host_hook_workdir(workspace_root, &absolute_hook),
             PathBuf::from("/tmp")
         );
+    }
+
+    #[test]
+    fn same_container_user_matches_group_suffix_and_root_alias() {
+        assert!(same_container_user("vscode", "vscode:shared"));
+        assert!(same_container_user("root", "0"));
+        assert!(!same_container_user("root", "vscode"));
     }
 }

@@ -46,6 +46,7 @@ pub(crate) struct RemoteUserResolveInput<'a> {
 pub(crate) struct ResolvedRemoteUser {
     pub(crate) user: String,
     pub(crate) home: String,
+    pub(crate) shell: Option<String>,
     pub(crate) source: RemoteUserSource,
     pub(crate) fallback_from: Option<String>,
 }
@@ -54,6 +55,7 @@ pub(crate) struct ResolvedRemoteUser {
 pub(crate) struct ContainerUserRecord {
     pub(crate) name: String,
     pub(crate) home: String,
+    pub(crate) shell: Option<String>,
 }
 
 pub(crate) async fn resolve_remote_user(
@@ -141,6 +143,7 @@ async fn resolve_selected_remote_user(
         return Ok(ResolvedRemoteUser {
             user: selection.user,
             home: record.home,
+            shell: record.shell,
             source: selection.source,
             fallback_from: None,
         });
@@ -162,6 +165,7 @@ async fn resolve_selected_remote_user(
     Ok(ResolvedRemoteUser {
         user: ROOT_USER.to_owned(),
         home: root.home,
+        shell: root.shell,
         source: RemoteUserSource::RootFallback,
         fallback_from: Some(selection.user),
     })
@@ -288,6 +292,7 @@ fn parse_passwd_record(line: &str) -> Result<ContainerUserRecord> {
     Ok(ContainerUserRecord {
         name: name.to_owned(),
         home: home.to_owned(),
+        shell: normalize_user(Some(fields[6])),
     })
 }
 
@@ -401,6 +406,13 @@ mod tests {
 
         assert_eq!(record.name, "vscode");
         assert_eq!(record.home, "/home/vscode");
+    }
+
+    #[test]
+    fn parses_passwd_record_login_shell() {
+        let record = parse_passwd_record("vscode:x:1000:1000::/home/vscode:/bin/bash").unwrap();
+
+        assert_eq!(record.shell.as_deref(), Some("/bin/bash"));
     }
 
     #[test]
