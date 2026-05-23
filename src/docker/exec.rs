@@ -103,6 +103,16 @@ pub(crate) async fn exec_attach_stdio(
     spec: &ExecCommandSpec,
 ) -> Result<i64> {
     let attached = exec_attach(client, container, spec).await?;
+
+    run_attached_exec_stdio(client, container, spec, attached).await
+}
+
+pub(crate) async fn run_attached_exec_stdio(
+    client: &DockerClient,
+    container: &str,
+    spec: &ExecCommandSpec,
+    attached: AttachedExec,
+) -> Result<i64> {
     let exec_id = attached.id.clone();
     let StartExecResults::Attached { output, input } = attached.results else {
         bail!("Docker exec did not attach stdio in container: {container}");

@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    future::Future,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result, bail};
 use bollard::models::ContainerSummary;
@@ -28,7 +31,7 @@ use crate::{
             devcontainer_keepalive_command, remove_container, start_container, stop_container,
             workspace_container_list_options,
         },
-        exec::{ExecCommandSpec, exec_attach_stdio, resolve_exec_env},
+        exec::{ExecCommandSpec, exec_attach, resolve_exec_env, run_attached_exec_stdio},
         image::{PullPolicy, ensure_image},
         mounts::DockerMountSpec,
         resource::DockerResources,
@@ -401,24 +404,56 @@ async fn attach_shell(client: &DockerClient, plan: &UpPlan, container_name: &str
         plan.config.devcontainer.user_env_probe,
     )
     .await?;
-    let command =
-        shell_command_candidates(plan.config.shell.as_deref(), remote_user.shell.as_deref())
-            .into_iter()
-            .next()
-            .context("No shell command candidate is available")?;
+    let candidates =
+        shell_command_candidates(plan.config.shell.as_deref(), remote_user.shell.as_deref());
+    let (spec, attached) = first_successful_shell_candidate(candidates, |command| {
+        let env = env.clone();
+        let user = remote_user.user.clone();
+        let working_dir = plan.workspace_folder.clone();
 
-    exec_attach_stdio(
-        client,
-        container_name,
-        &ExecCommandSpec {
-            command: vec![command],
-            user: Some(remote_user.user),
-            working_dir: Some(plan.workspace_folder.clone()),
-            env,
-            tty: true,
-        },
-    )
+        async move {
+            let spec = ExecCommandSpec {
+                command: vec![command],
+                user: Some(user),
+                working_dir: Some(working_dir),
+                env,
+                tty: true,
+            };
+            let attached = exec_attach(client, container_name, &spec).await?;
+
+            Ok::<_, anyhow::Error>((spec, attached))
+        }
+    })
     .await
+    .with_context(|| format!("Failed to start an attached shell in container: {container_name}"))?;
+
+    run_attached_exec_stdio(client, container_name, &spec, attached).await
+}
+
+pub(crate) async fn first_successful_shell_candidate<T, F, Fut>(
+    candidates: Vec<String>,
+    mut start_candidate: F,
+) -> Result<T>
+where
+    F: FnMut(String) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
+    if candidates.is_empty() {
+        bail!("No shell command candidate is available");
+    }
+
+    let mut failures = Vec::new();
+    for command in candidates {
+        match start_candidate(command.clone()).await {
+            Ok(result) => return Ok(result),
+            Err(error) => failures.push(format!("{command}: {error:#}")),
+        }
+    }
+
+    bail!(
+        "Failed to start any shell command candidate. Tried: {}",
+        failures.join("; ")
+    )
 }
 
 pub(crate) fn shell_command_candidates(
@@ -576,8 +611,8 @@ mod tests {
 
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
-        decide_existing_container, default_workspace_folder, list_workspace_containers,
-        run_detached_up, shell_command_candidates,
+        decide_existing_container, default_workspace_folder, first_successful_shell_candidate,
+        list_workspace_containers, run_detached_up, shell_command_candidates,
     };
 
     #[test]
@@ -613,6 +648,29 @@ mod tests {
             shell_command_candidates(None, None),
             vec!["/bin/bash".to_owned(), "/bin/sh".to_owned()]
         );
+    }
+
+    #[test]
+    fn shell_candidate_fallback_tries_next_candidate_after_start_failure() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let selected = runtime
+            .block_on(first_successful_shell_candidate(
+                vec!["/bin/bash".to_owned(), "/bin/sh".to_owned()],
+                |command| async move {
+                    if command == "/bin/bash" {
+                        anyhow::bail!("start failed");
+                    }
+
+                    Ok::<_, anyhow::Error>(command)
+                },
+            ))
+            .unwrap();
+
+        assert_eq!(selected, "/bin/sh");
     }
 
     #[test]
