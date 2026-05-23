@@ -180,15 +180,26 @@ pub(crate) struct LifecycleRunContext<'a> {
     pub(crate) config: &'a ResolvedConfig,
     pub(crate) workspace_root: &'a Path,
     pub(crate) workspace_folder: &'a str,
-    pub(crate) remote_user: &'a ResolvedRemoteUser,
+    pub(crate) remote_user: ResolvedRemoteUser,
 }
 
-struct ResolvedLifecycleRunContext<'a> {
-    run: LifecycleRunContext<'a>,
+pub(crate) struct PreparedLifecycleRunContext<'a> {
+    client: &'a DockerClient,
+    container: &'a str,
+    config: &'a ResolvedConfig,
+    workspace_root: &'a Path,
+    workspace_folder: &'a str,
+    remote_user: ResolvedRemoteUser,
     remote_process_env: BTreeMap<String, String>,
 }
 
 pub(crate) fn lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
+    let mut plan = container_start_lifecycle_plan(path);
+    plan.extend(attach_lifecycle_plan());
+    plan
+}
+
+pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
     match path {
         LifecycleRunPath::New => vec![
             LifecycleStep::Hooks(HookStage::BeforeInitialize),
@@ -211,11 +222,6 @@ pub(crate) fn lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
             LifecycleStep::Hooks(HookStage::BeforePostStart),
             LifecycleStep::Lifecycle(LifecycleStage::PostStart),
             LifecycleStep::Hooks(HookStage::AfterPostStart),
-            LifecycleStep::PortForwardingStart,
-            LifecycleStep::Hooks(HookStage::BeforePostAttach),
-            LifecycleStep::Lifecycle(LifecycleStage::PostAttach),
-            LifecycleStep::Hooks(HookStage::AfterPostAttach),
-            LifecycleStep::ShellAttach,
         ],
         LifecycleRunPath::Started => vec![
             LifecycleStep::HostDaemonStart,
@@ -224,22 +230,21 @@ pub(crate) fn lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
             LifecycleStep::Hooks(HookStage::BeforePostStart),
             LifecycleStep::Lifecycle(LifecycleStage::PostStart),
             LifecycleStep::Hooks(HookStage::AfterPostStart),
-            LifecycleStep::PortForwardingStart,
-            LifecycleStep::Hooks(HookStage::BeforePostAttach),
-            LifecycleStep::Lifecycle(LifecycleStage::PostAttach),
-            LifecycleStep::Hooks(HookStage::AfterPostAttach),
-            LifecycleStep::ShellAttach,
         ],
-        LifecycleRunPath::Running => vec![
-            LifecycleStep::HostDaemonStart,
-            LifecycleStep::DecuneSetup,
-            LifecycleStep::PortForwardingStart,
-            LifecycleStep::Hooks(HookStage::BeforePostAttach),
-            LifecycleStep::Lifecycle(LifecycleStage::PostAttach),
-            LifecycleStep::Hooks(HookStage::AfterPostAttach),
-            LifecycleStep::ShellAttach,
-        ],
+        LifecycleRunPath::Running => {
+            vec![LifecycleStep::HostDaemonStart, LifecycleStep::DecuneSetup]
+        }
     }
+}
+
+pub(crate) fn attach_lifecycle_plan() -> Vec<LifecycleStep> {
+    vec![
+        LifecycleStep::PortForwardingStart,
+        LifecycleStep::Hooks(HookStage::BeforePostAttach),
+        LifecycleStep::Lifecycle(LifecycleStage::PostAttach),
+        LifecycleStep::Hooks(HookStage::AfterPostAttach),
+        LifecycleStep::ShellAttach,
+    ]
 }
 
 pub(crate) fn run_host_initialize_lifecycle(
@@ -253,13 +258,12 @@ pub(crate) fn run_host_initialize_lifecycle(
     Ok(())
 }
 
-pub(crate) async fn run_container_lifecycle(
-    path: LifecycleRunPath,
+pub(crate) async fn prepare_container_lifecycle(
     context: LifecycleRunContext<'_>,
-) -> Result<()> {
+) -> Result<PreparedLifecycleRunContext<'_>> {
     start_host_daemon()?;
     refresh_decune_setup()?;
-    let context = ResolvedLifecycleRunContext {
+    Ok(PreparedLifecycleRunContext {
         remote_process_env: resolve_exec_env(
             context.client,
             context.container,
@@ -269,31 +273,37 @@ pub(crate) async fn run_container_lifecycle(
             context.config.devcontainer.user_env_probe,
         )
         .await?,
-        run: context,
-    };
+        client: context.client,
+        container: context.container,
+        config: context.config,
+        workspace_root: context.workspace_root,
+        workspace_folder: context.workspace_folder,
+        remote_user: context.remote_user,
+    })
+}
 
+pub(crate) async fn run_container_start_lifecycle(
+    path: LifecycleRunPath,
+    context: &PreparedLifecycleRunContext<'_>,
+) -> Result<()> {
     match path {
         LifecycleRunPath::New => {
+            run_container_stage(context, HookStage::BeforeOnCreate, LifecycleStage::OnCreate)
+                .await?;
             run_container_stage(
-                &context,
-                HookStage::BeforeOnCreate,
-                LifecycleStage::OnCreate,
-            )
-            .await?;
-            run_container_stage(
-                &context,
+                context,
                 HookStage::BeforeUpdateContent,
                 LifecycleStage::UpdateContent,
             )
             .await?;
             run_container_stage(
-                &context,
+                context,
                 HookStage::BeforePostCreate,
                 LifecycleStage::PostCreate,
             )
             .await?;
             run_container_stage(
-                &context,
+                context,
                 HookStage::BeforePostStart,
                 LifecycleStage::PostStart,
             )
@@ -301,7 +311,7 @@ pub(crate) async fn run_container_lifecycle(
         }
         LifecycleRunPath::Started => {
             run_container_stage(
-                &context,
+                context,
                 HookStage::BeforePostStart,
                 LifecycleStage::PostStart,
             )
@@ -310,9 +320,13 @@ pub(crate) async fn run_container_lifecycle(
         LifecycleRunPath::Running => {}
     }
 
+    Ok(())
+}
+
+pub(crate) async fn run_attach_lifecycle(context: &PreparedLifecycleRunContext<'_>) -> Result<()> {
     start_port_forwarding_listeners()?;
     run_container_stage(
-        &context,
+        context,
         HookStage::BeforePostAttach,
         LifecycleStage::PostAttach,
     )
@@ -322,7 +336,7 @@ pub(crate) async fn run_container_lifecycle(
 }
 
 async fn run_container_stage(
-    context: &ResolvedLifecycleRunContext<'_>,
+    context: &PreparedLifecycleRunContext<'_>,
     before_hook: HookStage,
     lifecycle_stage: LifecycleStage,
 ) -> Result<()> {
@@ -334,10 +348,10 @@ async fn run_container_stage(
 }
 
 async fn run_lifecycle_stage(
-    context: &ResolvedLifecycleRunContext<'_>,
+    context: &PreparedLifecycleRunContext<'_>,
     stage: LifecycleStage,
 ) -> Result<()> {
-    let Some(lifecycle) = &context.run.config.devcontainer.lifecycle else {
+    let Some(lifecycle) = &context.config.devcontainer.lifecycle else {
         return Ok(());
     };
     let Some(command) = lifecycle.command(stage) else {
@@ -381,10 +395,10 @@ fn run_hook_stage_without_container(
     Ok(())
 }
 
-async fn run_hook_stage(context: &ResolvedLifecycleRunContext<'_>, stage: HookStage) -> Result<()> {
-    for hook in hooks_for_stage(context.run.config, stage) {
+async fn run_hook_stage(context: &PreparedLifecycleRunContext<'_>, stage: HookStage) -> Result<()> {
+    for hook in hooks_for_stage(context.config, stage) {
         match hook.location.unwrap_or_else(|| stage.default_location()) {
-            HookLocation::Host => run_host_hook(context.run.workspace_root, stage, hook)?,
+            HookLocation::Host => run_host_hook(context.workspace_root, stage, hook)?,
             HookLocation::Container => run_container_hook(context, stage, hook).await?,
         }
     }
@@ -425,7 +439,7 @@ fn run_host_lifecycle_command_value(
 }
 
 async fn run_container_lifecycle_command(
-    context: &ResolvedLifecycleRunContext<'_>,
+    context: &PreparedLifecycleRunContext<'_>,
     stage: LifecycleStage,
     command: &LifecycleCommand,
 ) -> Result<()> {
@@ -471,16 +485,16 @@ fn run_host_hook(workspace_root: &Path, stage: HookStage, hook: &ResolvedHook) -
 }
 
 async fn run_container_hook(
-    context: &ResolvedLifecycleRunContext<'_>,
+    context: &PreparedLifecycleRunContext<'_>,
     stage: HookStage,
     hook: &ResolvedHook,
 ) -> Result<()> {
     let argv = hook_command_argv(&hook.command, hook.shell);
-    let user = hook_user(context.run.remote_user, hook);
+    let user = hook_user(&context.remote_user, hook);
     let workdir = hook
         .workdir
         .clone()
-        .unwrap_or_else(|| context.run.workspace_folder.to_owned());
+        .unwrap_or_else(|| context.workspace_folder.to_owned());
 
     run_container_process(context, stage.property_name(), argv, Some((user, workdir))).await
 }
@@ -527,20 +541,20 @@ fn run_host_parallel(
 }
 
 async fn run_container_process(
-    context: &ResolvedLifecycleRunContext<'_>,
+    context: &PreparedLifecycleRunContext<'_>,
     stage_name: &str,
     command: Vec<String>,
     hook_context: Option<(String, String)>,
 ) -> Result<()> {
     let (user, working_dir) = hook_context.unwrap_or_else(|| {
         (
-            context.run.remote_user.user.clone(),
-            context.run.workspace_folder.to_owned(),
+            context.remote_user.user.clone(),
+            context.workspace_folder.to_owned(),
         )
     });
     let output = exec_capture_output(
-        context.run.client,
-        context.run.container,
+        context.client,
+        context.container,
         &ExecCommandSpec {
             command: command.clone(),
             user: Some(user.clone()),
@@ -556,14 +570,14 @@ async fn run_container_process(
 }
 
 fn lifecycle_process_env(
-    context: &ResolvedLifecycleRunContext<'_>,
+    context: &PreparedLifecycleRunContext<'_>,
     user: &str,
 ) -> BTreeMap<String, String> {
-    if same_container_user(user, &context.run.remote_user.user) {
+    if same_container_user(user, &context.remote_user.user) {
         return context.remote_process_env.clone();
     }
 
-    context.run.config.devcontainer.remote_env.clone()
+    context.config.devcontainer.remote_env.clone()
 }
 
 fn same_container_user(left: &str, right: &str) -> bool {
@@ -1099,6 +1113,64 @@ mod tests {
             vec![
                 LifecycleStep::HostDaemonStart,
                 LifecycleStep::DecuneSetup,
+                LifecycleStep::PortForwardingStart,
+                LifecycleStep::Hooks(HookStage::BeforePostAttach),
+                LifecycleStep::Lifecycle(LifecycleStage::PostAttach),
+                LifecycleStep::Hooks(HookStage::AfterPostAttach),
+                LifecycleStep::ShellAttach,
+            ]
+        );
+    }
+
+    #[test]
+    fn lifecycle_start_phase_plans_exclude_attach_steps() {
+        assert_eq!(
+            container_start_lifecycle_plan(LifecycleRunPath::New),
+            vec![
+                LifecycleStep::Hooks(HookStage::BeforeInitialize),
+                LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+                LifecycleStep::Hooks(HookStage::AfterInitialize),
+                LifecycleStep::ImagePreparation,
+                LifecycleStep::ContainerCreate,
+                LifecycleStep::HostDaemonStart,
+                LifecycleStep::ContainerStart,
+                LifecycleStep::DecuneSetup,
+                LifecycleStep::Hooks(HookStage::BeforeOnCreate),
+                LifecycleStep::Lifecycle(LifecycleStage::OnCreate),
+                LifecycleStep::Hooks(HookStage::AfterOnCreate),
+                LifecycleStep::Hooks(HookStage::BeforeUpdateContent),
+                LifecycleStep::Lifecycle(LifecycleStage::UpdateContent),
+                LifecycleStep::Hooks(HookStage::AfterUpdateContent),
+                LifecycleStep::Hooks(HookStage::BeforePostCreate),
+                LifecycleStep::Lifecycle(LifecycleStage::PostCreate),
+                LifecycleStep::Hooks(HookStage::AfterPostCreate),
+                LifecycleStep::Hooks(HookStage::BeforePostStart),
+                LifecycleStep::Lifecycle(LifecycleStage::PostStart),
+                LifecycleStep::Hooks(HookStage::AfterPostStart),
+            ]
+        );
+        assert_eq!(
+            container_start_lifecycle_plan(LifecycleRunPath::Started),
+            vec![
+                LifecycleStep::HostDaemonStart,
+                LifecycleStep::ContainerStart,
+                LifecycleStep::DecuneSetup,
+                LifecycleStep::Hooks(HookStage::BeforePostStart),
+                LifecycleStep::Lifecycle(LifecycleStage::PostStart),
+                LifecycleStep::Hooks(HookStage::AfterPostStart),
+            ]
+        );
+        assert_eq!(
+            container_start_lifecycle_plan(LifecycleRunPath::Running),
+            vec![LifecycleStep::HostDaemonStart, LifecycleStep::DecuneSetup]
+        );
+    }
+
+    #[test]
+    fn lifecycle_attach_phase_plan_contains_forwarding_post_attach_and_shell_boundary() {
+        assert_eq!(
+            attach_lifecycle_plan(),
+            vec![
                 LifecycleStep::PortForwardingStart,
                 LifecycleStep::Hooks(HookStage::BeforePostAttach),
                 LifecycleStep::Lifecycle(LifecycleStage::PostAttach),

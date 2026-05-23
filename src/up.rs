@@ -15,7 +15,8 @@ use crate::{
     devcontainer::{
         json::DevcontainerJson,
         lifecycle::{
-            LifecycleRunContext, LifecycleRunPath, run_container_lifecycle,
+            LifecycleRunContext, LifecycleRunPath, PreparedLifecycleRunContext,
+            prepare_container_lifecycle, run_attach_lifecycle, run_container_start_lifecycle,
             run_host_initialize_lifecycle,
         },
         metadata::parse_metadata,
@@ -86,6 +87,14 @@ pub(crate) struct UpOutcome {
     pub(crate) container_id: String,
     pub(crate) container_name: String,
     pub(crate) reused: bool,
+}
+
+struct StartedUpContainer {
+    client: DockerClient,
+    workspace: Workspace,
+    plan: UpPlan,
+    outcome: UpOutcome,
+    lifecycle_path: LifecycleRunPath,
 }
 
 pub(crate) fn decide_existing_container(
@@ -179,19 +188,34 @@ pub(crate) fn build_up_plan(
 }
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
-    let (_, _, outcome) = start_up_container(options).await?;
+    let started = ensure_container_started(options).await?;
+    {
+        let lifecycle = prepare_up_lifecycle(&started).await?;
+        run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
+        run_attach_lifecycle_for_up(&lifecycle).await?;
+    }
 
-    Ok(outcome)
+    Ok(started.outcome)
 }
 
 pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
-    let (client, plan, outcome) = start_up_container(options).await?;
-    let exit_code = attach_shell(&client, &plan, &outcome.container_name).await?;
+    let started = ensure_container_started(options).await?;
+    {
+        let lifecycle = prepare_up_lifecycle(&started).await?;
+        run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
+        run_attach_lifecycle_for_up(&lifecycle).await?;
+    }
+    let exit_code = attach_shell(
+        &started.client,
+        &started.plan,
+        &started.outcome.container_name,
+    )
+    .await?;
 
     Ok(clamp_exit_code(exit_code))
 }
 
-async fn start_up_container(options: UpOptions) -> Result<(DockerClient, UpPlan, UpOutcome)> {
+async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContainer> {
     let workspace = Workspace::resolve(&options.workspace)?;
     let plan = build_up_plan(
         &workspace,
@@ -205,7 +229,7 @@ async fn start_up_container(options: UpOptions) -> Result<(DockerClient, UpPlan,
 
     match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
         ExistingContainerDecision::Create => {
-            let outcome = create_detached_container(
+            let outcome = create_and_start_container(
                 &client,
                 workspace.root(),
                 &plan,
@@ -213,11 +237,17 @@ async fn start_up_container(options: UpOptions) -> Result<(DockerClient, UpPlan,
                 options.no_cache,
             )
             .await?;
-            Ok((client, plan, outcome))
+            Ok(StartedUpContainer {
+                client,
+                workspace,
+                plan,
+                outcome,
+                lifecycle_path: LifecycleRunPath::New,
+            })
         }
         ExistingContainerDecision::Recreate { containers } => {
             recreate_existing_containers(&client, &containers).await?;
-            let outcome = create_detached_container(
+            let outcome = create_and_start_container(
                 &client,
                 workspace.root(),
                 &plan,
@@ -225,42 +255,44 @@ async fn start_up_container(options: UpOptions) -> Result<(DockerClient, UpPlan,
                 options.no_cache,
             )
             .await?;
-            Ok((client, plan, outcome))
+            Ok(StartedUpContainer {
+                client,
+                workspace,
+                plan,
+                outcome,
+                lifecycle_path: LifecycleRunPath::New,
+            })
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
-            run_lifecycle_for_container(
-                &client,
-                workspace.root(),
-                &plan,
-                &name,
-                LifecycleRunPath::Running,
-            )
-            .await?;
             ui::done(&format!("Reusing running dev container: {name}"));
-            Ok(UpOutcome {
+            let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
                 reused: true,
+            };
+            Ok(StartedUpContainer {
+                client,
+                workspace,
+                plan,
+                outcome,
+                lifecycle_path: LifecycleRunPath::Running,
             })
-            .map(|outcome| (client, plan, outcome))
         }
         ExistingContainerDecision::StartStopped { id, name } => {
             start_container(&client, &name).await?;
-            run_lifecycle_for_container(
-                &client,
-                workspace.root(),
-                &plan,
-                &name,
-                LifecycleRunPath::Started,
-            )
-            .await?;
             ui::done(&format!("Started existing dev container: {name}"));
-            Ok(UpOutcome {
+            let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
                 reused: true,
+            };
+            Ok(StartedUpContainer {
+                client,
+                workspace,
+                plan,
+                outcome,
+                lifecycle_path: LifecycleRunPath::Started,
             })
-            .map(|outcome| (client, plan, outcome))
         }
     }
 }
@@ -281,7 +313,7 @@ async fn recreate_existing_containers(
     Ok(())
 }
 
-async fn create_detached_container(
+async fn create_and_start_container(
     client: &DockerClient,
     workspace_root: &Path,
     plan: &UpPlan,
@@ -334,14 +366,6 @@ async fn create_detached_container(
     });
     let container_id = create_container(client, &spec).await?;
     start_new_container(client, &plan.resources.container_name).await?;
-    run_lifecycle_for_container(
-        client,
-        workspace_root,
-        plan,
-        &plan.resources.container_name,
-        LifecycleRunPath::New,
-    )
-    .await?;
     ui::done(&format!(
         "Started dev container: {}",
         plan.resources.container_name
@@ -354,35 +378,39 @@ async fn create_detached_container(
     })
 }
 
-async fn run_lifecycle_for_container(
-    client: &DockerClient,
-    workspace_root: &Path,
-    plan: &UpPlan,
-    container_name: &str,
-    path: LifecycleRunPath,
-) -> Result<()> {
+async fn prepare_up_lifecycle(
+    started: &StartedUpContainer,
+) -> Result<PreparedLifecycleRunContext<'_>> {
     let remote_user = resolve_remote_user(
-        client,
-        container_name,
+        &started.client,
+        &started.outcome.container_name,
         RemoteUserResolveInput {
-            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
+            explicit_remote_user: started.plan.config.devcontainer.remote_user.as_deref(),
             image_metadata_remote_user: None,
         },
     )
     .await?;
 
-    run_container_lifecycle(
-        path,
-        LifecycleRunContext {
-            client,
-            container: container_name,
-            config: &plan.config,
-            workspace_root,
-            workspace_folder: &plan.workspace_folder,
-            remote_user: &remote_user,
-        },
-    )
+    prepare_container_lifecycle(LifecycleRunContext {
+        client: &started.client,
+        container: &started.outcome.container_name,
+        config: &started.plan.config,
+        workspace_root: started.workspace.root(),
+        workspace_folder: &started.plan.workspace_folder,
+        remote_user,
+    })
     .await
+}
+
+async fn run_container_start_lifecycle_for_up(
+    started: &StartedUpContainer,
+    lifecycle: &PreparedLifecycleRunContext<'_>,
+) -> Result<()> {
+    run_container_start_lifecycle(started.lifecycle_path, lifecycle).await
+}
+
+async fn run_attach_lifecycle_for_up(lifecycle: &PreparedLifecycleRunContext<'_>) -> Result<()> {
+    run_attach_lifecycle(lifecycle).await
 }
 
 async fn attach_shell(client: &DockerClient, plan: &UpPlan, container_name: &str) -> Result<i64> {
