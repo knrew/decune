@@ -199,7 +199,11 @@ pub(crate) fn ensure_success_exit(
     ensure_success_exit_code(container, command, exit_code, output)
 }
 
-fn ensure_success_output(container: &str, command: &[String], output: &ExecOutput) -> Result<()> {
+pub(crate) fn ensure_success_output(
+    container: &str,
+    command: &[String],
+    output: &ExecOutput,
+) -> Result<()> {
     ensure_success_exit_code(container, command, output.exit_code, output)
 }
 
