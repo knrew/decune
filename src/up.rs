@@ -28,6 +28,7 @@ use crate::{
             devcontainer_keepalive_command, remove_container, start_container, stop_container,
             workspace_container_list_options,
         },
+        exec::{ExecCommandSpec, exec_attach_stdio, resolve_exec_env},
         image::{PullPolicy, ensure_image},
         mounts::DockerMountSpec,
         resource::DockerResources,
@@ -175,6 +176,19 @@ pub(crate) fn build_up_plan(
 }
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
+    let (_, _, outcome) = start_up_container(options).await?;
+
+    Ok(outcome)
+}
+
+pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
+    let (client, plan, outcome) = start_up_container(options).await?;
+    let exit_code = attach_shell(&client, &plan, &outcome.container_name).await?;
+
+    Ok(clamp_exit_code(exit_code))
+}
+
+async fn start_up_container(options: UpOptions) -> Result<(DockerClient, UpPlan, UpOutcome)> {
     let workspace = Workspace::resolve(&options.workspace)?;
     let plan = build_up_plan(
         &workspace,
@@ -188,25 +202,27 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
 
     match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
         ExistingContainerDecision::Create => {
-            create_detached_container(
+            let outcome = create_detached_container(
                 &client,
                 workspace.root(),
-                plan,
+                &plan,
                 options.pull,
                 options.no_cache,
             )
-            .await
+            .await?;
+            Ok((client, plan, outcome))
         }
         ExistingContainerDecision::Recreate { containers } => {
             recreate_existing_containers(&client, &containers).await?;
-            create_detached_container(
+            let outcome = create_detached_container(
                 &client,
                 workspace.root(),
-                plan,
+                &plan,
                 options.pull,
                 options.no_cache,
             )
-            .await
+            .await?;
+            Ok((client, plan, outcome))
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
             run_lifecycle_for_container(
@@ -223,6 +239,7 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
                 container_name: name,
                 reused: true,
             })
+            .map(|outcome| (client, plan, outcome))
         }
         ExistingContainerDecision::StartStopped { id, name } => {
             start_container(&client, &name).await?;
@@ -240,6 +257,7 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
                 container_name: name,
                 reused: true,
             })
+            .map(|outcome| (client, plan, outcome))
         }
     }
 }
@@ -263,7 +281,7 @@ async fn recreate_existing_containers(
 async fn create_detached_container(
     client: &DockerClient,
     workspace_root: &Path,
-    plan: UpPlan,
+    plan: &UpPlan,
     pull: bool,
     no_cache: bool,
 ) -> Result<UpOutcome> {
@@ -316,7 +334,7 @@ async fn create_detached_container(
     run_lifecycle_for_container(
         client,
         workspace_root,
-        &plan,
+        plan,
         &plan.resources.container_name,
         LifecycleRunPath::New,
     )
@@ -328,7 +346,7 @@ async fn create_detached_container(
 
     Ok(UpOutcome {
         container_id,
-        container_name: plan.resources.container_name,
+        container_name: plan.resources.container_name.clone(),
         reused: false,
     })
 }
@@ -362,6 +380,77 @@ async fn run_lifecycle_for_container(
         },
     )
     .await
+}
+
+async fn attach_shell(client: &DockerClient, plan: &UpPlan, container_name: &str) -> Result<i64> {
+    let remote_user = resolve_remote_user(
+        client,
+        container_name,
+        RemoteUserResolveInput {
+            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
+            image_metadata_remote_user: None,
+        },
+    )
+    .await?;
+    let env = resolve_exec_env(
+        client,
+        container_name,
+        &remote_user.user,
+        remote_user.shell.as_deref(),
+        &plan.config.devcontainer.remote_env,
+        plan.config.devcontainer.user_env_probe,
+    )
+    .await?;
+    let command =
+        shell_command_candidates(plan.config.shell.as_deref(), remote_user.shell.as_deref())
+            .into_iter()
+            .next()
+            .context("No shell command candidate is available")?;
+
+    exec_attach_stdio(
+        client,
+        container_name,
+        &ExecCommandSpec {
+            command: vec![command],
+            user: Some(remote_user.user),
+            working_dir: Some(plan.workspace_folder.clone()),
+            env,
+            tty: true,
+        },
+    )
+    .await
+}
+
+pub(crate) fn shell_command_candidates(
+    config_shell: Option<&str>,
+    remote_user_shell: Option<&str>,
+) -> Vec<String> {
+    if let Some(shell) = normalized_shell(config_shell) {
+        return vec![shell];
+    }
+
+    let mut candidates = Vec::new();
+    if let Some(shell) = normalized_shell(remote_user_shell) {
+        candidates.push(shell);
+    }
+    candidates.push("/bin/bash".to_owned());
+    candidates.push("/bin/sh".to_owned());
+    candidates.dedup();
+    candidates
+}
+
+fn normalized_shell(shell: Option<&str>) -> Option<String> {
+    shell
+        .map(str::trim)
+        .filter(|shell| !shell.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn clamp_exit_code(exit_code: i64) -> i32 {
+    match exit_code {
+        0..=255 => exit_code as i32,
+        _ => 1,
+    }
 }
 
 async fn start_new_container(client: &DockerClient, container_name: &str) -> Result<()> {
@@ -488,7 +577,7 @@ mod tests {
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
         decide_existing_container, default_workspace_folder, list_workspace_containers,
-        run_detached_up,
+        run_detached_up, shell_command_candidates,
     };
 
     #[test]
@@ -496,6 +585,34 @@ mod tests {
         let decision = decide_existing_container(&[], "hash123", false).unwrap();
 
         assert_eq!(decision, ExistingContainerDecision::Create);
+    }
+
+    #[test]
+    fn shell_candidates_prefer_config_shell() {
+        assert_eq!(
+            shell_command_candidates(Some("/bin/zsh"), Some("/bin/fish")),
+            vec!["/bin/zsh".to_owned()]
+        );
+    }
+
+    #[test]
+    fn shell_candidates_use_remote_login_shell_before_fallbacks() {
+        assert_eq!(
+            shell_command_candidates(None, Some("/bin/fish")),
+            vec![
+                "/bin/fish".to_owned(),
+                "/bin/bash".to_owned(),
+                "/bin/sh".to_owned()
+            ]
+        );
+    }
+
+    #[test]
+    fn shell_candidates_fall_back_to_bash_then_sh() {
+        assert_eq!(
+            shell_command_candidates(None, None),
+            vec!["/bin/bash".to_owned(), "/bin/sh".to_owned()]
+        );
     }
 
     #[test]

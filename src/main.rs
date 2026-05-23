@@ -6,6 +6,7 @@ mod down;
 mod error;
 mod host;
 mod state;
+mod terminal;
 mod ui;
 mod up;
 mod workspace;
@@ -15,13 +16,17 @@ use anyhow::Result;
 use crate::error::ResultExt;
 
 fn main() {
-    if let Err(error) = run() {
-        ui::error(&format!("{error:#}"));
-        std::process::exit(1);
-    }
+    let exit_code = match run() {
+        Ok(exit_code) => exit_code,
+        Err(error) => {
+            ui::error(&format!("{error:#}"));
+            1
+        }
+    };
+    std::process::exit(exit_code);
 }
 
-fn run() -> Result<()> {
+fn run() -> Result<i32> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
