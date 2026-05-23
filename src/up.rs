@@ -623,9 +623,9 @@ mod tests {
     }
 
     #[test]
-    fn shell_candidates_prefer_config_shell() {
+    fn shell_candidates_use_only_explicit_config_shell() {
         assert_eq!(
-            shell_command_candidates(Some("/bin/zsh"), Some("/bin/fish")),
+            shell_command_candidates(Some(" /bin/zsh "), Some("/bin/fish")),
             vec!["/bin/zsh".to_owned()]
         );
     }
@@ -651,7 +651,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_candidate_fallback_tries_next_candidate_after_start_failure() {
+    fn shell_candidate_fallback_tries_next_auto_candidate_after_start_failure() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()

@@ -187,6 +187,64 @@ fn up_attaches_configured_shell_and_returns_shell_exit_code_when_docker_tests_ar
 }
 
 #[test]
+fn up_config_shell_failure_does_not_fallback_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-missing-shell"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("up")
+            .arg(&workspace_root)
+            .assert()
+            .code(127)
+            .stdout(predicate::str::contains(
+                "/usr/local/bin/decune-missing-shell",
+            ))
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_builds_dockerfile_container_and_honors_dockerignore_when_docker_tests_are_enabled() {
     if support::skip_unless_docker_tests_enabled() {
         return;
