@@ -85,7 +85,8 @@ pub(crate) async fn remote_user_home(
     container: &str,
     user: &str,
 ) -> Result<String> {
-    let record = lookup_container_user(client, container, user)
+    let lookup_user = docker_user_lookup_key(user);
+    let record = lookup_container_user(client, container, lookup_user)
         .await?
         .with_context(|| format!("Remote user does not exist in container {container}: {user}"))?;
 
@@ -97,7 +98,7 @@ pub(crate) fn select_remote_user(input: RemoteUserSelectionInput<'_>) -> RemoteU
         return selection;
     }
 
-    if let Some(user) = normalize_image_config_user(input.image_config_user) {
+    if let Some(user) = normalize_user(input.image_config_user) {
         return RemoteUserSelection {
             user,
             source: RemoteUserSource::ImageConfig,
@@ -135,7 +136,8 @@ async fn resolve_selected_remote_user(
     container: &str,
     selection: RemoteUserSelection,
 ) -> Result<ResolvedRemoteUser> {
-    if let Some(record) = lookup_container_user(client, container, &selection.user).await? {
+    let lookup_user = docker_user_lookup_key(&selection.user);
+    if let Some(record) = lookup_container_user(client, container, lookup_user).await? {
         return Ok(ResolvedRemoteUser {
             user: selection.user,
             home: record.home,
@@ -246,17 +248,11 @@ fn normalize_user(value: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn normalize_image_config_user(value: Option<&str>) -> Option<String> {
-    normalize_user(value).and_then(|user| {
-        let user = user
-            .split_once(':')
-            .map(|(name, _)| name)
-            .unwrap_or(&user)
-            .trim()
-            .to_owned();
-
-        if user.is_empty() { None } else { Some(user) }
-    })
+fn docker_user_lookup_key(user: &str) -> &str {
+    user.split_once(':')
+        .map(|(name, _)| name)
+        .unwrap_or(user)
+        .trim()
 }
 
 #[cfg(test)]
@@ -319,15 +315,34 @@ mod tests {
     }
 
     #[test]
-    fn normalizes_image_config_user_group_suffix() {
+    fn preserves_image_config_user_group_suffix_for_exec_user() {
         let selected = select_remote_user(RemoteUserSelectionInput {
             explicit_remote_user: None,
             image_metadata_remote_user: None,
             image_config_user: Some("node:node"),
         });
 
-        assert_eq!(selected.user, "node");
+        assert_eq!(selected.user, "node:node");
         assert_eq!(selected.source, RemoteUserSource::ImageConfig);
+    }
+
+    #[test]
+    fn preserves_numeric_image_config_user_group_suffix_for_exec_user() {
+        let selected = select_remote_user(RemoteUserSelectionInput {
+            explicit_remote_user: None,
+            image_metadata_remote_user: None,
+            image_config_user: Some("1000:2000"),
+        });
+
+        assert_eq!(selected.user, "1000:2000");
+        assert_eq!(selected.source, RemoteUserSource::ImageConfig);
+    }
+
+    #[test]
+    fn extracts_user_part_for_container_user_lookup() {
+        assert_eq!(docker_user_lookup_key("node:shared"), "node");
+        assert_eq!(docker_user_lookup_key("1000:2000"), "1000");
+        assert_eq!(docker_user_lookup_key("vscode"), "vscode");
     }
 
     #[test]
@@ -424,6 +439,53 @@ mod tests {
                 .await?;
 
                 assert_eq!(user.user, "vscode");
+                assert_eq!(user.home, "/home/vscode");
+                assert_eq!(user.source, RemoteUserSource::ImageConfig);
+                assert_eq!(user.fallback_from, None);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn resolves_grouped_user_from_image_config_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set {DOCKER_TESTS_ENV}=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let image = test_image_tag("remote-user-grouped");
+            let name = test_container_name("remote-user-grouped");
+            let result = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                build_grouped_user_test_image(&client, &image).await?;
+                create_running_user_test_container(&client, &name, &image).await?;
+
+                let user = resolve_remote_user(
+                    &client,
+                    &name,
+                    RemoteUserResolveInput {
+                        image: &image,
+                        explicit_remote_user: None,
+                        image_metadata_remote_user: None,
+                    },
+                )
+                .await?;
+
+                assert_eq!(user.user, "vscode:shared");
                 assert_eq!(user.home, "/home/vscode");
                 assert_eq!(user.source, RemoteUserSource::ImageConfig);
                 assert_eq!(user.fallback_from, None);
@@ -557,6 +619,35 @@ mod tests {
             FROM alpine:3.20
             RUN adduser -D vscode
             USER vscode
+            "#,
+        )?;
+
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_grouped_user_test_image(client: &DockerClient, image: &str) -> Result<()> {
+        let context = tempfile::tempdir()?;
+        let dockerfile_path = context.path().join("Dockerfile");
+        std::fs::write(
+            &dockerfile_path,
+            r#"
+            FROM alpine:3.20
+            RUN adduser -D vscode && addgroup -S shared && addgroup vscode shared
+            USER vscode:shared
             "#,
         )?;
 
