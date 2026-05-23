@@ -61,12 +61,21 @@ pub(crate) async fn resolve_remote_user(
     container: &str,
     input: RemoteUserResolveInput<'_>,
 ) -> Result<ResolvedRemoteUser> {
-    let image_config_user = image_config_user(client, input.image).await?;
-    let selection = select_remote_user(RemoteUserSelectionInput {
+    let selection = match select_configured_remote_user(RemoteUserSelectionInput {
         explicit_remote_user: input.explicit_remote_user,
         image_metadata_remote_user: input.image_metadata_remote_user,
-        image_config_user: image_config_user.as_deref(),
-    });
+        image_config_user: None,
+    }) {
+        Some(selection) => selection,
+        None => {
+            let image_config_user = image_config_user(client, input.image).await?;
+            select_remote_user(RemoteUserSelectionInput {
+                explicit_remote_user: None,
+                image_metadata_remote_user: None,
+                image_config_user: image_config_user.as_deref(),
+            })
+        }
+    };
 
     resolve_selected_remote_user(client, container, selection).await
 }
@@ -84,18 +93,8 @@ pub(crate) async fn remote_user_home(
 }
 
 pub(crate) fn select_remote_user(input: RemoteUserSelectionInput<'_>) -> RemoteUserSelection {
-    if let Some(user) = normalize_user(input.explicit_remote_user) {
-        return RemoteUserSelection {
-            user,
-            source: RemoteUserSource::Explicit,
-        };
-    }
-
-    if let Some(user) = normalize_user(input.image_metadata_remote_user) {
-        return RemoteUserSelection {
-            user,
-            source: RemoteUserSource::ImageMetadata,
-        };
+    if let Some(selection) = select_configured_remote_user(input) {
+        return selection;
     }
 
     if let Some(user) = normalize_image_config_user(input.image_config_user) {
@@ -109,6 +108,26 @@ pub(crate) fn select_remote_user(input: RemoteUserSelectionInput<'_>) -> RemoteU
         user: ROOT_USER.to_owned(),
         source: RemoteUserSource::RootFallback,
     }
+}
+
+fn select_configured_remote_user(
+    input: RemoteUserSelectionInput<'_>,
+) -> Option<RemoteUserSelection> {
+    if let Some(user) = normalize_user(input.explicit_remote_user) {
+        return Some(RemoteUserSelection {
+            user,
+            source: RemoteUserSource::Explicit,
+        });
+    }
+
+    if let Some(user) = normalize_user(input.image_metadata_remote_user) {
+        return Some(RemoteUserSelection {
+            user,
+            source: RemoteUserSource::ImageMetadata,
+        });
+    }
+
+    None
 }
 
 async fn resolve_selected_remote_user(
@@ -460,6 +479,68 @@ mod tests {
 
             let cleanup = remove_container(&client, &name, true, true).await;
             result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn resolves_configured_remote_user_without_image_config_inspect_when_image_tag_is_missing() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set {DOCKER_TESTS_ENV}=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let image = test_image_tag("remote-user-missing-image");
+            let name = test_container_name("remote-user-missing-image");
+            let result = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                build_non_root_test_image(&client, &image).await?;
+                create_running_user_test_container(&client, &name, &image).await?;
+                remove_image(&client, &image, true).await?;
+
+                let explicit = resolve_remote_user(
+                    &client,
+                    &name,
+                    RemoteUserResolveInput {
+                        image: &image,
+                        explicit_remote_user: Some("vscode"),
+                        image_metadata_remote_user: None,
+                    },
+                )
+                .await?;
+                let metadata = resolve_remote_user(
+                    &client,
+                    &name,
+                    RemoteUserResolveInput {
+                        image: &image,
+                        explicit_remote_user: None,
+                        image_metadata_remote_user: Some("vscode"),
+                    },
+                )
+                .await?;
+
+                assert_eq!(explicit.user, "vscode");
+                assert_eq!(explicit.home, "/home/vscode");
+                assert_eq!(explicit.source, RemoteUserSource::Explicit);
+                assert_eq!(explicit.fallback_from, None);
+                assert_eq!(metadata.user, "vscode");
+                assert_eq!(metadata.home, "/home/vscode");
+                assert_eq!(metadata.source, RemoteUserSource::ImageMetadata);
+                assert_eq!(metadata.fallback_from, None);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
         });
     }
 
