@@ -38,7 +38,6 @@ pub(crate) struct RemoteUserSelectionInput<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoteUserResolveInput<'a> {
-    pub(crate) image: &'a str,
     pub(crate) explicit_remote_user: Option<&'a str>,
     pub(crate) image_metadata_remote_user: Option<&'a str>,
 }
@@ -69,7 +68,7 @@ pub(crate) async fn resolve_remote_user(
     }) {
         Some(selection) => selection,
         None => {
-            let image_config_user = image_config_user(client, input.image).await?;
+            let image_config_user = container_config_user(client, container).await?;
             select_remote_user(RemoteUserSelectionInput {
                 explicit_remote_user: None,
                 image_metadata_remote_user: None,
@@ -166,6 +165,34 @@ async fn resolve_selected_remote_user(
         source: RemoteUserSource::RootFallback,
         fallback_from: Some(selection.user),
     })
+}
+
+async fn container_config_user(client: &DockerClient, container: &str) -> Result<Option<String>> {
+    let inspect = client
+        .raw()
+        .inspect_container(container, None)
+        .await
+        .with_context(|| {
+            format!("Failed to inspect Docker container for remote user: {container}")
+        })?;
+
+    if let Some(user) = inspect
+        .config
+        .as_ref()
+        .and_then(|config| normalize_user(config.user.as_deref()))
+    {
+        return Ok(Some(user));
+    }
+
+    let Some(image_id) = inspect
+        .image
+        .as_deref()
+        .filter(|image| !image.trim().is_empty())
+    else {
+        return Ok(None);
+    };
+
+    image_config_user(client, image_id).await
 }
 
 async fn image_config_user(client: &DockerClient, image: &str) -> Result<Option<String>> {
@@ -443,7 +470,6 @@ mod tests {
                     &client,
                     &name,
                     RemoteUserResolveInput {
-                        image: "alpine:3.20",
                         explicit_remote_user: None,
                         image_metadata_remote_user: None,
                     },
@@ -490,7 +516,6 @@ mod tests {
                     &client,
                     &name,
                     RemoteUserResolveInput {
-                        image: &image,
                         explicit_remote_user: None,
                         image_metadata_remote_user: None,
                     },
@@ -537,7 +562,6 @@ mod tests {
                     &client,
                     &name,
                     RemoteUserResolveInput {
-                        image: &image,
                         explicit_remote_user: None,
                         image_metadata_remote_user: None,
                     },
@@ -582,7 +606,6 @@ mod tests {
                     &client,
                     &name,
                     RemoteUserResolveInput {
-                        image: "alpine:3.20",
                         explicit_remote_user: Some("missing-user"),
                         image_metadata_remote_user: None,
                     },
@@ -629,7 +652,6 @@ mod tests {
                     &client,
                     &name,
                     RemoteUserResolveInput {
-                        image: &image,
                         explicit_remote_user: Some("vscode"),
                         image_metadata_remote_user: None,
                     },
@@ -639,7 +661,6 @@ mod tests {
                     &client,
                     &name,
                     RemoteUserResolveInput {
-                        image: &image,
                         explicit_remote_user: None,
                         image_metadata_remote_user: Some("vscode"),
                     },

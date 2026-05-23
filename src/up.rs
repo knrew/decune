@@ -344,7 +344,6 @@ async fn run_lifecycle_for_container(
         client,
         container_name,
         RemoteUserResolveInput {
-            image: &plan.image,
             explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
             image_metadata_remote_user: None,
         },
@@ -483,6 +482,7 @@ mod tests {
     use crate::docker::client::DockerClient;
     use crate::docker::container::remove_container;
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
+    use crate::docker::image::remove_image;
     use crate::workspace::Workspace;
 
     use super::{
@@ -778,6 +778,84 @@ mod tests {
     }
 
     #[test]
+    fn up_detach_reuses_container_when_built_image_tag_is_removed_if_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-reuse-missing-image-tag");
+            fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+            fs::write(
+                workspace.root().join(".devcontainer/Dockerfile"),
+                r#"
+                FROM alpine:3.20
+                RUN adduser -D vscode
+                USER vscode
+                "#,
+            )
+            .unwrap();
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "build": {
+                    "dockerfile": "Dockerfile"
+                  }
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let image = plan.image.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert!(!first.reused);
+
+                remove_image(&client, &image, true).await?;
+
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert_eq!(second.container_name, container_name);
+                assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn up_detach_stops_lifecycle_after_failure_when_docker_tests_are_enabled() {
         if !docker_tests_enabled() {
             eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
@@ -840,6 +918,80 @@ mod tests {
                 .await?;
 
                 assert_eq!(String::from_utf8(output.stdout).unwrap(), "on-create");
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_detach_waits_for_parallel_lifecycle_siblings_after_failure_if_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-parallel-lifecycle-failure");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "postAttachCommand": {
+                    "a_slow": "sleep 1; printf done >/tmp/decune-parallel-lifecycle",
+                    "z_fail": "exit 7"
+                  }
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
+                assert!(message.contains("Lifecycle stage postAttachCommand.z_fail failed"));
+                assert!(message.contains("exit code 7"));
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-parallel-lifecycle".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "done");
 
                 Ok(())
             }

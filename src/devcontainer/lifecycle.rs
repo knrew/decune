@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use futures_util::future::try_join_all;
+use futures_util::future::join_all;
 use serde_json::Value;
 
 use crate::{
@@ -423,7 +423,18 @@ async fn run_container_lifecycle_command(
                 let stage_name = format!("{}.{name}", stage.property_name());
                 run_container_process(context, &stage_name, argv, None).await
             });
-            try_join_all(futures).await?;
+            let results = join_all(futures).await;
+            let mut first_error = None;
+            for result in results {
+                if let Err(error) = result
+                    && first_error.is_none()
+                {
+                    first_error = Some(error);
+                }
+            }
+            if let Some(error) = first_error {
+                return Err(error);
+            }
             Ok(())
         }
     }
