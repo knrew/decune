@@ -7,12 +7,13 @@ use anyhow::{Context, Result, bail};
 use crate::{
     docker::{
         client::DockerClient,
-        exec::{ExecCommandSpec, exec_capture_output},
+        exec::{ExecCommandSpec, ExecOutput, ensure_success_output, exec_capture_output},
     },
     ui,
 };
 
 const ROOT_USER: &str = "root";
+const USER_LOOKUP_NOT_FOUND_EXIT_CODE: i64 = 42;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteUserSource {
@@ -184,15 +185,12 @@ async fn lookup_container_user(
     container: &str,
     user: &str,
 ) -> Result<Option<ContainerUserRecord>> {
+    let command = lookup_user_command();
     let output = exec_capture_output(
         client,
         container,
         &ExecCommandSpec {
-            command: vec![
-                "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                "while IFS=: read -r name passwd uid gid gecos home shell; do if [ \"$name\" = \"$DECUNE_REMOTE_USER\" ] || [ \"$uid\" = \"$DECUNE_REMOTE_USER\" ]; then printf '%s:%s:%s:%s:%s:%s:%s\\n' \"$name\" \"$passwd\" \"$uid\" \"$gid\" \"$gecos\" \"$home\" \"$shell\"; exit 0; fi; done </etc/passwd; exit 1".to_owned(),
-            ],
+            command: command.clone(),
             user: None,
             working_dir: None,
             env: BTreeMap::from([("DECUNE_REMOTE_USER".to_owned(), user.to_owned())]),
@@ -202,8 +200,33 @@ async fn lookup_container_user(
     .await
     .with_context(|| format!("Failed to query user in container {container}: {user}"))?;
 
+    handle_user_lookup_output(container, user, &command, output)
+}
+
+fn lookup_user_command() -> Vec<String> {
+    vec![
+        "/bin/sh".to_owned(),
+        "-c".to_owned(),
+        format!(
+            "while IFS=: read -r name passwd uid gid gecos home shell; do if [ \"$name\" = \"$DECUNE_REMOTE_USER\" ] || [ \"$uid\" = \"$DECUNE_REMOTE_USER\" ]; then printf '%s:%s:%s:%s:%s:%s:%s\\n' \"$name\" \"$passwd\" \"$uid\" \"$gid\" \"$gecos\" \"$home\" \"$shell\"; exit 0; fi; done </etc/passwd; status=$?; if [ \"$status\" -eq 0 ]; then exit {USER_LOOKUP_NOT_FOUND_EXIT_CODE}; fi; exit \"$status\""
+        ),
+    ]
+}
+
+fn handle_user_lookup_output(
+    container: &str,
+    user: &str,
+    command: &[String],
+    output: ExecOutput,
+) -> Result<Option<ContainerUserRecord>> {
     if output.exit_code != 0 {
-        return Ok(None);
+        if output.exit_code == USER_LOOKUP_NOT_FOUND_EXIT_CODE {
+            return Ok(None);
+        }
+
+        if let Err(error) = ensure_success_output(container, command, &output) {
+            bail!("Failed to query user in container {container}: {user}: {error}");
+        }
     }
 
     let stdout = String::from_utf8(output.stdout).with_context(|| {
@@ -359,6 +382,42 @@ mod tests {
             parse_passwd_record("broken:x:1000:1000:::").expect_err("home must be rejected");
 
         assert!(error.to_string().contains("home directory"));
+    }
+
+    #[test]
+    fn lookup_output_returns_none_only_for_not_found_exit_code() {
+        let output = crate::docker::exec::ExecOutput {
+            stdout: Vec::new(),
+            stderr: Vec::new(),
+            exit_code: USER_LOOKUP_NOT_FOUND_EXIT_CODE,
+        };
+
+        let result = handle_user_lookup_output(
+            "test-container",
+            "missing-user",
+            &lookup_user_command(),
+            output,
+        )
+        .unwrap();
+
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn lookup_output_errors_on_lookup_exec_failure() {
+        let output = crate::docker::exec::ExecOutput {
+            stdout: b"partial output\n".to_vec(),
+            stderr: b"/bin/sh: cannot open /etc/passwd\n".to_vec(),
+            exit_code: 2,
+        };
+
+        let error =
+            handle_user_lookup_output("test-container", "vscode", &lookup_user_command(), output)
+                .expect_err("lookup failure must not be treated as missing user");
+        let message = error.to_string();
+
+        assert!(message.contains("exit code 2"));
+        assert!(message.contains("cannot open /etc/passwd"));
     }
 
     #[test]
