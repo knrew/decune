@@ -9,7 +9,14 @@ use crate::{
         resolve_config, resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource,
         types::MountType,
     },
-    devcontainer::{json::DevcontainerJson, metadata::parse_metadata},
+    devcontainer::{
+        json::DevcontainerJson,
+        lifecycle::{
+            LifecycleRunContext, LifecycleRunPath, run_container_lifecycle,
+            run_host_initialize_lifecycle,
+        },
+        metadata::parse_metadata,
+    },
     docker::{
         build::{
             DockerBuildInput, DockerBuildOptions, ResolvedBuildContext, build_hash_input,
@@ -24,6 +31,7 @@ use crate::{
         image::{PullPolicy, ensure_image},
         mounts::DockerMountSpec,
         resource::DockerResources,
+        user::{RemoteUserResolveInput, resolve_remote_user},
     },
     ui,
     workspace::Workspace,
@@ -180,13 +188,35 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
 
     match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
         ExistingContainerDecision::Create => {
-            create_detached_container(&client, plan, options.pull, options.no_cache).await
+            create_detached_container(
+                &client,
+                workspace.root(),
+                plan,
+                options.pull,
+                options.no_cache,
+            )
+            .await
         }
         ExistingContainerDecision::Recreate { containers } => {
             recreate_existing_containers(&client, &containers).await?;
-            create_detached_container(&client, plan, options.pull, options.no_cache).await
+            create_detached_container(
+                &client,
+                workspace.root(),
+                plan,
+                options.pull,
+                options.no_cache,
+            )
+            .await
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
+            run_lifecycle_for_container(
+                &client,
+                workspace.root(),
+                &plan,
+                &name,
+                LifecycleRunPath::Running,
+            )
+            .await?;
             ui::done(&format!("Reusing running dev container: {name}"));
             Ok(UpOutcome {
                 container_id: id,
@@ -196,6 +226,14 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
         }
         ExistingContainerDecision::StartStopped { id, name } => {
             start_container(&client, &name).await?;
+            run_lifecycle_for_container(
+                &client,
+                workspace.root(),
+                &plan,
+                &name,
+                LifecycleRunPath::Started,
+            )
+            .await?;
             ui::done(&format!("Started existing dev container: {name}"));
             Ok(UpOutcome {
                 container_id: id,
@@ -224,10 +262,13 @@ async fn recreate_existing_containers(
 
 async fn create_detached_container(
     client: &DockerClient,
+    workspace_root: &Path,
     plan: UpPlan,
     pull: bool,
     no_cache: bool,
 ) -> Result<UpOutcome> {
+    run_host_initialize_lifecycle(&plan.config, workspace_root)?;
+
     if let Some(context) = plan.build_context.clone() {
         let mut build_options = plan.build_options.clone();
         build_options.pull = pull;
@@ -268,10 +309,18 @@ async fn create_detached_container(
         entrypoint,
         command,
         working_dir: Some(plan.workspace_folder.clone()),
-        mounts: plan.mounts,
+        mounts: plan.mounts.clone(),
     });
     let container_id = create_container(client, &spec).await?;
     start_new_container(client, &plan.resources.container_name).await?;
+    run_lifecycle_for_container(
+        client,
+        workspace_root,
+        &plan,
+        &plan.resources.container_name,
+        LifecycleRunPath::New,
+    )
+    .await?;
     ui::done(&format!(
         "Started dev container: {}",
         plan.resources.container_name
@@ -282,6 +331,38 @@ async fn create_detached_container(
         container_name: plan.resources.container_name,
         reused: false,
     })
+}
+
+async fn run_lifecycle_for_container(
+    client: &DockerClient,
+    workspace_root: &Path,
+    plan: &UpPlan,
+    container_name: &str,
+    path: LifecycleRunPath,
+) -> Result<()> {
+    let remote_user = resolve_remote_user(
+        client,
+        container_name,
+        RemoteUserResolveInput {
+            image: &plan.image,
+            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
+            image_metadata_remote_user: None,
+        },
+    )
+    .await?;
+
+    run_container_lifecycle(
+        path,
+        LifecycleRunContext {
+            client,
+            container: container_name,
+            config: &plan.config,
+            workspace_root,
+            workspace_folder: &plan.workspace_folder,
+            remote_user: &remote_user,
+        },
+    )
+    .await
 }
 
 async fn start_new_container(client: &DockerClient, container_name: &str) -> Result<()> {
@@ -390,37 +471,18 @@ fn warn_about_deferred_features(config: &ResolvedConfig) {
     if !config.features.is_empty() {
         ui::warn("Dev Container Features are not applied yet in this milestone");
     }
-
-    if config.devcontainer.lifecycle.is_some() || has_hooks(config) {
-        ui::warn("Lifecycle commands and hooks are not run yet in this milestone");
-    }
-}
-
-fn has_hooks(config: &ResolvedConfig) -> bool {
-    let hooks = &config.hooks;
-    !hooks.before_initialize.is_empty()
-        || !hooks.after_initialize.is_empty()
-        || !hooks.before_on_create.is_empty()
-        || !hooks.after_on_create.is_empty()
-        || !hooks.before_update_content.is_empty()
-        || !hooks.after_update_content.is_empty()
-        || !hooks.before_post_create.is_empty()
-        || !hooks.after_post_create.is_empty()
-        || !hooks.before_post_start.is_empty()
-        || !hooks.after_post_start.is_empty()
-        || !hooks.before_post_attach.is_empty()
-        || !hooks.after_post_attach.is_empty()
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use crate::config::ConfigLayer;
     use crate::config::resolved::ResolvedDevcontainerSource;
     use crate::config::types::MountType;
     use crate::docker::client::DockerClient;
     use crate::docker::container::remove_container;
+    use crate::docker::exec::{ExecCommandSpec, exec_capture};
     use crate::workspace::Workspace;
 
     use super::{
@@ -705,6 +767,79 @@ mod tests {
                 .await?;
                 assert_eq!(second.container_name, container_name);
                 assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_detach_stops_lifecycle_after_failure_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-lifecycle-failure");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "onCreateCommand": "printf on-create >/tmp/decune-lifecycle; exit 7",
+                  "updateContentCommand": "printf update-content >>/tmp/decune-lifecycle"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
+                assert!(message.contains("Lifecycle stage onCreateCommand failed"));
+                assert!(message.contains("exit code 7"));
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-lifecycle".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "on-create");
 
                 Ok(())
             }
