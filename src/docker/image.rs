@@ -16,7 +16,8 @@ use serde_json::Value;
 
 use crate::ui;
 use crate::{
-    config::ConfigLayer, devcontainer::metadata::parse_metadata_layer, docker::client::DockerClient,
+    config::ConfigLayer, devcontainer::metadata::parse_image_metadata_layer,
+    docker::client::DockerClient,
 };
 
 pub(crate) const DEVCONTAINER_METADATA_LABEL: &str = "devcontainer.metadata";
@@ -170,7 +171,7 @@ async fn local_image_presence(client: &DockerClient, image: &str) -> Result<Loca
 }
 
 fn metadata_value_to_layer(image: &str, value: Value) -> Result<ConfigLayer> {
-    parse_metadata_layer(value)
+    parse_image_metadata_layer(value)
         .and_then(|metadata| metadata.to_config_layer())
         .with_context(|| {
             format!(
@@ -462,6 +463,20 @@ mod tests {
                 .as_deref(),
             Some("second-user")
         );
+    }
+
+    #[test]
+    fn image_metadata_label_rejects_initialize_command() {
+        let error = parse_devcontainer_metadata_label(
+            "example/devcontainer:latest",
+            Some(r#"{"initializeCommand": "echo image init"}"#),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("example/devcontainer:latest"));
+        assert!(message.contains("devcontainer.metadata"));
+        assert!(message.contains("initializeCommand"));
     }
 
     #[test]

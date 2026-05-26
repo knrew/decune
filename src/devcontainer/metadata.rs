@@ -23,14 +23,24 @@ pub(crate) fn parse_metadata(value: Value) -> Result<DevcontainerMetadata> {
     let raw: RawDevcontainerMetadata = serde_json::from_value(value)
         .map_err(|error| anyhow!("Failed to parse devcontainer metadata schema: {error}"))?;
 
-    raw.validate(SourceRequirement::Required)
+    raw.validate(
+        SourceRequirement::Required,
+        MetadataLayerKind::DevcontainerJson,
+    )
 }
 
 pub(crate) fn parse_metadata_layer(value: Value) -> Result<DevcontainerMetadata> {
     let raw: RawDevcontainerMetadata = serde_json::from_value(value)
         .map_err(|error| anyhow!("Failed to parse devcontainer metadata schema: {error}"))?;
 
-    raw.validate(SourceRequirement::Optional)
+    raw.validate(SourceRequirement::Optional, MetadataLayerKind::Generic)
+}
+
+pub(crate) fn parse_image_metadata_layer(value: Value) -> Result<DevcontainerMetadata> {
+    let raw: RawDevcontainerMetadata = serde_json::from_value(value)
+        .map_err(|error| anyhow!("Failed to parse devcontainer metadata schema: {error}"))?;
+
+    raw.validate(SourceRequirement::Optional, MetadataLayerKind::ImageLabel)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -438,10 +448,20 @@ struct RawDevcontainerMetadata {
 }
 
 impl RawDevcontainerMetadata {
-    fn validate(self, source_requirement: SourceRequirement) -> Result<DevcontainerMetadata> {
+    fn validate(
+        self,
+        source_requirement: SourceRequirement,
+        layer_kind: MetadataLayerKind,
+    ) -> Result<DevcontainerMetadata> {
         if self.docker_compose_file.is_some() || self.service.is_some() {
             return Err(anyhow!(
                 "Docker Compose mode is not supported in decune v0.1"
+            ));
+        }
+
+        if layer_kind == MetadataLayerKind::ImageLabel && self.initialize_command.is_some() {
+            return Err(anyhow!(
+                "Image devcontainer metadata must not specify initializeCommand"
             ));
         }
 
@@ -529,6 +549,13 @@ impl RawDevcontainerMetadata {
 enum SourceRequirement {
     Required,
     Optional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MetadataLayerKind {
+    DevcontainerJson,
+    Generic,
+    ImageLabel,
 }
 
 #[derive(Debug, Deserialize)]
@@ -723,6 +750,23 @@ mod tests {
         assert_eq!(metadata.remote_user(), Some("vscode"));
         assert_eq!(metadata.update_remote_user_uid(), Some(false));
         assert!(metadata.customizations().is_some());
+    }
+
+    #[test]
+    fn devcontainer_json_allows_initialize_command() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "initializeCommand": "scripts/init.sh"
+        }))
+        .unwrap();
+        let layer = metadata.to_config_layer().unwrap();
+        let lifecycle = layer.devcontainer.unwrap().lifecycle.unwrap();
+        let resolved = lifecycle.into_resolved();
+
+        assert_eq!(
+            resolved.command(LifecycleStage::Initialize),
+            Some(&LifecycleCommand::Shell("scripts/init.sh".to_owned()))
+        );
     }
 
     #[test]
