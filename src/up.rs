@@ -240,6 +240,46 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     }
 
+    match decide_existing_container(
+        &containers,
+        &preliminary_plan.resources.config_hash,
+        options.rebuild,
+    ) {
+        Ok(ExistingContainerDecision::ReuseRunning { id, name }) => {
+            warn_about_deferred_features(&preliminary_plan.config);
+            let outcome = UpOutcome {
+                container_id: id,
+                container_name: name,
+                reused: true,
+            };
+            return Ok(StartedUpContainer {
+                client,
+                workspace,
+                plan: preliminary_plan,
+                outcome,
+                lifecycle_path: LifecycleRunPath::Running,
+            });
+        }
+        Ok(ExistingContainerDecision::StartStopped { id, name }) => {
+            warn_about_deferred_features(&preliminary_plan.config);
+            start_container(&client, &name).await?;
+            let outcome = UpOutcome {
+                container_id: id,
+                container_name: name,
+                reused: true,
+            };
+            return Ok(StartedUpContainer {
+                client,
+                workspace,
+                plan: preliminary_plan,
+                outcome,
+                lifecycle_path: LifecycleRunPath::Started,
+            });
+        }
+        Ok(ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. })
+        | Err(_) => {}
+    }
+
     let (plan, image_prepared) = prepare_image_based_metadata(
         &client,
         &workspace,
@@ -699,7 +739,7 @@ mod tests {
     use crate::docker::client::DockerClient;
     use crate::docker::container::remove_container;
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
-    use crate::docker::image::remove_image;
+    use crate::docker::image::{PullPolicy, ensure_image, remove_image};
     use crate::workspace::Workspace;
 
     use super::{
@@ -1156,6 +1196,80 @@ mod tests {
                     no_cache: false,
                 })
                 .await?;
+                assert!(!first.reused);
+
+                remove_image(&client, &image, true).await?;
+
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert_eq!(second.container_name, container_name);
+                assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_detach_reuses_image_container_when_source_image_tag_is_removed() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-reuse-missing-source-image");
+            let image = format!(
+                "localhost:9/decune-test/reuse-source-image-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "initializeCommand": "docker tag alpine:3.20 {image}"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert_eq!(first.container_name, container_name);
                 assert!(!first.reused);
 
                 remove_image(&client, &image, true).await?;
