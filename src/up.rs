@@ -33,7 +33,10 @@ use crate::{
             workspace_container_list_options,
         },
         exec::{ExecCommandSpec, exec_attach, resolve_exec_env, run_attached_exec_stdio},
-        image::{PullPolicy, ensure_image, image_devcontainer_metadata_layers},
+        image::{
+            PullPolicy, ensure_image, image_devcontainer_metadata_layers,
+            image_devcontainer_metadata_layers_if_present,
+        },
         mounts::DockerMountSpec,
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user},
@@ -240,44 +243,50 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     }
 
-    match decide_existing_container(
-        &containers,
-        &preliminary_plan.resources.config_hash,
-        options.rebuild,
-    ) {
-        Ok(ExistingContainerDecision::ReuseRunning { id, name }) => {
-            warn_about_deferred_features(&preliminary_plan.config);
-            let outcome = UpOutcome {
-                container_id: id,
-                container_name: name,
-                reused: true,
-            };
-            return Ok(StartedUpContainer {
-                client,
-                workspace,
-                plan: preliminary_plan,
-                outcome,
-                lifecycle_path: LifecycleRunPath::Running,
-            });
+    if !options.rebuild && !containers.is_empty() {
+        let existing_plan = build_existing_container_decision_plan(
+            &client,
+            &workspace,
+            options.config_path.as_deref(),
+            options.cli_layer.clone(),
+            &preliminary_plan,
+        )
+        .await?;
+
+        match decide_existing_container(&containers, &existing_plan.resources.config_hash, false)? {
+            ExistingContainerDecision::ReuseRunning { id, name } => {
+                warn_about_deferred_features(&existing_plan.config);
+                let outcome = UpOutcome {
+                    container_id: id,
+                    container_name: name,
+                    reused: true,
+                };
+                return Ok(StartedUpContainer {
+                    client,
+                    workspace,
+                    plan: existing_plan,
+                    outcome,
+                    lifecycle_path: LifecycleRunPath::Running,
+                });
+            }
+            ExistingContainerDecision::StartStopped { id, name } => {
+                warn_about_deferred_features(&existing_plan.config);
+                start_container(&client, &name).await?;
+                let outcome = UpOutcome {
+                    container_id: id,
+                    container_name: name,
+                    reused: true,
+                };
+                return Ok(StartedUpContainer {
+                    client,
+                    workspace,
+                    plan: existing_plan,
+                    outcome,
+                    lifecycle_path: LifecycleRunPath::Started,
+                });
+            }
+            ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
         }
-        Ok(ExistingContainerDecision::StartStopped { id, name }) => {
-            warn_about_deferred_features(&preliminary_plan.config);
-            start_container(&client, &name).await?;
-            let outcome = UpOutcome {
-                container_id: id,
-                container_name: name,
-                reused: true,
-            };
-            return Ok(StartedUpContainer {
-                client,
-                workspace,
-                plan: preliminary_plan,
-                outcome,
-                lifecycle_path: LifecycleRunPath::Started,
-            });
-        }
-        Ok(ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. })
-        | Err(_) => {}
     }
 
     let (plan, image_prepared) = prepare_image_based_metadata(
@@ -357,6 +366,30 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             })
         }
     }
+}
+
+async fn build_existing_container_decision_plan(
+    client: &DockerClient,
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    preliminary_plan: &UpPlan,
+) -> Result<UpPlan> {
+    if preliminary_plan.build_context.is_some() {
+        return Ok(preliminary_plan.clone());
+    }
+
+    let Some(image_metadata) =
+        image_devcontainer_metadata_layers_if_present(client, &preliminary_plan.image).await?
+    else {
+        return Ok(preliminary_plan.clone());
+    };
+
+    if image_metadata.is_empty() {
+        return Ok(preliminary_plan.clone());
+    }
+
+    build_up_plan_with_image_metadata(workspace, explicit_config_path, cli_layer, image_metadata)
 }
 
 async fn prepare_image_based_metadata(

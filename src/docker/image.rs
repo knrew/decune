@@ -128,6 +128,26 @@ pub(crate) async fn image_devcontainer_metadata_layers(
     parse_devcontainer_metadata_label(image, label)
 }
 
+pub(crate) async fn image_devcontainer_metadata_layers_if_present(
+    client: &DockerClient,
+    image: &str,
+) -> Result<Option<Vec<ConfigLayer>>> {
+    let inspect = match client.raw().inspect_image(image).await {
+        Ok(inspect) => inspect,
+        Err(error) if is_image_not_found(&error) => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to inspect Docker image metadata: {image}"));
+        }
+    };
+    let labels = inspect.config.and_then(|config| config.labels);
+    let label = labels
+        .as_ref()
+        .and_then(|labels| labels.get(DEVCONTAINER_METADATA_LABEL).map(String::as_str));
+
+    parse_devcontainer_metadata_label(image, label).map(Some)
+}
+
 pub(crate) fn parse_devcontainer_metadata_label(
     image: &str,
     label: Option<&str>,
