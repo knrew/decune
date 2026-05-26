@@ -129,7 +129,7 @@ fn up_detach_does_not_report_started_when_lifecycle_fails_if_docker_tests_are_en
             r#"
             {
               "image": "alpine:3.20",
-              "postAttachCommand": "exit 7"
+              "postStartCommand": "exit 7"
             }
             "#,
         )
@@ -152,7 +152,7 @@ fn up_detach_does_not_report_started_when_lifecycle_fails_if_docker_tests_are_en
             .failure()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains(
-                "Lifecycle stage postAttachCommand failed",
+                "Lifecycle stage postStartCommand failed",
             ))
             .stderr(predicate::str::contains("Started dev container").not());
     });

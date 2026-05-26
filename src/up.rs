@@ -192,7 +192,6 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     {
         let lifecycle = prepare_up_lifecycle(&started).await?;
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
-        run_attach_lifecycle_for_up(&lifecycle).await?;
     }
     report_up_success(&started);
 
@@ -648,7 +647,7 @@ mod tests {
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
         decide_existing_container, default_workspace_folder, first_successful_shell_candidate,
-        list_workspace_containers, run_detached_up, shell_command_candidates,
+        list_workspace_containers, run_attached_up, run_detached_up, shell_command_candidates,
     };
 
     #[test]
@@ -1140,7 +1139,7 @@ mod tests {
     }
 
     #[test]
-    fn up_detach_waits_for_parallel_lifecycle_siblings_after_failure_if_docker_tests_are_enabled() {
+    fn up_detach_waits_for_parallel_post_start_siblings() {
         if !docker_tests_enabled() {
             eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
             return;
@@ -1158,7 +1157,7 @@ mod tests {
                 r#"
                 {
                   "image": "alpine:3.20",
-                  "postAttachCommand": {
+                  "postStartCommand": {
                     "a_slow": "sleep 1; printf done >/tmp/decune-parallel-lifecycle",
                     "z_fail": "exit 7"
                   }
@@ -1183,7 +1182,7 @@ mod tests {
                 .await
                 .unwrap_err();
                 let message = format!("{error:#}");
-                assert!(message.contains("Lifecycle stage postAttachCommand.z_fail failed"));
+                assert!(message.contains("Lifecycle stage postStartCommand.z_fail failed"));
                 assert!(message.contains("exit code 7"));
 
                 let output = exec_capture(
@@ -1214,6 +1213,246 @@ mod tests {
     }
 
     #[test]
+    fn up_detach_does_not_run_post_attach_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-detach-no-post-attach");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "postStartCommand": "printf post-start >/tmp/decune-post-start",
+                  "postAttachCommand": "printf post-attach >/tmp/decune-post-attach"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "test -f /tmp/decune-post-start && test ! -e /tmp/decune-post-attach && cat /tmp/decune-post-start".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "post-start");
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_attached_runs_post_attach_before_shell_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-attached-post-attach-before-shell");
+            fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+            fs::write(
+                workspace.root().join(".devcontainer/Dockerfile"),
+                r#"
+                FROM alpine:3.20
+                RUN printf '%s\n' \
+                  '#!/bin/sh' \
+                  'test -f /tmp/decune-post-attach-before-shell || exit 9' \
+                  'exit 0' \
+                  >/usr/local/bin/decune-shell-check \
+                  && chmod +x /usr/local/bin/decune-shell-check
+                "#,
+            )
+            .unwrap();
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "build": {
+                    "dockerfile": "Dockerfile"
+                  },
+                  "postAttachCommand": "printf ready >/tmp/decune-post-attach-before-shell"
+                }
+                "#,
+            );
+            fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+            fs::write(
+                workspace.root().join(".decune/config.toml"),
+                r#"
+version = 1
+shell = "/usr/local/bin/decune-shell-check"
+"#,
+            )
+            .unwrap();
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let image = plan.image.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                let exit_code = run_attached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert_eq!(exit_code, 0);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_running_attached_runs_post_attach_each_attach_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-running-post-attach-each-attach");
+            fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+            fs::write(
+                workspace.root().join(".devcontainer/Dockerfile"),
+                r#"
+                FROM alpine:3.20
+                RUN printf '%s\n' '#!/bin/sh' 'exit 0' >/usr/local/bin/decune-exit-0 \
+                  && chmod +x /usr/local/bin/decune-exit-0
+                "#,
+            )
+            .unwrap();
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "build": {
+                    "dockerfile": "Dockerfile"
+                  },
+                  "postAttachCommand": "count=0; if [ -f /tmp/decune-post-attach-count ]; then count=$(cat /tmp/decune-post-attach-count); fi; count=$((count + 1)); printf '%s' \"$count\" >/tmp/decune-post-attach-count"
+                }
+                "#,
+            );
+            fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+            fs::write(
+                workspace.root().join(".decune/config.toml"),
+                r#"
+version = 1
+shell = "/usr/local/bin/decune-exit-0"
+"#,
+            )
+            .unwrap();
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let image = plan.image.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                for _ in 0..2 {
+                    let exit_code = run_attached_up(UpOptions {
+                        workspace: workspace.root().to_path_buf(),
+                        config_path: None,
+                        cli_layer: ConfigLayer::default(),
+                        pull: false,
+                        rebuild: false,
+                        no_cache: false,
+                    })
+                    .await?;
+                    assert_eq!(exit_code, 0);
+                }
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-post-attach-count".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "2");
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn up_detach_applies_remote_env_to_lifecycle_when_docker_tests_are_enabled() {
         if !docker_tests_enabled() {
             eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
@@ -1235,7 +1474,7 @@ mod tests {
                   "remoteEnv": {
                     "DECUNE_REMOTE_ENV_SENTINEL": "from-remote-env"
                   },
-                  "postAttachCommand": "test \"$DECUNE_REMOTE_ENV_SENTINEL\" = from-remote-env && printf '%s' \"$DECUNE_REMOTE_ENV_SENTINEL\" >/tmp/decune-remote-env"
+                  "postStartCommand": "test \"$DECUNE_REMOTE_ENV_SENTINEL\" = from-remote-env && printf '%s' \"$DECUNE_REMOTE_ENV_SENTINEL\" >/tmp/decune-remote-env"
                 }
                 "#,
             );
@@ -1320,7 +1559,7 @@ mod tests {
                   "remoteEnv": {
                     "DECUNE_ENV_PRIORITY": "from-remote-env"
                   },
-                  "postAttachCommand": [
+                  "postStartCommand": [
                     "/bin/sh",
                     "-c",
                     "test \"$DECUNE_PROBED_ENV\" = from-profile && test \"$DECUNE_ENV_PRIORITY\" = from-remote-env && printf '%s:%s' \"$DECUNE_PROBED_ENV\" \"$DECUNE_ENV_PRIORITY\" >/tmp/decune-user-env-probe"
@@ -1379,7 +1618,7 @@ mod tests {
     }
 
     #[test]
-    fn up_detach_omits_remote_probe_env_for_root_hook_when_docker_tests_are_enabled() {
+    fn up_detach_omits_remote_probe_env_for_root_post_start_hook_when_docker_tests_are_enabled() {
         if !docker_tests_enabled() {
             eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
             return;
@@ -1428,7 +1667,7 @@ mod tests {
                 r#"
 version = 1
 
-[[hooks.before_post_attach]]
+[[hooks.before_post_start]]
 command = "test -z \"${DECUNE_REMOTE_ONLY+x}\" && test \"$DECUNE_REMOTE_ENV\" = from-remote-env && printf '%s' root-hook-clean >/tmp/decune-root-hook-env"
 user = "root"
 "#,
@@ -1519,7 +1758,7 @@ user = "root"
                   },
                   "remoteUser": "decune",
                   "userEnvProbe": "loginShell",
-                  "postAttachCommand": [
+                  "postStartCommand": [
                     "/bin/sh",
                     "-c",
                     "test \"$DECUNE_LOGIN_SHELL_ENV\" = from-login-shell && printf '%s' \"$DECUNE_LOGIN_SHELL_ENV\" >/tmp/decune-login-shell-env-probe"
