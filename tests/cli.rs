@@ -1,12 +1,14 @@
 use assert_cmd::Command;
 use bollard::{
     Docker,
-    models::{ContainerCreateBody, ContainerSummary, HostConfig, VolumeCreateRequest},
+    models::{
+        ContainerConfig, ContainerCreateBody, ContainerSummary, HostConfig, VolumeCreateRequest,
+    },
     query_parameters::{
-        CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-        ListImagesOptionsBuilder, ListVolumesOptionsBuilder, RemoveContainerOptionsBuilder,
-        RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder, StartContainerOptionsBuilder,
-        TagImageOptionsBuilder,
+        CommitContainerOptionsBuilder, CreateContainerOptionsBuilder, CreateImageOptionsBuilder,
+        ListContainersOptionsBuilder, ListImagesOptionsBuilder, ListVolumesOptionsBuilder,
+        RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder,
+        StartContainerOptionsBuilder, TagImageOptionsBuilder, WaitContainerOptionsBuilder,
     },
 };
 use futures_util::TryStreamExt;
@@ -288,6 +290,169 @@ fn up_config_shell_failure_does_not_fallback_when_docker_tests_are_enabled() {
 
     runtime.block_on(async {
         cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_uses_image_metadata_remote_user_and_remote_env_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let image_tag = format!(
+        "decune-test/image-metadata-{}:latest",
+        workspace_id(&workspace_root)
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            format!(
+                r#"
+                {{
+                  "image": "{image_tag}"
+                }}
+                "#
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-record-shell"
+            "#,
+        )
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        remove_image_if_exists(&image_tag).await.unwrap();
+        create_image_with_devcontainer_metadata(&workspace_root, &image_tag)
+            .await
+            .unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("up")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("lifecycle-user")).unwrap(),
+            "devuser\n"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("lifecycle-env")).unwrap(),
+            "label"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("shell-user")).unwrap(),
+            "devuser\n"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("shell-env")).unwrap(),
+            "label"
+        );
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_devcontainer_remote_user_overrides_image_metadata_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let image_tag = format!(
+        "decune-test/image-metadata-override-{}:latest",
+        workspace_id(&workspace_root)
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            format!(
+                r#"
+                {{
+                  "image": "{image_tag}",
+                  "remoteUser": "root"
+                }}
+                "#
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-record-shell"
+            "#,
+        )
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        remove_image_if_exists(&image_tag).await.unwrap();
+        create_image_with_devcontainer_metadata(&workspace_root, &image_tag)
+            .await
+            .unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("up")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("lifecycle-user")).unwrap(),
+            "root\n"
+        );
+        assert_eq!(
+            fs::read_to_string(workspace_root.join("shell-user")).unwrap(),
+            "root\n"
+        );
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        container_cleanup.and(image_cleanup).unwrap();
     });
 
     if let Err(payload) = result {
@@ -1183,6 +1348,109 @@ async fn create_workspace_image_tag(workspace_root: &Path, tag: &str) -> anyhow:
     docker.tag_image("alpine:3.20", Some(options)).await?;
 
     Ok(format!("{image_repository}:{tag}"))
+}
+
+async fn create_image_with_devcontainer_metadata(
+    workspace_root: &Path,
+    image_tag: &str,
+) -> anyhow::Result<()> {
+    let docker = Docker::connect_with_defaults()?;
+    ensure_alpine_image(&docker).await?;
+
+    let container_name = format!(
+        "decune-image-metadata-source-{}",
+        workspace_id(workspace_root)
+    );
+    let remove_options = RemoveContainerOptionsBuilder::default()
+        .force(true)
+        .v(true)
+        .build();
+    let _ = docker
+        .remove_container(&container_name, Some(remove_options.clone()))
+        .await;
+
+    let create_options = CreateContainerOptionsBuilder::default()
+        .name(&container_name)
+        .build();
+    let script = r#"
+        set -eu
+        adduser -D -u 1000 -h /home/devuser devuser
+        cat >/usr/local/bin/decune-record-shell <<'EOF'
+#!/bin/sh
+id -un > shell-user
+printf "%s" "$FROM_IMAGE" > shell-env
+exit 0
+EOF
+        chmod +x /usr/local/bin/decune-record-shell
+    "#;
+    let body = ContainerCreateBody {
+        image: Some("alpine:3.20".to_owned()),
+        entrypoint: Some(vec!["/bin/sh".to_owned()]),
+        cmd: Some(vec!["-c".to_owned(), script.to_owned()]),
+        ..Default::default()
+    };
+
+    docker.create_container(Some(create_options), body).await?;
+    docker
+        .start_container(
+            &container_name,
+            Some(StartContainerOptionsBuilder::default().build()),
+        )
+        .await?;
+
+    let mut wait_stream = docker.wait_container(
+        &container_name,
+        Some(WaitContainerOptionsBuilder::default().build()),
+    );
+    let wait = wait_stream
+        .try_next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("container wait stream ended before status"))?;
+    anyhow::ensure!(
+        wait.status_code == 0,
+        "image metadata fixture container exited with {}",
+        wait.status_code
+    );
+
+    let (repo, tag) = image_tag
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("test image tag must include a tag: {image_tag}"))?;
+    let metadata = r#"{"remoteUser":"devuser","remoteEnv":{"FROM_IMAGE":"label"},"postStartCommand":"id -un > lifecycle-user && printf \"$FROM_IMAGE\" > lifecycle-env"}"#;
+    let labels = HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]);
+    let commit_options = CommitContainerOptionsBuilder::default()
+        .container(&container_name)
+        .repo(repo)
+        .tag(tag)
+        .pause(false)
+        .build();
+    let config = ContainerConfig {
+        user: Some("root".to_owned()),
+        labels: Some(labels),
+        ..Default::default()
+    };
+
+    docker.commit_container(commit_options, config).await?;
+    docker
+        .remove_container(&container_name, Some(remove_options))
+        .await?;
+
+    Ok(())
+}
+
+async fn remove_image_if_exists(image: &str) -> anyhow::Result<()> {
+    let docker = Docker::connect_with_defaults()?;
+
+    if docker.inspect_image(image).await.is_err() {
+        return Ok(());
+    }
+
+    let options = RemoveImageOptionsBuilder::default()
+        .force(true)
+        .noprune(false)
+        .build();
+    docker.remove_image(image, Some(options), None).await?;
+
+    Ok(())
 }
 
 async fn create_managed_volume(workspace_root: &Path, volume_name: &str) -> anyhow::Result<()> {

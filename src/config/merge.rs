@@ -19,15 +19,13 @@ use crate::config::{
 pub(crate) fn resolve_config(input: ConfigMergeInput) -> ResolvedConfig {
     let mut accumulator = MergeAccumulator::default();
 
-    for layer in [
-        input.image_metadata,
-        input.global,
-        input.devcontainer,
-        input.project,
-        input.cli,
-    ]
-    .into_iter()
-    .flatten()
+    for layer in input.image_metadata {
+        accumulator.apply_layer(layer);
+    }
+
+    for layer in [input.global, input.devcontainer, input.project, input.cli]
+        .into_iter()
+        .flatten()
     {
         accumulator.apply_layer(layer);
     }
@@ -487,14 +485,14 @@ mod tests {
     #[test]
     fn hooks_follow_documented_layer_order() {
         let config = resolve_config(ConfigMergeInput {
-            image_metadata: Some(raw_layer(
+            image_metadata: vec![raw_layer(
                 r#"
 version = 1
 
 [[hooks.before_initialize]]
 command = "image.sh"
 "#,
-            )),
+            )],
             global: Some(raw_layer(
                 r#"
 version = 1
@@ -538,6 +536,58 @@ command = "cli.sh"
                 "project.sh",
                 "cli.sh"
             ]
+        );
+    }
+
+    #[test]
+    fn multiple_image_metadata_layers_keep_label_order_before_global_config() {
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: vec![
+                ConfigLayer {
+                    devcontainer: Some(LayerDevcontainerMetadata {
+                        remote_user: Some("first-image-user".to_owned()),
+                        ..LayerDevcontainerMetadata::default()
+                    }),
+                    ..ConfigLayer::default()
+                },
+                ConfigLayer {
+                    devcontainer: Some(LayerDevcontainerMetadata {
+                        remote_user: Some("second-image-user".to_owned()),
+                        remote_env: [("FROM_IMAGE".to_owned(), "1".to_owned())].into(),
+                        ..LayerDevcontainerMetadata::default()
+                    }),
+                    ..ConfigLayer::default()
+                },
+            ],
+            global: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    remote_env: [("FROM_GLOBAL".to_owned(), "1".to_owned())].into(),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config.devcontainer.remote_user.as_deref(),
+            Some("second-image-user")
+        );
+        assert_eq!(
+            config
+                .devcontainer
+                .remote_env
+                .get("FROM_IMAGE")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            config
+                .devcontainer
+                .remote_env
+                .get("FROM_GLOBAL")
+                .map(String::as_str),
+            Some("1")
         );
     }
 
@@ -887,13 +937,13 @@ enabled = false
         };
 
         let config = resolve_config(ConfigMergeInput {
-            image_metadata: Some(ConfigLayer {
+            image_metadata: vec![ConfigLayer {
                 devcontainer: Some(LayerDevcontainerMetadata {
                     publish_ports: vec![first.clone()],
                     ..LayerDevcontainerMetadata::default()
                 }),
                 ..ConfigLayer::default()
-            }),
+            }],
             devcontainer: Some(ConfigLayer {
                 devcontainer: Some(LayerDevcontainerMetadata {
                     publish_ports: vec![second.clone()],
@@ -1012,7 +1062,7 @@ shell = true
     #[test]
     fn scalar_without_cli_follows_documented_layer_precedence() {
         let config = resolve_config(ConfigMergeInput {
-            image_metadata: Some(raw_layer("version = 1\nshell = '/bin/image'\n")),
+            image_metadata: vec![raw_layer("version = 1\nshell = '/bin/image'\n")],
             global: Some(raw_layer("version = 1\nshell = '/bin/global'\n")),
             devcontainer: Some(raw_layer("version = 1\nshell = '/bin/devcontainer'\n")),
             project: Some(raw_layer("version = 1\nshell = '/bin/project'\n")),

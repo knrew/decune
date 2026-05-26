@@ -21,7 +21,7 @@ use crate::config::{
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ConfigMergeInput {
-    pub(crate) image_metadata: Option<ConfigLayer>,
+    pub(crate) image_metadata: Vec<ConfigLayer>,
     pub(crate) global: Option<ConfigLayer>,
     pub(crate) devcontainer: Option<ConfigLayer>,
     pub(crate) project: Option<ConfigLayer>,

@@ -924,7 +924,7 @@ mod tests {
         .unwrap();
 
         let config = resolve_config(ConfigMergeInput {
-            image_metadata: Some(metadata.to_config_layer().unwrap()),
+            image_metadata: vec![metadata.to_config_layer().unwrap()],
             ..ConfigMergeInput::default()
         });
 
@@ -1146,7 +1146,7 @@ mod tests {
         .unwrap();
 
         let config = resolve_config(ConfigMergeInput {
-            image_metadata: Some(image_metadata),
+            image_metadata: vec![image_metadata],
             devcontainer: Some(devcontainer),
             ..ConfigMergeInput::default()
         });
@@ -1298,7 +1298,7 @@ mod tests {
         .unwrap();
 
         let config = resolve_config(ConfigMergeInput {
-            image_metadata: Some(image_metadata),
+            image_metadata: vec![image_metadata],
             devcontainer: Some(devcontainer),
             ..ConfigMergeInput::default()
         });
@@ -1329,7 +1329,7 @@ mod tests {
         .unwrap();
 
         let config = resolve_config(ConfigMergeInput {
-            image_metadata: Some(image_metadata),
+            image_metadata: vec![image_metadata],
             devcontainer: Some(devcontainer),
             ..ConfigMergeInput::default()
         });
