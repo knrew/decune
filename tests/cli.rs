@@ -352,23 +352,6 @@ fn up_uses_image_metadata_remote_user_and_remote_env_when_docker_tests_are_enabl
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"));
-
-        assert_eq!(
-            fs::read_to_string(workspace_root.join("lifecycle-user")).unwrap(),
-            "devuser\n"
-        );
-        assert_eq!(
-            fs::read_to_string(workspace_root.join("lifecycle-env")).unwrap(),
-            "label"
-        );
-        assert_eq!(
-            fs::read_to_string(workspace_root.join("shell-user")).unwrap(),
-            "devuser\n"
-        );
-        assert_eq!(
-            fs::read_to_string(workspace_root.join("shell-env")).unwrap(),
-            "label"
-        );
     });
 
     runtime.block_on(async {
@@ -406,7 +389,10 @@ fn up_devcontainer_remote_user_overrides_image_metadata_when_docker_tests_are_en
                 r#"
                 {{
                   "image": "{image_tag}",
-                  "remoteUser": "root"
+                  "remoteUser": "root",
+                  "remoteEnv": {{
+                    "EXPECTED_USER": "root"
+                  }}
                 }}
                 "#
             ),
@@ -438,15 +424,6 @@ fn up_devcontainer_remote_user_overrides_image_metadata_when_docker_tests_are_en
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"));
-
-        assert_eq!(
-            fs::read_to_string(workspace_root.join("lifecycle-user")).unwrap(),
-            "root\n"
-        );
-        assert_eq!(
-            fs::read_to_string(workspace_root.join("shell-user")).unwrap(),
-            "root\n"
-        );
     });
 
     runtime.block_on(async {
@@ -1377,8 +1354,17 @@ async fn create_image_with_devcontainer_metadata(
         adduser -D -u 1000 -h /home/devuser devuser
         cat >/usr/local/bin/decune-record-shell <<'EOF'
 #!/bin/sh
-id -un > shell-user
-printf "%s" "$FROM_IMAGE" > shell-env
+set -eu
+actual_user="$(id -un)"
+expected_user="${EXPECTED_USER:-}"
+if [ "$actual_user" != "$expected_user" ]; then
+    echo "expected shell user $expected_user, got $actual_user" >&2
+    exit 11
+fi
+if [ "${FROM_IMAGE:-}" != "label" ]; then
+    echo "expected FROM_IMAGE=label, got ${FROM_IMAGE:-}" >&2
+    exit 12
+fi
 exit 0
 EOF
         chmod +x /usr/local/bin/decune-record-shell
@@ -1415,7 +1401,7 @@ EOF
     let (repo, tag) = image_tag
         .rsplit_once(':')
         .ok_or_else(|| anyhow::anyhow!("test image tag must include a tag: {image_tag}"))?;
-    let metadata = r#"{"remoteUser":"devuser","remoteEnv":{"FROM_IMAGE":"label"},"postStartCommand":"id -un > lifecycle-user && printf \"$FROM_IMAGE\" > lifecycle-env"}"#;
+    let metadata = r#"{"remoteUser":"devuser","remoteEnv":{"FROM_IMAGE":"label","EXPECTED_USER":"devuser"},"postStartCommand":"actual_user=$(id -un); expected_user=${EXPECTED_USER:-}; if [ \"$actual_user\" != \"$expected_user\" ]; then echo \"expected lifecycle user $expected_user, got $actual_user\" >&2; exit 11; fi; if [ \"${FROM_IMAGE:-}\" != \"label\" ]; then echo \"expected FROM_IMAGE=label, got ${FROM_IMAGE:-}\" >&2; exit 12; fi"}"#;
     let labels = HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]);
     let commit_options = CommitContainerOptionsBuilder::default()
         .container(&container_name)
