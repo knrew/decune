@@ -194,6 +194,7 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
         run_attach_lifecycle_for_up(&lifecycle).await?;
     }
+    report_up_success(&started);
 
     Ok(started.outcome)
 }
@@ -205,6 +206,8 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
         run_attach_lifecycle_for_up(&lifecycle).await?;
     }
+    report_up_success(&started);
+
     let exit_code = attach_shell(
         &started.client,
         &started.plan,
@@ -264,7 +267,6 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             })
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
-            ui::done(&format!("Reusing running dev container: {name}"));
             let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
@@ -280,7 +282,6 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         }
         ExistingContainerDecision::StartStopped { id, name } => {
             start_container(&client, &name).await?;
-            ui::done(&format!("Started existing dev container: {name}"));
             let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
@@ -366,16 +367,23 @@ async fn create_and_start_container(
     });
     let container_id = create_container(client, &spec).await?;
     start_new_container(client, &plan.resources.container_name).await?;
-    ui::done(&format!(
-        "Started dev container: {}",
-        plan.resources.container_name
-    ));
 
     Ok(UpOutcome {
         container_id,
         container_name: plan.resources.container_name.clone(),
         reused: false,
     })
+}
+
+fn report_up_success(started: &StartedUpContainer) {
+    let name = &started.outcome.container_name;
+    let message = match started.lifecycle_path {
+        LifecycleRunPath::New => format!("Started dev container: {name}"),
+        LifecycleRunPath::Started => format!("Started existing dev container: {name}"),
+        LifecycleRunPath::Running => format!("Reusing running dev container: {name}"),
+    };
+
+    ui::done(&message);
 }
 
 async fn prepare_up_lifecycle(

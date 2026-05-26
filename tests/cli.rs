@@ -116,6 +116,57 @@ fn up_detach_creates_and_reuses_image_container_when_docker_tests_are_enabled() 
 }
 
 #[test]
+fn up_detach_does_not_report_started_when_lifecycle_fails_if_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "postAttachCommand": "exit 7"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Lifecycle stage postAttachCommand failed",
+            ))
+            .stderr(predicate::str::contains("Started dev container").not());
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_attaches_configured_shell_and_returns_shell_exit_code_when_docker_tests_are_enabled() {
     if support::skip_unless_docker_tests_enabled() {
         return;
