@@ -235,6 +235,11 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
     )?;
 
     let client = DockerClient::connect_from_env()?;
+    let containers = list_workspace_containers(&client, workspace.id()).await?;
+    if options.rebuild || containers.is_empty() {
+        run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
+    }
+
     let (plan, image_prepared) = prepare_image_based_metadata(
         &client,
         &workspace,
@@ -246,13 +251,10 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
     .await?;
     warn_about_deferred_features(&plan.config);
 
-    let containers = list_workspace_containers(&client, workspace.id()).await?;
-
     match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
         ExistingContainerDecision::Create => {
             let outcome = create_and_start_container(
                 &client,
-                workspace.root(),
                 &plan,
                 options.pull,
                 options.no_cache,
@@ -271,7 +273,6 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             recreate_existing_containers(&client, &containers).await?;
             let outcome = create_and_start_container(
                 &client,
-                workspace.root(),
                 &plan,
                 options.pull,
                 options.no_cache,
@@ -374,14 +375,11 @@ async fn recreate_existing_containers(
 
 async fn create_and_start_container(
     client: &DockerClient,
-    workspace_root: &Path,
     plan: &UpPlan,
     pull: bool,
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    run_host_initialize_lifecycle(&plan.config, workspace_root)?;
-
     if let Some(context) = plan.build_context.clone() {
         let mut build_options = plan.build_options.clone();
         build_options.pull = pull;
