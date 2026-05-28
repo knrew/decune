@@ -803,6 +803,8 @@ async fn warn_about_unsupported_dockerfile_image_metadata(
 mod tests {
     use std::{collections::BTreeMap, fs, ops::Deref, path::PathBuf};
 
+    use anyhow::Context;
+
     use crate::config::ConfigLayer;
     use crate::config::resolved::ResolvedDevcontainerSource;
     use crate::config::types::MountType;
@@ -1878,7 +1880,7 @@ shell = "/usr/local/bin/decune-shell-check"
             let result: anyhow::Result<()> = async {
                 remove_container(&client, &container_name, true, true).await?;
 
-                run_detached_up(UpOptions {
+                let first = run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
                     cli_layer: ConfigLayer::default(),
@@ -1887,8 +1889,9 @@ shell = "/usr/local/bin/decune-shell-check"
                     no_cache: false,
                 })
                 .await?;
+                assert!(!first.reused);
 
-                run_detached_up(UpOptions {
+                let second = run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
                     cli_layer: ConfigLayer::default(),
@@ -1897,6 +1900,8 @@ shell = "/usr/local/bin/decune-shell-check"
                     no_cache: false,
                 })
                 .await?;
+                assert!(!second.reused);
+                assert_ne!(first.container_id, second.container_id);
 
                 let output = exec_capture(
                     &client,
@@ -1982,7 +1987,7 @@ shell = "/usr/local/bin/decune-shell-check"
                 remove_container(&client, &container_name, true, true).await?;
                 remove_image(&client, &image, true).await?;
 
-                run_detached_up(UpOptions {
+                let first = run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
                     cli_layer: ConfigLayer::default(),
@@ -1991,6 +1996,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     no_cache: false,
                 })
                 .await?;
+                assert!(!first.reused);
 
                 let exit_code = run_attached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
@@ -2002,6 +2008,15 @@ shell = "/usr/local/bin/decune-shell-check"
                 })
                 .await?;
                 assert_eq!(exit_code, 0);
+
+                let inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                let rebuilt_container_id = inspect
+                    .id
+                    .context("Docker inspect response did not include container id")?;
+                assert_ne!(first.container_id, rebuilt_container_id);
 
                 Ok(())
             }
