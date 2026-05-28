@@ -52,6 +52,7 @@ const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
 pub(crate) struct UpContainerSummary {
     pub(crate) id: String,
     pub(crate) name: String,
+    pub(crate) image_id: Option<String>,
     pub(crate) config_hash: Option<String>,
     pub(crate) running: bool,
 }
@@ -247,6 +248,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             &workspace,
             options.config_path.as_deref(),
             options.cli_layer.clone(),
+            containers.first().and_then(existing_container_image_id),
             &preliminary_plan,
         )
         .await?;
@@ -371,17 +373,29 @@ async fn build_existing_container_decision_plan(
     workspace: &Workspace,
     explicit_config_path: Option<&Path>,
     cli_layer: ConfigLayer,
+    existing_container_image_id: Option<&str>,
     preliminary_plan: &UpPlan,
 ) -> Result<UpPlan> {
     if preliminary_plan.build_context.is_some() {
         return Ok(preliminary_plan.clone());
     }
 
-    let Some(image_metadata) =
-        image_devcontainer_metadata_layers_if_present(client, &preliminary_plan.image).await?
-    else {
-        return Ok(preliminary_plan.clone());
-    };
+    let image_metadata =
+        match image_devcontainer_metadata_layers_if_present(client, &preliminary_plan.image).await?
+        {
+            Some(image_metadata) => image_metadata,
+            None => {
+                let Some(image_id) = existing_container_image_id else {
+                    return Ok(preliminary_plan.clone());
+                };
+                let Some(image_metadata) =
+                    image_devcontainer_metadata_layers_if_present(client, image_id).await?
+                else {
+                    return Ok(preliminary_plan.clone());
+                };
+                image_metadata
+            }
+        };
 
     if image_metadata.is_empty() {
         return Ok(preliminary_plan.clone());
@@ -749,9 +763,17 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
     Some(UpContainerSummary {
         id,
         name,
+        image_id: container.image_id,
         config_hash,
         running,
     })
+}
+
+fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
+    container
+        .image_id
+        .as_deref()
+        .filter(|image_id| !image_id.trim().is_empty())
 }
 
 fn warn_about_deferred_features(config: &ResolvedConfig) {
@@ -843,6 +865,7 @@ mod tests {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
+            image_id: None,
             config_hash: Some("hash123".to_owned()),
             running: true,
         };
@@ -863,6 +886,7 @@ mod tests {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
+            image_id: None,
             config_hash: Some("hash123".to_owned()),
             running: false,
         };
@@ -883,6 +907,7 @@ mod tests {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
+            image_id: None,
             config_hash: Some("old-hash".to_owned()),
             running: true,
         };
@@ -897,6 +922,7 @@ mod tests {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
+            image_id: None,
             config_hash: Some("old-hash".to_owned()),
             running: true,
         };
