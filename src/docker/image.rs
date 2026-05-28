@@ -148,6 +148,23 @@ pub(crate) async fn image_devcontainer_metadata_layers_if_present(
     parse_devcontainer_metadata_label(image, label).map(Some)
 }
 
+pub(crate) async fn image_has_devcontainer_metadata_label_if_present(
+    client: &DockerClient,
+    image: &str,
+) -> Result<Option<bool>> {
+    let inspect = match client.raw().inspect_image(image).await {
+        Ok(inspect) => inspect,
+        Err(error) if is_image_not_found(&error) => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to inspect Docker image metadata: {image}"));
+        }
+    };
+    let labels = inspect.config.and_then(|config| config.labels);
+
+    Ok(Some(has_devcontainer_metadata_label(labels.as_ref())))
+}
+
 pub(crate) fn parse_devcontainer_metadata_label(
     image: &str,
     label: Option<&str>,
@@ -178,6 +195,10 @@ pub(crate) fn parse_devcontainer_metadata_label(
             "Docker image label {DEVCONTAINER_METADATA_LABEL} for image {image} must be a JSON object or array"
         ),
     }
+}
+
+fn has_devcontainer_metadata_label(labels: Option<&HashMap<String, String>>) -> bool {
+    labels.is_some_and(|labels| labels.contains_key(DEVCONTAINER_METADATA_LABEL))
 }
 
 async fn local_image_presence(client: &DockerClient, image: &str) -> Result<LocalImagePresence> {
@@ -291,14 +312,16 @@ fn progress_detail_line(progress_detail: &bollard::models::ProgressDetail) -> Op
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use bollard::models::{CreateImageInfo, ProgressDetail};
 
     use crate::docker::client::DockerClient;
 
     use super::{
         ImagePullOutcome, LocalImagePresence, PullPolicy, create_image_options_for_pull,
-        ensure_image, image_tags_for_repository, parse_devcontainer_metadata_label, progress_line,
-        should_pull_image,
+        ensure_image, has_devcontainer_metadata_label, image_tags_for_repository,
+        parse_devcontainer_metadata_label, progress_line, should_pull_image,
     };
 
     #[test]
@@ -412,6 +435,16 @@ mod tests {
                 "decune/project-abc123:hash2".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn detects_devcontainer_metadata_label_without_parsing_value() {
+        let labels = HashMap::from([(
+            "devcontainer.metadata".to_owned(),
+            "not necessarily valid json".to_owned(),
+        )]);
+
+        assert!(has_devcontainer_metadata_label(Some(&labels)));
     }
 
     #[test]

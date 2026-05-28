@@ -36,6 +36,7 @@ use crate::{
         image::{
             PullPolicy, ensure_image, image_devcontainer_metadata_layers,
             image_devcontainer_metadata_layers_if_present,
+            image_has_devcontainer_metadata_label_if_present,
         },
         mounts::DockerMountSpec,
         resource::DockerResources,
@@ -377,6 +378,8 @@ async fn build_existing_container_decision_plan(
     preliminary_plan: &UpPlan,
 ) -> Result<UpPlan> {
     if preliminary_plan.build_context.is_some() {
+        let image = existing_container_image_id.unwrap_or(&preliminary_plan.image);
+        warn_about_unsupported_dockerfile_image_metadata(client, image).await?;
         return Ok(preliminary_plan.clone());
     }
 
@@ -479,6 +482,7 @@ async fn create_and_start_container(
             },
         )
         .await?;
+        warn_about_unsupported_dockerfile_image_metadata(client, &plan.image).await?;
     } else if !image_prepared {
         ensure_image(
             client,
@@ -780,6 +784,19 @@ fn warn_about_deferred_features(config: &ResolvedConfig) {
     if !config.features.is_empty() {
         ui::warn("Dev Container Features are not applied yet in this milestone");
     }
+}
+
+async fn warn_about_unsupported_dockerfile_image_metadata(
+    client: &DockerClient,
+    image: &str,
+) -> Result<()> {
+    if image_has_devcontainer_metadata_label_if_present(client, image).await? == Some(true) {
+        ui::warn(&format!(
+            "Dockerfile image label devcontainer.metadata is not merged in decune v0.1: {image}. Move this metadata to devcontainer.json or use an image-based devcontainer."
+        ));
+    }
+
+    Ok(())
 }
 
 #[cfg(test)]
