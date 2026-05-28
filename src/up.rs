@@ -801,13 +801,15 @@ async fn warn_about_unsupported_dockerfile_image_metadata(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::PathBuf};
+    use std::{collections::BTreeMap, fs, ops::Deref, path::PathBuf};
+
+    use anyhow::Context;
 
     use crate::config::ConfigLayer;
     use crate::config::resolved::ResolvedDevcontainerSource;
     use crate::config::types::MountType;
     use crate::docker::client::DockerClient;
-    use crate::docker::container::remove_container;
+    use crate::docker::container::{remove_container, stop_container};
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
     use crate::docker::image::{PullPolicy, ensure_image, remove_image};
     use crate::workspace::Workspace;
@@ -1758,6 +1760,275 @@ shell = "/usr/local/bin/decune-exit-0"
     }
 
     #[test]
+    fn up_attached_stopped_runs_start_attach_shell_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-stopped-attached-lifecycle");
+            fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+            fs::write(
+                workspace.root().join(".devcontainer/Dockerfile"),
+                r#"
+                FROM alpine:3.20
+                RUN printf '%s\n' \
+                  '#!/bin/sh' \
+                  'test "$(cat /tmp/decune-stopped-attach-matrix)" = "ssa" || exit 9' \
+                  'exit 0' \
+                  >/usr/local/bin/decune-shell-check \
+                  && chmod +x /usr/local/bin/decune-shell-check
+                "#,
+            )
+            .unwrap();
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "build": {
+                    "dockerfile": "Dockerfile"
+                  },
+                  "postStartCommand": "printf s >>/tmp/decune-stopped-attach-matrix",
+                  "postAttachCommand": "printf a >>/tmp/decune-stopped-attach-matrix"
+                }
+                "#,
+            );
+            fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+            fs::write(
+                workspace.root().join(".decune/config.toml"),
+                r#"
+version = 1
+shell = "/usr/local/bin/decune-shell-check"
+"#,
+            )
+            .unwrap();
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let image = plan.image.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                stop_container(&client, &container_name, 10).await?;
+
+                let exit_code = run_attached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert_eq!(exit_code, 0);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn rebuild_detach_recreates_without_post_attach_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-rebuild-detach-no-post-attach");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "postStartCommand": "printf post-start >/tmp/decune-rebuild-post-start",
+                  "postAttachCommand": "printf post-attach >/tmp/decune-rebuild-post-attach"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert!(!first.reused);
+
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: true,
+                    no_cache: false,
+                })
+                .await?;
+                assert!(!second.reused);
+                assert_ne!(first.container_id, second.container_id);
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "test -f /tmp/decune-rebuild-post-start && test ! -e /tmp/decune-rebuild-post-attach && cat /tmp/decune-rebuild-post-start".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "post-start");
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn rebuild_attached_recreates_runs_post_attach_before_shell_when_docker_tests_are_enabled() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-rebuild-attached-post-attach");
+            fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+            fs::write(
+                workspace.root().join(".devcontainer/Dockerfile"),
+                r#"
+                FROM alpine:3.20
+                RUN printf '%s\n' \
+                  '#!/bin/sh' \
+                  'test -f /tmp/decune-rebuild-post-attach-before-shell || exit 9' \
+                  'exit 0' \
+                  >/usr/local/bin/decune-shell-check \
+                  && chmod +x /usr/local/bin/decune-shell-check
+                "#,
+            )
+            .unwrap();
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "build": {
+                    "dockerfile": "Dockerfile"
+                  },
+                  "postAttachCommand": "printf ready >/tmp/decune-rebuild-post-attach-before-shell"
+                }
+                "#,
+            );
+            fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+            fs::write(
+                workspace.root().join(".decune/config.toml"),
+                r#"
+version = 1
+shell = "/usr/local/bin/decune-shell-check"
+"#,
+            )
+            .unwrap();
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let image = plan.image.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert!(!first.reused);
+
+                let exit_code = run_attached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: true,
+                    no_cache: false,
+                })
+                .await?;
+                assert_eq!(exit_code, 0);
+
+                let inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                let rebuilt_container_id = inspect
+                    .id
+                    .context("Docker inspect response did not include container id")?;
+                assert_ne!(first.container_id, rebuilt_container_id);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn up_detach_applies_remote_env_to_lifecycle_when_docker_tests_are_enabled() {
         if !docker_tests_enabled() {
             eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
@@ -2180,18 +2451,31 @@ user = "root"
         });
     }
 
-    fn test_workspace(name: &str) -> Workspace {
-        let root = temp_root(name);
-        Workspace::resolve(&root).unwrap()
+    struct TestWorkspace {
+        _directory: tempfile::TempDir,
+        workspace: Workspace,
     }
 
-    fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir()
-            .join(format!("decune-up-test-{}", std::process::id()))
-            .join(name);
-        let _ = fs::remove_dir_all(&root);
+    impl Deref for TestWorkspace {
+        type Target = Workspace;
+
+        fn deref(&self) -> &Self::Target {
+            &self.workspace
+        }
+    }
+
+    fn test_workspace(name: &str) -> TestWorkspace {
+        let directory = tempfile::Builder::new()
+            .prefix(&format!("decune-up-test-{name}-"))
+            .tempdir()
+            .unwrap();
+        let root = directory.path().join(name);
         fs::create_dir_all(&root).unwrap();
-        root
+        let workspace = Workspace::resolve(&root).unwrap();
+        TestWorkspace {
+            _directory: directory,
+            workspace,
+        }
     }
 
     fn write_devcontainer(workspace: &Workspace, contents: &str) {
