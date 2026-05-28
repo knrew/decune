@@ -207,8 +207,8 @@ pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<Life
             LifecycleStep::Hooks(HookStage::AfterInitialize),
             LifecycleStep::ImagePreparation,
             LifecycleStep::ContainerCreate,
-            LifecycleStep::HostDaemonStart,
             LifecycleStep::ContainerStart,
+            LifecycleStep::HostDaemonStart,
             LifecycleStep::DecuneSetup,
             LifecycleStep::Hooks(HookStage::BeforeOnCreate),
             LifecycleStep::Lifecycle(LifecycleStage::OnCreate),
@@ -227,8 +227,8 @@ pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<Life
             LifecycleStep::Hooks(HookStage::BeforeInitialize),
             LifecycleStep::Lifecycle(LifecycleStage::Initialize),
             LifecycleStep::Hooks(HookStage::AfterInitialize),
-            LifecycleStep::HostDaemonStart,
             LifecycleStep::ContainerStart,
+            LifecycleStep::HostDaemonStart,
             LifecycleStep::DecuneSetup,
             LifecycleStep::Hooks(HookStage::BeforePostStart),
             LifecycleStep::Lifecycle(LifecycleStage::PostStart),
@@ -1073,8 +1073,8 @@ mod tests {
                 LifecycleStep::Hooks(HookStage::AfterInitialize),
                 LifecycleStep::ImagePreparation,
                 LifecycleStep::ContainerCreate,
-                LifecycleStep::HostDaemonStart,
                 LifecycleStep::ContainerStart,
+                LifecycleStep::HostDaemonStart,
                 LifecycleStep::DecuneSetup,
                 LifecycleStep::Hooks(HookStage::BeforeOnCreate),
                 LifecycleStep::Lifecycle(LifecycleStage::OnCreate),
@@ -1105,8 +1105,8 @@ mod tests {
                 LifecycleStep::Hooks(HookStage::BeforeInitialize),
                 LifecycleStep::Lifecycle(LifecycleStage::Initialize),
                 LifecycleStep::Hooks(HookStage::AfterInitialize),
-                LifecycleStep::HostDaemonStart,
                 LifecycleStep::ContainerStart,
+                LifecycleStep::HostDaemonStart,
                 LifecycleStep::DecuneSetup,
                 LifecycleStep::Hooks(HookStage::BeforePostStart),
                 LifecycleStep::Lifecycle(LifecycleStage::PostStart),
@@ -1145,8 +1145,8 @@ mod tests {
                 LifecycleStep::Hooks(HookStage::AfterInitialize),
                 LifecycleStep::ImagePreparation,
                 LifecycleStep::ContainerCreate,
-                LifecycleStep::HostDaemonStart,
                 LifecycleStep::ContainerStart,
+                LifecycleStep::HostDaemonStart,
                 LifecycleStep::DecuneSetup,
                 LifecycleStep::Hooks(HookStage::BeforeOnCreate),
                 LifecycleStep::Lifecycle(LifecycleStage::OnCreate),
@@ -1168,8 +1168,8 @@ mod tests {
                 LifecycleStep::Hooks(HookStage::BeforeInitialize),
                 LifecycleStep::Lifecycle(LifecycleStage::Initialize),
                 LifecycleStep::Hooks(HookStage::AfterInitialize),
-                LifecycleStep::HostDaemonStart,
                 LifecycleStep::ContainerStart,
+                LifecycleStep::HostDaemonStart,
                 LifecycleStep::DecuneSetup,
                 LifecycleStep::Hooks(HookStage::BeforePostStart),
                 LifecycleStep::Lifecycle(LifecycleStage::PostStart),
@@ -1246,6 +1246,33 @@ mod tests {
         let message = format!("{error:#}");
         assert!(message.contains("Lifecycle stage initializeCommand.a_fail failed"));
         assert!(marker.exists());
+    }
+
+    #[test]
+    fn host_lifecycle_failure_reports_command_exit_code_and_output_tails() {
+        let workspace = tempfile::Builder::new()
+            .prefix("decune-host-lifecycle-failure-")
+            .tempdir()
+            .unwrap();
+        let command = LifecycleCommand::Shell(
+            "printf stdout-sentinel; printf stderr-sentinel >&2; exit 7".to_owned(),
+        );
+
+        let error = run_host_lifecycle_command_value(
+            workspace.path(),
+            LifecycleStage::Initialize,
+            &command,
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("Lifecycle stage initializeCommand failed"));
+        assert!(message.contains(
+            "command `/bin/sh -lc printf stdout-sentinel; printf stderr-sentinel >&2; exit 7`"
+        ));
+        assert!(message.contains("exit code 7"));
+        assert!(message.contains("stdout tail: `stdout-sentinel`"));
+        assert!(message.contains("stderr tail: `stderr-sentinel`"));
     }
 
     #[test]

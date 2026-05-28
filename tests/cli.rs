@@ -366,6 +366,93 @@ fn up_attaches_configured_shell_and_returns_shell_exit_code_when_docker_tests_ar
 }
 
 #[test]
+fn up_attached_shell_receives_user_env_probe_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'export DECUNE_PROBED_FOR_ATTACH=from-login-shell' \
+              'exec /bin/sh "$@"' \
+              >/usr/local/bin/decune-probe-shell \
+              && chmod +x /usr/local/bin/decune-probe-shell \
+              && adduser -D -s /usr/local/bin/decune-probe-shell decune \
+              && printf '%s\n' \
+              '#!/bin/sh' \
+              'test "$DECUNE_PROBED_FOR_ATTACH" = "from-login-shell" || exit 9' \
+              'test "$DECUNE_REMOTE_ENV_FOR_ATTACH" = "from-remote-env" || exit 10' \
+              'exit 0' \
+              >/usr/local/bin/decune-shell-check \
+              && chmod +x /usr/local/bin/decune-shell-check
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteUser": "decune",
+              "userEnvProbe": "loginShell",
+              "remoteEnv": {
+                "DECUNE_REMOTE_ENV_FOR_ATTACH": "from-remote-env"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-shell-check"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("up")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_config_shell_failure_does_not_fallback_when_docker_tests_are_enabled() {
     if support::skip_unless_docker_tests_enabled() {
         return;
