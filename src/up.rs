@@ -38,7 +38,7 @@ use crate::{
             image_devcontainer_metadata_layers_if_present,
             image_has_devcontainer_metadata_label_if_present,
         },
-        mounts::DockerMountSpec,
+        mounts::{DockerMountSpec, config_mount_specs},
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user},
     },
@@ -159,10 +159,14 @@ pub(crate) fn build_up_plan_with_image_metadata(
     let devcontainer_json = DevcontainerJson::load(workspace.root(), explicit_config_path)?;
     let metadata = parse_metadata(devcontainer_json.value().clone())?;
     let devcontainer_layer = metadata.to_config_layer()?;
-    let global_layer =
-        ConfigLayer::from_raw_decune(load_config_file(workspace.paths().global_config_path())?);
-    let project_layer =
-        ConfigLayer::from_raw_decune(load_config_file(workspace.paths().project_config_path())?);
+    let global_layer = ConfigLayer::from_raw_decune_with_origin(
+        load_config_file(workspace.paths().global_config_path())?,
+        crate::config::path::ConfigPathOrigin::Global,
+    );
+    let project_layer = ConfigLayer::from_raw_decune_with_origin(
+        load_config_file(workspace.paths().project_config_path())?,
+        crate::config::path::ConfigPathOrigin::Project,
+    );
     let config = resolve_config(ConfigMergeInput {
         image_metadata,
         global: Some(global_layer),
@@ -188,7 +192,8 @@ pub(crate) fn build_up_plan_with_image_metadata(
         .workspace_folder
         .clone()
         .unwrap_or_else(|| default_workspace_folder(workspace));
-    let mounts = workspace_mounts(workspace, &config)?;
+    let mount_variables = mount_variable_context(workspace, &workspace_folder, &config);
+    let mounts = workspace_mounts(workspace, &config, &mount_variables)?;
 
     Ok(UpPlan {
         image,
@@ -719,17 +724,50 @@ fn dockerfile_build_input(
 fn workspace_mounts(
     workspace: &Workspace,
     config: &ResolvedConfig,
+    variables: &crate::config::variables::VariableContext,
 ) -> Result<Vec<DockerMountSpec>> {
     if config.devcontainer.workspace_mount.is_some() {
         bail!("workspaceMount is not supported yet");
     }
 
-    Ok(vec![DockerMountSpec {
+    let mut mounts = vec![DockerMountSpec {
         source: Some(workspace.root().display().to_string()),
         target: default_workspace_folder(workspace),
         mount_type: MountType::Bind,
         read_only: false,
-    }])
+    }];
+    mounts.extend(config_mount_specs(config, workspace.root(), variables)?);
+
+    Ok(mounts)
+}
+
+fn mount_variable_context(
+    workspace: &Workspace,
+    workspace_folder: &str,
+    config: &ResolvedConfig,
+) -> crate::config::variables::VariableContext {
+    let remote_user = config
+        .devcontainer
+        .remote_user
+        .clone()
+        .unwrap_or_else(|| "root".to_owned());
+    let remote_user_home = if remote_user == "root" {
+        "/root".to_owned()
+    } else {
+        format!("/home/{remote_user}")
+    };
+
+    crate::config::variables::VariableContext::new(
+        workspace.root().to_path_buf(),
+        workspace.basename().to_owned(),
+        workspace_folder.to_owned(),
+        workspace.basename().to_owned(),
+        workspace.id().to_owned(),
+        0,
+        0,
+        remote_user,
+        remote_user_home,
+    )
 }
 
 async fn list_workspace_containers(

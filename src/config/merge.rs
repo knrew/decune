@@ -170,6 +170,7 @@ impl MergeAccumulator {
                     read_only: mount.read_only,
                     resolve_symlink: mount.resolve_symlink,
                     create: mount.create,
+                    origin: mount.origin,
                 },
                 |left, right| left.target == right.target,
             );

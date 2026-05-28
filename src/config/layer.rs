@@ -8,6 +8,7 @@ use toml::Value;
 use crate::devcontainer::lifecycle::LayerLifecycleDefinition;
 
 use crate::config::{
+    path::ConfigPathOrigin,
     schema::{
         RawAutoPortsConfig, RawCredentialsConfig, RawDecuneConfig, RawDotfileConfig,
         RawFeatureConfig, RawGitCredentialsConfig, RawGithubCredentialsConfig, RawHookConfig,
@@ -44,6 +45,13 @@ pub(crate) struct ConfigLayer {
 
 impl ConfigLayer {
     pub(crate) fn from_raw_decune(raw: RawDecuneConfig) -> Self {
+        Self::from_raw_decune_with_origin(raw, ConfigPathOrigin::Project)
+    }
+
+    pub(crate) fn from_raw_decune_with_origin(
+        raw: RawDecuneConfig,
+        origin: ConfigPathOrigin,
+    ) -> Self {
         Self {
             shell: raw.shell,
             features: raw
@@ -56,7 +64,11 @@ impl ConfigLayer {
                 .into_iter()
                 .map(LayerDotfile::from_raw)
                 .collect(),
-            mounts: raw.mounts.into_iter().map(LayerMount::from_raw).collect(),
+            mounts: raw
+                .mounts
+                .into_iter()
+                .map(|mount| LayerMount::from_raw(mount, origin))
+                .collect(),
             ports: raw
                 .ports
                 .entries
@@ -133,10 +145,11 @@ pub(crate) struct LayerMount {
     pub(crate) read_only: bool,
     pub(crate) resolve_symlink: bool,
     pub(crate) create: Option<MountCreate>,
+    pub(crate) origin: ConfigPathOrigin,
 }
 
 impl LayerMount {
-    fn from_raw(raw: RawMountConfig) -> Self {
+    fn from_raw(raw: RawMountConfig, origin: ConfigPathOrigin) -> Self {
         Self {
             enabled: raw.enabled.unwrap_or(true),
             source: raw.source,
@@ -145,6 +158,7 @@ impl LayerMount {
             read_only: raw.read_only.unwrap_or(false),
             resolve_symlink: raw.resolve_symlink.unwrap_or(true),
             create: raw.create.map(Into::into),
+            origin,
         }
     }
 }
