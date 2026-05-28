@@ -33,7 +33,10 @@ use crate::{
             workspace_container_list_options,
         },
         exec::{ExecCommandSpec, exec_attach, resolve_exec_env, run_attached_exec_stdio},
-        image::{PullPolicy, ensure_image},
+        image::{
+            PullPolicy, ensure_image, image_devcontainer_metadata_layers,
+            image_devcontainer_metadata_layers_if_present,
+        },
         mounts::DockerMountSpec,
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user},
@@ -49,6 +52,7 @@ const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
 pub(crate) struct UpContainerSummary {
     pub(crate) id: String,
     pub(crate) name: String,
+    pub(crate) image_id: Option<String>,
     pub(crate) config_hash: Option<String>,
     pub(crate) running: bool,
 }
@@ -142,6 +146,15 @@ pub(crate) fn build_up_plan(
     explicit_config_path: Option<&Path>,
     cli_layer: ConfigLayer,
 ) -> Result<UpPlan> {
+    build_up_plan_with_image_metadata(workspace, explicit_config_path, cli_layer, Vec::new())
+}
+
+pub(crate) fn build_up_plan_with_image_metadata(
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    image_metadata: Vec<ConfigLayer>,
+) -> Result<UpPlan> {
     let devcontainer_json = DevcontainerJson::load(workspace.root(), explicit_config_path)?;
     let metadata = parse_metadata(devcontainer_json.value().clone())?;
     let devcontainer_layer = metadata.to_config_layer()?;
@@ -150,7 +163,7 @@ pub(crate) fn build_up_plan(
     let project_layer =
         ConfigLayer::from_raw_decune(load_config_file(workspace.paths().project_config_path())?);
     let config = resolve_config(ConfigMergeInput {
-        image_metadata: None,
+        image_metadata,
         global: Some(global_layer),
         devcontainer: Some(devcontainer_layer),
         project: Some(project_layer),
@@ -219,24 +232,82 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
 
 async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContainer> {
     let workspace = Workspace::resolve(&options.workspace)?;
-    let plan = build_up_plan(
+    let preliminary_plan = build_up_plan(
         &workspace,
         options.config_path.as_deref(),
-        options.cli_layer,
+        options.cli_layer.clone(),
     )?;
-    warn_about_deferred_features(&plan.config);
+    run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
 
     let client = DockerClient::connect_from_env()?;
     let containers = list_workspace_containers(&client, workspace.id()).await?;
+
+    if !options.rebuild && !containers.is_empty() {
+        let existing_plan = build_existing_container_decision_plan(
+            &client,
+            &workspace,
+            options.config_path.as_deref(),
+            options.cli_layer.clone(),
+            containers.first().and_then(existing_container_image_id),
+            &preliminary_plan,
+        )
+        .await?;
+
+        match decide_existing_container(&containers, &existing_plan.resources.config_hash, false)? {
+            ExistingContainerDecision::ReuseRunning { id, name } => {
+                warn_about_deferred_features(&existing_plan.config);
+                let outcome = UpOutcome {
+                    container_id: id,
+                    container_name: name,
+                    reused: true,
+                };
+                return Ok(StartedUpContainer {
+                    client,
+                    workspace,
+                    plan: existing_plan,
+                    outcome,
+                    lifecycle_path: LifecycleRunPath::Running,
+                });
+            }
+            ExistingContainerDecision::StartStopped { id, name } => {
+                warn_about_deferred_features(&existing_plan.config);
+                start_container(&client, &name).await?;
+                let outcome = UpOutcome {
+                    container_id: id,
+                    container_name: name,
+                    reused: true,
+                };
+                return Ok(StartedUpContainer {
+                    client,
+                    workspace,
+                    plan: existing_plan,
+                    outcome,
+                    lifecycle_path: LifecycleRunPath::Started,
+                });
+            }
+            ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
+        }
+    }
+
+    let (plan, image_prepared) = prepare_image_based_metadata(
+        &client,
+        &workspace,
+        options.config_path.as_deref(),
+        options.cli_layer,
+        preliminary_plan,
+        options.pull,
+    )
+    .await?;
+    warn_about_deferred_features(&plan.config);
 
     match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
         ExistingContainerDecision::Create => {
             let outcome = create_and_start_container(
                 &client,
-                workspace.root(),
                 &plan,
                 options.pull,
                 options.no_cache,
+                image_prepared,
             )
             .await?;
             Ok(StartedUpContainer {
@@ -251,10 +322,10 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             recreate_existing_containers(&client, &containers).await?;
             let outcome = create_and_start_container(
                 &client,
-                workspace.root(),
                 &plan,
                 options.pull,
                 options.no_cache,
+                image_prepared,
             )
             .await?;
             Ok(StartedUpContainer {
@@ -297,6 +368,80 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
     }
 }
 
+async fn build_existing_container_decision_plan(
+    client: &DockerClient,
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    existing_container_image_id: Option<&str>,
+    preliminary_plan: &UpPlan,
+) -> Result<UpPlan> {
+    if preliminary_plan.build_context.is_some() {
+        return Ok(preliminary_plan.clone());
+    }
+
+    let image_metadata =
+        match image_devcontainer_metadata_layers_if_present(client, &preliminary_plan.image).await?
+        {
+            Some(image_metadata) => image_metadata,
+            None => {
+                let Some(image_id) = existing_container_image_id else {
+                    return Ok(preliminary_plan.clone());
+                };
+                let Some(image_metadata) =
+                    image_devcontainer_metadata_layers_if_present(client, image_id).await?
+                else {
+                    return Ok(preliminary_plan.clone());
+                };
+                image_metadata
+            }
+        };
+
+    if image_metadata.is_empty() {
+        return Ok(preliminary_plan.clone());
+    }
+
+    build_up_plan_with_image_metadata(workspace, explicit_config_path, cli_layer, image_metadata)
+}
+
+async fn prepare_image_based_metadata(
+    client: &DockerClient,
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    preliminary_plan: UpPlan,
+    pull: bool,
+) -> Result<(UpPlan, bool)> {
+    if preliminary_plan.build_context.is_some() {
+        return Ok((preliminary_plan, false));
+    }
+
+    ensure_image(
+        client,
+        &preliminary_plan.image,
+        if pull {
+            PullPolicy::Always
+        } else {
+            PullPolicy::Missing
+        },
+    )
+    .await?;
+    let image_metadata =
+        image_devcontainer_metadata_layers(client, &preliminary_plan.image).await?;
+    if image_metadata.is_empty() {
+        return Ok((preliminary_plan, true));
+    }
+
+    let plan = build_up_plan_with_image_metadata(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        image_metadata,
+    )?;
+
+    Ok((plan, true))
+}
+
 async fn recreate_existing_containers(
     client: &DockerClient,
     containers: &[UpContainerSummary],
@@ -315,13 +460,11 @@ async fn recreate_existing_containers(
 
 async fn create_and_start_container(
     client: &DockerClient,
-    workspace_root: &Path,
     plan: &UpPlan,
     pull: bool,
     no_cache: bool,
+    image_prepared: bool,
 ) -> Result<UpOutcome> {
-    run_host_initialize_lifecycle(&plan.config, workspace_root)?;
-
     if let Some(context) = plan.build_context.clone() {
         let mut build_options = plan.build_options.clone();
         build_options.pull = pull;
@@ -336,7 +479,7 @@ async fn create_and_start_container(
             },
         )
         .await?;
-    } else {
+    } else if !image_prepared {
         ensure_image(
             client,
             &plan.image,
@@ -620,9 +763,17 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
     Some(UpContainerSummary {
         id,
         name,
+        image_id: container.image_id,
         config_hash,
         running,
     })
+}
+
+fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
+    container
+        .image_id
+        .as_deref()
+        .filter(|image_id| !image_id.trim().is_empty())
 }
 
 fn warn_about_deferred_features(config: &ResolvedConfig) {
@@ -641,13 +792,14 @@ mod tests {
     use crate::docker::client::DockerClient;
     use crate::docker::container::remove_container;
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
-    use crate::docker::image::remove_image;
+    use crate::docker::image::{PullPolicy, ensure_image, remove_image};
     use crate::workspace::Workspace;
 
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
-        decide_existing_container, default_workspace_folder, first_successful_shell_candidate,
-        list_workspace_containers, run_attached_up, run_detached_up, shell_command_candidates,
+        build_up_plan_with_image_metadata, decide_existing_container, default_workspace_folder,
+        first_successful_shell_candidate, list_workspace_containers, run_attached_up,
+        run_detached_up, shell_command_candidates,
     };
 
     #[test]
@@ -713,6 +865,7 @@ mod tests {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
+            image_id: None,
             config_hash: Some("hash123".to_owned()),
             running: true,
         };
@@ -733,6 +886,7 @@ mod tests {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
+            image_id: None,
             config_hash: Some("hash123".to_owned()),
             running: false,
         };
@@ -753,6 +907,7 @@ mod tests {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
+            image_id: None,
             config_hash: Some("old-hash".to_owned()),
             running: true,
         };
@@ -767,6 +922,7 @@ mod tests {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
+            image_id: None,
             config_hash: Some("old-hash".to_owned()),
             running: true,
         };
@@ -826,6 +982,64 @@ mod tests {
                 .display()
                 .to_string()
         );
+    }
+
+    #[test]
+    fn build_up_plan_merges_image_metadata_and_includes_it_in_config_hash() {
+        let workspace = test_workspace("image-metadata-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        let image_layer = ConfigLayer {
+            devcontainer: Some(crate::config::layer::LayerDevcontainerMetadata {
+                remote_user: Some("image-user".to_owned()),
+                remote_env: [("FROM_IMAGE".to_owned(), "1".to_owned())].into(),
+                ..crate::config::layer::LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        };
+        let changed_image_layer = ConfigLayer {
+            devcontainer: Some(crate::config::layer::LayerDevcontainerMetadata {
+                remote_user: Some("image-user".to_owned()),
+                remote_env: [("FROM_IMAGE".to_owned(), "2".to_owned())].into(),
+                ..crate::config::layer::LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        };
+
+        let plan = build_up_plan_with_image_metadata(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            vec![image_layer],
+        )
+        .unwrap();
+        let changed = build_up_plan_with_image_metadata(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            vec![changed_image_layer],
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.config.devcontainer.remote_user.as_deref(),
+            Some("image-user")
+        );
+        assert_eq!(
+            plan.config
+                .devcontainer
+                .remote_env
+                .get("FROM_IMAGE")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_ne!(plan.resources.config_hash, changed.resources.config_hash);
     }
 
     #[test]
@@ -1039,6 +1253,80 @@ mod tests {
                     no_cache: false,
                 })
                 .await?;
+                assert!(!first.reused);
+
+                remove_image(&client, &image, true).await?;
+
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert_eq!(second.container_name, container_name);
+                assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_detach_reuses_image_container_when_source_image_tag_is_removed() {
+        if !docker_tests_enabled() {
+            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-reuse-missing-source-image");
+            let image = format!(
+                "localhost:9/decune-test/reuse-source-image-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "initializeCommand": "docker tag alpine:3.20 {image}"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert_eq!(first.container_name, container_name);
                 assert!(!first.reused);
 
                 remove_image(&client, &image, true).await?;

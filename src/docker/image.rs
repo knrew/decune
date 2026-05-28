@@ -12,9 +12,15 @@ use bollard::{
     },
 };
 use futures_util::TryStreamExt;
+use serde_json::Value;
 
-use crate::docker::client::DockerClient;
 use crate::ui;
+use crate::{
+    config::ConfigLayer, devcontainer::metadata::parse_image_metadata_layer,
+    docker::client::DockerClient,
+};
+
+pub(crate) const DEVCONTAINER_METADATA_LABEL: &str = "devcontainer.metadata";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PullPolicy {
@@ -105,6 +111,75 @@ pub(crate) fn image_tags_for_repository(
         .collect()
 }
 
+pub(crate) async fn image_devcontainer_metadata_layers(
+    client: &DockerClient,
+    image: &str,
+) -> Result<Vec<ConfigLayer>> {
+    let inspect = client
+        .raw()
+        .inspect_image(image)
+        .await
+        .with_context(|| format!("Failed to inspect Docker image metadata: {image}"))?;
+    let labels = inspect.config.and_then(|config| config.labels);
+    let label = labels
+        .as_ref()
+        .and_then(|labels| labels.get(DEVCONTAINER_METADATA_LABEL).map(String::as_str));
+
+    parse_devcontainer_metadata_label(image, label)
+}
+
+pub(crate) async fn image_devcontainer_metadata_layers_if_present(
+    client: &DockerClient,
+    image: &str,
+) -> Result<Option<Vec<ConfigLayer>>> {
+    let inspect = match client.raw().inspect_image(image).await {
+        Ok(inspect) => inspect,
+        Err(error) if is_image_not_found(&error) => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to inspect Docker image metadata: {image}"));
+        }
+    };
+    let labels = inspect.config.and_then(|config| config.labels);
+    let label = labels
+        .as_ref()
+        .and_then(|labels| labels.get(DEVCONTAINER_METADATA_LABEL).map(String::as_str));
+
+    parse_devcontainer_metadata_label(image, label).map(Some)
+}
+
+pub(crate) fn parse_devcontainer_metadata_label(
+    image: &str,
+    label: Option<&str>,
+) -> Result<Vec<ConfigLayer>> {
+    let Some(label) = label else {
+        return Ok(Vec::new());
+    };
+
+    let value: Value = serde_json::from_str(label).with_context(|| {
+        format!(
+            "Failed to parse Docker image label {DEVCONTAINER_METADATA_LABEL} for image: {image}"
+        )
+    })?;
+
+    match value {
+        Value::Object(_) => Ok(vec![metadata_value_to_layer(image, value)?]),
+        Value::Array(values) => values
+            .into_iter()
+            .enumerate()
+            .map(|(index, value)| match value {
+                Value::Object(_) => metadata_value_to_layer(image, value),
+                _ => bail!(
+                    "Docker image label {DEVCONTAINER_METADATA_LABEL} for image {image} array entry {index} must be an object"
+                ),
+            })
+            .collect(),
+        _ => bail!(
+            "Docker image label {DEVCONTAINER_METADATA_LABEL} for image {image} must be a JSON object or array"
+        ),
+    }
+}
+
 async fn local_image_presence(client: &DockerClient, image: &str) -> Result<LocalImagePresence> {
     match client.raw().inspect_image(image).await {
         Ok(_) => Ok(LocalImagePresence::Present),
@@ -113,6 +188,16 @@ async fn local_image_presence(client: &DockerClient, image: &str) -> Result<Loca
             Err(error).with_context(|| format!("Failed to inspect Docker image: {image}"))
         }
     }
+}
+
+fn metadata_value_to_layer(image: &str, value: Value) -> Result<ConfigLayer> {
+    parse_image_metadata_layer(value)
+        .and_then(|metadata| metadata.to_config_layer())
+        .with_context(|| {
+            format!(
+                "Failed to convert Docker image label {DEVCONTAINER_METADATA_LABEL} for image: {image}"
+            )
+        })
 }
 
 async fn pull_image(client: &DockerClient, image: &str) -> Result<()> {
@@ -212,7 +297,8 @@ mod tests {
 
     use super::{
         ImagePullOutcome, LocalImagePresence, PullPolicy, create_image_options_for_pull,
-        ensure_image, image_tags_for_repository, progress_line, should_pull_image,
+        ensure_image, image_tags_for_repository, parse_devcontainer_metadata_label, progress_line,
+        should_pull_image,
     };
 
     #[test]
@@ -326,6 +412,116 @@ mod tests {
                 "decune/project-abc123:hash2".to_owned(),
             ]
         );
+    }
+
+    #[test]
+    fn image_metadata_label_object_is_converted_to_config_layer() {
+        let layers = parse_devcontainer_metadata_label(
+            "example/devcontainer:latest",
+            Some(
+                r#"{
+                    "remoteUser": "vscode",
+                    "remoteEnv": {
+                        "FROM_IMAGE": "1"
+                    }
+                }"#,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(layers.len(), 1);
+        let devcontainer = layers[0].devcontainer.as_ref().unwrap();
+        assert_eq!(devcontainer.remote_user.as_deref(), Some("vscode"));
+        assert_eq!(
+            devcontainer
+                .remote_env
+                .get("FROM_IMAGE")
+                .map(String::as_str),
+            Some("1")
+        );
+    }
+
+    #[test]
+    fn image_metadata_label_array_preserves_layer_order() {
+        let layers = parse_devcontainer_metadata_label(
+            "example/devcontainer:latest",
+            Some(
+                r#"[
+                    {
+                        "remoteUser": "image-user",
+                        "remoteEnv": {
+                            "FIRST": "1"
+                        }
+                    },
+                    {
+                        "remoteUser": "second-user",
+                        "remoteEnv": {
+                            "SECOND": "2"
+                        }
+                    }
+                ]"#,
+            ),
+        )
+        .unwrap();
+
+        assert_eq!(layers.len(), 2);
+        assert_eq!(
+            layers[0]
+                .devcontainer
+                .as_ref()
+                .unwrap()
+                .remote_user
+                .as_deref(),
+            Some("image-user")
+        );
+        assert_eq!(
+            layers[1]
+                .devcontainer
+                .as_ref()
+                .unwrap()
+                .remote_user
+                .as_deref(),
+            Some("second-user")
+        );
+    }
+
+    #[test]
+    fn image_metadata_label_rejects_initialize_command() {
+        let error = parse_devcontainer_metadata_label(
+            "example/devcontainer:latest",
+            Some(r#"{"initializeCommand": "echo image init"}"#),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("example/devcontainer:latest"));
+        assert!(message.contains("devcontainer.metadata"));
+        assert!(message.contains("initializeCommand"));
+    }
+
+    #[test]
+    fn invalid_image_metadata_label_error_mentions_image_and_label() {
+        let error = parse_devcontainer_metadata_label(
+            "example/devcontainer:latest",
+            Some(r#"{"remoteUser": "vscode""#),
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("example/devcontainer:latest"));
+        assert!(message.contains("devcontainer.metadata"));
+    }
+
+    #[test]
+    fn image_metadata_label_array_entries_must_be_objects() {
+        let error =
+            parse_devcontainer_metadata_label("example/devcontainer:latest", Some(r#"[true]"#))
+                .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(message.contains("example/devcontainer:latest"));
+        assert!(message.contains("devcontainer.metadata"));
+        assert!(message.contains("array entry 0"));
     }
 
     #[test]

@@ -1,6 +1,6 @@
 #![allow(dead_code)]
 
-use std::{collections::BTreeMap, pin::Pin};
+use std::{collections::BTreeMap, pin::Pin, time::Duration};
 
 use anyhow::{Context, Result, bail};
 use bollard::{
@@ -11,7 +11,10 @@ use bollard::{
     query_parameters::ResizeExecOptionsBuilder,
 };
 use futures_util::TryStreamExt;
-use tokio::io::{AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::{
+    io::{AsyncReadExt, AsyncWrite, AsyncWriteExt},
+    time::sleep,
+};
 
 use crate::{
     config::resolved::ResolvedUserEnvProbe,
@@ -46,6 +49,9 @@ pub(crate) struct AttachedExec {
     pub(crate) id: String,
     pub(crate) results: StartExecResults,
 }
+
+const EXEC_EXIT_CODE_RETRY_LIMIT: usize = 10;
+const EXEC_EXIT_CODE_RETRY_DELAY: Duration = Duration::from_millis(20);
 
 pub(crate) async fn exec_capture(
     client: &DockerClient,
@@ -138,10 +144,7 @@ pub(crate) async fn run_attached_exec_stdio(
     }
     stream_result?;
 
-    let inspect = inspect_exec(client, &exec_id, container).await?;
-    inspect
-        .exit_code
-        .context("Failed to read Docker exec exit code")
+    inspect_exec_exit_code(client, &exec_id, container).await
 }
 
 pub(crate) async fn resolve_exec_env(
@@ -274,6 +277,26 @@ async fn inspect_exec(
         .inspect_exec(exec_id)
         .await
         .with_context(|| format!("Failed to inspect Docker exec in container: {container}"))
+}
+
+async fn inspect_exec_exit_code(
+    client: &DockerClient,
+    exec_id: &str,
+    container: &str,
+) -> Result<i64> {
+    for attempt in 0..EXEC_EXIT_CODE_RETRY_LIMIT {
+        let inspect = inspect_exec(client, exec_id, container).await?;
+        if let Some(exit_code) = inspect.exit_code {
+            return Ok(exit_code);
+        }
+
+        // Docker の attach stream 完了直後は exit_code がまだ反映されないことがある．
+        if attempt + 1 < EXEC_EXIT_CODE_RETRY_LIMIT {
+            sleep(EXEC_EXIT_CODE_RETRY_DELAY).await;
+        }
+    }
+
+    bail!("Failed to read Docker exec exit code")
 }
 
 async fn copy_stdin_to_exec(mut input: Pin<Box<dyn AsyncWrite + Send>>) -> Result<()> {
