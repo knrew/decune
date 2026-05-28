@@ -236,12 +236,10 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         options.config_path.as_deref(),
         options.cli_layer.clone(),
     )?;
+    run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
 
     let client = DockerClient::connect_from_env()?;
     let containers = list_workspace_containers(&client, workspace.id()).await?;
-    if options.rebuild || containers.is_empty() {
-        run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
-    }
 
     if !options.rebuild && !containers.is_empty() {
         let existing_plan = build_existing_container_decision_plan(

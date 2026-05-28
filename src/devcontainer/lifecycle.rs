@@ -224,6 +224,9 @@ pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<Life
             LifecycleStep::Hooks(HookStage::AfterPostStart),
         ],
         LifecycleRunPath::Started => vec![
+            LifecycleStep::Hooks(HookStage::BeforeInitialize),
+            LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+            LifecycleStep::Hooks(HookStage::AfterInitialize),
             LifecycleStep::HostDaemonStart,
             LifecycleStep::ContainerStart,
             LifecycleStep::DecuneSetup,
@@ -231,9 +234,13 @@ pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<Life
             LifecycleStep::Lifecycle(LifecycleStage::PostStart),
             LifecycleStep::Hooks(HookStage::AfterPostStart),
         ],
-        LifecycleRunPath::Running => {
-            vec![LifecycleStep::HostDaemonStart, LifecycleStep::DecuneSetup]
-        }
+        LifecycleRunPath::Running => vec![
+            LifecycleStep::Hooks(HookStage::BeforeInitialize),
+            LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+            LifecycleStep::Hooks(HookStage::AfterInitialize),
+            LifecycleStep::HostDaemonStart,
+            LifecycleStep::DecuneSetup,
+        ],
     }
 }
 
@@ -1095,6 +1102,9 @@ mod tests {
         assert_eq!(
             lifecycle_plan(LifecycleRunPath::Started),
             vec![
+                LifecycleStep::Hooks(HookStage::BeforeInitialize),
+                LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+                LifecycleStep::Hooks(HookStage::AfterInitialize),
                 LifecycleStep::HostDaemonStart,
                 LifecycleStep::ContainerStart,
                 LifecycleStep::DecuneSetup,
@@ -1111,6 +1121,9 @@ mod tests {
         assert_eq!(
             lifecycle_plan(LifecycleRunPath::Running),
             vec![
+                LifecycleStep::Hooks(HookStage::BeforeInitialize),
+                LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+                LifecycleStep::Hooks(HookStage::AfterInitialize),
                 LifecycleStep::HostDaemonStart,
                 LifecycleStep::DecuneSetup,
                 LifecycleStep::PortForwardingStart,
@@ -1152,6 +1165,9 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan(LifecycleRunPath::Started),
             vec![
+                LifecycleStep::Hooks(HookStage::BeforeInitialize),
+                LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+                LifecycleStep::Hooks(HookStage::AfterInitialize),
                 LifecycleStep::HostDaemonStart,
                 LifecycleStep::ContainerStart,
                 LifecycleStep::DecuneSetup,
@@ -1162,7 +1178,13 @@ mod tests {
         );
         assert_eq!(
             container_start_lifecycle_plan(LifecycleRunPath::Running),
-            vec![LifecycleStep::HostDaemonStart, LifecycleStep::DecuneSetup]
+            vec![
+                LifecycleStep::Hooks(HookStage::BeforeInitialize),
+                LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+                LifecycleStep::Hooks(HookStage::AfterInitialize),
+                LifecycleStep::HostDaemonStart,
+                LifecycleStep::DecuneSetup,
+            ]
         );
     }
 
