@@ -47,7 +47,10 @@ use crate::{
         user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
     host::{
-        credentials::{GitCredentialRuntime, prepare_git_credential_runtime},
+        credentials::{
+            GitCredentialRuntime, SshAgentRuntime, prepare_git_credential_runtime,
+            prepare_ssh_agent_runtime,
+        },
         daemon::HostDaemon,
     },
     ui,
@@ -69,12 +72,18 @@ struct WorkspaceLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpMountSummary {
+    pub(crate) source: Option<String>,
+    pub(crate) target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpContainerSummary {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) image_id: Option<String>,
     pub(crate) config_hash: Option<String>,
-    pub(crate) mount_targets: Option<Vec<String>>,
+    pub(crate) mounts: Option<Vec<UpMountSummary>>,
     pub(crate) running: bool,
 }
 
@@ -120,13 +129,43 @@ struct StartedUpContainer {
     plan: UpPlan,
     outcome: UpOutcome,
     lifecycle_path: LifecycleRunPath,
+    _credentials: CredentialRuntime,
+}
+
+struct CredentialRuntime {
     _git_credentials: GitCredentialRuntime,
+    _ssh_agent: SshAgentRuntime,
+    required_mounts: Vec<UpMountSummary>,
+}
+
+impl CredentialRuntime {
+    fn new(git_credentials: GitCredentialRuntime, ssh_agent: SshAgentRuntime) -> Self {
+        let required_mounts = git_credentials
+            .mounts()
+            .iter()
+            .chain(ssh_agent.mounts())
+            .map(|mount| UpMountSummary {
+                source: mount.source.clone(),
+                target: mount.target.clone(),
+            })
+            .collect();
+
+        Self {
+            _git_credentials: git_credentials,
+            _ssh_agent: ssh_agent,
+            required_mounts,
+        }
+    }
+
+    fn required_mounts(&self) -> &[UpMountSummary] {
+        &self.required_mounts
+    }
 }
 
 pub(crate) fn decide_existing_container(
     containers: &[UpContainerSummary],
     expected_config_hash: &str,
-    required_mount_targets: &[String],
+    required_mounts: &[UpMountSummary],
     rebuild: bool,
 ) -> Result<ExistingContainerDecision> {
     if rebuild {
@@ -147,7 +186,7 @@ pub(crate) fn decide_existing_container(
         bail!("Dev container configuration changed. Run decune rebuild to recreate it.");
     }
 
-    if !container_has_required_mount_targets(container, required_mount_targets) {
+    if !container_has_required_mounts(container, required_mounts) {
         return Ok(ExistingContainerDecision::Recreate {
             containers: containers.to_vec(),
         });
@@ -166,23 +205,33 @@ pub(crate) fn decide_existing_container(
     }
 }
 
-fn container_has_required_mount_targets(
+fn container_has_required_mounts(
     container: &UpContainerSummary,
-    required_mount_targets: &[String],
+    required_mounts: &[UpMountSummary],
 ) -> bool {
-    if required_mount_targets.is_empty() {
+    if required_mounts.is_empty() {
         return true;
     }
 
-    let Some(existing_targets) = &container.mount_targets else {
+    let Some(existing_mounts) = &container.mounts else {
         return false;
     };
-    required_mount_targets.iter().all(|required| {
-        let required = normalize_container_path(required);
-        existing_targets
+    required_mounts.iter().all(|required| {
+        existing_mounts
             .iter()
-            .any(|target| normalize_container_path(target) == required)
+            .any(|mount| mount_matches_required(mount, required))
     })
+}
+
+fn mount_matches_required(existing: &UpMountSummary, required: &UpMountSummary) -> bool {
+    if normalize_container_path(&existing.target) != normalize_container_path(&required.target) {
+        return false;
+    }
+
+    match required.source.as_deref() {
+        Some(required_source) => existing.source.as_deref() == Some(required_source),
+        None => true,
+    }
 }
 
 pub(crate) fn default_workspace_folder(workspace: &Workspace) -> String {
@@ -359,15 +408,13 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             None,
         )
         .await?;
-        let (existing_plan, git_credentials) =
-            add_git_credential_runtime_mounts(existing_plan, workspace.paths().runtime_dir())?;
-
-        let required_mount_targets = required_mount_targets(git_credentials.mounts());
+        let (existing_plan, credentials) =
+            add_credential_runtime_mounts(existing_plan, workspace.paths().runtime_dir())?;
 
         match decide_existing_container(
             &containers,
             &existing_plan.resources.config_hash,
-            &required_mount_targets,
+            credentials.required_mounts(),
             false,
         )? {
             ExistingContainerDecision::ReuseRunning { id, name } => {
@@ -383,7 +430,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                     plan: existing_plan,
                     outcome,
                     lifecycle_path: LifecycleRunPath::Running,
-                    _git_credentials: git_credentials,
+                    _credentials: credentials,
                 });
             }
             ExistingContainerDecision::StartStopped { id, name } => {
@@ -400,7 +447,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                     plan: existing_plan,
                     outcome,
                     lifecycle_path: LifecycleRunPath::Started,
-                    _git_credentials: git_credentials,
+                    _credentials: credentials,
                 });
             }
             ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
@@ -424,17 +471,14 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         Some((options.pull, options.no_cache)),
     )
     .await?;
-    let (plan, git_credentials) =
-        add_git_credential_runtime_mounts(plan, workspace.paths().runtime_dir())?;
+    let (plan, credentials) = add_credential_runtime_mounts(plan, workspace.paths().runtime_dir())?;
     let image_prepared = image_prepared || mount_image_prepared;
     warn_about_deferred_features(&plan.config);
-
-    let required_mount_targets = required_mount_targets(git_credentials.mounts());
 
     match decide_existing_container(
         &containers,
         &plan.resources.config_hash,
-        &required_mount_targets,
+        credentials.required_mounts(),
         options.rebuild,
     )? {
         ExistingContainerDecision::Create => {
@@ -452,7 +496,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::New,
-                _git_credentials: git_credentials,
+                _credentials: credentials,
             })
         }
         ExistingContainerDecision::Recreate { containers } => {
@@ -471,7 +515,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::New,
-                _git_credentials: git_credentials,
+                _credentials: credentials,
             })
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
@@ -486,7 +530,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::Running,
-                _git_credentials: git_credentials,
+                _credentials: credentials,
             })
         }
         ExistingContainerDecision::StartStopped { id, name } => {
@@ -502,24 +546,47 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::Started,
-                _git_credentials: git_credentials,
+                _credentials: credentials,
             })
         }
     }
 }
 
-fn add_git_credential_runtime_mounts(
-    mut plan: UpPlan,
+fn add_credential_runtime_mounts(
+    plan: UpPlan,
     runtime_dir: &Path,
-) -> Result<(UpPlan, GitCredentialRuntime)> {
-    let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir)?;
-    plan.mounts.extend(git_credentials.mounts().iter().cloned());
-
-    Ok((plan, git_credentials))
+) -> Result<(UpPlan, CredentialRuntime)> {
+    let ssh_agent = prepare_ssh_agent_runtime(&plan.config)?;
+    add_prepared_credential_runtime_mounts(plan, runtime_dir, ssh_agent)
 }
 
-fn required_mount_targets(mounts: &[DockerMountSpec]) -> Vec<String> {
-    mounts.iter().map(|mount| mount.target.clone()).collect()
+#[cfg(test)]
+fn add_credential_runtime_mounts_with_ssh_socket(
+    plan: UpPlan,
+    runtime_dir: &Path,
+    ssh_auth_sock: Option<&Path>,
+) -> Result<(UpPlan, CredentialRuntime)> {
+    let ssh_agent = crate::host::credentials::prepare_ssh_agent_runtime_with_socket(
+        &plan.config,
+        ssh_auth_sock,
+    )?;
+    add_prepared_credential_runtime_mounts(plan, runtime_dir, ssh_agent)
+}
+
+fn add_prepared_credential_runtime_mounts(
+    mut plan: UpPlan,
+    runtime_dir: &Path,
+    ssh_agent: SshAgentRuntime,
+) -> Result<(UpPlan, CredentialRuntime)> {
+    let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir)?;
+    plan.mounts.extend(git_credentials.mounts().iter().cloned());
+    plan.mounts.extend(ssh_agent.mounts().iter().cloned());
+    plan.config
+        .devcontainer
+        .container_env
+        .extend(ssh_agent.container_env().clone());
+
+    Ok((plan, CredentialRuntime::new(git_credentials, ssh_agent)))
 }
 
 async fn build_existing_container_decision_plan(
@@ -1213,10 +1280,15 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
     let config_hash = container
         .labels
         .and_then(|labels| labels.get(CONFIG_HASH_LABEL).cloned());
-    let mount_targets = container.mounts.map(|mounts| {
+    let mounts = container.mounts.map(|mounts| {
         mounts
             .into_iter()
-            .filter_map(|mount| mount.destination)
+            .filter_map(|mount| {
+                mount.destination.map(|target| UpMountSummary {
+                    source: mount.source,
+                    target,
+                })
+            })
             .collect()
     });
     let running = container
@@ -1228,7 +1300,7 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
         name,
         image_id: container.image_id,
         config_hash,
-        mount_targets,
+        mounts,
         running,
     })
 }
@@ -1261,23 +1333,26 @@ async fn warn_about_unsupported_dockerfile_image_metadata(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, ops::Deref, path::PathBuf};
+    use std::{collections::BTreeMap, fs, ops::Deref, os::unix::net::UnixListener, path::PathBuf};
 
     use anyhow::Context;
     use bollard::models::{MountBindOptions, MountBindOptionsPropagationEnum, MountVolumeOptions};
 
-    use crate::config::resolved::ResolvedDevcontainerSource;
-    use crate::config::types::MountType;
+    use crate::config::resolved::{ResolvedConfig, ResolvedDevcontainerSource};
+    use crate::config::types::{GitHttpsMode, MountType};
     use crate::config::{ConfigHashInput, ConfigLayer, config_hash};
     use crate::docker::client::DockerClient;
     use crate::docker::container::{remove_container, stop_container};
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
     use crate::docker::image::{PullPolicy, ensure_image, remove_image};
     use crate::docker::mounts::DockerMountSpec;
+    use crate::docker::resource::DockerResources;
+    use crate::host::credentials::SSH_AGENT_SOCKET_TARGET;
     use crate::workspace::Workspace;
 
     use super::{
-        ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
+        ExistingContainerDecision, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
+        add_credential_runtime_mounts_with_ssh_socket, build_up_plan,
         build_up_plan_with_image_metadata, create_and_start_container, decide_existing_container,
         default_workspace_folder, first_successful_shell_candidate, list_workspace_containers,
         mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
@@ -1348,7 +1423,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
-            mount_targets: Some(Vec::new()),
+            mounts: Some(Vec::new()),
             running: true,
         };
 
@@ -1370,7 +1445,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
-            mount_targets: Some(Vec::new()),
+            mounts: Some(Vec::new()),
             running: false,
         };
 
@@ -1392,14 +1467,14 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
-            mount_targets: Some(vec!["/workspaces/project".to_owned()]),
+            mounts: Some(vec![mount_summary(None, "/workspaces/project")]),
             running: true,
         };
 
         let decision = decide_existing_container(
             &[container.clone()],
             "hash123",
-            &["/run/decune".to_owned()],
+            &[mount_summary(None, "/run/decune")],
             false,
         )
         .unwrap();
@@ -1413,13 +1488,97 @@ mod tests {
     }
 
     #[test]
+    fn existing_container_decision_recreates_when_required_mount_source_changed() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary(
+                Some("/tmp/agent-a.sock"),
+                SSH_AGENT_SOCKET_TARGET,
+            )]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container.clone()],
+            "hash123",
+            &[mount_summary(
+                Some("/tmp/agent-b.sock"),
+                SSH_AGENT_SOCKET_TARGET,
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+    }
+
+    #[test]
+    fn credential_runtime_mounts_add_ssh_agent_without_hashing_socket_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket_path_a = temp.path().join("agent-a.sock");
+        let socket_path_b = temp.path().join("agent-b.sock");
+        let _listener_a = UnixListener::bind(&socket_path_a).unwrap();
+        let _listener_b = UnixListener::bind(&socket_path_b).unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::Off;
+        let plan = test_up_plan_with_config(config);
+
+        let (plan_a, _runtime_a) = add_credential_runtime_mounts_with_ssh_socket(
+            plan.clone(),
+            &runtime_dir,
+            Some(&socket_path_a),
+        )
+        .unwrap();
+        let (plan_b, _runtime_b) =
+            add_credential_runtime_mounts_with_ssh_socket(plan, &runtime_dir, Some(&socket_path_b))
+                .unwrap();
+
+        assert_eq!(plan_a.resources.config_hash, "stable-hash");
+        assert_eq!(plan_b.resources.config_hash, "stable-hash");
+        assert_eq!(
+            plan_a
+                .config
+                .devcontainer
+                .container_env
+                .get("SSH_AUTH_SOCK")
+                .map(String::as_str),
+            Some(SSH_AGENT_SOCKET_TARGET)
+        );
+        assert_eq!(
+            plan_a
+                .mounts
+                .iter()
+                .find(|mount| mount.target == SSH_AGENT_SOCKET_TARGET)
+                .and_then(|mount| mount.source.as_deref()),
+            socket_path_a.to_str()
+        );
+        assert_eq!(
+            plan_b
+                .mounts
+                .iter()
+                .find(|mount| mount.target == SSH_AGENT_SOCKET_TARGET)
+                .and_then(|mount| mount.source.as_deref()),
+            socket_path_b.to_str()
+        );
+    }
+
+    #[test]
     fn existing_container_decision_rejects_changed_config_hash() {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
-            mount_targets: Some(Vec::new()),
+            mounts: Some(Vec::new()),
             running: true,
         };
 
@@ -1435,7 +1594,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
-            mount_targets: Some(Vec::new()),
+            mounts: Some(Vec::new()),
             running: true,
         };
 
@@ -3316,11 +3475,35 @@ user = "root"
     }
 
     fn config_hash_for_mount(mount: DockerMountSpec) -> String {
-        let config = crate::config::resolved::ResolvedConfig::default();
+        let config = ResolvedConfig::default();
         let mut input = ConfigHashInput::new(&config);
         input.resolved_mounts = mount_hash_inputs(&[mount]);
 
         config_hash(&input)
+    }
+
+    fn mount_summary(source: Option<&str>, target: &str) -> UpMountSummary {
+        UpMountSummary {
+            source: source.map(ToOwned::to_owned),
+            target: target.to_owned(),
+        }
+    }
+
+    fn test_up_plan_with_config(config: ResolvedConfig) -> UpPlan {
+        UpPlan {
+            image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: crate::docker::build::DockerBuildOptions::default(),
+            resources: DockerResources {
+                container_name: "decune-test".to_owned(),
+                image_tag: "decune/test:stable-hash".to_owned(),
+                labels: BTreeMap::new(),
+                config_hash: "stable-hash".to_owned(),
+            },
+            config,
+            workspace_folder: "/workspaces/project".to_owned(),
+            mounts: Vec::new(),
+        }
     }
 
     fn container_has_mount_target(
