@@ -62,7 +62,7 @@ impl ConfigLayer {
             dotfiles: raw
                 .dotfiles
                 .into_iter()
-                .map(LayerDotfile::from_raw)
+                .map(|dotfile| LayerDotfile::from_raw(dotfile, origin))
                 .collect(),
             mounts: raw
                 .mounts
@@ -121,10 +121,11 @@ pub(crate) struct LayerDotfile {
     pub(crate) read_only: bool,
     pub(crate) resolve_symlink: bool,
     pub(crate) on_conflict: DotfileConflict,
+    pub(crate) origin: ConfigPathOrigin,
 }
 
 impl LayerDotfile {
-    fn from_raw(raw: RawDotfileConfig) -> Self {
+    fn from_raw(raw: RawDotfileConfig, origin: ConfigPathOrigin) -> Self {
         Self {
             enabled: raw.enabled.unwrap_or(true),
             source: raw.source,
@@ -132,6 +133,7 @@ impl LayerDotfile {
             read_only: raw.read_only.unwrap_or(true),
             resolve_symlink: raw.resolve_symlink.unwrap_or(true),
             on_conflict: raw.on_conflict.map(Into::into).unwrap_or_default(),
+            origin,
         }
     }
 }

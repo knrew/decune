@@ -43,6 +43,7 @@ pub(crate) struct ResolvedDotfile {
     pub(crate) read_only: bool,
     pub(crate) resolve_symlink: bool,
     pub(crate) on_conflict: DotfileConflict,
+    pub(crate) origin: ConfigPathOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

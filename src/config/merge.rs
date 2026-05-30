@@ -148,6 +148,7 @@ impl MergeAccumulator {
                     read_only: dotfile.read_only,
                     resolve_symlink: dotfile.resolve_symlink,
                     on_conflict: dotfile.on_conflict,
+                    origin: dotfile.origin,
                 },
                 |left, right| left.target == right.target,
             );

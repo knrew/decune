@@ -33,6 +33,7 @@ use crate::{
             devcontainer_keepalive_command, remove_container, start_container, stop_container,
             workspace_container_list_options,
         },
+        dotfiles::dotfile_mount_specs,
         exec::{ExecCommandSpec, exec_attach, resolve_exec_env, run_attached_exec_stdio},
         image::{
             PullPolicy, ensure_image, image_devcontainer_metadata_layers,
@@ -908,6 +909,7 @@ fn workspace_mounts_from_resolved(
     let mut mounts = vec![workspace_mount];
     if mount_resolution == MountResolution::Resolve {
         mounts.extend(config_mount_specs(config, workspace_root, variables)?);
+        mounts.extend(dotfile_mount_specs(config, workspace_root, variables)?);
     }
 
     Ok(mounts)
