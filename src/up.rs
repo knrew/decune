@@ -10,8 +10,8 @@ use crate::{
     config::{
         ConfigHashInput, ConfigLayer, ConfigMergeInput, MountBindOptionsHashInput, MountHashInput,
         MountVolumeDriverConfigHashInput, MountVolumeOptionsHashInput, config_hash,
-        load::load_config_file, resolve_config, resolved::ResolvedConfig,
-        resolved::ResolvedDevcontainerSource, types::MountType,
+        layer::LayerDevcontainerMount, load::load_config_file, resolve_config,
+        resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource, types::MountType,
     },
     devcontainer::{
         json::DevcontainerJson,
@@ -39,7 +39,7 @@ use crate::{
             image_devcontainer_metadata_layers_if_present,
             image_has_devcontainer_metadata_label_if_present, remove_image, tag_image,
         },
-        mounts::{DockerMountSpec, config_mount_specs},
+        mounts::{DockerMountSpec, config_mount_specs, devcontainer_mount_spec},
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
@@ -54,6 +54,11 @@ const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
 enum MountResolution {
     Resolve,
     DeferConfigMounts,
+}
+
+struct WorkspaceLocation {
+    workspace_folder: String,
+    workspace_mount: DockerMountSpec,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -219,13 +224,18 @@ fn build_up_plan_inner(
     });
     let (build_context, build_options) =
         dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
-    let workspace_folder = config
-        .devcontainer
-        .workspace_folder
-        .clone()
-        .unwrap_or_else(|| default_workspace_folder(workspace));
-    let mount_variables = static_mount_variable_context(workspace, &workspace_folder, &config);
-    let mounts = workspace_mounts(workspace, &config, &mount_variables, mount_resolution)?;
+    let workspace_location = resolve_workspace_location(workspace, &config, |workspace_folder| {
+        static_mount_variable_context(workspace, workspace_folder, &config)
+    })?;
+    let mount_variables =
+        static_mount_variable_context(workspace, &workspace_location.workspace_folder, &config);
+    let mounts = workspace_mounts_from_resolved(
+        workspace_location.workspace_mount,
+        workspace.root(),
+        &config,
+        &mount_variables,
+        mount_resolution,
+    )?;
     let mut hash_input = ConfigHashInput::new(&config);
     if let Some(context) = &build_context {
         hash_input.build = Some(build_hash_input(context)?);
@@ -247,7 +257,7 @@ fn build_up_plan_inner(
         build_options,
         resources,
         config,
-        workspace_folder,
+        workspace_folder: workspace_location.workspace_folder,
         mounts,
     })
 }
@@ -562,14 +572,26 @@ async fn finalize_up_plan_mounts(
         },
     )
     .await?;
+    let remote_user_name = remote_user.user;
+    let remote_user_home = remote_user.home;
+    let workspace_location =
+        resolve_workspace_location(workspace, &plan.config, |workspace_folder| {
+            mount_variable_context(
+                workspace,
+                workspace_folder,
+                remote_user_name.clone(),
+                remote_user_home.clone(),
+            )
+        })?;
     let mount_variables = mount_variable_context(
         workspace,
-        &plan.workspace_folder,
-        remote_user.user,
-        remote_user.home,
+        &workspace_location.workspace_folder,
+        remote_user_name,
+        remote_user_home,
     );
-    let mounts = workspace_mounts(
-        workspace,
+    let mounts = workspace_mounts_from_resolved(
+        workspace_location.workspace_mount,
+        workspace.root(),
         &plan.config,
         &mount_variables,
         MountResolution::Resolve,
@@ -597,6 +619,7 @@ async fn finalize_up_plan_mounts(
 
     plan.image = image;
     plan.resources = resources;
+    plan.workspace_folder = workspace_location.workspace_folder;
     plan.mounts = mounts;
 
     Ok((plan, image_prepared))
@@ -875,17 +898,63 @@ fn dockerfile_build_input(
     }
 }
 
-fn workspace_mounts(
-    workspace: &Workspace,
+fn workspace_mounts_from_resolved(
+    workspace_mount: DockerMountSpec,
+    workspace_root: &Path,
     config: &ResolvedConfig,
     variables: &crate::config::variables::VariableContext,
     mount_resolution: MountResolution,
 ) -> Result<Vec<DockerMountSpec>> {
-    if config.devcontainer.workspace_mount.is_some() {
-        bail!("workspaceMount is not supported yet");
+    let mut mounts = vec![workspace_mount];
+    if mount_resolution == MountResolution::Resolve {
+        mounts.extend(config_mount_specs(config, workspace_root, variables)?);
     }
 
-    let mut mounts = vec![DockerMountSpec {
+    Ok(mounts)
+}
+
+fn resolve_workspace_location<F>(
+    workspace: &Workspace,
+    config: &ResolvedConfig,
+    variables_for_workspace_folder: F,
+) -> Result<WorkspaceLocation>
+where
+    F: Fn(&str) -> crate::config::variables::VariableContext,
+{
+    let seed_workspace_folder = config
+        .devcontainer
+        .workspace_folder
+        .clone()
+        .unwrap_or_else(|| default_workspace_folder(workspace));
+    let variables = variables_for_workspace_folder(&seed_workspace_folder);
+    let workspace_mount = workspace_mount_spec(workspace, config, &variables)?;
+    let workspace_folder = config
+        .devcontainer
+        .workspace_folder
+        .clone()
+        .unwrap_or_else(|| workspace_mount.target.clone());
+
+    Ok(WorkspaceLocation {
+        workspace_folder,
+        workspace_mount,
+    })
+}
+
+fn workspace_mount_spec(
+    workspace: &Workspace,
+    config: &ResolvedConfig,
+    variables: &crate::config::variables::VariableContext,
+) -> Result<DockerMountSpec> {
+    if let Some(workspace_mount) = &config.devcontainer.workspace_mount {
+        return devcontainer_mount_spec(
+            &LayerDevcontainerMount::String(workspace_mount.clone()),
+            workspace.root(),
+            variables,
+        )
+        .context("Failed to resolve workspaceMount");
+    }
+
+    Ok(DockerMountSpec {
         source: Some(workspace.root().display().to_string()),
         target: default_workspace_folder(workspace),
         mount_type: MountType::Bind,
@@ -893,12 +962,7 @@ fn workspace_mounts(
         consistency: None,
         bind_options: None,
         volume_options: None,
-    }];
-    if mount_resolution == MountResolution::Resolve {
-        mounts.extend(config_mount_specs(config, workspace.root(), variables)?);
-    }
-
-    Ok(mounts)
+    })
 }
 
 fn mount_hash_inputs(mounts: &[DockerMountSpec]) -> Vec<MountHashInput> {
@@ -1279,6 +1343,93 @@ mod tests {
                 .display()
                 .to_string()
         );
+    }
+
+    #[test]
+    fn build_up_plan_uses_workspace_mount_target_as_default_workspace_folder() {
+        let workspace = test_workspace("workspace-mount-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+            }
+            "#,
+        );
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.workspace_folder, "/workspace");
+        assert_eq!(plan.mounts.len(), 1);
+        assert_eq!(
+            plan.mounts[0].source.as_deref(),
+            Some(workspace.root().to_str().unwrap())
+        );
+        assert_eq!(plan.mounts[0].target, "/workspace");
+        assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
+    }
+
+    #[test]
+    fn build_up_plan_does_not_expand_workspace_mount_target_twice_when_used_as_workspace_folder() {
+        let workspace = test_workspace("workspace-mount-variable-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=${containerWorkspaceFolder}/src,type=bind"
+            }
+            "#,
+        );
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(
+            plan.workspace_folder,
+            "/workspaces/workspace-mount-variable-plan/src"
+        );
+        assert_eq!(plan.mounts.len(), 1);
+        assert_eq!(
+            plan.mounts[0].source.as_deref(),
+            Some(workspace.root().to_str().unwrap())
+        );
+        assert_eq!(plan.mounts[0].target, plan.workspace_folder);
+        assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
+    }
+
+    #[test]
+    fn build_up_plan_uses_explicit_workspace_folder_with_workspace_mount() {
+        let workspace = test_workspace("workspace-folder-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+              "workspaceFolder": "/workspace/app"
+            }
+            "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "/opt/${containerWorkspaceFolderBasename}"
+type = "volume"
+"#,
+        )
+        .unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.workspace_folder, "/workspace/app");
+        assert_eq!(plan.mounts[0].target, "/workspace");
+        assert_eq!(plan.mounts[1].target, "/opt/app");
     }
 
     #[test]

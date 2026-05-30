@@ -145,7 +145,7 @@ fn resolved_mount_spec(
     }
 }
 
-fn devcontainer_mount_spec(
+pub(crate) fn devcontainer_mount_spec(
     mount: &LayerDevcontainerMount,
     workspace_root: &Path,
     variables: &VariableContext,
