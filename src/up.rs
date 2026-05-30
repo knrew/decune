@@ -46,6 +46,7 @@ use crate::{
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
+    host::daemon::HostDaemon,
     ui,
     workspace::Workspace,
 };
@@ -267,6 +268,7 @@ fn build_up_plan_inner(
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     let started = ensure_container_started(options).await?;
+    let _host_daemon = start_host_daemon_for_up(&started).await?;
     {
         let lifecycle = prepare_up_lifecycle(&started).await?;
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
@@ -278,6 +280,7 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
 
 pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     let started = ensure_container_started(options).await?;
+    let _host_daemon = start_host_daemon_for_up(&started).await?;
     {
         let lifecycle = prepare_up_lifecycle(&started).await?;
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
@@ -741,6 +744,20 @@ async fn prepare_up_lifecycle(
         remote_user,
     })
     .await
+}
+
+async fn start_host_daemon_for_up(started: &StartedUpContainer) -> Result<HostDaemon> {
+    let daemon = HostDaemon::start(started.workspace.paths().runtime_dir())
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to start host daemon for workspace: {}",
+                started.workspace.id()
+            )
+        })?;
+    let _socket_path = daemon.socket_path();
+
+    Ok(daemon)
 }
 
 async fn run_container_start_lifecycle_for_up(
