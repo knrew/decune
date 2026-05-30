@@ -237,7 +237,7 @@ fn up_detach_runs_initialize_when_starting_stopped_container() {
 }
 
 #[test]
-fn up_detach_sets_git_credential_helper_through_host_daemon() {
+fn up_detach_routes_git_credential_helper_actions_through_host_daemon() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_home = support::TempWorkspace::new().unwrap();
     workspace
@@ -272,6 +272,22 @@ fn up_detach_sets_git_credential_helper_through_host_daemon() {
               '  rm -f "$input"' \
               '  exit 0' \
               'fi' \
+              'if [ "$1" = credential ] && [ "$2" = approve ]; then' \
+              '  input=$(mktemp)' \
+              '  cat >"$input"' \
+              '  helper=$(cat /tmp/decune-git-helper)' \
+              '  "$helper" store <"$input"' \
+              '  rm -f "$input"' \
+              '  exit 0' \
+              'fi' \
+              'if [ "$1" = credential ] && [ "$2" = reject ]; then' \
+              '  input=$(mktemp)' \
+              '  cat >"$input"' \
+              '  helper=$(cat /tmp/decune-git-helper)' \
+              '  "$helper" erase <"$input"' \
+              '  rm -f "$input"' \
+              '  exit 0' \
+              'fi' \
               'echo "unexpected fake git command: $*" >&2' \
               'exit 91' \
               >/usr/local/bin/git && chmod +x /usr/local/bin/git
@@ -286,7 +302,7 @@ fn up_detach_sets_git_credential_helper_through_host_daemon() {
               "build": {
                 "dockerfile": "Dockerfile"
               },
-              "postStartCommand": "printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && grep -q 'password=test-secret' /tmp/decune-credential"
+              "postStartCommand": "printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && grep -q 'password=test-secret' /tmp/decune-credential && printf 'protocol=https\nhost=example.test\nusername=octo\npassword=test-secret\n\n' | git credential approve && printf 'protocol=https\nhost=example.test\nusername=octo\npassword=test-secret\n\n' | git credential reject"
             }
             "#,
         )
@@ -296,7 +312,7 @@ fn up_detach_sets_git_credential_helper_through_host_daemon() {
             ".gitconfig",
             r#"
             [credential]
-              helper = "!f() { while IFS= read -r line; do [ -z \"$line\" ] && break; done; printf 'username=octo\npassword=test-secret\n'; }; f"
+              helper = "!f() { action=\"$1\"; if [ \"$action\" = get ]; then while IFS= read -r line; do [ -z \"$line\" ] && break; done; printf 'username=octo\npassword=test-secret\n'; exit 0; fi; if [ \"$action\" = store ] || [ \"$action\" = erase ]; then printf '%s\n' \"$action\" >> \"$HOME/credential-actions\"; while IFS= read -r line; do [ -z \"$line\" ] && break; done; exit 0; fi; }; f"
             "#,
         )
         .unwrap();
@@ -321,6 +337,94 @@ fn up_detach_sets_git_credential_helper_through_host_daemon() {
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("test-secret").not());
+
+        assert_eq!(
+            fs::read_to_string(host_home.path().join("credential-actions")).unwrap(),
+            "store\nerase\n"
+        );
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_warns_with_unsupported_git_credential_helper_container_architecture() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'echo aarch64' \
+              >/usr/local/bin/uname && chmod +x /usr/local/bin/uname && \
+              printf '%s\n' \
+              '#!/bin/sh' \
+              'touch /tmp/git-called' \
+              'echo "git setup should not run" >&2' \
+              'exit 41' \
+              >/usr/local/bin/git && chmod +x /usr/local/bin/git
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "postStartCommand": "test ! -e /tmp/git-called"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            copy_user = false
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains(
+                "Unsupported Git credential helper container architecture: aarch64",
+            ));
     });
 
     runtime.block_on(async {
@@ -3056,6 +3160,43 @@ fn down_removes_github_token_file_and_keeps_token_directory_without_container() 
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
     }
+}
+
+#[test]
+fn clean_force_removes_github_token_file_before_docker_access() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let runtime_home = path_roots.path().join("runtime");
+    let workspace_id = workspace_id(&workspace_root);
+    let token_dir = runtime_home
+        .join("decune")
+        .join(&workspace_id)
+        .join("gh-token");
+    let token_file = token_dir.join("token");
+    let marker_file = token_dir.join("marker");
+    let missing_docker_socket = path_roots.path().join("missing-docker.sock");
+
+    fs::create_dir_all(&token_dir).unwrap();
+    fs::write(&token_file, "github-test-secret\n").unwrap();
+    fs::write(&marker_file, "keep\n").unwrap();
+
+    decune()
+        .args(["clean", "--force"])
+        .arg(&workspace_root)
+        .env("XDG_RUNTIME_DIR", &runtime_home)
+        .env(
+            "DOCKER_HOST",
+            format!("unix://{}", missing_docker_socket.display()),
+        )
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("github-test-secret").not());
+
+    assert!(token_dir.is_dir());
+    assert!(!token_file.exists());
+    assert_eq!(fs::read_to_string(&marker_file).unwrap(), "keep\n");
 }
 
 #[test]
