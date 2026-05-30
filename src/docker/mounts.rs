@@ -483,11 +483,21 @@ fn symlink_resolution(resolve_symlink: bool) -> SymlinkResolution {
 }
 
 fn validate_target(target: &str) -> Result<()> {
-    if target.starts_with('/') {
-        Ok(())
-    } else {
+    if !target.starts_with('/') {
         bail!("Mount target must be an absolute container path: {target}")
     }
+
+    if is_reserved_decune_target(target) {
+        bail!("Mount target is reserved for decune internal use: {target}");
+    }
+
+    Ok(())
+}
+
+fn is_reserved_decune_target(target: &str) -> bool {
+    ["/opt/decune", "/run/decune"]
+        .iter()
+        .any(|reserved| target == *reserved || target.starts_with(&format!("{reserved}/")))
 }
 
 #[cfg(test)]
@@ -912,6 +922,103 @@ mod tests {
 
         assert_eq!(mounts[0].source.as_deref(), Some("project-cache"));
         assert_eq!(mounts[0].target, "/opt/project");
+    }
+
+    #[test]
+    fn rejects_decune_mount_target_under_reserved_opt_decune_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some("project-cache".to_owned()),
+                target: "/opt/decune/cache".to_owned(),
+                mount_type: MountType::Volume,
+                read_only: false,
+                resolve_symlink: true,
+                create: None,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let error = config_mount_specs(&config, workspace.path(), &variables(workspace.path()))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target is reserved for decune internal use")
+        );
+    }
+
+    #[test]
+    fn rejects_devcontainer_mount_target_under_reserved_run_decune_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=agent,target=/run/decune/ssh-agent.sock,type=volume".to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let error = config_mount_specs(&config, workspace.path(), &variables(workspace.path()))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target is reserved for decune internal use")
+        );
+    }
+
+    #[test]
+    fn allows_targets_outside_reserved_prefix_boundary() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some("project-cache".to_owned()),
+                target: "/opt/decune-cache".to_owned(),
+                mount_type: MountType::Volume,
+                read_only: false,
+                resolve_symlink: true,
+                create: None,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts[0].target, "/opt/decune-cache");
+    }
+
+    #[test]
+    fn rejects_mount_target_that_expands_to_reserved_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some("project-cache".to_owned()),
+                target: "/run/decune/${remoteUser}".to_owned(),
+                mount_type: MountType::Volume,
+                read_only: false,
+                resolve_symlink: true,
+                create: None,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let error = config_mount_specs(&config, workspace.path(), &variables(workspace.path()))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target is reserved for decune internal use")
+        );
     }
 
     #[test]
