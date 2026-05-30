@@ -273,6 +273,8 @@ pub(crate) fn prepare_github_cli_runtime(
     config: &ResolvedConfig,
     runtime_dir: &Path,
 ) -> Result<GithubCliRuntime> {
+    remove_github_cli_token_file(runtime_dir)?;
+
     if !github_cli_credentials_enabled(&config.credentials.github) {
         return Ok(GithubCliRuntime::empty());
     }
@@ -286,6 +288,8 @@ pub(crate) fn prepare_github_cli_runtime_with_token(
     runtime_dir: &Path,
     token: Option<&str>,
 ) -> Result<GithubCliRuntime> {
+    remove_github_cli_token_file(runtime_dir)?;
+
     if !github_cli_credentials_enabled(&config.credentials.github) {
         return Ok(GithubCliRuntime::empty());
     }
@@ -1658,6 +1662,77 @@ mod tests {
     }
 
     #[test]
+    fn github_runtime_removes_stale_token_file_when_disabled() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let (token_file, marker_file) = seed_stale_github_token_file(&runtime_dir);
+        let mut config = ResolvedConfig::default();
+        config.credentials.github.enabled = false;
+
+        let runtime =
+            prepare_github_cli_runtime_with_token(&config, &runtime_dir, Some("test-secret\n"))
+                .unwrap();
+
+        assert!(runtime.mounts().is_empty());
+        assert!(runtime.token_file().is_none());
+        assert!(!token_file.exists());
+        assert_eq!(fs::read_to_string(marker_file).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn github_runtime_removes_stale_token_file_when_mode_is_off() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let (token_file, marker_file) = seed_stale_github_token_file(&runtime_dir);
+        let mut config = ResolvedConfig::default();
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+
+        let runtime =
+            prepare_github_cli_runtime_with_token(&config, &runtime_dir, Some("test-secret\n"))
+                .unwrap();
+
+        assert!(runtime.mounts().is_empty());
+        assert!(runtime.token_file().is_none());
+        assert!(!token_file.exists());
+        assert_eq!(fs::read_to_string(marker_file).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn github_runtime_removes_stale_token_file_when_token_is_unavailable() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let (token_file, marker_file) = seed_stale_github_token_file(&runtime_dir);
+
+        let runtime =
+            prepare_github_cli_runtime_with_token(&ResolvedConfig::default(), &runtime_dir, None)
+                .unwrap();
+
+        assert!(runtime.mounts().is_empty());
+        assert!(runtime.token_file().is_none());
+        assert!(!token_file.exists());
+        assert_eq!(fs::read_to_string(marker_file).unwrap(), "keep\n");
+    }
+
+    #[test]
+    fn github_runtime_removes_stale_token_file_when_token_is_empty() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let (token_file, marker_file) = seed_stale_github_token_file(&runtime_dir);
+
+        let runtime = prepare_github_cli_runtime_with_token(
+            &ResolvedConfig::default(),
+            &runtime_dir,
+            Some("\n"),
+        )
+        .unwrap();
+
+        assert!(runtime.mounts().is_empty());
+        assert!(runtime.token_file().is_none());
+        assert!(!token_file.exists());
+        assert_eq!(fs::read_to_string(marker_file).unwrap(), "keep\n");
+    }
+
+    #[test]
     fn github_runtime_omits_mount_when_disabled() {
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
@@ -1862,5 +1937,15 @@ mod tests {
 
     fn invalid_path_with_nul() -> PathBuf {
         PathBuf::from(OsString::from_vec(b"invalid\0socket".to_vec()))
+    }
+
+    fn seed_stale_github_token_file(runtime_dir: &Path) -> (PathBuf, PathBuf) {
+        let token_dir = runtime_dir.join("gh-token");
+        fs::create_dir_all(&token_dir).unwrap();
+        let token_file = token_dir.join("token");
+        let marker_file = token_dir.join("marker");
+        fs::write(&token_file, "stale-secret\n").unwrap();
+        fs::write(&marker_file, "keep\n").unwrap();
+        (token_file, marker_file)
     }
 }

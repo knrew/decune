@@ -1,6 +1,8 @@
 use assert_cmd::Command;
 use bollard::{
     Docker,
+    container::LogOutput,
+    exec::{CreateExecOptions, StartExecOptions, StartExecResults},
     models::{
         ContainerConfig, ContainerCreateBody, ContainerSummary, HostConfig, VolumeCreateRequest,
     },
@@ -1458,6 +1460,155 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
                 .await
                 .unwrap();
             assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'set -eu' \
+              'if [ "$1" = auth ] && [ "$2" = login ]; then' \
+              '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+              '  mkdir -p "$GH_CONFIG_DIR"' \
+              '  cat > "$GH_CONFIG_DIR/token"' \
+              '  exit 0' \
+              'fi' \
+              'if [ "$1" = auth ] && [ "$2" = setup-git ]; then' \
+              '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+              '  exit 0' \
+              'fi' \
+              'echo "unexpected fake gh command: $*" >&2' \
+              'exit 91' \
+              >/usr/local/bin/gh \
+              && chmod +x /usr/local/bin/gh
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+              "workspaceFolder": "/workspace",
+              "postStartCommand": "test \"${GH_CONFIG_DIR:-}\" = /run/decune/gh && grep -qx \"$(cat /workspace/expected-token)\" \"$GH_CONFIG_DIR/token\""
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file("expected-token", "first-secret\n")
+        .unwrap();
+    let host_token_path = host_tools.write_file("token", "first-secret\n").unwrap();
+    let gh_path = host_tools
+        .write_file(
+            "bin/gh",
+            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then cat \"$DECUNE_TEST_GH_TOKEN_FILE\"; exit 0; fi\nexit 91\n",
+        )
+        .unwrap();
+    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        gh_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("PATH", &fake_path)
+            .env("DECUNE_TEST_GH_TOKEN_FILE", &host_token_path)
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("first-secret").not());
+
+        let first_id = runtime.block_on(async {
+            inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap()
+                .id
+                .unwrap()
+        });
+
+        fs::write(&host_token_path, "second-secret\n").unwrap();
+        workspace
+            .write_file("expected-token", "second-secret\n")
+            .unwrap();
+
+        decune()
+            .env("PATH", &fake_path)
+            .env("DECUNE_TEST_GH_TOKEN_FILE", &host_token_path)
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Reusing running dev container"))
+            .stderr(predicate::str::contains("second-secret").not());
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
+            exec_single_workspace_container(
+                &workspace_root,
+                [
+                    "/bin/sh",
+                    "-lc",
+                    "test \"${GH_CONFIG_DIR:-}\" = /run/decune/gh && grep -qx \"$(cat /workspace/expected-token)\" \"$GH_CONFIG_DIR/token\"",
+                ],
+            )
+            .await
+            .unwrap();
         });
     });
 
@@ -4544,6 +4695,56 @@ fn inspect_has_mount_target(
             .iter()
             .any(|mount| mount.destination.as_deref() == Some(target))
     })
+}
+
+async fn exec_single_workspace_container<const N: usize>(
+    workspace_root: &Path,
+    command: [&str; N],
+) -> anyhow::Result<String> {
+    let docker = Docker::connect_with_defaults()?;
+    let inspect = inspect_single_workspace_container(workspace_root).await?;
+    let container_id = inspect
+        .id
+        .ok_or_else(|| anyhow::anyhow!("workspace container did not include an id"))?;
+    let options = CreateExecOptions {
+        attach_stdout: Some(true),
+        attach_stderr: Some(true),
+        cmd: Some(command.into_iter().map(str::to_owned).collect::<Vec<_>>()),
+        ..Default::default()
+    };
+    let exec = docker.create_exec(&container_id, options).await?;
+    let start_options = StartExecOptions {
+        detach: false,
+        tty: false,
+        output_capacity: None,
+    };
+    let StartExecResults::Attached { mut output, .. } =
+        docker.start_exec(&exec.id, Some(start_options)).await?
+    else {
+        anyhow::bail!("Docker exec did not attach output");
+    };
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    while let Some(chunk) = output.try_next().await? {
+        match chunk {
+            LogOutput::StdOut { message } | LogOutput::Console { message } => {
+                stdout.extend_from_slice(&message)
+            }
+            LogOutput::StdErr { message } => stderr.extend_from_slice(&message),
+            LogOutput::StdIn { .. } => {}
+        }
+    }
+
+    let inspect = docker.inspect_exec(&exec.id).await?;
+    let exit_code = inspect.exit_code.unwrap_or(-1);
+    anyhow::ensure!(
+        exit_code == 0,
+        "Docker exec failed with exit code {exit_code}: {}",
+        String::from_utf8_lossy(&stderr)
+    );
+
+    Ok(String::from_utf8_lossy(&stdout).into_owned())
 }
 
 async fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
