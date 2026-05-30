@@ -2,7 +2,7 @@ use std::{
     collections::BTreeMap,
     env, fs, io,
     io::{Read, Write},
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{FileTypeExt, PermissionsExt},
     os::unix::net::UnixStream,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -231,14 +231,19 @@ pub(crate) fn prepare_ssh_agent_runtime_with_socket(
         return Ok(SshAgentRuntime::empty());
     }
 
-    let Some(socket_path) = socket_path.filter(|path| path.exists()) else {
-        return match config.credentials.git.ssh_agent {
-            SshAgentMode::Required => {
-                bail!("SSH agent forwarding is required, but SSH_AUTH_SOCK is not available")
-            }
-            SshAgentMode::Auto | SshAgentMode::Off => Ok(SshAgentRuntime::empty()),
-        };
+    let Some(socket_path) = socket_path else {
+        return ssh_agent_unavailable(config, "SSH_AUTH_SOCK is not available");
     };
+
+    match inspect_ssh_agent_socket(socket_path)? {
+        SshAgentSocketStatus::Available => {}
+        SshAgentSocketStatus::Missing => {
+            return ssh_agent_unavailable(config, "SSH_AUTH_SOCK is not available");
+        }
+        SshAgentSocketStatus::NotSocket => {
+            return ssh_agent_unavailable(config, "SSH_AUTH_SOCK is not a Unix socket");
+        }
+    }
 
     Ok(SshAgentRuntime {
         mounts: vec![DockerMountSpec {
@@ -255,6 +260,43 @@ pub(crate) fn prepare_ssh_agent_runtime_with_socket(
             SSH_AGENT_SOCKET_TARGET.to_owned(),
         )]),
     })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SshAgentSocketStatus {
+    Available,
+    Missing,
+    NotSocket,
+}
+
+fn inspect_ssh_agent_socket(socket_path: &Path) -> Result<SshAgentSocketStatus> {
+    let metadata = match fs::metadata(socket_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            return Ok(SshAgentSocketStatus::Missing);
+        }
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to inspect SSH_AUTH_SOCK path: {}",
+                    socket_path.display()
+                )
+            });
+        }
+    };
+
+    if metadata.file_type().is_socket() {
+        Ok(SshAgentSocketStatus::Available)
+    } else {
+        Ok(SshAgentSocketStatus::NotSocket)
+    }
+}
+
+fn ssh_agent_unavailable(config: &ResolvedConfig, reason: &str) -> Result<SshAgentRuntime> {
+    match config.credentials.git.ssh_agent {
+        SshAgentMode::Required => bail!("SSH agent forwarding is required, but {reason}"),
+        SshAgentMode::Auto | SshAgentMode::Off => Ok(SshAgentRuntime::empty()),
+    }
 }
 
 fn prepare_git_credential_runtime_with_gitconfig(
@@ -817,9 +859,49 @@ mod tests {
     }
 
     #[test]
+    fn ssh_agent_required_errors_when_socket_path_is_regular_file() {
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("agent.sock");
+        fs::write(&socket_path, "").unwrap();
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.ssh_agent = SshAgentMode::Required;
+
+        let error = prepare_ssh_agent_runtime_with_socket(&config, Some(&socket_path)).unwrap_err();
+
+        assert!(error.to_string().contains("not a Unix socket"));
+    }
+
+    #[test]
+    fn ssh_agent_required_errors_when_socket_path_is_directory() {
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("agent.sock");
+        fs::create_dir(&socket_path).unwrap();
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.ssh_agent = SshAgentMode::Required;
+
+        let error = prepare_ssh_agent_runtime_with_socket(&config, Some(&socket_path)).unwrap_err();
+
+        assert!(error.to_string().contains("not a Unix socket"));
+    }
+
+    #[test]
     fn ssh_agent_auto_omits_mount_and_container_env_when_socket_is_absent() {
         let runtime =
             prepare_ssh_agent_runtime_with_socket(&ResolvedConfig::default(), None).unwrap();
+
+        assert!(runtime.mounts().is_empty());
+        assert!(runtime.container_env().is_empty());
+    }
+
+    #[test]
+    fn ssh_agent_auto_omits_mount_and_container_env_when_socket_path_is_regular_file() {
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("agent.sock");
+        fs::write(&socket_path, "").unwrap();
+
+        let runtime =
+            prepare_ssh_agent_runtime_with_socket(&ResolvedConfig::default(), Some(&socket_path))
+                .unwrap();
 
         assert!(runtime.mounts().is_empty());
         assert!(runtime.container_env().is_empty());
