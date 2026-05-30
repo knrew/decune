@@ -9,7 +9,7 @@ use crate::config::{
     path::{HostPathOptions, PathCreate, SymlinkResolution, resolve_host_path},
     resolved::{ResolvedConfig, ResolvedMount},
     types::{MountCreate, MountType},
-    variables::VariableContext,
+    variables::{VariableContext, expand_variables},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,13 +63,16 @@ fn resolved_mount_spec(
     workspace_root: &Path,
     variables: &VariableContext,
 ) -> Result<DockerMountSpec> {
-    validate_target(&mount.target)?;
+    let target = expand_variables(&mount.target, variables)
+        .with_context(|| format!("Failed to expand mount target: {}", mount.target))?;
+    validate_target(&target)?;
 
     match mount.mount_type {
         MountType::Bind => {
-            let source = mount.source.as_deref().ok_or_else(|| {
-                anyhow!("Bind mount source is required for target: {}", mount.target)
-            })?;
+            let source = mount
+                .source
+                .as_deref()
+                .ok_or_else(|| anyhow!("Bind mount source is required for target: {}", target))?;
             let source = resolve_bind_source(
                 source,
                 HostPathOptions::new(mount.origin, workspace_root, variables)
@@ -77,26 +80,34 @@ fn resolved_mount_spec(
                     .with_symlink_resolution(symlink_resolution(mount.resolve_symlink)),
             )
             .with_context(|| {
-                format!(
-                    "Failed to resolve bind mount source for target: {}",
-                    mount.target
-                )
+                format!("Failed to resolve bind mount source for target: {}", target)
             })?;
 
             Ok(DockerMountSpec {
                 source: Some(source),
-                target: mount.target.clone(),
+                target,
                 mount_type: MountType::Bind,
                 read_only: mount.read_only,
             })
         }
-        MountType::Volume => Ok(DockerMountSpec {
-            source: mount.source.clone(),
-            target: mount.target.clone(),
-            mount_type: MountType::Volume,
-            read_only: mount.read_only,
-        }),
-        MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {}", mount.target),
+        MountType::Volume => {
+            let source = mount
+                .source
+                .as_deref()
+                .map(|source| {
+                    expand_variables(source, variables)
+                        .with_context(|| format!("Failed to expand mount source: {source}"))
+                })
+                .transpose()?;
+
+            Ok(DockerMountSpec {
+                source,
+                target,
+                mount_type: MountType::Volume,
+                read_only: mount.read_only,
+            })
+        }
+        MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {}", target),
     }
 }
 
@@ -105,7 +116,7 @@ fn devcontainer_mount_spec(
     workspace_root: &Path,
     variables: &VariableContext,
 ) -> Result<DockerMountSpec> {
-    let parsed = parse_devcontainer_mount(mount)?;
+    let parsed = parse_devcontainer_mount(mount, variables)?;
     validate_target(&parsed.target)?;
 
     match parsed.mount_type {
@@ -156,14 +167,17 @@ struct ParsedMount {
     read_only: bool,
 }
 
-fn parse_devcontainer_mount(mount: &LayerDevcontainerMount) -> Result<ParsedMount> {
+fn parse_devcontainer_mount(
+    mount: &LayerDevcontainerMount,
+    variables: &VariableContext,
+) -> Result<ParsedMount> {
     match mount {
         LayerDevcontainerMount::String(value) => parse_devcontainer_mount_fields(
-            docker_mount_string_fields(value)
+            expand_mount_fields(docker_mount_string_fields(value)?, variables)
                 .with_context(|| format!("Failed to parse devcontainer mount: {value}"))?,
         ),
         LayerDevcontainerMount::Object(values) => parse_devcontainer_mount_fields(
-            devcontainer_mount_object_fields(values)
+            expand_mount_fields(devcontainer_mount_object_fields(values)?, variables)
                 .context("Failed to parse devcontainer mount object")?,
         ),
     }
@@ -217,6 +231,27 @@ fn devcontainer_mount_object_fields(
 enum MountFieldValue {
     String(String),
     Bool(bool),
+}
+
+fn expand_mount_fields(
+    fields: BTreeMap<String, MountFieldValue>,
+    variables: &VariableContext,
+) -> Result<BTreeMap<String, MountFieldValue>> {
+    fields
+        .into_iter()
+        .map(|(key, value)| {
+            Ok((
+                key.clone(),
+                match value {
+                    MountFieldValue::String(value) => MountFieldValue::String(
+                        expand_variables(&value, variables)
+                            .with_context(|| format!("Failed to expand mount field: {key}"))?,
+                    ),
+                    MountFieldValue::Bool(value) => MountFieldValue::Bool(value),
+                },
+            ))
+        })
+        .collect()
 }
 
 fn parse_devcontainer_mount_fields(
@@ -475,6 +510,51 @@ mod tests {
         assert_eq!(mounts[0].target, "/tools");
         assert_eq!(mounts[0].mount_type, MountType::Bind);
         assert!(mounts[0].read_only);
+    }
+
+    #[test]
+    fn expands_devcontainer_mount_target_before_validation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("tools");
+        fs::create_dir_all(&source).unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localWorkspaceFolder}/tools,target=${containerWorkspaceFolder}/tools,type=bind"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts[0].target, "/workspaces/project/tools");
+    }
+
+    #[test]
+    fn expands_decune_volume_mount_strings() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some("${localWorkspaceFolderBasename}-cache".to_owned()),
+                target: "/opt/${containerWorkspaceFolderBasename}".to_owned(),
+                mount_type: MountType::Volume,
+                read_only: false,
+                resolve_symlink: true,
+                create: None,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts[0].source.as_deref(), Some("project-cache"));
+        assert_eq!(mounts[0].target, "/opt/project");
     }
 
     #[test]

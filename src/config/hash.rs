@@ -26,6 +26,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) feature_locks: Vec<FeatureLockHashEntry>,
     pub(crate) cli_flags: BTreeMap<String, Value>,
     pub(crate) build: Option<BuildHashInput>,
+    pub(crate) resolved_mounts: Vec<MountHashInput>,
 }
 
 impl<'a> ConfigHashInput<'a> {
@@ -35,8 +36,17 @@ impl<'a> ConfigHashInput<'a> {
             feature_locks: Vec::new(),
             cli_flags: BTreeMap::new(),
             build: None,
+            resolved_mounts: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MountHashInput {
+    pub(crate) source: Option<String>,
+    pub(crate) target: String,
+    pub(crate) mount_type: MountType,
+    pub(crate) read_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,8 +82,26 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
         Some(build) => write_build_input(writer, build),
         None => writer.none(),
     });
+    writer.field("resolved_mounts", |writer| {
+        write_resolved_mounts(writer, &input.resolved_mounts);
+    });
 
     sha256_hex(writer.finish().as_bytes())
+}
+
+fn write_resolved_mounts(writer: &mut CanonicalWriter, mounts: &[MountHashInput]) {
+    writer.seq(mounts.iter(), |writer, mount| {
+        writer.object("ResolvedMountSpec", |writer| {
+            writer.field("source", |writer| {
+                writer.option_string(mount.source.as_deref());
+            });
+            writer.field("target", |writer| writer.string(&mount.target));
+            writer.field("type", |writer| {
+                writer.string(mount_type_name(mount.mount_type));
+            });
+            writer.field("read_only", |writer| writer.bool(mount.read_only));
+        });
+    });
 }
 
 fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
