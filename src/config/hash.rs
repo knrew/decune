@@ -227,6 +227,9 @@ fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) 
                     writer.field("on_conflict", |writer| {
                         writer.string(dotfile_conflict_name(dotfile.on_conflict));
                     });
+                    writer.field("origin", |writer| {
+                        writer.string(config_path_origin_name(dotfile.origin));
+                    });
                 });
             });
         });
@@ -618,6 +621,13 @@ fn dotfile_conflict_name(value: DotfileConflict) -> &'static str {
         DotfileConflict::Fail => "fail",
         DotfileConflict::ReplaceSymlink => "replace-symlink",
         DotfileConflict::Backup => "backup",
+    }
+}
+
+fn config_path_origin_name(value: crate::config::path::ConfigPathOrigin) -> &'static str {
+    match value {
+        crate::config::path::ConfigPathOrigin::Global => "global",
+        crate::config::path::ConfigPathOrigin::Project => "project",
     }
 }
 

@@ -18,6 +18,7 @@ use crate::{
     devcontainer::metadata::LifecycleProperty,
     docker::{
         client::DockerClient,
+        dotfiles::setup_dotfiles,
         exec::{ExecCommandSpec, ExecOutput, exec_capture_output, resolve_exec_env},
         user::ResolvedRemoteUser,
     },
@@ -270,6 +271,13 @@ pub(crate) async fn prepare_container_lifecycle(
 ) -> Result<PreparedLifecycleRunContext<'_>> {
     start_host_daemon()?;
     refresh_decune_setup()?;
+    setup_dotfiles(
+        context.client,
+        context.container,
+        context.config,
+        &context.remote_user,
+    )
+    .await?;
     Ok(PreparedLifecycleRunContext {
         remote_process_env: resolve_exec_env(
             context.client,

@@ -2,6 +2,7 @@
 
 use std::{
     collections::BTreeMap,
+    sync::atomic::{AtomicU64, Ordering},
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -19,6 +20,7 @@ use crate::{
 
 const ROOT_USER: &str = "root";
 const USER_LOOKUP_NOT_FOUND_EXIT_CODE: i64 = 42;
+static REMOTE_USER_LOOKUP_CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RemoteUserSource {
@@ -286,8 +288,12 @@ fn remote_user_lookup_container_name() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_nanos())
         .unwrap_or_default();
+    let sequence = REMOTE_USER_LOOKUP_CONTAINER_SEQUENCE.fetch_add(1, Ordering::Relaxed);
 
-    format!("decune-user-lookup-{}-{nanos}", std::process::id())
+    format!(
+        "decune-user-lookup-{}-{nanos}-{sequence}",
+        std::process::id()
+    )
 }
 
 async fn lookup_container_user(
