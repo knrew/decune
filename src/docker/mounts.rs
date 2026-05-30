@@ -208,7 +208,7 @@ fn parse_devcontainer_mount(
         LayerDevcontainerMount::Object(values) => parse_devcontainer_mount_fields(
             expand_mount_fields(devcontainer_mount_object_fields(values)?, variables)
                 .context("Failed to parse devcontainer mount object")?,
-            false,
+            true,
         ),
     }
 }
@@ -833,6 +833,70 @@ mod tests {
         );
         assert_eq!(mounts[0].target, "/data");
         assert!(mounts[0].read_only);
+    }
+
+    #[test]
+    fn parses_devcontainer_object_bind_mount_options() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("generated/cache");
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::Object(
+                    [
+                        ("type".to_owned(), json!("bind")),
+                        (
+                            "source".to_owned(),
+                            json!("${localWorkspaceFolder}/generated/cache"),
+                        ),
+                        ("target".to_owned(), json!("/cache")),
+                        ("consistency".to_owned(), json!("cached")),
+                        ("bind-propagation".to_owned(), json!("rshared")),
+                        ("bind-create-src".to_owned(), json!(true)),
+                    ]
+                    .into(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+        let bollard_mount = mounts[0].to_bollard_mount();
+        let bind_options = bollard_mount.bind_options.unwrap();
+
+        assert!(source.is_dir());
+        assert_eq!(bollard_mount.consistency.as_deref(), Some("cached"));
+        assert_eq!(bind_options.propagation.unwrap().to_string(), "rshared");
+        assert_eq!(bind_options.create_mountpoint, Some(true));
+    }
+
+    #[test]
+    fn parses_devcontainer_object_volume_mount_options() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::Object(
+                    [
+                        ("type".to_owned(), json!("volume")),
+                        ("source".to_owned(), json!("project-cache")),
+                        ("target".to_owned(), json!("/cache")),
+                        ("volume-nocopy".to_owned(), json!(true)),
+                        ("volume-subpath".to_owned(), json!("deps")),
+                    ]
+                    .into(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+        let volume_options = mounts[0].to_bollard_mount().volume_options.unwrap();
+
+        assert_eq!(volume_options.no_copy, Some(true));
+        assert_eq!(volume_options.subpath.as_deref(), Some("deps"));
     }
 
     #[test]
