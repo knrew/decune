@@ -554,6 +554,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
     let workspace = support::TempWorkspace::new().unwrap();
     let host_home = support::TempWorkspace::new().unwrap();
     let uid = current_uid();
+    let gid = current_gid();
     let attacker_uid = if current_uid() == 20001 { 20002 } else { 20001 };
     let attacker_gid = if current_gid() == 20001 { 20002 } else { 20001 };
     workspace
@@ -562,7 +563,9 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
             &format!(
                 r#"
             FROM ubuntu:24.04
-            RUN groupadd -g {attacker_gid} attackergrp \
+            RUN if getent group {gid} >/dev/null; then remote_group="$(getent group {gid} | cut -d: -f1)"; else groupadd -g {gid} decunegrp && remote_group=decunegrp; fi \
+              && if getent passwd {uid} >/dev/null; then remote_user="$(getent passwd {uid} | cut -d: -f1)" && if [ "$remote_user" != decune ]; then usermod -l decune "$remote_user"; fi && usermod -d /home/decune -m decune && usermod -g "$remote_group" decune; else useradd -m -u {uid} -g "$remote_group" decune; fi \
+              && groupadd -g {attacker_gid} attackergrp \
               && useradd -m -u {attacker_uid} -g attackergrp attacker \
               && printf '%s\n' \
               '#!/bin/sh' \
@@ -603,8 +606,9 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
               "build": {
                 "dockerfile": "Dockerfile"
               },
-              "remoteUser": "__UID__",
-              "postStartCommand": "test \"$(id -u)\" = \"__UID__\" && command -v su >/dev/null && owner=$(stat -c %u /run/decune/host-daemon.sock) && attacker=$(id -u attacker) && if [ \"$owner\" = \"$attacker\" ]; then echo 'attacker fixture uid matches host daemon owner' >&2; exit 24; fi && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && if su attacker -s /bin/sh -c \"printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi"
+              "remoteUser": "decune",
+              "updateRemoteUserUID": false,
+              "postStartCommand": "test \"$(id -un)\" = decune && test \"$(id -u)\" = \"__UID__\" && command -v su >/dev/null && owner=$(stat -c %u /run/decune/host-daemon.sock) && attacker=$(id -u attacker) && if [ \"$owner\" = \"$attacker\" ]; then echo 'attacker fixture uid matches host daemon owner' >&2; exit 24; fi && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && if su attacker -s /bin/sh -c \"printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi"
             }
             "#
     .replace("__UID__", &uid.to_string());
@@ -640,6 +644,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("Falling back to root").not())
             .stderr(predicate::str::contains("attacker reached host daemon").not())
             .stderr(predicate::str::contains("test-secret").not());
     });
