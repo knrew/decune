@@ -40,7 +40,9 @@ use crate::{
             image_devcontainer_metadata_layers_if_present,
             image_has_devcontainer_metadata_label_if_present, remove_image, tag_image,
         },
-        mounts::{DockerMountSpec, config_mount_specs, devcontainer_mount_spec},
+        mounts::{
+            DockerMountSpec, config_mount_specs, devcontainer_mount_spec, normalize_container_path,
+        },
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
@@ -908,13 +910,34 @@ fn workspace_mounts_from_resolved(
     variables: &crate::config::variables::VariableContext,
     mount_resolution: MountResolution,
 ) -> Result<Vec<DockerMountSpec>> {
+    let workspace_target = workspace_mount.target.clone();
     let mut mounts = vec![workspace_mount];
     if mount_resolution == MountResolution::Resolve {
-        mounts.extend(config_mount_specs(config, workspace_root, variables)?);
-        mounts.extend(dotfile_mount_specs(config, workspace_root, variables)?);
+        let config_mounts = config_mount_specs(config, workspace_root, variables)?;
+        reject_workspace_mount_target_conflicts(&workspace_target, &config_mounts)?;
+        mounts.extend(config_mounts);
+
+        let dotfile_mounts = dotfile_mount_specs(config, workspace_root, variables)?;
+        reject_workspace_mount_target_conflicts(&workspace_target, &dotfile_mounts)?;
+        mounts.extend(dotfile_mounts);
     }
 
     Ok(mounts)
+}
+
+fn reject_workspace_mount_target_conflicts(
+    workspace_target: &str,
+    mounts: &[DockerMountSpec],
+) -> Result<()> {
+    let workspace_target = normalize_container_path(workspace_target);
+    if mounts
+        .iter()
+        .any(|mount| normalize_container_path(&mount.target) == workspace_target)
+    {
+        bail!("Mount target conflicts with workspace mount target: {workspace_target}");
+    }
+
+    Ok(())
 }
 
 fn resolve_workspace_location<F>(
@@ -1434,6 +1457,99 @@ type = "volume"
         assert_eq!(plan.workspace_folder, "/workspace/app");
         assert_eq!(plan.mounts[0].target, "/workspace");
         assert_eq!(plan.mounts[1].target, "/opt/app");
+    }
+
+    #[test]
+    fn build_up_plan_rejects_mount_target_that_conflicts_with_workspace_mount() {
+        let workspace = test_workspace("workspace-mount-conflict-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            format!(
+                r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "{}"
+type = "volume"
+"#,
+                default_workspace_folder(&workspace)
+            ),
+        )
+        .unwrap();
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target conflicts with workspace mount target")
+        );
+    }
+
+    #[test]
+    fn build_up_plan_rejects_mount_target_that_normalizes_to_workspace_mount() {
+        let workspace = test_workspace("normalized-workspace-mount-conflict-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            format!(
+                r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "{}/."
+type = "volume"
+"#,
+                default_workspace_folder(&workspace)
+            ),
+        )
+        .unwrap();
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target conflicts with workspace mount target")
+        );
+    }
+
+    #[test]
+    fn build_up_plan_rejects_workspace_mount_under_reserved_decune_path() {
+        let workspace = test_workspace("reserved-workspace-mount-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=/run/decune/workspace,type=bind"
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Mount target is reserved for decune internal use"));
     }
 
     #[test]
