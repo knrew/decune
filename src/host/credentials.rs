@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::{
     config::{
         resolved::{ResolvedConfig, ResolvedGitCredentials},
-        types::GitHttpsMode,
+        types::{GitHttpsMode, SshAgentMode},
     },
     docker::{
         exec::{ExecCommandSpec, exec_capture, exec_capture_output},
@@ -30,6 +30,7 @@ const GIT_CREDENTIAL_HELPER_LINUX_X86_64_NAME: &str = "git-credential-decune-lin
 const HOST_GITCONFIG_NAME: &str = "host-gitconfig";
 const HOST_DAEMON_SOCKET_TARGET: &str = "/run/decune/host-daemon.sock";
 const GIT_CREDENTIAL_HELPER_TARGET: &str = "/run/decune/git-credential-decune";
+pub(crate) const SSH_AGENT_SOCKET_TARGET: &str = "/run/decune/ssh-agent.sock";
 const REQUEST_TYPE_CREDENTIAL: &str = "credential";
 // host の decune binary は container OS/libc と一致しないため，Linux static helper を展開する．
 const GIT_CREDENTIAL_HELPER_LINUX_X86_64: &[u8] =
@@ -114,6 +115,29 @@ impl Drop for GitCredentialRuntime {
     }
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SshAgentRuntime {
+    mounts: Vec<DockerMountSpec>,
+    container_env: BTreeMap<String, String>,
+}
+
+impl SshAgentRuntime {
+    fn empty() -> Self {
+        Self {
+            mounts: Vec::new(),
+            container_env: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn mounts(&self) -> &[DockerMountSpec] {
+        &self.mounts
+    }
+
+    pub(crate) fn container_env(&self) -> &BTreeMap<String, String> {
+        &self.container_env
+    }
+}
+
 #[derive(Debug, Serialize)]
 struct GitCredentialHelperRequest<'a> {
     version: u16,
@@ -190,6 +214,47 @@ pub(crate) fn prepare_git_credential_runtime(
         runtime_dir,
         host_gitconfig_path().as_deref(),
     )
+}
+
+pub(crate) fn prepare_ssh_agent_runtime(config: &ResolvedConfig) -> Result<SshAgentRuntime> {
+    let socket_path = env::var_os("SSH_AUTH_SOCK")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from);
+    prepare_ssh_agent_runtime_with_socket(config, socket_path.as_deref())
+}
+
+pub(crate) fn prepare_ssh_agent_runtime_with_socket(
+    config: &ResolvedConfig,
+    socket_path: Option<&Path>,
+) -> Result<SshAgentRuntime> {
+    if !config.credentials.git.enabled || config.credentials.git.ssh_agent == SshAgentMode::Off {
+        return Ok(SshAgentRuntime::empty());
+    }
+
+    let Some(socket_path) = socket_path.filter(|path| path.exists()) else {
+        return match config.credentials.git.ssh_agent {
+            SshAgentMode::Required => {
+                bail!("SSH agent forwarding is required, but SSH_AUTH_SOCK is not available")
+            }
+            SshAgentMode::Auto | SshAgentMode::Off => Ok(SshAgentRuntime::empty()),
+        };
+    };
+
+    Ok(SshAgentRuntime {
+        mounts: vec![DockerMountSpec {
+            source: Some(socket_path.display().to_string()),
+            target: SSH_AGENT_SOCKET_TARGET.to_owned(),
+            mount_type: crate::config::types::MountType::Bind,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        }],
+        container_env: BTreeMap::from([(
+            "SSH_AUTH_SOCK".to_owned(),
+            SSH_AGENT_SOCKET_TARGET.to_owned(),
+        )]),
+    })
 }
 
 fn prepare_git_credential_runtime_with_gitconfig(
@@ -585,7 +650,7 @@ fn shell_quote(value: &str) -> String {
 mod tests {
     use std::{
         fs,
-        os::unix::fs::PermissionsExt,
+        os::unix::{fs::PermissionsExt, net::UnixListener},
         path::{Path, PathBuf},
     };
 
@@ -593,11 +658,12 @@ mod tests {
 
     use super::{
         GIT_CREDENTIAL_HELPER_NAME, GitCredentialAction, GitCredentialCommand,
-        git_credential_helper_request_json, git_credential_setup_script,
+        SSH_AGENT_SOCKET_TARGET, git_credential_helper_request_json, git_credential_setup_script,
         host_git_config_value_from, parse_git_credential_helper_response,
         prepare_git_credential_runtime, prepare_git_credential_runtime_with_gitconfig,
+        prepare_ssh_agent_runtime_with_socket,
     };
-    use crate::config::resolved::ResolvedConfig;
+    use crate::config::{resolved::ResolvedConfig, types::SshAgentMode};
 
     #[test]
     fn helper_request_json_preserves_git_protocol_input() {
@@ -711,6 +777,86 @@ mod tests {
         let value = host_git_config_value_from(&missing_git, "user.name").unwrap();
 
         assert_eq!(value, None);
+    }
+
+    #[test]
+    fn ssh_agent_auto_adds_mount_and_container_env_when_socket_exists() {
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("agent.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+
+        let runtime =
+            prepare_ssh_agent_runtime_with_socket(&ResolvedConfig::default(), Some(&socket_path))
+                .unwrap();
+
+        assert_eq!(runtime.mounts().len(), 1);
+        assert_eq!(runtime.mounts()[0].source.as_deref(), socket_path.to_str());
+        assert_eq!(runtime.mounts()[0].target, SSH_AGENT_SOCKET_TARGET);
+        assert!(!runtime.mounts()[0].read_only);
+        assert_eq!(
+            runtime
+                .container_env()
+                .get("SSH_AUTH_SOCK")
+                .map(String::as_str),
+            Some(SSH_AGENT_SOCKET_TARGET)
+        );
+    }
+
+    #[test]
+    fn ssh_agent_required_errors_when_socket_is_absent() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.ssh_agent = SshAgentMode::Required;
+
+        let error = prepare_ssh_agent_runtime_with_socket(&config, None).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("SSH agent forwarding is required")
+        );
+    }
+
+    #[test]
+    fn ssh_agent_auto_omits_mount_and_container_env_when_socket_is_absent() {
+        let runtime =
+            prepare_ssh_agent_runtime_with_socket(&ResolvedConfig::default(), None).unwrap();
+
+        assert!(runtime.mounts().is_empty());
+        assert!(runtime.container_env().is_empty());
+    }
+
+    #[test]
+    fn ssh_agent_off_omits_mount_and_container_env() {
+        let temp = TempDir::new().unwrap();
+        let socket_path = temp.path().join("agent.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.ssh_agent = SshAgentMode::Off;
+
+        let runtime = prepare_ssh_agent_runtime_with_socket(&config, Some(&socket_path)).unwrap();
+
+        assert!(runtime.mounts().is_empty());
+        assert!(runtime.container_env().is_empty());
+    }
+
+    #[test]
+    fn ssh_agent_socket_path_is_not_canonicalized() {
+        let temp = TempDir::new().unwrap();
+        let real_socket_path = temp.path().join("real-agent.sock");
+        let symlink_socket_path = temp.path().join("linked-agent.sock");
+        let _listener = UnixListener::bind(&real_socket_path).unwrap();
+        std::os::unix::fs::symlink(&real_socket_path, &symlink_socket_path).unwrap();
+
+        let runtime = prepare_ssh_agent_runtime_with_socket(
+            &ResolvedConfig::default(),
+            Some(&symlink_socket_path),
+        )
+        .unwrap();
+
+        assert_eq!(
+            runtime.mounts()[0].source.as_deref(),
+            symlink_socket_path.to_str()
+        );
     }
 
     fn mode(path: &Path) -> u32 {
