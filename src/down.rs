@@ -67,6 +67,7 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     }
 
     let workspace = Workspace::resolve(&options.workspace)?;
+    remove_github_cli_token_file(workspace.paths().runtime_dir())?;
     let client = DockerClient::connect_from_env()?;
     let containers = list_managed_containers(&client, workspace.id()).await?;
 

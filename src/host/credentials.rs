@@ -21,6 +21,7 @@ use crate::{
         mounts::DockerMountSpec,
         user::ResolvedRemoteUser,
     },
+    host::runtime::set_private_runtime_parent,
     ui,
 };
 
@@ -635,7 +636,7 @@ async fn setup_git_credential_helper(
 
     let script = git_credential_helper_setup_script(&config.credentials.git);
     let env = BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]);
-    let setup_result = exec_capture(
+    let setup_result = exec_capture_output(
         client,
         container,
         &ExecCommandSpec {
@@ -646,15 +647,37 @@ async fn setup_git_credential_helper(
             tty: false,
         },
     )
-    .await
-    .with_context(|| format!("Failed to setup Git credentials in container: {container}"));
-    if setup_result.is_err() {
+    .await;
+    match setup_result {
+        Ok(output) if output.exit_code == 0 => {}
+        Ok(output) => warn_git_credential_setup_unavailable(container, &output.stderr),
+        Err(_) => warn_git_credential_setup_unavailable(container, &[]),
+    }
+
+    Ok(())
+}
+
+fn warn_git_credential_setup_unavailable(container: &str, stderr: &[u8]) {
+    if let Some(detail) = git_credential_setup_warning_detail(stderr) {
+        ui::warn(&format!(
+            "Git credential forwarding is unavailable in container: {container}: {detail}"
+        ));
+    } else {
         ui::warn(&format!(
             "Git credential forwarding is unavailable in container: {container}"
         ));
     }
+}
 
-    Ok(())
+fn git_credential_setup_warning_detail(stderr: &[u8]) -> Option<String> {
+    const UNSUPPORTED_ARCH_PREFIX: &str =
+        "Unsupported Git credential helper container architecture:";
+
+    String::from_utf8_lossy(stderr)
+        .lines()
+        .map(str::trim)
+        .find(|line| line.starts_with(UNSUPPORTED_ARCH_PREFIX))
+        .map(str::to_owned)
 }
 
 async fn setup_git_user_config(
@@ -1209,28 +1232,6 @@ fn host_gitconfig_path() -> Option<PathBuf> {
         .map(|home| home.join(".gitconfig"))
 }
 
-fn set_private_runtime_parent(runtime_dir: &Path) -> Result<()> {
-    let Some(parent) = runtime_dir
-        .parent()
-        .filter(|path| is_decune_runtime_parent(path))
-    else {
-        return Ok(());
-    };
-
-    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).with_context(|| {
-        format!(
-            "Failed to set decune runtime parent directory permissions: {}",
-            parent.display()
-        )
-    })
-}
-
-fn is_decune_runtime_parent(path: &Path) -> bool {
-    path.file_name()
-        .and_then(|value| value.to_str())
-        .is_some_and(|name| name == "decune" || name.starts_with("decune-"))
-}
-
 fn git_credential_helper_launcher() -> &'static [u8] {
     b"#!/bin/sh
 set -eu
@@ -1278,8 +1279,8 @@ mod tests {
         GIT_CREDENTIAL_HELPER_NAME, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET,
         GitCredentialAction, GitCredentialCommand, SSH_AGENT_SOCKET_TARGET,
         git_credential_helper_request_json, git_credential_helper_setup_script,
-        git_user_config_setup_script_from_values, github_cli_setup_script,
-        host_git_config_value_from, host_github_auth_token_from,
+        git_credential_setup_warning_detail, git_user_config_setup_script_from_values,
+        github_cli_setup_script, host_git_config_value_from, host_github_auth_token_from,
         parse_git_credential_helper_response, prepare_git_credential_runtime,
         prepare_git_credential_runtime_with_gitconfig, prepare_github_cli_runtime_with_token,
         prepare_ssh_agent_runtime_with_socket, remove_github_cli_token_file,
@@ -1390,6 +1391,18 @@ mod tests {
         assert!(user_script.contains("git config --global user.email 'octo@example.test'"));
         assert!(!user_script.contains("credential.helper"));
         assert!(!user_script.contains("Unsupported Git credential helper container architecture"));
+    }
+
+    #[test]
+    fn setup_warning_detail_preserves_unsupported_container_architecture() {
+        let detail = git_credential_setup_warning_detail(
+            b"Unsupported Git credential helper container architecture: aarch64\n",
+        );
+
+        assert_eq!(
+            detail.as_deref(),
+            Some("Unsupported Git credential helper container architecture: aarch64")
+        );
     }
 
     #[test]
