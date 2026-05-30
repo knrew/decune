@@ -465,8 +465,8 @@ mod tests {
         layer::{LayerDevcontainerMetadata, LayerHook, LayerPublishPort, canonical_feature_id},
         schema::RawDecuneConfig,
         types::{
-            Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, OnAutoForward,
-            PortProtocol, SshAgentMode,
+            Command, DEFAULT_PORT_HOST_IP, DotfileConflict, GitHttpsMode, GithubCredentialsMode,
+            OnAutoForward, PortProtocol, SshAgentMode,
         },
     };
     use toml::Value;
@@ -1189,6 +1189,58 @@ label = "public"
         assert_eq!(config.ports.entries[0].host, Some(13000));
         assert_eq!(config.ports.entries[0].label.as_deref(), Some("project"));
         assert_eq!(config.ports.entries[1].host, Some(23000));
+    }
+
+    #[test]
+    fn manual_port_priority_is_cli_project_devcontainer_global() {
+        let devcontainer = crate::devcontainer::metadata::parse_metadata(serde_json::json!({
+            "image": "ubuntu:24.04",
+            "forwardPorts": ["3000:3000"]
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+container = 3000
+host = 4000
+label = "global"
+"#,
+            )),
+            devcontainer: Some(devcontainer),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+container = 3000
+host = 5000
+label = "project"
+"#,
+            )),
+            cli: Some(ConfigLayer {
+                ports: vec![LayerPort {
+                    enabled: true,
+                    container: 3000,
+                    host: Some(6000),
+                    host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                    protocol: PortProtocol::Tcp,
+                    require_local: false,
+                    label: None,
+                }],
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.ports.entries.len(), 1);
+        assert_eq!(config.ports.entries[0].host, Some(6000));
+        assert_eq!(config.ports.entries[0].label, None);
     }
 
     #[test]

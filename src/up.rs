@@ -43,6 +43,7 @@ use crate::{
         mounts::{
             DockerMountSpec, config_mount_specs, devcontainer_mount_spec, normalize_container_path,
         },
+        ports::{ResolvedForwardPort, resolve_forward_ports},
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
@@ -113,6 +114,7 @@ pub(crate) struct UpPlan {
     pub(crate) config: ResolvedConfig,
     pub(crate) workspace_folder: String,
     pub(crate) mounts: Vec<DockerMountSpec>,
+    pub(crate) forward_ports: Vec<ResolvedForwardPort>,
 }
 
 #[derive(Debug, Clone)]
@@ -415,6 +417,7 @@ fn build_up_plan_inner(
         devcontainer_json.path().display().to_string(),
     );
     let image = image_source(&config, &resources)?;
+    let forward_ports = resolve_forward_ports(&config.ports.entries)?;
 
     Ok(UpPlan {
         image,
@@ -424,6 +427,7 @@ fn build_up_plan_inner(
         config,
         workspace_folder: workspace_location.workspace_folder,
         mounts,
+        forward_ports,
     })
 }
 
@@ -3988,6 +3992,7 @@ user = "root"
             config,
             workspace_folder: "/workspaces/project".to_owned(),
             mounts: Vec::new(),
+            forward_ports: Vec::new(),
         }
     }
 
