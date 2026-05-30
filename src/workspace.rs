@@ -20,7 +20,6 @@ pub(crate) struct Workspace {
     paths: WorkspacePaths,
 }
 
-#[allow(dead_code)]
 impl Workspace {
     pub(crate) fn resolve(path: impl AsRef<Path>) -> Result<Self> {
         let path = absolute_path(path.as_ref())?;
@@ -71,7 +70,6 @@ pub(crate) struct WorkspacePaths {
     project_config_path: PathBuf,
 }
 
-#[allow(dead_code)]
 impl WorkspacePaths {
     pub(crate) fn resolve(workspace_root: &Path, workspace_id: &str) -> Result<Self> {
         Self::from_roots(workspace_root, workspace_id, &PathRoots::from_env()?)
@@ -95,6 +93,7 @@ impl WorkspacePaths {
         &self.runtime_dir
     }
 
+    #[allow(dead_code)]
     pub(crate) fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }

@@ -4,7 +4,6 @@ pub(crate) fn info(message: &str) {
     write_stderr("Info", message);
 }
 
-#[allow(dead_code)]
 pub(crate) fn warn(message: &str) {
     write_stderr("Warning", message);
 }

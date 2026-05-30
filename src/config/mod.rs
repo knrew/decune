@@ -10,13 +10,12 @@ pub(crate) mod types;
 pub(crate) mod variables;
 
 #[allow(unused_imports)]
+pub(crate) use hash::{BuildHashInput, FeatureLockHashEntry};
 pub(crate) use hash::{
-    BuildHashInput, ConfigHashInput, FeatureLockHashEntry, MountBindOptionsHashInput,
-    MountHashInput, MountVolumeDriverConfigHashInput, MountVolumeOptionsHashInput, config_hash,
+    ConfigHashInput, MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
+    MountVolumeOptionsHashInput, config_hash,
 };
-#[allow(unused_imports)]
 pub(crate) use layer::{ConfigLayer, ConfigMergeInput};
-#[allow(unused_imports)]
 pub(crate) use merge::resolve_config;
 #[allow(unused_imports)]
 pub(crate) use resolved::ResolvedConfig;

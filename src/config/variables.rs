@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{env, path::PathBuf};
 
 use anyhow::{Result, anyhow};

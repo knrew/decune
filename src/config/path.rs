@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     env, fs,
     path::{Path, PathBuf},
@@ -56,6 +54,7 @@ impl<'a> HostPathOptions<'a> {
         }
     }
 
+    #[allow(dead_code)]
     pub(crate) fn with_home_dir(mut self, home_dir: Option<PathBuf>) -> Self {
         self.home_dir = home_dir;
         self

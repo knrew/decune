@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use toml::Value;
@@ -153,6 +151,7 @@ impl Default for ResolvedDevcontainer {
 }
 
 pub(crate) type ResolvedDevcontainerSource = LayerDevcontainerSource;
+#[allow(dead_code)]
 pub(crate) type ResolvedDevcontainerBuild = LayerDevcontainerBuild;
 pub(crate) type ResolvedDevcontainerMount = LayerDevcontainerMount;
 pub(crate) type ResolvedUserEnvProbe = LayerUserEnvProbe;

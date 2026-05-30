@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     collections::BTreeMap,
     sync::atomic::{AtomicU64, Ordering},
@@ -129,6 +127,7 @@ pub(crate) async fn resolve_remote_user_from_image(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) async fn remote_user_home(
     client: &DockerClient,
     container: &str,
