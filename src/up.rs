@@ -46,7 +46,10 @@ use crate::{
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
-    host::daemon::HostDaemon,
+    host::{
+        credentials::{GitCredentialRuntime, prepare_git_credential_runtime},
+        daemon::HostDaemon,
+    },
     ui,
     workspace::Workspace,
 };
@@ -71,6 +74,7 @@ pub(crate) struct UpContainerSummary {
     pub(crate) name: String,
     pub(crate) image_id: Option<String>,
     pub(crate) config_hash: Option<String>,
+    pub(crate) mount_targets: Option<Vec<String>>,
     pub(crate) running: bool,
 }
 
@@ -116,11 +120,13 @@ struct StartedUpContainer {
     plan: UpPlan,
     outcome: UpOutcome,
     lifecycle_path: LifecycleRunPath,
+    _git_credentials: GitCredentialRuntime,
 }
 
 pub(crate) fn decide_existing_container(
     containers: &[UpContainerSummary],
     expected_config_hash: &str,
+    required_mount_targets: &[String],
     rebuild: bool,
 ) -> Result<ExistingContainerDecision> {
     if rebuild {
@@ -141,6 +147,12 @@ pub(crate) fn decide_existing_container(
         bail!("Dev container configuration changed. Run decune rebuild to recreate it.");
     }
 
+    if !container_has_required_mount_targets(container, required_mount_targets) {
+        return Ok(ExistingContainerDecision::Recreate {
+            containers: containers.to_vec(),
+        });
+    }
+
     if container.running {
         Ok(ExistingContainerDecision::ReuseRunning {
             id: container.id.clone(),
@@ -152,6 +164,25 @@ pub(crate) fn decide_existing_container(
             name: container.name.clone(),
         })
     }
+}
+
+fn container_has_required_mount_targets(
+    container: &UpContainerSummary,
+    required_mount_targets: &[String],
+) -> bool {
+    if required_mount_targets.is_empty() {
+        return true;
+    }
+
+    let Some(existing_targets) = &container.mount_targets else {
+        return false;
+    };
+    required_mount_targets.iter().all(|required| {
+        let required = normalize_container_path(required);
+        existing_targets
+            .iter()
+            .any(|target| normalize_container_path(target) == required)
+    })
 }
 
 pub(crate) fn default_workspace_folder(workspace: &Workspace) -> String {
@@ -328,8 +359,17 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             None,
         )
         .await?;
+        let (existing_plan, git_credentials) =
+            add_git_credential_runtime_mounts(existing_plan, workspace.paths().runtime_dir())?;
 
-        match decide_existing_container(&containers, &existing_plan.resources.config_hash, false)? {
+        let required_mount_targets = required_mount_targets(git_credentials.mounts());
+
+        match decide_existing_container(
+            &containers,
+            &existing_plan.resources.config_hash,
+            &required_mount_targets,
+            false,
+        )? {
             ExistingContainerDecision::ReuseRunning { id, name } => {
                 warn_about_deferred_features(&existing_plan.config);
                 let outcome = UpOutcome {
@@ -343,6 +383,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                     plan: existing_plan,
                     outcome,
                     lifecycle_path: LifecycleRunPath::Running,
+                    _git_credentials: git_credentials,
                 });
             }
             ExistingContainerDecision::StartStopped { id, name } => {
@@ -359,6 +400,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                     plan: existing_plan,
                     outcome,
                     lifecycle_path: LifecycleRunPath::Started,
+                    _git_credentials: git_credentials,
                 });
             }
             ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
@@ -382,10 +424,19 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         Some((options.pull, options.no_cache)),
     )
     .await?;
+    let (plan, git_credentials) =
+        add_git_credential_runtime_mounts(plan, workspace.paths().runtime_dir())?;
     let image_prepared = image_prepared || mount_image_prepared;
     warn_about_deferred_features(&plan.config);
 
-    match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
+    let required_mount_targets = required_mount_targets(git_credentials.mounts());
+
+    match decide_existing_container(
+        &containers,
+        &plan.resources.config_hash,
+        &required_mount_targets,
+        options.rebuild,
+    )? {
         ExistingContainerDecision::Create => {
             let outcome = create_and_start_container(
                 &client,
@@ -401,6 +452,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::New,
+                _git_credentials: git_credentials,
             })
         }
         ExistingContainerDecision::Recreate { containers } => {
@@ -419,6 +471,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::New,
+                _git_credentials: git_credentials,
             })
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
@@ -433,6 +486,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::Running,
+                _git_credentials: git_credentials,
             })
         }
         ExistingContainerDecision::StartStopped { id, name } => {
@@ -448,9 +502,24 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::Started,
+                _git_credentials: git_credentials,
             })
         }
     }
+}
+
+fn add_git_credential_runtime_mounts(
+    mut plan: UpPlan,
+    runtime_dir: &Path,
+) -> Result<(UpPlan, GitCredentialRuntime)> {
+    let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir)?;
+    plan.mounts.extend(git_credentials.mounts().iter().cloned());
+
+    Ok((plan, git_credentials))
+}
+
+fn required_mount_targets(mounts: &[DockerMountSpec]) -> Vec<String> {
+    mounts.iter().map(|mount| mount.target.clone()).collect()
 }
 
 async fn build_existing_container_decision_plan(
@@ -1144,6 +1213,12 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
     let config_hash = container
         .labels
         .and_then(|labels| labels.get(CONFIG_HASH_LABEL).cloned());
+    let mount_targets = container.mounts.map(|mounts| {
+        mounts
+            .into_iter()
+            .filter_map(|mount| mount.destination)
+            .collect()
+    });
     let running = container
         .state
         .is_some_and(|state| state.to_string() == "running");
@@ -1153,6 +1228,7 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
         name,
         image_id: container.image_id,
         config_hash,
+        mount_targets,
         running,
     })
 }
@@ -1202,14 +1278,14 @@ mod tests {
 
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
-        build_up_plan_with_image_metadata, decide_existing_container, default_workspace_folder,
-        first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
-        run_attached_up, run_detached_up, shell_command_candidates,
+        build_up_plan_with_image_metadata, create_and_start_container, decide_existing_container,
+        default_workspace_folder, first_successful_shell_candidate, list_workspace_containers,
+        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
     };
 
     #[test]
     fn existing_container_decision_creates_when_no_container_exists() {
-        let decision = decide_existing_container(&[], "hash123", false).unwrap();
+        let decision = decide_existing_container(&[], "hash123", &[], false).unwrap();
 
         assert_eq!(decision, ExistingContainerDecision::Create);
     }
@@ -1272,10 +1348,11 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            mount_targets: Some(Vec::new()),
             running: true,
         };
 
-        let decision = decide_existing_container(&[container], "hash123", false).unwrap();
+        let decision = decide_existing_container(&[container], "hash123", &[], false).unwrap();
 
         assert_eq!(
             decision,
@@ -1293,10 +1370,11 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            mount_targets: Some(Vec::new()),
             running: false,
         };
 
-        let decision = decide_existing_container(&[container], "hash123", false).unwrap();
+        let decision = decide_existing_container(&[container], "hash123", &[], false).unwrap();
 
         assert_eq!(
             decision,
@@ -1308,16 +1386,44 @@ mod tests {
     }
 
     #[test]
+    fn existing_container_decision_recreates_when_required_mount_missing() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mount_targets: Some(vec!["/workspaces/project".to_owned()]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container.clone()],
+            "hash123",
+            &["/run/decune".to_owned()],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+    }
+
+    #[test]
     fn existing_container_decision_rejects_changed_config_hash() {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
+            mount_targets: Some(Vec::new()),
             running: true,
         };
 
-        let error = decide_existing_container(&[container], "new-hash", false).unwrap_err();
+        let error = decide_existing_container(&[container], "new-hash", &[], false).unwrap_err();
 
         assert!(error.to_string().contains("Run decune rebuild"));
     }
@@ -1329,10 +1435,12 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
+            mount_targets: Some(Vec::new()),
             running: true,
         };
 
-        let decision = decide_existing_container(&[container.clone()], "new-hash", true).unwrap();
+        let decision =
+            decide_existing_container(&[container.clone()], "new-hash", &[], true).unwrap();
 
         assert_eq!(
             decision,
@@ -1919,6 +2027,71 @@ type = "bind"
                 .await?;
                 assert_eq!(second.container_name, container_name);
                 assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_detach_recreates_legacy_container_missing_decune_runtime_mount() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-legacy-runtime-mount");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20"
+                }
+                "#,
+            );
+            let legacy_plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = legacy_plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let legacy =
+                    create_and_start_container(&client, &legacy_plan, false, false, false).await?;
+                let legacy_inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                assert!(!container_has_mount_target(
+                    &legacy_inspect.mounts,
+                    "/run/decune"
+                ));
+
+                let recreated = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                })
+                .await?;
+                assert!(!recreated.reused);
+                assert_ne!(legacy.container_id, recreated.container_id);
+
+                let recreated_inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                assert!(container_has_mount_target(
+                    &recreated_inspect.mounts,
+                    "/run/decune"
+                ));
 
                 Ok(())
             }
@@ -3148,5 +3321,16 @@ user = "root"
         input.resolved_mounts = mount_hash_inputs(&[mount]);
 
         config_hash(&input)
+    }
+
+    fn container_has_mount_target(
+        mounts: &Option<Vec<bollard::models::MountPoint>>,
+        target: &str,
+    ) -> bool {
+        mounts.as_ref().is_some_and(|mounts| {
+            mounts
+                .iter()
+                .any(|mount| mount.destination.as_deref() == Some(target))
+        })
     }
 }

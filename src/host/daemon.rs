@@ -2,6 +2,7 @@ use std::{
     fs, io,
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
@@ -11,7 +12,10 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::host::protocol::handle_host_daemon_request;
+use crate::host::{
+    credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
+    protocol::handle_host_daemon_request,
+};
 
 const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
 
@@ -23,6 +27,14 @@ pub(crate) struct HostDaemon {
 
 impl HostDaemon {
     pub(crate) async fn start(runtime_dir: impl AsRef<Path>) -> Result<Self> {
+        Self::start_with_git_credential_executor(runtime_dir, Arc::new(SystemGitCredentialExecutor))
+            .await
+    }
+
+    pub(crate) async fn start_with_git_credential_executor(
+        runtime_dir: impl AsRef<Path>,
+        git_credentials: Arc<dyn GitCredentialExecutor>,
+    ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
         prepare_runtime_dir(&runtime_dir)?;
         let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
@@ -37,7 +49,7 @@ impl HostDaemon {
             },
         )?;
 
-        let task = tokio::spawn(run_host_daemon(listener));
+        let task = tokio::spawn(run_host_daemon(listener, git_credentials));
 
         Ok(Self {
             socket_path,
@@ -80,12 +92,35 @@ fn prepare_runtime_dir(runtime_dir: &Path) -> Result<()> {
             runtime_dir.display()
         )
     })?;
+    set_private_runtime_parent(runtime_dir)?;
     fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
         format!(
             "Failed to set host daemon runtime directory permissions: {}",
             runtime_dir.display()
         )
     })
+}
+
+fn set_private_runtime_parent(runtime_dir: &Path) -> Result<()> {
+    let Some(parent) = runtime_dir
+        .parent()
+        .filter(|path| is_decune_runtime_parent(path))
+    else {
+        return Ok(());
+    };
+
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).with_context(|| {
+        format!(
+            "Failed to set decune runtime parent directory permissions: {}",
+            parent.display()
+        )
+    })
+}
+
+fn is_decune_runtime_parent(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name == "decune" || name.starts_with("decune-"))
 }
 
 async fn bind_host_daemon_socket(socket_path: &Path) -> Result<UnixListener> {
@@ -175,22 +210,25 @@ fn remove_socket_file(socket_path: &Path) -> io::Result<()> {
     }
 }
 
-async fn run_host_daemon(listener: UnixListener) {
+async fn run_host_daemon(listener: UnixListener, git_credentials: Arc<dyn GitCredentialExecutor>) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             break;
         };
-        tokio::spawn(handle_connection(stream));
+        tokio::spawn(handle_connection(stream, Arc::clone(&git_credentials)));
     }
 }
 
-async fn handle_connection(mut stream: UnixStream) {
+async fn handle_connection(
+    mut stream: UnixStream,
+    git_credentials: Arc<dyn GitCredentialExecutor>,
+) {
     let mut request = Vec::new();
     if stream.read_to_end(&mut request).await.is_err() {
         return;
     }
 
-    let response = handle_host_daemon_request(&request);
+    let response = handle_host_daemon_request(&request, git_credentials.as_ref());
     let Ok(response) = serde_json::to_vec(&response) else {
         return;
     };
@@ -201,8 +239,9 @@ async fn handle_connection(mut stream: UnixStream) {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::Arc};
 
+    use anyhow::Result;
     use serde_json::{Value, json};
     use tempfile::TempDir;
     use tokio::{
@@ -211,6 +250,17 @@ mod tests {
     };
 
     use super::HostDaemon;
+    use crate::host::credentials::{GitCredentialCommand, GitCredentialExecutor};
+
+    #[derive(Debug)]
+    struct StaticGitCredentialExecutor;
+
+    impl GitCredentialExecutor for StaticGitCredentialExecutor {
+        fn run(&self, command: GitCredentialCommand, _input: &str) -> Result<String> {
+            assert_eq!(command, GitCredentialCommand::Fill);
+            Ok("username=octo\npassword=SECRET\n".to_owned())
+        }
+    }
 
     #[test]
     fn daemon_creates_private_runtime_dir_and_socket() {
@@ -303,9 +353,49 @@ mod tests {
                     "version": 1,
                     "ok": false,
                     "error": {
-                        "code": "not_implemented",
-                        "message": "Host daemon request is not implemented yet: credential"
+                        "code": "invalid_request",
+                        "message": "Invalid Git credential request JSON: missing field `action` at line 1 column 33"
                     }
+                })
+            );
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_handles_git_credential_get_request() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start_with_git_credential_executor(
+                temp.path().join("runtime"),
+                Arc::new(StaticGitCredentialExecutor),
+            )
+            .await
+            .unwrap();
+
+            let response = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "credential",
+                    "action": "get",
+                    "input": "protocol=https\nhost=github.com\n\n"
+                }),
+            )
+            .await;
+
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": true,
+                    "output": "username=octo\npassword=SECRET\n"
                 })
             );
 
@@ -377,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_accepts_only_scoped_request_families_as_unimplemented_skeleton() {
+    fn daemon_keeps_port_forward_request_scoped_as_unimplemented_skeleton() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -385,30 +475,30 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         runtime.block_on(async {
-            let daemon = HostDaemon::start(temp.path().join("runtime")).await.unwrap();
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
 
-            for request_type in ["credential", "portForward"] {
-                let response = send_request(
-                    daemon.socket_path(),
-                    json!({
-                        "version": 1,
-                        "type": request_type
-                    }),
-                )
-                .await;
+            let response = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "portForward"
+                }),
+            )
+            .await;
 
-                assert_eq!(
-                    response,
-                    json!({
-                        "version": 1,
-                        "ok": false,
-                        "error": {
-                            "code": "not_implemented",
-                            "message": format!("Host daemon request is not implemented yet: {request_type}")
-                        }
-                    })
-                );
-            }
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": false,
+                    "error": {
+                        "code": "not_implemented",
+                        "message": "Host daemon request is not implemented yet: portForward"
+                    }
+                })
+            );
 
             daemon.stop().await.unwrap();
         });
