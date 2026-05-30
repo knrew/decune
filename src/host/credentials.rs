@@ -32,6 +32,7 @@ const GITHUB_CLI_TOKEN_DIR_NAME: &str = "gh-token";
 const GITHUB_CLI_TOKEN_FILE_NAME: &str = "token";
 const HOST_DAEMON_SOCKET_TARGET: &str = "/run/decune/host-daemon.sock";
 const GIT_CREDENTIAL_HELPER_TARGET: &str = "/run/decune/git-credential-decune";
+const HOST_GITCONFIG_TARGET: &str = "/run/decune/host-gitconfig";
 pub(crate) const GITHUB_CLI_TOKEN_DIR_TARGET: &str = "/run/decune/gh-token";
 pub(crate) const GITHUB_CLI_TOKEN_TARGET: &str = "/run/decune/gh-token/token";
 pub(crate) const GITHUB_CLI_CONFIG_TARGET: &str = "/run/decune/gh";
@@ -538,7 +539,7 @@ fn prepare_git_credential_runtime_with_gitconfig(
                 source.display()
             )
         })?;
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).with_context(|| {
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).with_context(|| {
             format!(
                 "Failed to set staged host Git config permissions: {}",
                 target.display()
@@ -808,17 +809,67 @@ async fn github_cli_available(
     matches!(output, Ok(output) if output.exit_code == 0)
 }
 
+pub(crate) async fn install_staged_host_gitconfig(
+    client: &crate::docker::client::DockerClient,
+    container: &str,
+    config: &ResolvedConfig,
+    remote_user: &ResolvedRemoteUser,
+) -> Result<()> {
+    if !config.credentials.git.enabled || !config.credentials.git.copy_global_config {
+        return Ok(());
+    }
+
+    let target = format!("{}/.gitconfig", remote_user.home);
+    let script = format!(
+        "set -e\nif [ -f {source} ]; then cp {source} {target}; chown {uid}:{gid} {target}; chmod 600 {target}; fi\n",
+        source = shell_quote(HOST_GITCONFIG_TARGET),
+        target = shell_quote(&target),
+        uid = remote_user.uid,
+        gid = remote_user.gid,
+    );
+
+    let setup_result = exec_capture(
+        client,
+        container,
+        &ExecCommandSpec {
+            command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
+            user: Some("root".to_owned()),
+            working_dir: None,
+            env: BTreeMap::new(),
+            tty: false,
+        },
+    )
+    .await
+    .with_context(|| format!("Failed to install host Git config in container: {container}"));
+    if setup_result.is_err() {
+        ui::warn(&format!(
+            "Host Git config copy is unavailable in container: {container}"
+        ));
+    }
+
+    Ok(())
+}
+
+pub(crate) fn remove_staged_host_gitconfig(runtime_dir: &Path) -> Result<()> {
+    let path = runtime_dir.join(HOST_GITCONFIG_NAME);
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to remove staged host Git config: {}",
+                path.display()
+            )
+        }),
+    }
+}
+
 pub(crate) fn git_credential_setup_script(credentials: &ResolvedGitCredentials) -> Result<String> {
     if !git_credentials_setup_enabled(credentials) {
         return Ok(String::new());
     }
 
     let mut script = String::from("set -e\n");
-    if credentials.copy_global_config {
-        script.push_str(
-            "if [ -f /run/decune/host-gitconfig ]; then cp /run/decune/host-gitconfig \"$HOME/.gitconfig\"; fi\n",
-        );
-    }
     if git_host_helper_enabled(credentials) {
         script.push_str(
             "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\n",
@@ -906,10 +957,7 @@ fn git_host_helper_enabled(credentials: &ResolvedGitCredentials) -> bool {
 }
 
 fn git_credentials_setup_enabled(credentials: &ResolvedGitCredentials) -> bool {
-    credentials.enabled
-        && (credentials.https == GitHttpsMode::HostHelper
-            || credentials.copy_user
-            || credentials.copy_global_config)
+    credentials.enabled && (credentials.https == GitHttpsMode::HostHelper || credentials.copy_user)
 }
 
 fn github_cli_credentials_enabled(credentials: &ResolvedGithubCredentials) -> bool {
@@ -1223,7 +1271,7 @@ mod tests {
     }
 
     #[test]
-    fn host_gitconfig_is_readable_by_remote_user_when_copied() {
+    fn host_gitconfig_is_staged_privately_when_copied() {
         let temp = TempDir::new().unwrap();
         let home = temp.path().join("home");
         fs::create_dir_all(&home).unwrap();
@@ -1239,7 +1287,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(mode(&runtime_dir.join("host-gitconfig")), 0o644);
+        assert_eq!(mode(&runtime_dir.join("host-gitconfig")), 0o600);
     }
 
     #[test]
@@ -1263,11 +1311,11 @@ mod tests {
 
         assert_eq!(runtime.mounts().len(), 1);
         assert_eq!(runtime.mounts()[0].target, "/run/decune");
-        assert_eq!(mode(&runtime_dir.join("host-gitconfig")), 0o644);
+        assert_eq!(mode(&runtime_dir.join("host-gitconfig")), 0o600);
     }
 
     #[test]
-    fn setup_script_runs_copy_global_config_when_https_is_off() {
+    fn setup_script_omits_copy_global_config_when_https_is_off() {
         let mut config = ResolvedConfig::default();
         config.credentials.git.https = GitHttpsMode::Off;
         config.credentials.git.copy_user = false;
@@ -1275,7 +1323,7 @@ mod tests {
 
         let script = git_credential_setup_script(&config.credentials.git).unwrap();
 
-        assert!(script.contains("cp /run/decune/host-gitconfig \"$HOME/.gitconfig\""));
+        assert!(script.is_empty());
         assert!(!script.contains("credential.helper"));
         assert!(!script.contains("Unsupported Git credential helper container architecture"));
     }

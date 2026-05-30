@@ -1403,6 +1403,101 @@ fn up_detach_copies_host_global_gitconfig_when_https_is_off_without_leaking_secr
 }
 
 #[test]
+fn up_detach_does_not_expose_host_gitconfig_when_remote_user_uid_differs_from_host_uid() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_home = support::TempWorkspace::new().unwrap();
+    let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+    let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+    let attacker_uid = if current_uid() == 20003 { 20004 } else { 20003 };
+    let attacker_gid = if current_gid() == 20003 { 20004 } else { 20003 };
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            &format!(
+                r#"
+            FROM ubuntu:24.04
+            RUN groupadd -g {remote_gid} decunegrp \
+              && useradd -m -u {remote_uid} -g decunegrp decune \
+              && groupadd -g {attacker_gid} attackergrp \
+              && useradd -m -u {attacker_uid} -g attackergrp attacker \
+              && echo 'attacker:decune-test' | chpasswd
+            "#,
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteUser": "decune",
+              "updateRemoteUserUID": false,
+              "postStartCommand": "test \"$(id -un)\" = decune && test -f \"$HOME/.gitconfig\" && grep -q \"$(printf %s%s global -secret)\" \"$HOME/.gitconfig\" && if printf 'decune-test\n' | su attacker -s /bin/sh -c \"test -r /run/decune/host-gitconfig && grep -q 'global-secret' /run/decune/host-gitconfig\"; then echo 'attacker read host gitconfig' >&2; exit 23; fi"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            copy_user = false
+            copy_global_config = true
+            https = "off"
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    host_home
+        .write_file(
+            ".gitconfig",
+            "[credential]\n  helper = store\n[decune]\n  token = global-secret\n",
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("HOME", host_home.path())
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("attacker read host gitconfig").not())
+            .stderr(predicate::str::contains("global-secret").not());
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_does_not_report_started_when_lifecycle_fails() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();

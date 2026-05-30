@@ -48,8 +48,9 @@ use crate::{
     },
     host::{
         credentials::{
-            GitCredentialRuntime, GithubCliRuntime, SshAgentRuntime,
+            GitCredentialRuntime, GithubCliRuntime, SshAgentRuntime, install_staged_host_gitconfig,
             prepare_git_credential_runtime, prepare_github_cli_runtime, prepare_ssh_agent_runtime,
+            remove_staged_host_gitconfig,
         },
         daemon::HostDaemon,
     },
@@ -943,6 +944,15 @@ async fn start_host_daemon_for_up(started: &StartedUpContainer) -> Result<HostDa
         },
     )
     .await?;
+
+    install_staged_host_gitconfig(
+        &started.client,
+        &started.outcome.container_name,
+        &started.plan.config,
+        &remote_user,
+    )
+    .await?;
+    remove_staged_host_gitconfig(started.workspace.paths().runtime_dir())?;
 
     let daemon = HostDaemon::start_for_remote_user(
         started.workspace.paths().runtime_dir(),
