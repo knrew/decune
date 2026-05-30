@@ -12,7 +12,8 @@ use crate::config::{
     },
     resolved::{
         ResolvedAutoPorts, ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile,
-        ResolvedFeature, ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
+        ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature, ResolvedHooks,
+        ResolvedMount, ResolvedPort, ResolvedPorts,
     },
 };
 
@@ -37,6 +38,7 @@ pub(crate) fn resolve_config(input: ConfigMergeInput) -> ResolvedConfig {
 struct MergeAccumulator {
     shell: Option<String>,
     features: Vec<ResolvedFeature>,
+    dotfile_entries: Vec<ResolvedDotfileEntry>,
     dotfiles: Vec<ResolvedDotfile>,
     mounts: Vec<ResolvedMount>,
     ports: Vec<MergedPort>,
@@ -136,21 +138,31 @@ impl MergeAccumulator {
             remove_by_identity(&mut self.dotfiles, |existing| {
                 existing.target == dotfile.target
             });
+            replace_dotfile_entry_by_target(
+                &mut self.dotfile_entries,
+                ResolvedDotfileEntry::Disabled(ResolvedDotfileDisable {
+                    target: dotfile.target,
+                    origin: dotfile.origin,
+                }),
+            );
             return;
         }
 
         if let Some(source) = dotfile.source {
-            replace_by_identity(
-                &mut self.dotfiles,
-                ResolvedDotfile {
-                    source,
-                    target: dotfile.target,
-                    read_only: dotfile.read_only,
-                    resolve_symlink: dotfile.resolve_symlink,
-                    on_conflict: dotfile.on_conflict,
-                    origin: dotfile.origin,
-                },
-                |left, right| left.target == right.target,
+            let resolved = ResolvedDotfile {
+                source,
+                target: dotfile.target,
+                read_only: dotfile.read_only,
+                resolve_symlink: dotfile.resolve_symlink,
+                on_conflict: dotfile.on_conflict,
+                origin: dotfile.origin,
+            };
+            replace_by_identity(&mut self.dotfiles, resolved.clone(), |left, right| {
+                left.target == right.target
+            });
+            replace_dotfile_entry_by_target(
+                &mut self.dotfile_entries,
+                ResolvedDotfileEntry::Enabled(resolved),
             );
         }
     }
@@ -326,6 +338,7 @@ impl MergeAccumulator {
         ResolvedConfig {
             shell: self.shell,
             features: self.features,
+            dotfile_entries: self.dotfile_entries,
             dotfiles: self.dotfiles,
             mounts: self.mounts,
             ports: ResolvedPorts {
@@ -375,6 +388,28 @@ where
     F: Fn(&T) -> bool,
 {
     entries.retain(|existing| !same_identity(existing));
+}
+
+fn replace_dotfile_entry_by_target(
+    entries: &mut Vec<ResolvedDotfileEntry>,
+    entry: ResolvedDotfileEntry,
+) {
+    let target = dotfile_entry_target(&entry);
+    if let Some(position) = entries
+        .iter()
+        .position(|existing| dotfile_entry_target(existing) == target)
+    {
+        entries[position] = entry;
+    } else {
+        entries.push(entry);
+    }
+}
+
+fn dotfile_entry_target(entry: &ResolvedDotfileEntry) -> &str {
+    match entry {
+        ResolvedDotfileEntry::Enabled(dotfile) => &dotfile.target,
+        ResolvedDotfileEntry::Disabled(dotfile) => &dotfile.target,
+    }
 }
 
 fn same_port_identity(left: &ResolvedPort, right: &ResolvedPort) -> bool {

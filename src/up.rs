@@ -733,6 +733,8 @@ async fn prepare_up_lifecycle(
         container: &started.outcome.container_name,
         config: &started.plan.config,
         workspace_root: started.workspace.root(),
+        workspace_basename: started.workspace.basename(),
+        workspace_id: started.workspace.id(),
         workspace_folder: &started.plan.workspace_folder,
         remote_user,
     })

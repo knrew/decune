@@ -10,8 +10,8 @@ use serde_json::Value as JsonValue;
 use crate::config::{
     layer::LayerDevcontainerMount,
     path::{
-        HostPathOptions, PathCreate, SymlinkResolution, resolve_expanded_host_path,
-        resolve_host_path,
+        ConfigPathOrigin, HostPathOptions, PathCreate, SymlinkResolution,
+        resolve_expanded_host_path, resolve_host_path,
     },
     resolved::{ResolvedConfig, ResolvedMount},
     types::{MountCreate, MountType},
@@ -59,6 +59,17 @@ pub(crate) fn config_mount_specs(
 ) -> Result<Vec<DockerMountSpec>> {
     let mut mounts = Vec::new();
 
+    for mount in config
+        .mounts
+        .iter()
+        .filter(|mount| mount.origin == ConfigPathOrigin::Global)
+    {
+        replace_mount_by_target(
+            &mut mounts,
+            resolved_mount_spec(mount, workspace_root, variables)?,
+        );
+    }
+
     for mount in &config.devcontainer.mounts {
         replace_mount_by_target(
             &mut mounts,
@@ -66,7 +77,11 @@ pub(crate) fn config_mount_specs(
         );
     }
 
-    for mount in &config.mounts {
+    for mount in config
+        .mounts
+        .iter()
+        .filter(|mount| mount.origin == ConfigPathOrigin::Project)
+    {
         replace_mount_by_target(
             &mut mounts,
             resolved_mount_spec(mount, workspace_root, variables)?,
@@ -660,6 +675,46 @@ mod tests {
         assert_eq!(mounts[0].target, "/cache");
         assert!(!mounts[0].read_only);
         assert_eq!(mounts[0].consistency, None);
+    }
+
+    #[test]
+    fn devcontainer_mount_replaces_global_decune_mount_with_same_target() {
+        let workspace = tempfile::tempdir().unwrap();
+        let global_source = workspace.path().join("global-cache");
+        let devcontainer_source = workspace.path().join("devcontainer-cache");
+        fs::create_dir_all(&global_source).unwrap();
+        fs::create_dir_all(&devcontainer_source).unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some(global_source.to_str().unwrap().to_owned()),
+                target: "/cache".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+                resolve_symlink: true,
+                create: None,
+                origin: ConfigPathOrigin::Global,
+            }],
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localWorkspaceFolder}/devcontainer-cache,target=/cache,type=bind,readonly=true,consistency=cached"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(
+            mounts[0].source.as_deref(),
+            Some(devcontainer_source.to_str().unwrap())
+        );
+        assert_eq!(mounts[0].target, "/cache");
+        assert!(mounts[0].read_only);
+        assert_eq!(mounts[0].consistency.as_deref(), Some("cached"));
     }
 
     #[test]

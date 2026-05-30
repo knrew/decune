@@ -21,6 +21,7 @@ use crate::config::{
 pub(crate) struct ResolvedConfig {
     pub(crate) shell: Option<String>,
     pub(crate) features: Vec<ResolvedFeature>,
+    pub(crate) dotfile_entries: Vec<ResolvedDotfileEntry>,
     pub(crate) dotfiles: Vec<ResolvedDotfile>,
     pub(crate) mounts: Vec<ResolvedMount>,
     pub(crate) ports: ResolvedPorts,
@@ -43,6 +44,18 @@ pub(crate) struct ResolvedDotfile {
     pub(crate) read_only: bool,
     pub(crate) resolve_symlink: bool,
     pub(crate) on_conflict: DotfileConflict,
+    pub(crate) origin: ConfigPathOrigin,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ResolvedDotfileEntry {
+    Enabled(ResolvedDotfile),
+    Disabled(ResolvedDotfileDisable),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedDotfileDisable {
+    pub(crate) target: String,
     pub(crate) origin: ConfigPathOrigin,
 }
 
