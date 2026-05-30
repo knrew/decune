@@ -23,7 +23,7 @@ use crate::{
         exec::{ExecCommandSpec, ExecOutput, exec_capture_output, resolve_exec_env},
         user::ResolvedRemoteUser,
     },
-    host::credentials::setup_git_credentials,
+    host::credentials::{setup_git_credentials, setup_github_cli_credentials},
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -285,6 +285,13 @@ pub(crate) async fn prepare_container_lifecycle(
     )
     .await?;
     setup_git_credentials(
+        context.client,
+        context.container,
+        context.config,
+        &context.remote_user,
+    )
+    .await?;
+    setup_github_cli_credentials(
         context.client,
         context.container,
         context.config,

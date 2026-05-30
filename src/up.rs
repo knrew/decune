@@ -48,8 +48,8 @@ use crate::{
     },
     host::{
         credentials::{
-            GitCredentialRuntime, SshAgentRuntime, prepare_git_credential_runtime,
-            prepare_ssh_agent_runtime,
+            GitCredentialRuntime, GithubCliRuntime, SshAgentRuntime,
+            prepare_git_credential_runtime, prepare_github_cli_runtime, prepare_ssh_agent_runtime,
         },
         daemon::HostDaemon,
     },
@@ -75,6 +75,7 @@ struct WorkspaceLocation {
 pub(crate) struct UpMountSummary {
     pub(crate) source: Option<String>,
     pub(crate) target: String,
+    pub(crate) mount_type: MountType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,24 +135,32 @@ struct StartedUpContainer {
 
 struct CredentialRuntime {
     _git_credentials: GitCredentialRuntime,
+    _github_cli: GithubCliRuntime,
     _ssh_agent: SshAgentRuntime,
     required_mounts: Vec<UpMountSummary>,
 }
 
 impl CredentialRuntime {
-    fn new(git_credentials: GitCredentialRuntime, ssh_agent: SshAgentRuntime) -> Self {
+    fn new(
+        git_credentials: GitCredentialRuntime,
+        github_cli: GithubCliRuntime,
+        ssh_agent: SshAgentRuntime,
+    ) -> Self {
         let required_mounts = git_credentials
             .mounts()
             .iter()
+            .chain(github_cli.mounts())
             .chain(ssh_agent.mounts())
             .map(|mount| UpMountSummary {
                 source: mount.source.clone(),
                 target: mount.target.clone(),
+                mount_type: mount.mount_type,
             })
             .collect();
 
         Self {
             _git_credentials: git_credentials,
+            _github_cli: github_cli,
             _ssh_agent: ssh_agent,
             required_mounts,
         }
@@ -225,6 +234,9 @@ fn container_has_required_mounts(
 
 fn mount_matches_required(existing: &UpMountSummary, required: &UpMountSummary) -> bool {
     if normalize_container_path(&existing.target) != normalize_container_path(&required.target) {
+        return false;
+    }
+    if existing.mount_type != required.mount_type {
         return false;
     }
 
@@ -557,7 +569,8 @@ fn add_credential_runtime_mounts(
     runtime_dir: &Path,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let ssh_agent = prepare_ssh_agent_runtime(&plan.config)?;
-    add_prepared_credential_runtime_mounts(plan, runtime_dir, ssh_agent)
+    let github_cli = prepare_github_cli_runtime(&plan.config, runtime_dir)?;
+    add_prepared_credential_runtime_mounts(plan, runtime_dir, github_cli, ssh_agent)
 }
 
 #[cfg(test)]
@@ -570,23 +583,56 @@ fn add_credential_runtime_mounts_with_ssh_socket(
         &plan.config,
         ssh_auth_sock,
     )?;
-    add_prepared_credential_runtime_mounts(plan, runtime_dir, ssh_agent)
+    let github_cli = crate::host::credentials::prepare_github_cli_runtime_with_token(
+        &plan.config,
+        runtime_dir,
+        None,
+    )?;
+    add_prepared_credential_runtime_mounts(plan, runtime_dir, github_cli, ssh_agent)
+}
+
+#[cfg(test)]
+fn add_credential_runtime_mounts_with_inputs(
+    plan: UpPlan,
+    runtime_dir: &Path,
+    ssh_auth_sock: Option<&Path>,
+    github_token: Option<&str>,
+) -> Result<(UpPlan, CredentialRuntime)> {
+    let ssh_agent = crate::host::credentials::prepare_ssh_agent_runtime_with_socket(
+        &plan.config,
+        ssh_auth_sock,
+    )?;
+    let github_cli = crate::host::credentials::prepare_github_cli_runtime_with_token(
+        &plan.config,
+        runtime_dir,
+        github_token,
+    )?;
+    add_prepared_credential_runtime_mounts(plan, runtime_dir, github_cli, ssh_agent)
 }
 
 fn add_prepared_credential_runtime_mounts(
     mut plan: UpPlan,
     runtime_dir: &Path,
+    github_cli: GithubCliRuntime,
     ssh_agent: SshAgentRuntime,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir)?;
     plan.mounts.extend(git_credentials.mounts().iter().cloned());
+    plan.mounts.extend(github_cli.mounts().iter().cloned());
     plan.mounts.extend(ssh_agent.mounts().iter().cloned());
+    plan.config
+        .devcontainer
+        .container_env
+        .extend(github_cli.container_env().clone());
     plan.config
         .devcontainer
         .container_env
         .extend(ssh_agent.container_env().clone());
 
-    Ok((plan, CredentialRuntime::new(git_credentials, ssh_agent)))
+    Ok((
+        plan,
+        CredentialRuntime::new(git_credentials, github_cli, ssh_agent),
+    ))
 }
 
 async fn build_existing_container_decision_plan(
@@ -1284,9 +1330,11 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
         mounts
             .into_iter()
             .filter_map(|mount| {
+                let mount_type = mount_type_from_summary(mount.typ.as_deref())?;
                 mount.destination.map(|target| UpMountSummary {
                     source: mount.source,
                     target,
+                    mount_type,
                 })
             })
             .collect()
@@ -1303,6 +1351,15 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
         mounts,
         running,
     })
+}
+
+fn mount_type_from_summary(value: Option<&str>) -> Option<MountType> {
+    match value {
+        Some("bind") => Some(MountType::Bind),
+        Some("volume") => Some(MountType::Volume),
+        Some("tmpfs") => Some(MountType::Tmpfs),
+        _ => None,
+    }
 }
 
 fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
@@ -1347,15 +1404,16 @@ mod tests {
     use crate::docker::image::{PullPolicy, ensure_image, remove_image};
     use crate::docker::mounts::DockerMountSpec;
     use crate::docker::resource::DockerResources;
-    use crate::host::credentials::SSH_AGENT_SOCKET_TARGET;
+    use crate::host::credentials::{GITHUB_CLI_CONFIG_TARGET, SSH_AGENT_SOCKET_TARGET};
     use crate::workspace::Workspace;
 
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
-        add_credential_runtime_mounts_with_ssh_socket, build_up_plan,
-        build_up_plan_with_image_metadata, create_and_start_container, decide_existing_container,
-        default_workspace_folder, first_successful_shell_candidate, list_workspace_containers,
-        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
+        add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
+        build_up_plan, build_up_plan_with_image_metadata, create_and_start_container,
+        decide_existing_container, default_workspace_folder, first_successful_shell_candidate,
+        list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
+        shell_command_candidates,
     };
 
     #[test]
@@ -1521,6 +1579,78 @@ mod tests {
     }
 
     #[test]
+    fn existing_container_decision_recreates_when_required_mount_type_changed_for_github_cli_tmpfs()
+    {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary_with_type(
+                Some("/tmp/gh-config"),
+                GITHUB_CLI_CONFIG_TARGET,
+                MountType::Bind,
+            )]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container.clone()],
+            "hash123",
+            &[mount_summary_with_type(
+                None,
+                GITHUB_CLI_CONFIG_TARGET,
+                MountType::Tmpfs,
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+    }
+
+    #[test]
+    fn existing_container_decision_reuses_when_required_tmpfs_mount_is_present() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary_with_type(
+                None,
+                GITHUB_CLI_CONFIG_TARGET,
+                MountType::Tmpfs,
+            )]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container],
+            "hash123",
+            &[mount_summary_with_type(
+                None,
+                GITHUB_CLI_CONFIG_TARGET,
+                MountType::Tmpfs,
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::ReuseRunning {
+                id: "container-id".to_owned(),
+                name: "decune-project-abc123".to_owned()
+            }
+        );
+    }
+
+    #[test]
     fn credential_runtime_mounts_add_ssh_agent_without_hashing_socket_path() {
         let temp = tempfile::tempdir().unwrap();
         let socket_path_a = temp.path().join("agent-a.sock");
@@ -1568,6 +1698,71 @@ mod tests {
                 .find(|mount| mount.target == SSH_AGENT_SOCKET_TARGET)
                 .and_then(|mount| mount.source.as_deref()),
             socket_path_b.to_str()
+        );
+    }
+
+    #[test]
+    fn credential_runtime_mounts_add_github_token_dir_without_hashing_token_or_env() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::Off;
+        let plan = test_up_plan_with_config(config);
+
+        let (plan_a, _runtime_a) = add_credential_runtime_mounts_with_inputs(
+            plan.clone(),
+            &runtime_dir,
+            None,
+            Some("first-secret\n"),
+        )
+        .unwrap();
+        let (plan_b, _runtime_b) = add_credential_runtime_mounts_with_inputs(
+            plan,
+            &runtime_dir,
+            None,
+            Some("second-secret\n"),
+        )
+        .unwrap();
+
+        assert_eq!(plan_a.resources.config_hash, "stable-hash");
+        assert_eq!(plan_b.resources.config_hash, "stable-hash");
+        assert!(
+            plan_a
+                .config
+                .devcontainer
+                .container_env
+                .values()
+                .all(|value| !value.contains("first-secret"))
+        );
+        assert!(
+            plan_a
+                .resources
+                .labels
+                .values()
+                .all(|value| !value.contains("first-secret"))
+        );
+        assert!(plan_a.mounts.iter().any(|mount| {
+            mount.target == "/run/decune/gh-token"
+                && mount
+                    .source
+                    .as_deref()
+                    .is_some_and(|source| source.ends_with("gh-token"))
+                && mount.read_only
+        }));
+        assert_eq!(
+            plan_a
+                .config
+                .devcontainer
+                .container_env
+                .get("GH_CONFIG_DIR")
+                .map(String::as_str),
+            Some(GITHUB_CLI_CONFIG_TARGET)
+        );
+        assert!(
+            plan_a
+                .mounts
+                .iter()
+                .any(|mount| mount.target == GITHUB_CLI_CONFIG_TARGET && !mount.read_only)
         );
     }
 
@@ -3483,9 +3678,18 @@ user = "root"
     }
 
     fn mount_summary(source: Option<&str>, target: &str) -> UpMountSummary {
+        mount_summary_with_type(source, target, MountType::Bind)
+    }
+
+    fn mount_summary_with_type(
+        source: Option<&str>,
+        target: &str,
+        mount_type: MountType,
+    ) -> UpMountSummary {
         UpMountSummary {
             source: source.map(ToOwned::to_owned),
             target: target.to_owned(),
+            mount_type,
         }
     }
 
