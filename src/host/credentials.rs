@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     env, fs, io,
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
@@ -293,6 +294,7 @@ pub(crate) async fn setup_git_credentials(
         return Ok(());
     }
 
+    let env = BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]);
     let setup_result = crate::docker::exec::exec_capture(
         client,
         container,
@@ -300,7 +302,7 @@ pub(crate) async fn setup_git_credentials(
             command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_user.home.clone()),
-            env: Default::default(),
+            env,
             tty: false,
         },
     )
