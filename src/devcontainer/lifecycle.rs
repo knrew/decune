@@ -23,7 +23,10 @@ use crate::{
         exec::{ExecCommandSpec, ExecOutput, exec_capture_output, resolve_exec_env},
         user::ResolvedRemoteUser,
     },
-    host::credentials::{setup_git_credentials, setup_github_cli_credentials},
+    host::credentials::{
+        install_staged_host_gitconfig, remove_staged_host_gitconfig, setup_git_credentials,
+        setup_github_cli_credentials,
+    },
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +188,7 @@ pub(crate) struct LifecycleRunContext<'a> {
     pub(crate) workspace_basename: &'a str,
     pub(crate) workspace_id: &'a str,
     pub(crate) workspace_folder: &'a str,
+    pub(crate) runtime_dir: &'a Path,
     pub(crate) remote_user: ResolvedRemoteUser,
 }
 
@@ -276,14 +280,30 @@ pub(crate) async fn prepare_container_lifecycle(
     start_host_daemon()?;
     refresh_decune_setup()?;
     let dotfile_variables = dotfile_variable_context(&context);
-    setup_dotfiles(
+    let dotfiles_result = setup_dotfiles(
         context.client,
         context.container,
         context.config,
         &context.remote_user,
         &dotfile_variables,
     )
-    .await?;
+    .await;
+    if dotfiles_result.is_err() {
+        remove_staged_host_gitconfig(context.runtime_dir)?;
+    }
+    dotfiles_result?;
+
+    let install_result = install_staged_host_gitconfig(
+        context.client,
+        context.container,
+        context.config,
+        &context.remote_user,
+    )
+    .await;
+    let cleanup_result = remove_staged_host_gitconfig(context.runtime_dir);
+    install_result?;
+    cleanup_result?;
+
     setup_git_credentials(
         context.client,
         context.container,

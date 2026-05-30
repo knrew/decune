@@ -76,6 +76,7 @@ pub(crate) struct UpMountSummary {
     pub(crate) source: Option<String>,
     pub(crate) target: String,
     pub(crate) mount_type: MountType,
+    pub(crate) read_only: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -155,6 +156,7 @@ impl CredentialRuntime {
                 source: mount.source.clone(),
                 target: mount.target.clone(),
                 mount_type: mount.mount_type,
+                read_only: mount.read_only,
             })
             .collect();
 
@@ -237,6 +239,9 @@ fn mount_matches_required(existing: &UpMountSummary, required: &UpMountSummary) 
         return false;
     }
     if existing.mount_type != required.mount_type {
+        return false;
+    }
+    if existing.read_only != required.read_only {
         return false;
     }
 
@@ -923,20 +928,35 @@ async fn prepare_up_lifecycle(
         workspace_basename: started.workspace.basename(),
         workspace_id: started.workspace.id(),
         workspace_folder: &started.plan.workspace_folder,
+        runtime_dir: started.workspace.paths().runtime_dir(),
         remote_user,
     })
     .await
 }
 
 async fn start_host_daemon_for_up(started: &StartedUpContainer) -> Result<HostDaemon> {
-    let daemon = HostDaemon::start(started.workspace.paths().runtime_dir())
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to start host daemon for workspace: {}",
-                started.workspace.id()
-            )
-        })?;
+    let remote_user = resolve_remote_user(
+        &started.client,
+        &started.outcome.container_name,
+        RemoteUserResolveInput {
+            explicit_remote_user: started.plan.config.devcontainer.remote_user.as_deref(),
+            image_metadata_remote_user: None,
+        },
+    )
+    .await?;
+
+    let daemon = HostDaemon::start_for_remote_user(
+        started.workspace.paths().runtime_dir(),
+        remote_user.uid,
+        remote_user.gid,
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to start host daemon for workspace: {}",
+            started.workspace.id()
+        )
+    })?;
     let _socket_path = daemon.socket_path();
 
     Ok(daemon)
@@ -1330,11 +1350,20 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
         mounts
             .into_iter()
             .filter_map(|mount| {
-                let mount_type = mount_type_from_summary(mount.typ.as_deref())?;
-                mount.destination.map(|target| UpMountSummary {
-                    source: mount.source,
+                let bollard::models::MountPoint {
+                    typ,
+                    source,
+                    destination,
+                    rw,
+                    ..
+                } = mount;
+                let read_only = !rw.unwrap_or(true);
+                let mount_type = mount_type_from_summary(typ.as_deref())?;
+                destination.map(|target| UpMountSummary {
+                    source,
                     target,
                     mount_type,
+                    read_only,
                 })
             })
             .collect()
@@ -1393,7 +1422,10 @@ mod tests {
     use std::{collections::BTreeMap, fs, ops::Deref, os::unix::net::UnixListener, path::PathBuf};
 
     use anyhow::Context;
-    use bollard::models::{MountBindOptions, MountBindOptionsPropagationEnum, MountVolumeOptions};
+    use bollard::models::{
+        ContainerSummary, ContainerSummaryStateEnum, MountBindOptions,
+        MountBindOptionsPropagationEnum, MountPoint, MountVolumeOptions,
+    };
 
     use crate::config::resolved::{ResolvedConfig, ResolvedDevcontainerSource};
     use crate::config::types::{GitHttpsMode, MountType};
@@ -1410,10 +1442,10 @@ mod tests {
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
         add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-        build_up_plan, build_up_plan_with_image_metadata, create_and_start_container,
-        decide_existing_container, default_workspace_folder, first_successful_shell_candidate,
-        list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
-        shell_command_candidates,
+        build_up_plan, build_up_plan_with_image_metadata, container_summary,
+        create_and_start_container, decide_existing_container, default_workspace_folder,
+        first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
+        run_attached_up, run_detached_up, shell_command_candidates,
     };
 
     #[test]
@@ -1648,6 +1680,112 @@ mod tests {
                 name: "decune-project-abc123".to_owned()
             }
         );
+    }
+
+    #[test]
+    fn existing_container_decision_recreates_when_required_mount_read_only_changed() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary_with_type_and_read_only(
+                Some("/tmp/gh-token"),
+                "/run/decune/gh-token",
+                MountType::Bind,
+                false,
+            )]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container.clone()],
+            "hash123",
+            &[mount_summary_with_type_and_read_only(
+                Some("/tmp/gh-token"),
+                "/run/decune/gh-token",
+                MountType::Bind,
+                true,
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+    }
+
+    #[test]
+    fn existing_container_decision_reuses_when_required_read_only_mount_matches() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary_with_type_and_read_only(
+                Some("/tmp/gh-token"),
+                "/run/decune/gh-token",
+                MountType::Bind,
+                true,
+            )]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container],
+            "hash123",
+            &[mount_summary_with_type_and_read_only(
+                Some("/tmp/gh-token"),
+                "/run/decune/gh-token",
+                MountType::Bind,
+                true,
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::ReuseRunning {
+                id: "container-id".to_owned(),
+                name: "decune-project-abc123".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn container_summary_restores_read_only_from_docker_mount_rw() {
+        let summary = container_summary(ContainerSummary {
+            id: Some("container-id".to_owned()),
+            names: Some(vec!["/decune-project-abc123".to_owned()]),
+            state: Some(ContainerSummaryStateEnum::RUNNING),
+            mounts: Some(vec![
+                MountPoint {
+                    typ: Some("bind".to_owned()),
+                    source: Some("/tmp/gh-token".to_owned()),
+                    destination: Some("/run/decune/gh-token".to_owned()),
+                    rw: Some(false),
+                    ..MountPoint::default()
+                },
+                MountPoint {
+                    typ: Some("bind".to_owned()),
+                    source: Some("/tmp/agent.sock".to_owned()),
+                    destination: Some(SSH_AGENT_SOCKET_TARGET.to_owned()),
+                    rw: Some(true),
+                    ..MountPoint::default()
+                },
+            ]),
+            ..ContainerSummary::default()
+        })
+        .unwrap();
+
+        let mounts = summary.mounts.unwrap();
+        assert!(mounts[0].read_only);
+        assert!(!mounts[1].read_only);
     }
 
     #[test]
@@ -3686,10 +3824,20 @@ user = "root"
         target: &str,
         mount_type: MountType,
     ) -> UpMountSummary {
+        mount_summary_with_type_and_read_only(source, target, mount_type, false)
+    }
+
+    fn mount_summary_with_type_and_read_only(
+        source: Option<&str>,
+        target: &str,
+        mount_type: MountType,
+        read_only: bool,
+    ) -> UpMountSummary {
         UpMountSummary {
             source: source.map(ToOwned::to_owned),
             target: target.to_owned(),
             mount_type,
+            read_only,
         }
     }
 
