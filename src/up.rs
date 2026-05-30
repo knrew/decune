@@ -37,11 +37,11 @@ use crate::{
         image::{
             PullPolicy, ensure_image, image_devcontainer_metadata_layers,
             image_devcontainer_metadata_layers_if_present,
-            image_has_devcontainer_metadata_label_if_present,
+            image_has_devcontainer_metadata_label_if_present, remove_image, tag_image,
         },
         mounts::{DockerMountSpec, config_mount_specs},
         resource::DockerResources,
-        user::{RemoteUserResolveInput, resolve_remote_user},
+        user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
     ui,
     workspace::Workspace,
@@ -224,7 +224,7 @@ fn build_up_plan_inner(
         .workspace_folder
         .clone()
         .unwrap_or_else(|| default_workspace_folder(workspace));
-    let mount_variables = mount_variable_context(workspace, &workspace_folder, &config);
+    let mount_variables = static_mount_variable_context(workspace, &workspace_folder, &config);
     let mounts = workspace_mounts(workspace, &config, &mount_variables, mount_resolution)?;
     let mut hash_input = ConfigHashInput::new(&config);
     if let Some(context) = &build_context {
@@ -304,6 +304,14 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             &preliminary_plan,
         )
         .await?;
+        let (existing_plan, _) = finalize_up_plan_mounts(
+            &client,
+            &workspace,
+            existing_plan,
+            containers.first().and_then(existing_container_image_id),
+            None,
+        )
+        .await?;
 
         match decide_existing_container(&containers, &existing_plan.resources.config_hash, false)? {
             ExistingContainerDecision::ReuseRunning { id, name } => {
@@ -350,6 +358,15 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         options.pull,
     )
     .await?;
+    let (plan, mount_image_prepared) = finalize_up_plan_mounts(
+        &client,
+        &workspace,
+        plan,
+        None,
+        Some((options.pull, options.no_cache)),
+    )
+    .await?;
+    let image_prepared = image_prepared || mount_image_prepared;
     warn_about_deferred_features(&plan.config);
 
     match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
@@ -502,6 +519,89 @@ async fn prepare_image_based_metadata(
     Ok((plan, true))
 }
 
+async fn finalize_up_plan_mounts(
+    client: &DockerClient,
+    workspace: &Workspace,
+    mut plan: UpPlan,
+    remote_user_image: Option<&str>,
+    build_for_lookup: Option<(bool, bool)>,
+) -> Result<(UpPlan, bool)> {
+    let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
+    let mut image_prepared = false;
+    if lookup_image.is_none() {
+        if let Some(context) = plan.build_context.clone() {
+            let Some((pull, no_cache)) = build_for_lookup else {
+                return Ok((plan, false));
+            };
+            let mut build_options = plan.build_options.clone();
+            build_options.pull = pull;
+            build_options.no_cache = no_cache;
+            build_image(
+                client,
+                DockerBuildInput {
+                    image_tag: plan.image.clone(),
+                    labels: plan.resources.labels.clone().into_iter().collect(),
+                    context,
+                    options: build_options,
+                },
+            )
+            .await?;
+            lookup_image = Some(plan.image.clone());
+            image_prepared = true;
+        } else {
+            lookup_image = Some(plan.image.clone());
+        }
+    };
+    let lookup_image = lookup_image.expect("lookup image must be set");
+    let remote_user = resolve_remote_user_from_image(
+        client,
+        &lookup_image,
+        RemoteUserResolveInput {
+            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
+            image_metadata_remote_user: None,
+        },
+    )
+    .await?;
+    let mount_variables = mount_variable_context(
+        workspace,
+        &plan.workspace_folder,
+        remote_user.user,
+        remote_user.home,
+    );
+    let mounts = workspace_mounts(
+        workspace,
+        &plan.config,
+        &mount_variables,
+        MountResolution::Resolve,
+    )?;
+    let mut hash_input = ConfigHashInput::new(&plan.config);
+    if let Some(context) = &plan.build_context {
+        hash_input.build = Some(build_hash_input(context)?);
+    }
+    hash_input.resolved_mounts = mount_hash_inputs(&mounts);
+    let hash = config_hash(&hash_input);
+    let resources = DockerResources::from_workspace(
+        workspace,
+        hash,
+        plan.resources
+            .labels
+            .get("devcontainer.config_file")
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let image = image_source(&plan.config, &resources)?;
+    if image_prepared && image != lookup_image {
+        tag_image(client, &lookup_image, &image).await?;
+        remove_image(client, &lookup_image, false).await?;
+    }
+
+    plan.image = image;
+    plan.resources = resources;
+    plan.mounts = mounts;
+
+    Ok((plan, image_prepared))
+}
+
 async fn recreate_existing_containers(
     client: &DockerClient,
     containers: &[UpContainerSummary],
@@ -526,19 +626,21 @@ async fn create_and_start_container(
     image_prepared: bool,
 ) -> Result<UpOutcome> {
     if let Some(context) = plan.build_context.clone() {
-        let mut build_options = plan.build_options.clone();
-        build_options.pull = pull;
-        build_options.no_cache = no_cache;
-        build_image(
-            client,
-            DockerBuildInput {
-                image_tag: plan.image.clone(),
-                labels: plan.resources.labels.clone().into_iter().collect(),
-                context,
-                options: build_options,
-            },
-        )
-        .await?;
+        if !image_prepared {
+            let mut build_options = plan.build_options.clone();
+            build_options.pull = pull;
+            build_options.no_cache = no_cache;
+            build_image(
+                client,
+                DockerBuildInput {
+                    image_tag: plan.image.clone(),
+                    labels: plan.resources.labels.clone().into_iter().collect(),
+                    context,
+                    options: build_options,
+                },
+            )
+            .await?;
+        }
         warn_about_unsupported_dockerfile_image_metadata(client, &plan.image).await?;
     } else if !image_prepared {
         ensure_image(
@@ -844,7 +946,7 @@ fn volume_options_hash_input(options: &MountVolumeOptions) -> MountVolumeOptions
     }
 }
 
-fn mount_variable_context(
+fn static_mount_variable_context(
     workspace: &Workspace,
     workspace_folder: &str,
     config: &ResolvedConfig,
@@ -854,12 +956,16 @@ fn mount_variable_context(
         .remote_user
         .clone()
         .unwrap_or_else(|| "root".to_owned());
-    let remote_user_home = if remote_user == "root" {
-        "/root".to_owned()
-    } else {
-        format!("/home/{remote_user}")
-    };
 
+    mount_variable_context(workspace, workspace_folder, remote_user, "/root".to_owned())
+}
+
+fn mount_variable_context(
+    workspace: &Workspace,
+    workspace_folder: &str,
+    remote_user: String,
+    remote_user_home: String,
+) -> crate::config::variables::VariableContext {
     crate::config::variables::VariableContext::new(
         workspace.root().to_path_buf(),
         workspace.basename().to_owned(),

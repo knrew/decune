@@ -8,7 +8,7 @@ use bollard::{
     models::CreateImageInfo,
     query_parameters::{
         CreateImageOptions, CreateImageOptionsBuilder, ListImagesOptionsBuilder,
-        RemoveImageOptionsBuilder,
+        RemoveImageOptionsBuilder, TagImageOptionsBuilder,
     },
 };
 use futures_util::TryStreamExt;
@@ -97,6 +97,22 @@ pub(crate) async fn remove_image(client: &DockerClient, image: &str, force: bool
         Err(error) if is_image_not_found(&error) => Ok(()),
         Err(error) => Err(error).with_context(|| format!("Failed to remove Docker image: {image}")),
     }
+}
+
+pub(crate) async fn tag_image(client: &DockerClient, source: &str, target: &str) -> Result<()> {
+    let (repo, tag) = target
+        .rsplit_once(':')
+        .with_context(|| format!("Docker image tag must include a tag: {target}"))?;
+    let options = TagImageOptionsBuilder::default()
+        .repo(repo)
+        .tag(tag)
+        .build();
+
+    client
+        .raw()
+        .tag_image(source, Some(options))
+        .await
+        .with_context(|| format!("Failed to tag Docker image {source} as {target}"))
 }
 
 pub(crate) fn image_tags_for_repository(
