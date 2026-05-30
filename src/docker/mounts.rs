@@ -6,7 +6,10 @@ use serde_json::Value as JsonValue;
 
 use crate::config::{
     layer::LayerDevcontainerMount,
-    path::{HostPathOptions, PathCreate, SymlinkResolution, resolve_host_path},
+    path::{
+        HostPathOptions, PathCreate, SymlinkResolution, resolve_expanded_host_path,
+        resolve_host_path,
+    },
     resolved::{ResolvedConfig, ResolvedMount},
     types::{MountCreate, MountType},
     variables::{VariableContext, expand_variables},
@@ -127,7 +130,7 @@ fn devcontainer_mount_spec(
                     parsed.target
                 )
             })?;
-            let source = resolve_bind_source(
+            let source = resolve_expanded_bind_source(
                 source,
                 HostPathOptions::new(
                     crate::config::path::ConfigPathOrigin::Project,
@@ -318,6 +321,12 @@ fn normalize_key(key: &str) -> String {
 
 fn resolve_bind_source(source: &str, options: HostPathOptions<'_>) -> Result<String> {
     Ok(resolve_host_path(source, &options)?.display().to_string())
+}
+
+fn resolve_expanded_bind_source(source: &str, options: HostPathOptions<'_>) -> Result<String> {
+    Ok(resolve_expanded_host_path(source, &options)?
+        .display()
+        .to_string())
 }
 
 fn path_create(create: Option<MountCreate>) -> PathCreate {
@@ -532,6 +541,31 @@ mod tests {
             config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
 
         assert_eq!(mounts[0].target, "/workspaces/project/tools");
+    }
+
+    #[test]
+    fn does_not_expand_devcontainer_bind_source_twice() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("${localWorkspaceFolderBasename}");
+        fs::create_dir_all(&source).unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localEnv:DECUNE_TEST_UNSET_BRACED_DEFAULT:${localWorkspaceFolderBasename}},target=/cache,type=bind"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(
+            mounts[0].source.as_deref(),
+            Some(source.canonicalize().unwrap().to_str().unwrap())
+        );
     }
 
     #[test]
