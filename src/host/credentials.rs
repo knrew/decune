@@ -35,6 +35,7 @@ const GIT_CREDENTIAL_HELPER_TARGET: &str = "/run/decune/git-credential-decune";
 pub(crate) const GITHUB_CLI_TOKEN_DIR_TARGET: &str = "/run/decune/gh-token";
 pub(crate) const GITHUB_CLI_TOKEN_TARGET: &str = "/run/decune/gh-token/token";
 pub(crate) const GITHUB_CLI_CONFIG_TARGET: &str = "/run/decune/gh";
+const GITHUB_CLI_CONFIG_TOKEN_TARGET: &str = "/run/decune/gh/.decune-token";
 pub(crate) const SSH_AGENT_SOCKET_TARGET: &str = "/run/decune/ssh-agent.sock";
 const REQUEST_TYPE_CREDENTIAL: &str = "credential";
 // host の decune binary は container OS/libc と一致しないため，Linux static helper を展開する．
@@ -605,7 +606,7 @@ pub(crate) async fn setup_github_cli_credentials(
         return Ok(());
     }
 
-    if !github_token_file_accessible(client, container, remote_user).await {
+    if !github_token_file_accessible(client, container).await {
         clear_github_cli_config_dir(client, container).await;
         return Ok(());
     }
@@ -662,8 +663,10 @@ async fn prepare_github_cli_config_dir(
     remote_user: &ResolvedRemoteUser,
 ) -> Result<()> {
     let script = format!(
-        "set -e\nmkdir -p {config_dir}\nchown {uid}:{gid} {config_dir}\nchmod 700 {config_dir}\n",
+        "set -e\nmkdir -p {config_dir}\nrm -rf {config_dir}/* {config_dir}/.[!.]* {config_dir}/..?* 2>/dev/null || true\ncp {token_file} {config_token_file}\nchown {uid}:{gid} {config_dir} {config_token_file}\nchmod 700 {config_dir}\nchmod 600 {config_token_file}\n",
         config_dir = shell_quote(GITHUB_CLI_CONFIG_TARGET),
+        token_file = shell_quote(GITHUB_CLI_TOKEN_TARGET),
+        config_token_file = shell_quote(GITHUB_CLI_CONFIG_TOKEN_TARGET),
         uid = remote_user.uid,
         gid = remote_user.gid,
     );
@@ -740,7 +743,6 @@ async fn git_credential_runtime_accessible(
 async fn github_token_file_accessible(
     client: &crate::docker::client::DockerClient,
     container: &str,
-    remote_user: &ResolvedRemoteUser,
 ) -> bool {
     let output = exec_capture_output(
         client,
@@ -751,9 +753,9 @@ async fn github_token_file_accessible(
                 "-lc".to_owned(),
                 format!("test -r {}", shell_quote(GITHUB_CLI_TOKEN_TARGET)),
             ],
-            user: Some(remote_user.user.clone()),
-            working_dir: Some(remote_user.home.clone()),
-            env: BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]),
+            user: Some("root".to_owned()),
+            working_dir: None,
+            env: BTreeMap::new(),
             tty: false,
         },
     )
@@ -828,9 +830,9 @@ fn github_cli_setup_script(credentials: &ResolvedGithubCredentials) -> String {
     }
 
     format!(
-        "set -e\nrm -rf {config_dir}/* {config_dir}/.[!.]* {config_dir}/..?* 2>/dev/null || true\nGH_CONFIG_DIR={config_dir} gh auth login --with-token < {token_file}\nGH_CONFIG_DIR={config_dir} gh auth setup-git\n",
+        "set -e\ntoken_file={config_token_file}\ncleanup() {{ rm -f \"$token_file\"; }}\ntrap cleanup EXIT\nGH_CONFIG_DIR={config_dir} gh auth login --with-token < \"$token_file\"\nGH_CONFIG_DIR={config_dir} gh auth setup-git\n",
         config_dir = shell_quote(GITHUB_CLI_CONFIG_TARGET),
-        token_file = shell_quote(GITHUB_CLI_TOKEN_TARGET),
+        config_token_file = shell_quote(GITHUB_CLI_CONFIG_TOKEN_TARGET),
     )
 }
 
@@ -1343,8 +1345,11 @@ mod tests {
         let script = github_cli_setup_script(&ResolvedConfig::default().credentials.github);
 
         assert!(script.contains("GH_CONFIG_DIR='/run/decune/gh'"));
-        assert!(script.contains("gh auth login --with-token < '/run/decune/gh-token/token'"));
+        assert!(script.contains("token_file='/run/decune/gh/.decune-token'"));
+        assert!(script.contains("gh auth login --with-token < \"$token_file\""));
         assert!(script.contains("gh auth setup-git"));
+        assert!(script.contains("rm -f \"$token_file\""));
+        assert!(!script.contains("/run/decune/gh-token/token"));
         assert!(!script.contains("test-secret"));
     }
 
