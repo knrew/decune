@@ -16,7 +16,11 @@ use crate::{
         resolved::{ResolvedConfig, ResolvedGitCredentials},
         types::GitHttpsMode,
     },
-    docker::{mounts::DockerMountSpec, user::ResolvedRemoteUser},
+    docker::{
+        exec::{ExecCommandSpec, exec_capture, exec_capture_output},
+        mounts::DockerMountSpec,
+        user::ResolvedRemoteUser,
+    },
     ui,
 };
 
@@ -204,7 +208,7 @@ fn prepare_git_credential_runtime_with_gitconfig(
         )
     })?;
     set_private_runtime_parent(runtime_dir)?;
-    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o755)).with_context(|| {
+    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
         format!(
             "Failed to set Git credential runtime directory permissions: {}",
             runtime_dir.display()
@@ -294,11 +298,18 @@ pub(crate) async fn setup_git_credentials(
         return Ok(());
     }
 
+    if !git_credential_runtime_accessible(client, container, remote_user).await {
+        ui::warn(&format!(
+            "Git credential forwarding is unavailable in container: {container}"
+        ));
+        return Ok(());
+    }
+
     let env = BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]);
-    let setup_result = crate::docker::exec::exec_capture(
+    let setup_result = exec_capture(
         client,
         container,
-        &crate::docker::exec::ExecCommandSpec {
+        &ExecCommandSpec {
             command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_user.home.clone()),
@@ -315,6 +326,33 @@ pub(crate) async fn setup_git_credentials(
     }
 
     Ok(())
+}
+
+async fn git_credential_runtime_accessible(
+    client: &crate::docker::client::DockerClient,
+    container: &str,
+    remote_user: &ResolvedRemoteUser,
+) -> bool {
+    let output = exec_capture_output(
+        client,
+        container,
+        &ExecCommandSpec {
+            command: vec![
+                "/bin/sh".to_owned(),
+                "-lc".to_owned(),
+                format!(
+                    "test -x {GIT_CREDENTIAL_HELPER_TARGET} && test -w {HOST_DAEMON_SOCKET_TARGET}"
+                ),
+            ],
+            user: Some(remote_user.user.clone()),
+            working_dir: Some(remote_user.home.clone()),
+            env: BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]),
+            tty: false,
+        },
+    )
+    .await;
+
+    matches!(output, Ok(output) if output.exit_code == 0)
 }
 
 pub(crate) fn git_credential_setup_script(credentials: &ResolvedGitCredentials) -> Result<String> {
@@ -614,7 +652,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_stages_container_helper_with_remote_user_permissions() {
+    fn runtime_stages_container_helper_in_private_runtime_dir() {
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
         let runtime =
@@ -622,7 +660,7 @@ mod tests {
         let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
 
         assert_eq!(runtime.mounts().len(), 1);
-        assert_eq!(mode(&runtime_dir), 0o755);
+        assert_eq!(mode(&runtime_dir), 0o700);
         assert_eq!(mode(&helper_path), 0o755);
         assert_ne!(
             fs::read(&helper_path).unwrap(),
