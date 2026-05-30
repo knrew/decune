@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 pub(crate) use crate::config::{
     layer::{ConfigLayer, ConfigMergeInput},
     resolved::ResolvedConfig,

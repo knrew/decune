@@ -19,7 +19,6 @@ pub(crate) struct DevcontainerJson {
     value: Value,
 }
 
-#[allow(dead_code)]
 impl DevcontainerJson {
     pub(crate) fn load(workspace_root: &Path, explicit_config_path: Option<&Path>) -> Result<Self> {
         let path = discover(workspace_root, explicit_config_path)?;
