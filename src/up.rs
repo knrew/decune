@@ -4,11 +4,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use bollard::models::ContainerSummary;
+use bollard::models::{ContainerSummary, MountBindOptions, MountVolumeOptions};
 
 use crate::{
     config::{
-        ConfigHashInput, ConfigLayer, ConfigMergeInput, MountHashInput, config_hash,
+        ConfigHashInput, ConfigLayer, ConfigMergeInput, MountBindOptionsHashInput, MountHashInput,
+        MountVolumeDriverConfigHashInput, MountVolumeOptionsHashInput, config_hash,
         load::load_config_file, resolve_config, resolved::ResolvedConfig,
         resolved::ResolvedDevcontainerSource, types::MountType,
     },
@@ -806,8 +807,41 @@ fn mount_hash_inputs(mounts: &[DockerMountSpec]) -> Vec<MountHashInput> {
             target: mount.target.clone(),
             mount_type: mount.mount_type,
             read_only: mount.read_only,
+            consistency: mount.consistency.clone(),
+            bind_options: mount.bind_options.as_ref().map(bind_options_hash_input),
+            volume_options: mount.volume_options.as_ref().map(volume_options_hash_input),
         })
         .collect()
+}
+
+fn bind_options_hash_input(options: &MountBindOptions) -> MountBindOptionsHashInput {
+    MountBindOptionsHashInput {
+        propagation: options.propagation.map(|value| value.to_string()),
+        non_recursive: options.non_recursive,
+        create_mountpoint: options.create_mountpoint,
+        read_only_non_recursive: options.read_only_non_recursive,
+        read_only_force_recursive: options.read_only_force_recursive,
+    }
+}
+
+fn volume_options_hash_input(options: &MountVolumeOptions) -> MountVolumeOptionsHashInput {
+    MountVolumeOptionsHashInput {
+        no_copy: options.no_copy,
+        labels: options
+            .labels
+            .clone()
+            .map(|labels| labels.into_iter().collect()),
+        driver_config: options.driver_config.as_ref().map(|driver_config| {
+            MountVolumeDriverConfigHashInput {
+                name: driver_config.name.clone(),
+                options: driver_config
+                    .options
+                    .clone()
+                    .map(|options| options.into_iter().collect()),
+            }
+        }),
+        subpath: options.subpath.clone(),
+    }
 }
 
 fn mount_variable_context(
@@ -940,21 +974,23 @@ mod tests {
     use std::{collections::BTreeMap, fs, ops::Deref, path::PathBuf};
 
     use anyhow::Context;
+    use bollard::models::{MountBindOptions, MountBindOptionsPropagationEnum, MountVolumeOptions};
 
-    use crate::config::ConfigLayer;
     use crate::config::resolved::ResolvedDevcontainerSource;
     use crate::config::types::MountType;
+    use crate::config::{ConfigHashInput, ConfigLayer, config_hash};
     use crate::docker::client::DockerClient;
     use crate::docker::container::{remove_container, stop_container};
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
     use crate::docker::image::{PullPolicy, ensure_image, remove_image};
+    use crate::docker::mounts::DockerMountSpec;
     use crate::workspace::Workspace;
 
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
         build_up_plan_with_image_metadata, decide_existing_container, default_workspace_folder,
-        first_successful_shell_candidate, list_workspace_containers, run_attached_up,
-        run_detached_up, shell_command_candidates,
+        first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
+        run_attached_up, run_detached_up, shell_command_candidates,
     };
 
     #[test]
@@ -1326,6 +1362,45 @@ resolve_symlink = true
 
         assert_ne!(first.mounts[1].source, second.mounts[1].source);
         assert_ne!(first.resources.config_hash, second.resources.config_hash);
+    }
+
+    #[test]
+    fn config_hash_changes_when_resolved_mount_options_change() {
+        let mut cached = test_mount();
+        cached.consistency = Some("cached".to_owned());
+        let mut delegated = test_mount();
+        delegated.consistency = Some("delegated".to_owned());
+        assert_ne!(
+            config_hash_for_mount(cached),
+            config_hash_for_mount(delegated)
+        );
+
+        let mut rshared = test_mount();
+        rshared.bind_options = Some(MountBindOptions {
+            propagation: Some(MountBindOptionsPropagationEnum::RSHARED),
+            ..MountBindOptions::default()
+        });
+        let mut rslave = test_mount();
+        rslave.bind_options = Some(MountBindOptions {
+            propagation: Some(MountBindOptionsPropagationEnum::RSLAVE),
+            ..MountBindOptions::default()
+        });
+        assert_ne!(
+            config_hash_for_mount(rshared),
+            config_hash_for_mount(rslave)
+        );
+
+        let mut deps = test_volume_mount();
+        deps.volume_options = Some(MountVolumeOptions {
+            subpath: Some("deps".to_owned()),
+            ..MountVolumeOptions::default()
+        });
+        let mut cache = test_volume_mount();
+        cache.volume_options = Some(MountVolumeOptions {
+            subpath: Some("cache".to_owned()),
+            ..MountVolumeOptions::default()
+        });
+        assert_ne!(config_hash_for_mount(deps), config_hash_for_mount(cache));
     }
 
     #[test]
@@ -2727,6 +2802,38 @@ user = "root"
         let path = workspace.root().join(".devcontainer/devcontainer.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    fn test_mount() -> DockerMountSpec {
+        DockerMountSpec {
+            source: Some("/host/cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        }
+    }
+
+    fn test_volume_mount() -> DockerMountSpec {
+        DockerMountSpec {
+            source: Some("project-cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Volume,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        }
+    }
+
+    fn config_hash_for_mount(mount: DockerMountSpec) -> String {
+        let config = crate::config::resolved::ResolvedConfig::default();
+        let mut input = ConfigHashInput::new(&config);
+        input.resolved_mounts = mount_hash_inputs(&[mount]);
+
+        config_hash(&input)
     }
 
     fn docker_tests_enabled() -> bool {
