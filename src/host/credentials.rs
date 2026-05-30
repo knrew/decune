@@ -321,6 +321,9 @@ pub(crate) fn git_credential_setup_script(credentials: &ResolvedGitCredentials) 
     }
 
     let mut script = String::from("set -e\n");
+    script.push_str(
+        "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\n",
+    );
     if credentials.copy_global_config {
         script.push_str(
             "if [ -f /run/decune/host-gitconfig ]; then cp /run/decune/host-gitconfig \"$HOME/.gitconfig\"; fi\n",
@@ -550,9 +553,9 @@ mod tests {
 
     use super::{
         GIT_CREDENTIAL_HELPER_NAME, GitCredentialAction, GitCredentialCommand,
-        git_credential_helper_request_json, host_git_config_value_from,
-        parse_git_credential_helper_response, prepare_git_credential_runtime,
-        prepare_git_credential_runtime_with_gitconfig,
+        git_credential_helper_request_json, git_credential_setup_script,
+        host_git_config_value_from, parse_git_credential_helper_response,
+        prepare_git_credential_runtime, prepare_git_credential_runtime_with_gitconfig,
     };
     use crate::config::resolved::ResolvedConfig;
 
@@ -623,6 +626,22 @@ mod tests {
             fs::read(&helper_path).unwrap(),
             fs::read(current_exe()).unwrap()
         );
+    }
+
+    #[test]
+    fn setup_script_rejects_unsupported_container_architectures_before_configuring_helper() {
+        let config = ResolvedConfig::default();
+
+        let script = git_credential_setup_script(&config.credentials.git).unwrap();
+
+        let arch_guard = script
+            .find("Unsupported Git credential helper container architecture")
+            .unwrap();
+        let helper_config = script
+            .find("git config --global --add credential.helper")
+            .unwrap();
+        assert!(script.contains("x86_64|amd64)"));
+        assert!(arch_guard < helper_config);
     }
 
     #[test]
