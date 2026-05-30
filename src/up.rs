@@ -46,7 +46,10 @@ use crate::{
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
-    host::daemon::HostDaemon,
+    host::{
+        credentials::{GitCredentialRuntime, prepare_git_credential_runtime},
+        daemon::HostDaemon,
+    },
     ui,
     workspace::Workspace,
 };
@@ -116,6 +119,7 @@ struct StartedUpContainer {
     plan: UpPlan,
     outcome: UpOutcome,
     lifecycle_path: LifecycleRunPath,
+    _git_credentials: GitCredentialRuntime,
 }
 
 pub(crate) fn decide_existing_container(
@@ -328,6 +332,8 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             None,
         )
         .await?;
+        let (existing_plan, git_credentials) =
+            add_git_credential_runtime_mounts(existing_plan, workspace.paths().runtime_dir())?;
 
         match decide_existing_container(&containers, &existing_plan.resources.config_hash, false)? {
             ExistingContainerDecision::ReuseRunning { id, name } => {
@@ -343,6 +349,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                     plan: existing_plan,
                     outcome,
                     lifecycle_path: LifecycleRunPath::Running,
+                    _git_credentials: git_credentials,
                 });
             }
             ExistingContainerDecision::StartStopped { id, name } => {
@@ -359,6 +366,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                     plan: existing_plan,
                     outcome,
                     lifecycle_path: LifecycleRunPath::Started,
+                    _git_credentials: git_credentials,
                 });
             }
             ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
@@ -382,6 +390,8 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         Some((options.pull, options.no_cache)),
     )
     .await?;
+    let (plan, git_credentials) =
+        add_git_credential_runtime_mounts(plan, workspace.paths().runtime_dir())?;
     let image_prepared = image_prepared || mount_image_prepared;
     warn_about_deferred_features(&plan.config);
 
@@ -401,6 +411,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::New,
+                _git_credentials: git_credentials,
             })
         }
         ExistingContainerDecision::Recreate { containers } => {
@@ -419,6 +430,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::New,
+                _git_credentials: git_credentials,
             })
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
@@ -433,6 +445,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::Running,
+                _git_credentials: git_credentials,
             })
         }
         ExistingContainerDecision::StartStopped { id, name } => {
@@ -448,9 +461,20 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
                 plan,
                 outcome,
                 lifecycle_path: LifecycleRunPath::Started,
+                _git_credentials: git_credentials,
             })
         }
     }
+}
+
+fn add_git_credential_runtime_mounts(
+    mut plan: UpPlan,
+    runtime_dir: &Path,
+) -> Result<(UpPlan, GitCredentialRuntime)> {
+    let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir)?;
+    plan.mounts.extend(git_credentials.mounts().iter().cloned());
+
+    Ok((plan, git_credentials))
 }
 
 async fn build_existing_container_decision_plan(

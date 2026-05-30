@@ -27,6 +27,11 @@ fn main() {
 }
 
 fn run() -> Result<i32> {
+    if host::credentials::invoked_as_git_credential_helper() {
+        host::credentials::run_git_credential_helper()?;
+        return Ok(0);
+    }
+
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()

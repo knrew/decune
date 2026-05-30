@@ -232,6 +232,104 @@ fn up_detach_runs_initialize_when_starting_stopped_container() {
 }
 
 #[test]
+fn up_detach_sets_git_credential_helper_through_host_daemon() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_home = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM ubuntu:24.04
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'set -eu' \
+              'if [ "$1" = config ]; then' \
+              '  shift' \
+              '  case "$*" in' \
+              '    "--global --unset-all credential.helper")' \
+              '      rm -f /tmp/decune-git-helper' \
+              '      exit 0' \
+              '      ;;' \
+              '    "--global --add credential.helper "*)' \
+              '      printf "%s\n" "$4" >/tmp/decune-git-helper' \
+              '      exit 0' \
+              '      ;;' \
+              '    "--global user.name "*|"--global user.email "*)' \
+              '      exit 0' \
+              '      ;;' \
+              '  esac' \
+              'fi' \
+              'if [ "$1" = credential ] && [ "$2" = fill ]; then' \
+              '  input=$(mktemp)' \
+              '  cat >"$input"' \
+              '  helper=$(cat /tmp/decune-git-helper)' \
+              '  "$helper" get <"$input"' \
+              '  rm -f "$input"' \
+              '  exit 0' \
+              'fi' \
+              'echo "unexpected fake git command: $*" >&2' \
+              'exit 91' \
+              >/usr/local/bin/git && chmod +x /usr/local/bin/git
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "postStartCommand": "printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && grep -q 'password=test-secret' /tmp/decune-credential"
+            }
+            "#,
+        )
+        .unwrap();
+    host_home
+        .write_file(
+            ".gitconfig",
+            r#"
+            [credential]
+              helper = "!f() { while IFS= read -r line; do [ -z \"$line\" ] && break; done; printf 'username=octo\npassword=test-secret\n'; }; f"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("HOME", host_home.path())
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("test-secret").not());
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_does_not_report_started_when_lifecycle_fails() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
