@@ -50,6 +50,8 @@ pub(crate) struct RemoteUserResolveInput<'a> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedRemoteUser {
     pub(crate) user: String,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
     pub(crate) home: String,
     pub(crate) shell: Option<String>,
     pub(crate) source: RemoteUserSource,
@@ -59,6 +61,8 @@ pub(crate) struct ResolvedRemoteUser {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ContainerUserRecord {
     pub(crate) name: String,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
     pub(crate) home: String,
     pub(crate) shell: Option<String>,
 }
@@ -188,6 +192,8 @@ async fn resolve_selected_remote_user(
     if let Some(record) = lookup_container_user(client, container, lookup_user).await? {
         return Ok(ResolvedRemoteUser {
             user: selection.user,
+            uid: record.uid,
+            gid: record.gid,
             home: record.home,
             shell: record.shell,
             source: selection.source,
@@ -210,6 +216,8 @@ async fn resolve_selected_remote_user(
 
     Ok(ResolvedRemoteUser {
         user: ROOT_USER.to_owned(),
+        uid: root.uid,
+        gid: root.gid,
         home: root.home,
         shell: root.shell,
         source: RemoteUserSource::RootFallback,
@@ -375,9 +383,18 @@ fn parse_passwd_record(line: &str) -> Result<ContainerUserRecord> {
 
     Ok(ContainerUserRecord {
         name: name.to_owned(),
+        uid: parse_passwd_id(fields[2], "uid")?,
+        gid: parse_passwd_id(fields[3], "gid")?,
         home: home.to_owned(),
         shell: normalize_user(Some(fields[6])),
     })
+}
+
+fn parse_passwd_id(value: &str, label: &str) -> Result<u32> {
+    value
+        .trim()
+        .parse()
+        .with_context(|| format!("passwd record {label} must be an unsigned integer: {value}"))
 }
 
 fn normalize_user(value: Option<&str>) -> Option<String> {
@@ -488,6 +505,14 @@ mod tests {
 
         assert_eq!(record.name, "vscode");
         assert_eq!(record.home, "/home/vscode");
+    }
+
+    #[test]
+    fn parses_passwd_record_uid_and_gid() {
+        let record = parse_passwd_record("vscode:x:1001:1002::/home/vscode:/bin/sh").unwrap();
+
+        assert_eq!(record.uid, 1001);
+        assert_eq!(record.gid, 1002);
     }
 
     #[test]

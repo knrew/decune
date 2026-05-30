@@ -618,6 +618,10 @@ fn add_prepared_credential_runtime_mounts(
     plan.config
         .devcontainer
         .container_env
+        .extend(github_cli.container_env().clone());
+    plan.config
+        .devcontainer
+        .container_env
         .extend(ssh_agent.container_env().clone());
 
     Ok((
@@ -1384,9 +1388,7 @@ mod tests {
     use crate::docker::image::{PullPolicy, ensure_image, remove_image};
     use crate::docker::mounts::DockerMountSpec;
     use crate::docker::resource::DockerResources;
-    use crate::host::credentials::{
-        GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_TARGET, SSH_AGENT_SOCKET_TARGET,
-    };
+    use crate::host::credentials::{GITHUB_CLI_CONFIG_TARGET, SSH_AGENT_SOCKET_TARGET};
     use crate::workspace::Workspace;
 
     use super::{
@@ -1612,7 +1614,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_runtime_mounts_add_github_token_without_hashing_token_or_env() {
+    fn credential_runtime_mounts_add_github_token_dir_without_hashing_token_or_env() {
         let temp = tempfile::tempdir().unwrap();
         let runtime_dir = temp.path().join("runtime");
         let mut config = ResolvedConfig::default();
@@ -1652,13 +1654,22 @@ mod tests {
                 .all(|value| !value.contains("first-secret"))
         );
         assert!(plan_a.mounts.iter().any(|mount| {
-            mount.target == GITHUB_CLI_TOKEN_TARGET
+            mount.target == "/run/decune/gh-token"
                 && mount
                     .source
                     .as_deref()
                     .is_some_and(|source| source.ends_with("gh-token"))
                 && mount.read_only
         }));
+        assert_eq!(
+            plan_a
+                .config
+                .devcontainer
+                .container_env
+                .get("GH_CONFIG_DIR")
+                .map(String::as_str),
+            Some(GITHUB_CLI_CONFIG_TARGET)
+        );
         assert!(
             plan_a
                 .mounts
