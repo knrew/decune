@@ -10,6 +10,7 @@ use crate::config::{
         LayerHooks, LayerPort, LayerPortAttributes, LayerPublishPort, LayerRunArg,
         LayerUserEnvProbe,
     },
+    path::ConfigPathOrigin,
     types::{
         DEFAULT_AUTO_PORT_MAX, DEFAULT_AUTO_PORT_MIN, DotfileConflict, GitHttpsMode,
         GithubCredentialsMode, MountCreate, MountType, OnAutoForward, SshAgentMode,
@@ -52,6 +53,7 @@ pub(crate) struct ResolvedMount {
     pub(crate) read_only: bool,
     pub(crate) resolve_symlink: bool,
     pub(crate) create: Option<MountCreate>,
+    pub(crate) origin: ConfigPathOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

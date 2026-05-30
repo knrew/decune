@@ -4,13 +4,14 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use bollard::models::ContainerSummary;
+use bollard::models::{ContainerSummary, MountBindOptions, MountVolumeOptions};
 
 use crate::{
     config::{
-        ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash, load::load_config_file,
-        resolve_config, resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource,
-        types::MountType,
+        ConfigHashInput, ConfigLayer, ConfigMergeInput, MountBindOptionsHashInput, MountHashInput,
+        MountVolumeDriverConfigHashInput, MountVolumeOptionsHashInput, config_hash,
+        load::load_config_file, resolve_config, resolved::ResolvedConfig,
+        resolved::ResolvedDevcontainerSource, types::MountType,
     },
     devcontainer::{
         json::DevcontainerJson,
@@ -36,11 +37,11 @@ use crate::{
         image::{
             PullPolicy, ensure_image, image_devcontainer_metadata_layers,
             image_devcontainer_metadata_layers_if_present,
-            image_has_devcontainer_metadata_label_if_present,
+            image_has_devcontainer_metadata_label_if_present, remove_image, tag_image,
         },
-        mounts::DockerMountSpec,
+        mounts::{DockerMountSpec, config_mount_specs},
         resource::DockerResources,
-        user::{RemoteUserResolveInput, resolve_remote_user},
+        user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
     ui,
     workspace::Workspace,
@@ -48,6 +49,12 @@ use crate::{
 
 const CONFIG_HASH_LABEL: &str = "decune.config_hash";
 const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum MountResolution {
+    Resolve,
+    DeferConfigMounts,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpContainerSummary {
@@ -147,7 +154,13 @@ pub(crate) fn build_up_plan(
     explicit_config_path: Option<&Path>,
     cli_layer: ConfigLayer,
 ) -> Result<UpPlan> {
-    build_up_plan_with_image_metadata(workspace, explicit_config_path, cli_layer, Vec::new())
+    build_up_plan_inner(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        Vec::new(),
+        MountResolution::Resolve,
+    )
 }
 
 pub(crate) fn build_up_plan_with_image_metadata(
@@ -156,13 +169,47 @@ pub(crate) fn build_up_plan_with_image_metadata(
     cli_layer: ConfigLayer,
     image_metadata: Vec<ConfigLayer>,
 ) -> Result<UpPlan> {
+    build_up_plan_inner(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        image_metadata,
+        MountResolution::Resolve,
+    )
+}
+
+fn build_preliminary_up_plan(
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+) -> Result<UpPlan> {
+    build_up_plan_inner(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        Vec::new(),
+        MountResolution::DeferConfigMounts,
+    )
+}
+
+fn build_up_plan_inner(
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    image_metadata: Vec<ConfigLayer>,
+    mount_resolution: MountResolution,
+) -> Result<UpPlan> {
     let devcontainer_json = DevcontainerJson::load(workspace.root(), explicit_config_path)?;
     let metadata = parse_metadata(devcontainer_json.value().clone())?;
     let devcontainer_layer = metadata.to_config_layer()?;
-    let global_layer =
-        ConfigLayer::from_raw_decune(load_config_file(workspace.paths().global_config_path())?);
-    let project_layer =
-        ConfigLayer::from_raw_decune(load_config_file(workspace.paths().project_config_path())?);
+    let global_layer = ConfigLayer::from_raw_decune_with_origin(
+        load_config_file(workspace.paths().global_config_path())?,
+        crate::config::path::ConfigPathOrigin::Global,
+    );
+    let project_layer = ConfigLayer::from_raw_decune_with_origin(
+        load_config_file(workspace.paths().project_config_path())?,
+        crate::config::path::ConfigPathOrigin::Project,
+    );
     let config = resolve_config(ConfigMergeInput {
         image_metadata,
         global: Some(global_layer),
@@ -172,9 +219,19 @@ pub(crate) fn build_up_plan_with_image_metadata(
     });
     let (build_context, build_options) =
         dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
+    let workspace_folder = config
+        .devcontainer
+        .workspace_folder
+        .clone()
+        .unwrap_or_else(|| default_workspace_folder(workspace));
+    let mount_variables = static_mount_variable_context(workspace, &workspace_folder, &config);
+    let mounts = workspace_mounts(workspace, &config, &mount_variables, mount_resolution)?;
     let mut hash_input = ConfigHashInput::new(&config);
     if let Some(context) = &build_context {
         hash_input.build = Some(build_hash_input(context)?);
+    }
+    if mount_resolution == MountResolution::Resolve {
+        hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     }
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
@@ -183,12 +240,6 @@ pub(crate) fn build_up_plan_with_image_metadata(
         devcontainer_json.path().display().to_string(),
     );
     let image = image_source(&config, &resources)?;
-    let workspace_folder = config
-        .devcontainer
-        .workspace_folder
-        .clone()
-        .unwrap_or_else(|| default_workspace_folder(workspace));
-    let mounts = workspace_mounts(workspace, &config)?;
 
     Ok(UpPlan {
         image,
@@ -233,7 +284,7 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
 
 async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContainer> {
     let workspace = Workspace::resolve(&options.workspace)?;
-    let preliminary_plan = build_up_plan(
+    let preliminary_plan = build_preliminary_up_plan(
         &workspace,
         options.config_path.as_deref(),
         options.cli_layer.clone(),
@@ -251,6 +302,14 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             options.cli_layer.clone(),
             containers.first().and_then(existing_container_image_id),
             &preliminary_plan,
+        )
+        .await?;
+        let (existing_plan, _) = finalize_up_plan_mounts(
+            &client,
+            &workspace,
+            existing_plan,
+            containers.first().and_then(existing_container_image_id),
+            None,
         )
         .await?;
 
@@ -299,6 +358,15 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         options.pull,
     )
     .await?;
+    let (plan, mount_image_prepared) = finalize_up_plan_mounts(
+        &client,
+        &workspace,
+        plan,
+        None,
+        Some((options.pull, options.no_cache)),
+    )
+    .await?;
+    let image_prepared = image_prepared || mount_image_prepared;
     warn_about_deferred_features(&plan.config);
 
     match decide_existing_container(&containers, &plan.resources.config_hash, options.rebuild)? {
@@ -380,7 +448,7 @@ async fn build_existing_container_decision_plan(
     if preliminary_plan.build_context.is_some() {
         let image = existing_container_image_id.unwrap_or(&preliminary_plan.image);
         warn_about_unsupported_dockerfile_image_metadata(client, image).await?;
-        return Ok(preliminary_plan.clone());
+        return build_up_plan(workspace, explicit_config_path, cli_layer);
     }
 
     let image_metadata =
@@ -389,19 +457,19 @@ async fn build_existing_container_decision_plan(
             Some(image_metadata) => image_metadata,
             None => {
                 let Some(image_id) = existing_container_image_id else {
-                    return Ok(preliminary_plan.clone());
+                    return build_up_plan(workspace, explicit_config_path, cli_layer);
                 };
                 let Some(image_metadata) =
                     image_devcontainer_metadata_layers_if_present(client, image_id).await?
                 else {
-                    return Ok(preliminary_plan.clone());
+                    return build_up_plan(workspace, explicit_config_path, cli_layer);
                 };
                 image_metadata
             }
         };
 
     if image_metadata.is_empty() {
-        return Ok(preliminary_plan.clone());
+        return build_up_plan(workspace, explicit_config_path, cli_layer);
     }
 
     build_up_plan_with_image_metadata(workspace, explicit_config_path, cli_layer, image_metadata)
@@ -416,7 +484,10 @@ async fn prepare_image_based_metadata(
     pull: bool,
 ) -> Result<(UpPlan, bool)> {
     if preliminary_plan.build_context.is_some() {
-        return Ok((preliminary_plan, false));
+        return Ok((
+            build_up_plan(workspace, explicit_config_path, cli_layer)?,
+            false,
+        ));
     }
 
     ensure_image(
@@ -432,7 +503,10 @@ async fn prepare_image_based_metadata(
     let image_metadata =
         image_devcontainer_metadata_layers(client, &preliminary_plan.image).await?;
     if image_metadata.is_empty() {
-        return Ok((preliminary_plan, true));
+        return Ok((
+            build_up_plan(workspace, explicit_config_path, cli_layer)?,
+            true,
+        ));
     }
 
     let plan = build_up_plan_with_image_metadata(
@@ -443,6 +517,89 @@ async fn prepare_image_based_metadata(
     )?;
 
     Ok((plan, true))
+}
+
+async fn finalize_up_plan_mounts(
+    client: &DockerClient,
+    workspace: &Workspace,
+    mut plan: UpPlan,
+    remote_user_image: Option<&str>,
+    build_for_lookup: Option<(bool, bool)>,
+) -> Result<(UpPlan, bool)> {
+    let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
+    let mut image_prepared = false;
+    if lookup_image.is_none() {
+        if let Some(context) = plan.build_context.clone() {
+            let Some((pull, no_cache)) = build_for_lookup else {
+                return Ok((plan, false));
+            };
+            let mut build_options = plan.build_options.clone();
+            build_options.pull = pull;
+            build_options.no_cache = no_cache;
+            build_image(
+                client,
+                DockerBuildInput {
+                    image_tag: plan.image.clone(),
+                    labels: plan.resources.labels.clone().into_iter().collect(),
+                    context,
+                    options: build_options,
+                },
+            )
+            .await?;
+            lookup_image = Some(plan.image.clone());
+            image_prepared = true;
+        } else {
+            lookup_image = Some(plan.image.clone());
+        }
+    };
+    let lookup_image = lookup_image.expect("lookup image must be set");
+    let remote_user = resolve_remote_user_from_image(
+        client,
+        &lookup_image,
+        RemoteUserResolveInput {
+            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
+            image_metadata_remote_user: None,
+        },
+    )
+    .await?;
+    let mount_variables = mount_variable_context(
+        workspace,
+        &plan.workspace_folder,
+        remote_user.user,
+        remote_user.home,
+    );
+    let mounts = workspace_mounts(
+        workspace,
+        &plan.config,
+        &mount_variables,
+        MountResolution::Resolve,
+    )?;
+    let mut hash_input = ConfigHashInput::new(&plan.config);
+    if let Some(context) = &plan.build_context {
+        hash_input.build = Some(build_hash_input(context)?);
+    }
+    hash_input.resolved_mounts = mount_hash_inputs(&mounts);
+    let hash = config_hash(&hash_input);
+    let resources = DockerResources::from_workspace(
+        workspace,
+        hash,
+        plan.resources
+            .labels
+            .get("devcontainer.config_file")
+            .cloned()
+            .unwrap_or_default(),
+    );
+    let image = image_source(&plan.config, &resources)?;
+    if image_prepared && image != lookup_image {
+        tag_image(client, &lookup_image, &image).await?;
+        remove_image(client, &lookup_image, false).await?;
+    }
+
+    plan.image = image;
+    plan.resources = resources;
+    plan.mounts = mounts;
+
+    Ok((plan, image_prepared))
 }
 
 async fn recreate_existing_containers(
@@ -469,19 +626,21 @@ async fn create_and_start_container(
     image_prepared: bool,
 ) -> Result<UpOutcome> {
     if let Some(context) = plan.build_context.clone() {
-        let mut build_options = plan.build_options.clone();
-        build_options.pull = pull;
-        build_options.no_cache = no_cache;
-        build_image(
-            client,
-            DockerBuildInput {
-                image_tag: plan.image.clone(),
-                labels: plan.resources.labels.clone().into_iter().collect(),
-                context,
-                options: build_options,
-            },
-        )
-        .await?;
+        if !image_prepared {
+            let mut build_options = plan.build_options.clone();
+            build_options.pull = pull;
+            build_options.no_cache = no_cache;
+            build_image(
+                client,
+                DockerBuildInput {
+                    image_tag: plan.image.clone(),
+                    labels: plan.resources.labels.clone().into_iter().collect(),
+                    context,
+                    options: build_options,
+                },
+            )
+            .await?;
+        }
         warn_about_unsupported_dockerfile_image_metadata(client, &plan.image).await?;
     } else if !image_prepared {
         ensure_image(
@@ -719,17 +878,134 @@ fn dockerfile_build_input(
 fn workspace_mounts(
     workspace: &Workspace,
     config: &ResolvedConfig,
+    variables: &crate::config::variables::VariableContext,
+    mount_resolution: MountResolution,
 ) -> Result<Vec<DockerMountSpec>> {
     if config.devcontainer.workspace_mount.is_some() {
         bail!("workspaceMount is not supported yet");
     }
 
-    Ok(vec![DockerMountSpec {
+    let mut mounts = vec![DockerMountSpec {
         source: Some(workspace.root().display().to_string()),
         target: default_workspace_folder(workspace),
         mount_type: MountType::Bind,
         read_only: false,
-    }])
+        consistency: None,
+        bind_options: None,
+        volume_options: None,
+    }];
+    if mount_resolution == MountResolution::Resolve {
+        mounts.extend(config_mount_specs(config, workspace.root(), variables)?);
+    }
+
+    Ok(mounts)
+}
+
+fn mount_hash_inputs(mounts: &[DockerMountSpec]) -> Vec<MountHashInput> {
+    mounts
+        .iter()
+        .map(|mount| MountHashInput {
+            source: mount.source.clone(),
+            target: mount.target.clone(),
+            mount_type: mount.mount_type,
+            read_only: mount.read_only,
+            consistency: mount.consistency.clone(),
+            bind_options: mount.bind_options.as_ref().map(bind_options_hash_input),
+            volume_options: mount.volume_options.as_ref().map(volume_options_hash_input),
+        })
+        .collect()
+}
+
+fn bind_options_hash_input(options: &MountBindOptions) -> MountBindOptionsHashInput {
+    MountBindOptionsHashInput {
+        propagation: options.propagation.map(|value| value.to_string()),
+        non_recursive: options.non_recursive,
+        create_mountpoint: options.create_mountpoint,
+        read_only_non_recursive: options.read_only_non_recursive,
+        read_only_force_recursive: options.read_only_force_recursive,
+    }
+}
+
+fn volume_options_hash_input(options: &MountVolumeOptions) -> MountVolumeOptionsHashInput {
+    MountVolumeOptionsHashInput {
+        no_copy: options.no_copy,
+        labels: options
+            .labels
+            .clone()
+            .map(|labels| labels.into_iter().collect()),
+        driver_config: options.driver_config.as_ref().map(|driver_config| {
+            MountVolumeDriverConfigHashInput {
+                name: driver_config.name.clone(),
+                options: driver_config
+                    .options
+                    .clone()
+                    .map(|options| options.into_iter().collect()),
+            }
+        }),
+        subpath: options.subpath.clone(),
+    }
+}
+
+fn static_mount_variable_context(
+    workspace: &Workspace,
+    workspace_folder: &str,
+    config: &ResolvedConfig,
+) -> crate::config::variables::VariableContext {
+    let remote_user = config
+        .devcontainer
+        .remote_user
+        .clone()
+        .unwrap_or_else(|| "root".to_owned());
+
+    mount_variable_context(workspace, workspace_folder, remote_user, "/root".to_owned())
+}
+
+fn mount_variable_context(
+    workspace: &Workspace,
+    workspace_folder: &str,
+    remote_user: String,
+    remote_user_home: String,
+) -> crate::config::variables::VariableContext {
+    crate::config::variables::VariableContext::new(
+        workspace.root().to_path_buf(),
+        workspace.basename().to_owned(),
+        workspace_folder.to_owned(),
+        container_workspace_folder_basename(workspace_folder, workspace),
+        workspace.id().to_owned(),
+        current_uid(),
+        current_gid(),
+        remote_user,
+        remote_user_home,
+    )
+}
+
+fn container_workspace_folder_basename(workspace_folder: &str, workspace: &Workspace) -> String {
+    Path::new(workspace_folder)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| workspace.basename())
+        .to_owned()
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    unsafe { libc::getuid() }
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn current_gid() -> u32 {
+    unsafe { libc::getgid() }
+}
+
+#[cfg(not(unix))]
+fn current_gid() -> u32 {
+    0
 }
 
 async fn list_workspace_containers(
@@ -804,21 +1080,23 @@ mod tests {
     use std::{collections::BTreeMap, fs, ops::Deref, path::PathBuf};
 
     use anyhow::Context;
+    use bollard::models::{MountBindOptions, MountBindOptionsPropagationEnum, MountVolumeOptions};
 
-    use crate::config::ConfigLayer;
     use crate::config::resolved::ResolvedDevcontainerSource;
     use crate::config::types::MountType;
+    use crate::config::{ConfigHashInput, ConfigLayer, config_hash};
     use crate::docker::client::DockerClient;
     use crate::docker::container::{remove_container, stop_container};
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
     use crate::docker::image::{PullPolicy, ensure_image, remove_image};
+    use crate::docker::mounts::DockerMountSpec;
     use crate::workspace::Workspace;
 
     use super::{
         ExistingContainerDecision, UpContainerSummary, UpOptions, build_up_plan,
         build_up_plan_with_image_metadata, decide_existing_container, default_workspace_folder,
-        first_successful_shell_candidate, list_workspace_containers, run_attached_up,
-        run_detached_up, shell_command_candidates,
+        first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
+        run_attached_up, run_detached_up, shell_command_candidates,
     };
 
     #[test]
@@ -1150,6 +1428,154 @@ mod tests {
 
         assert_ne!(first.resources.config_hash, second.resources.config_hash);
         assert_ne!(first.image, second.image);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_up_plan_hash_changes_when_resolved_mount_source_changes() {
+        let workspace = test_workspace("mount-source-hash-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        fs::create_dir_all(workspace.root().join("first-cache")).unwrap();
+        fs::create_dir_all(workspace.root().join("second-cache")).unwrap();
+        let link = workspace.root().join("host-cache");
+        std::os::unix::fs::symlink(workspace.root().join("first-cache"), &link).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[mounts]]
+source = "host-cache"
+target = "/cache"
+type = "bind"
+resolve_symlink = true
+"#,
+        )
+        .unwrap();
+
+        let first = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(workspace.root().join("second-cache"), &link).unwrap();
+        let second = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_ne!(first.mounts[1].source, second.mounts[1].source);
+        assert_ne!(first.resources.config_hash, second.resources.config_hash);
+    }
+
+    #[test]
+    fn config_hash_changes_when_resolved_mount_options_change() {
+        let mut cached = test_mount();
+        cached.consistency = Some("cached".to_owned());
+        let mut delegated = test_mount();
+        delegated.consistency = Some("delegated".to_owned());
+        assert_ne!(
+            config_hash_for_mount(cached),
+            config_hash_for_mount(delegated)
+        );
+
+        let mut rshared = test_mount();
+        rshared.bind_options = Some(MountBindOptions {
+            propagation: Some(MountBindOptionsPropagationEnum::RSHARED),
+            ..MountBindOptions::default()
+        });
+        let mut rslave = test_mount();
+        rslave.bind_options = Some(MountBindOptions {
+            propagation: Some(MountBindOptionsPropagationEnum::RSLAVE),
+            ..MountBindOptions::default()
+        });
+        assert_ne!(
+            config_hash_for_mount(rshared),
+            config_hash_for_mount(rslave)
+        );
+
+        let mut deps = test_volume_mount();
+        deps.volume_options = Some(MountVolumeOptions {
+            subpath: Some("deps".to_owned()),
+            ..MountVolumeOptions::default()
+        });
+        let mut cache = test_volume_mount();
+        cache.volume_options = Some(MountVolumeOptions {
+            subpath: Some("cache".to_owned()),
+            ..MountVolumeOptions::default()
+        });
+        assert_ne!(config_hash_for_mount(deps), config_hash_for_mount(cache));
+    }
+
+    #[test]
+    fn build_up_plan_uses_container_workspace_folder_basename_variable() {
+        let workspace = test_workspace("container-basename-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceFolder": "/src"
+            }
+            "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "/opt/${containerWorkspaceFolderBasename}"
+type = "volume"
+"#,
+        )
+        .unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.mounts[1].target, "/opt/src");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_up_plan_uses_current_uid_and_gid_variables() {
+        let workspace = test_workspace("uid-gid-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        let cache = workspace.root().join(format!("{uid}-{gid}"));
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[mounts]]
+source = "${uid}-${gid}"
+target = "/cache"
+type = "bind"
+"#,
+        )
+        .unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(
+            plan.mounts[1].source.as_deref(),
+            Some(cache.canonicalize().unwrap().to_str().unwrap())
+        );
     }
 
     #[test]
@@ -2482,6 +2908,38 @@ user = "root"
         let path = workspace.root().join(".devcontainer/devcontainer.json");
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(path, contents).unwrap();
+    }
+
+    fn test_mount() -> DockerMountSpec {
+        DockerMountSpec {
+            source: Some("/host/cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        }
+    }
+
+    fn test_volume_mount() -> DockerMountSpec {
+        DockerMountSpec {
+            source: Some("project-cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Volume,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        }
+    }
+
+    fn config_hash_for_mount(mount: DockerMountSpec) -> String {
+        let config = crate::config::resolved::ResolvedConfig::default();
+        let mut input = ConfigHashInput::new(&config);
+        input.resolved_mounts = mount_hash_inputs(&[mount]);
+
+        config_hash(&input)
     }
 
     fn docker_tests_enabled() -> bool {

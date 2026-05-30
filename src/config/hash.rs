@@ -26,6 +26,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) feature_locks: Vec<FeatureLockHashEntry>,
     pub(crate) cli_flags: BTreeMap<String, Value>,
     pub(crate) build: Option<BuildHashInput>,
+    pub(crate) resolved_mounts: Vec<MountHashInput>,
 }
 
 impl<'a> ConfigHashInput<'a> {
@@ -35,8 +36,43 @@ impl<'a> ConfigHashInput<'a> {
             feature_locks: Vec::new(),
             cli_flags: BTreeMap::new(),
             build: None,
+            resolved_mounts: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MountHashInput {
+    pub(crate) source: Option<String>,
+    pub(crate) target: String,
+    pub(crate) mount_type: MountType,
+    pub(crate) read_only: bool,
+    pub(crate) consistency: Option<String>,
+    pub(crate) bind_options: Option<MountBindOptionsHashInput>,
+    pub(crate) volume_options: Option<MountVolumeOptionsHashInput>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MountBindOptionsHashInput {
+    pub(crate) propagation: Option<String>,
+    pub(crate) non_recursive: Option<bool>,
+    pub(crate) create_mountpoint: Option<bool>,
+    pub(crate) read_only_non_recursive: Option<bool>,
+    pub(crate) read_only_force_recursive: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MountVolumeOptionsHashInput {
+    pub(crate) no_copy: Option<bool>,
+    pub(crate) labels: Option<BTreeMap<String, String>>,
+    pub(crate) driver_config: Option<MountVolumeDriverConfigHashInput>,
+    pub(crate) subpath: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct MountVolumeDriverConfigHashInput {
+    pub(crate) name: Option<String>,
+    pub(crate) options: Option<BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -72,8 +108,91 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
         Some(build) => write_build_input(writer, build),
         None => writer.none(),
     });
+    writer.field("resolved_mounts", |writer| {
+        write_resolved_mounts(writer, &input.resolved_mounts);
+    });
 
     sha256_hex(writer.finish().as_bytes())
+}
+
+fn write_resolved_mounts(writer: &mut CanonicalWriter, mounts: &[MountHashInput]) {
+    writer.seq(mounts.iter(), |writer, mount| {
+        writer.object("ResolvedMountSpec", |writer| {
+            writer.field("source", |writer| {
+                writer.option_string(mount.source.as_deref());
+            });
+            writer.field("target", |writer| writer.string(&mount.target));
+            writer.field("type", |writer| {
+                writer.string(mount_type_name(mount.mount_type));
+            });
+            writer.field("read_only", |writer| writer.bool(mount.read_only));
+            writer.field("consistency", |writer| {
+                writer.option_string(mount.consistency.as_deref());
+            });
+            writer.field("bind_options", |writer| match &mount.bind_options {
+                Some(options) => write_mount_bind_options(writer, options),
+                None => writer.none(),
+            });
+            writer.field("volume_options", |writer| match &mount.volume_options {
+                Some(options) => write_mount_volume_options(writer, options),
+                None => writer.none(),
+            });
+        });
+    });
+}
+
+fn write_mount_bind_options(writer: &mut CanonicalWriter, options: &MountBindOptionsHashInput) {
+    writer.object("MountBindOptions", |writer| {
+        writer.field("propagation", |writer| {
+            writer.option_string(options.propagation.as_deref());
+        });
+        writer.field("non_recursive", |writer| {
+            write_option_bool(writer, options.non_recursive);
+        });
+        writer.field("create_mountpoint", |writer| {
+            write_option_bool(writer, options.create_mountpoint);
+        });
+        writer.field("read_only_non_recursive", |writer| {
+            write_option_bool(writer, options.read_only_non_recursive);
+        });
+        writer.field("read_only_force_recursive", |writer| {
+            write_option_bool(writer, options.read_only_force_recursive);
+        });
+    });
+}
+
+fn write_mount_volume_options(writer: &mut CanonicalWriter, options: &MountVolumeOptionsHashInput) {
+    writer.object("MountVolumeOptions", |writer| {
+        writer.field("no_copy", |writer| {
+            write_option_bool(writer, options.no_copy)
+        });
+        writer.field("labels", |writer| match &options.labels {
+            Some(labels) => writer.map(labels.iter(), |writer, value| writer.string(value)),
+            None => writer.none(),
+        });
+        writer.field("driver_config", |writer| match &options.driver_config {
+            Some(driver_config) => write_mount_volume_driver_config(writer, driver_config),
+            None => writer.none(),
+        });
+        writer.field("subpath", |writer| {
+            writer.option_string(options.subpath.as_deref());
+        });
+    });
+}
+
+fn write_mount_volume_driver_config(
+    writer: &mut CanonicalWriter,
+    driver_config: &MountVolumeDriverConfigHashInput,
+) {
+    writer.object("MountVolumeDriverConfig", |writer| {
+        writer.field("name", |writer| {
+            writer.option_string(driver_config.name.as_deref());
+        });
+        writer.field("options", |writer| match &driver_config.options {
+            Some(options) => writer.map(options.iter(), |writer, value| writer.string(value)),
+            None => writer.none(),
+        });
+    });
 }
 
 fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) {

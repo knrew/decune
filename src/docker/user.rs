@@ -1,12 +1,17 @@
 #![allow(dead_code)]
 
-use std::collections::BTreeMap;
+use std::{
+    collections::BTreeMap,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use anyhow::{Context, Result, bail};
+use bollard::{models::ContainerCreateBody, query_parameters::CreateContainerOptionsBuilder};
 
 use crate::{
     docker::{
         client::DockerClient,
+        container::{remove_container, start_container},
         exec::{ExecCommandSpec, ExecOutput, ensure_success_output, exec_capture_output},
     },
     ui,
@@ -80,6 +85,46 @@ pub(crate) async fn resolve_remote_user(
     };
 
     resolve_selected_remote_user(client, container, selection).await
+}
+
+pub(crate) async fn resolve_remote_user_from_image(
+    client: &DockerClient,
+    image: &str,
+    input: RemoteUserResolveInput<'_>,
+) -> Result<ResolvedRemoteUser> {
+    let selection = match select_configured_remote_user(RemoteUserSelectionInput {
+        explicit_remote_user: input.explicit_remote_user,
+        image_metadata_remote_user: input.image_metadata_remote_user,
+        image_config_user: None,
+    }) {
+        Some(selection) => selection,
+        None => {
+            let image_config_user = image_config_user(client, image).await?;
+            select_remote_user(RemoteUserSelectionInput {
+                explicit_remote_user: None,
+                image_metadata_remote_user: None,
+                image_config_user: image_config_user.as_deref(),
+            })
+        }
+    };
+
+    let container = create_remote_user_lookup_container(client, image).await?;
+    let result = async {
+        start_container(client, &container).await?;
+        resolve_selected_remote_user(client, &container, selection).await
+    }
+    .await;
+    let cleanup = remove_container(client, &container, true, true).await;
+
+    match (result, cleanup) {
+        (Ok(user), Ok(())) => Ok(user),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error)
+            .with_context(|| format!("Failed to remove remote user lookup container: {container}")),
+        (Err(error), Err(cleanup_error)) => Err(error.context(format!(
+            "Failed to remove remote user lookup container {container}: {cleanup_error:#}"
+        ))),
+    }
 }
 
 pub(crate) async fn remote_user_home(
@@ -209,6 +254,40 @@ async fn image_config_user(client: &DockerClient, image: &str) -> Result<Option<
     Ok(inspect
         .config
         .and_then(|config| normalize_user(config.user.as_deref())))
+}
+
+async fn create_remote_user_lookup_container(client: &DockerClient, image: &str) -> Result<String> {
+    let container = remote_user_lookup_container_name();
+    let options = CreateContainerOptionsBuilder::default()
+        .name(&container)
+        .build();
+    let body = ContainerCreateBody {
+        image: Some(image.to_owned()),
+        entrypoint: Some(vec!["/bin/sh".to_owned()]),
+        cmd: Some(vec![
+            "-c".to_owned(),
+            "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+        ]),
+        user: Some(ROOT_USER.to_owned()),
+        ..Default::default()
+    };
+
+    client
+        .raw()
+        .create_container(Some(options), body)
+        .await
+        .with_context(|| format!("Failed to create remote user lookup container from: {image}"))?;
+
+    Ok(container)
+}
+
+fn remote_user_lookup_container_name() -> String {
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+
+    format!("decune-user-lookup-{}-{nanos}", std::process::id())
 }
 
 async fn lookup_container_user(

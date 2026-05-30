@@ -75,11 +75,20 @@ impl<'a> HostPathOptions<'a> {
 pub(crate) fn resolve_host_path(input: &str, options: &HostPathOptions<'_>) -> Result<PathBuf> {
     let expanded_home = expand_home(input, options.home_dir.as_deref())?;
     let expanded_variables = expand_variables(&expanded_home, options.variables)?;
-    let absolute_path = absolutize_config_path(
-        PathBuf::from(expanded_variables),
-        options.origin,
-        options.workspace_root,
-    )?;
+    resolve_checked_host_path(expanded_variables, options)
+}
+
+pub(crate) fn resolve_expanded_host_path(
+    input: &str,
+    options: &HostPathOptions<'_>,
+) -> Result<PathBuf> {
+    let expanded_home = expand_home(input, options.home_dir.as_deref())?;
+    resolve_checked_host_path(expanded_home, options)
+}
+
+fn resolve_checked_host_path(input: String, options: &HostPathOptions<'_>) -> Result<PathBuf> {
+    let absolute_path =
+        absolutize_config_path(PathBuf::from(input), options.origin, options.workspace_root)?;
 
     if options.create == PathCreate::Directory {
         fs::create_dir_all(&absolute_path)
