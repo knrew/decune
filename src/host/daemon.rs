@@ -19,6 +19,41 @@ use crate::host::{
 
 const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct HostDaemonAccess {
+    runtime_dir_mode: u32,
+    socket_mode: u32,
+}
+
+impl HostDaemonAccess {
+    fn private() -> Self {
+        Self {
+            runtime_dir_mode: 0o700,
+            socket_mode: 0o600,
+        }
+    }
+
+    pub(crate) fn for_remote_user(remote_uid: u32, remote_gid: u32) -> Self {
+        Self::from_ids(current_uid(), current_gid(), remote_uid, remote_gid)
+    }
+
+    fn from_ids(host_uid: u32, host_gid: u32, remote_uid: u32, remote_gid: u32) -> Self {
+        if remote_uid == host_uid {
+            Self::private()
+        } else if remote_gid == host_gid {
+            Self {
+                runtime_dir_mode: 0o710,
+                socket_mode: 0o660,
+            }
+        } else {
+            Self {
+                runtime_dir_mode: 0o711,
+                socket_mode: 0o666,
+            }
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct HostDaemon {
     socket_path: PathBuf,
@@ -26,28 +61,50 @@ pub(crate) struct HostDaemon {
 }
 
 impl HostDaemon {
+    #[cfg(test)]
     pub(crate) async fn start(runtime_dir: impl AsRef<Path>) -> Result<Self> {
         Self::start_with_git_credential_executor(runtime_dir, Arc::new(SystemGitCredentialExecutor))
             .await
     }
 
+    pub(crate) async fn start_for_remote_user(
+        runtime_dir: impl AsRef<Path>,
+        remote_uid: u32,
+        remote_gid: u32,
+    ) -> Result<Self> {
+        Self::start_with_access(
+            runtime_dir,
+            HostDaemonAccess::for_remote_user(remote_uid, remote_gid),
+            Arc::new(SystemGitCredentialExecutor),
+        )
+        .await
+    }
+
+    #[cfg(test)]
     pub(crate) async fn start_with_git_credential_executor(
         runtime_dir: impl AsRef<Path>,
         git_credentials: Arc<dyn GitCredentialExecutor>,
     ) -> Result<Self> {
+        Self::start_with_access(runtime_dir, HostDaemonAccess::private(), git_credentials).await
+    }
+
+    async fn start_with_access(
+        runtime_dir: impl AsRef<Path>,
+        access: HostDaemonAccess,
+        git_credentials: Arc<dyn GitCredentialExecutor>,
+    ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
-        prepare_runtime_dir(&runtime_dir)?;
+        prepare_runtime_dir(&runtime_dir, access)?;
         let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
 
         let listener = bind_host_daemon_socket(&socket_path).await?;
-        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).with_context(
-            || {
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(access.socket_mode))
+            .with_context(|| {
                 format!(
                     "Failed to set host daemon socket permissions: {}",
                     socket_path.display()
                 )
-            },
-        )?;
+            })?;
 
         let task = tokio::spawn(run_host_daemon(listener, git_credentials));
 
@@ -85,7 +142,7 @@ impl Drop for HostDaemon {
     }
 }
 
-fn prepare_runtime_dir(runtime_dir: &Path) -> Result<()> {
+fn prepare_runtime_dir(runtime_dir: &Path, access: HostDaemonAccess) -> Result<()> {
     fs::create_dir_all(runtime_dir).with_context(|| {
         format!(
             "Failed to create host daemon runtime directory: {}",
@@ -93,7 +150,11 @@ fn prepare_runtime_dir(runtime_dir: &Path) -> Result<()> {
         )
     })?;
     set_private_runtime_parent(runtime_dir)?;
-    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
+    fs::set_permissions(
+        runtime_dir,
+        fs::Permissions::from_mode(access.runtime_dir_mode),
+    )
+    .with_context(|| {
         format!(
             "Failed to set host daemon runtime directory permissions: {}",
             runtime_dir.display()
@@ -121,6 +182,26 @@ fn is_decune_runtime_parent(path: &Path) -> bool {
     path.file_name()
         .and_then(|value| value.to_str())
         .is_some_and(|name| name == "decune" || name.starts_with("decune-"))
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    unsafe { libc::getuid() }
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn current_gid() -> u32 {
+    unsafe { libc::getgid() }
+}
+
+#[cfg(not(unix))]
+fn current_gid() -> u32 {
+    0
 }
 
 async fn bind_host_daemon_socket(socket_path: &Path) -> Result<UnixListener> {
@@ -249,7 +330,7 @@ mod tests {
         net::{UnixListener, UnixStream},
     };
 
-    use super::HostDaemon;
+    use super::{HostDaemon, HostDaemonAccess, current_gid, current_uid};
     use crate::host::credentials::{GitCredentialCommand, GitCredentialExecutor};
 
     #[derive(Debug)]
@@ -281,6 +362,55 @@ mod tests {
 
             daemon.stop().await.unwrap();
             assert!(!socket_path.exists());
+        });
+    }
+
+    #[test]
+    fn access_policy_keeps_private_modes_when_remote_uid_matches_host_uid() {
+        let access = HostDaemonAccess::from_ids(1000, 1000, 1000, 2000);
+
+        assert_eq!(access.runtime_dir_mode, 0o700);
+        assert_eq!(access.socket_mode, 0o600);
+    }
+
+    #[test]
+    fn access_policy_uses_group_modes_when_only_gid_matches() {
+        let access = HostDaemonAccess::from_ids(1000, 1000, 2000, 1000);
+
+        assert_eq!(access.runtime_dir_mode, 0o710);
+        assert_eq!(access.socket_mode, 0o660);
+    }
+
+    #[test]
+    fn access_policy_uses_traversable_modes_when_remote_uid_and_gid_differ() {
+        let access = HostDaemonAccess::from_ids(1000, 1000, 2000, 2000);
+
+        assert_eq!(access.runtime_dir_mode, 0o711);
+        assert_eq!(access.socket_mode, 0o666);
+    }
+
+    #[test]
+    fn daemon_allows_remote_uid_mismatch_to_traverse_runtime_dir_and_socket() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("workspace-runtime");
+        let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+        let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+
+        runtime.block_on(async {
+            let daemon =
+                HostDaemon::start_for_remote_user(runtime_dir.clone(), remote_uid, remote_gid)
+                    .await
+                    .unwrap();
+            let socket_path = daemon.socket_path().to_path_buf();
+
+            assert_eq!(mode(&runtime_dir), 0o711);
+            assert_eq!(mode(&socket_path), 0o666);
+
+            daemon.stop().await.unwrap();
         });
     }
 

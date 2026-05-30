@@ -14,7 +14,12 @@ use bollard::{
 use futures_util::TryStreamExt;
 use predicates::prelude::*;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, fs, os::unix::fs::PermissionsExt, path::Path};
+use std::{
+    collections::HashMap,
+    fs,
+    os::unix::{fs::PermissionsExt, net::UnixListener},
+    path::Path,
+};
 
 mod support;
 
@@ -545,9 +550,10 @@ fn up_detach_sets_git_credential_home_for_nonroot_remote_user() {
 }
 
 #[test]
-fn up_detach_denies_host_daemon_socket_to_non_remote_user() {
+fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matches_host() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_home = support::TempWorkspace::new().unwrap();
+    let uid = current_uid();
     let attacker_uid = if current_uid() == 20001 { 20002 } else { 20001 };
     let attacker_gid = if current_gid() == 20001 { 20002 } else { 20001 };
     workspace
@@ -592,18 +598,18 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user() {
             ),
         )
         .unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/devcontainer.json",
-            r#"
+    let devcontainer_json = r#"
             {
               "build": {
                 "dockerfile": "Dockerfile"
               },
-              "postStartCommand": "command -v su >/dev/null && owner=$(stat -c %u /run/decune/host-daemon.sock) && attacker=$(id -u attacker) && if [ \"$owner\" = \"$attacker\" ]; then echo 'attacker fixture uid matches host daemon owner' >&2; exit 24; fi && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && if su attacker -s /bin/sh -c \"printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi"
+              "remoteUser": "__UID__",
+              "postStartCommand": "test \"$(id -u)\" = \"__UID__\" && command -v su >/dev/null && owner=$(stat -c %u /run/decune/host-daemon.sock) && attacker=$(id -u attacker) && if [ \"$owner\" = \"$attacker\" ]; then echo 'attacker fixture uid matches host daemon owner' >&2; exit 24; fi && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && if su attacker -s /bin/sh -c \"printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi"
             }
-            "#,
-        )
+            "#
+    .replace("__UID__", &uid.to_string());
+    workspace
+        .write_file(".devcontainer/devcontainer.json", &devcontainer_json)
         .unwrap();
     host_home
         .write_file(
@@ -650,7 +656,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user() {
 }
 
 #[test]
-fn up_detach_skips_git_credentials_when_remote_user_cannot_access_private_runtime() {
+fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_uid() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_home = support::TempWorkspace::new().unwrap();
     let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
@@ -682,6 +688,14 @@ fn up_detach_skips_git_credentials_when_remote_user_cannot_access_private_runtim
               '      ;;' \
               '  esac' \
               'fi' \
+              'if [ "$1" = credential ] && [ "$2" = fill ]; then' \
+              '  input=$(mktemp)' \
+              '  cat >"$input"' \
+              '  helper=$(cat /tmp/decune-git-helper)' \
+              '  "$helper" get <"$input"' \
+              '  rm -f "$input"' \
+              '  exit 0' \
+              'fi' \
               'echo "unexpected fake git command: $*" >&2' \
               'exit 91' \
               >/usr/local/bin/git \
@@ -699,7 +713,8 @@ fn up_detach_skips_git_credentials_when_remote_user_cannot_access_private_runtim
                 "dockerfile": "Dockerfile"
               },
               "remoteUser": "decune",
-              "postStartCommand": "test \"$(id -un)\" = decune && test ! -e /tmp/decune-git-helper"
+              "updateRemoteUserUID": false,
+              "postStartCommand": "test \"$(id -un)\" = decune && test -x /run/decune/git-credential-decune && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && grep -q 'password=test-secret' /tmp/decune-credential"
             }
             "#,
         )
@@ -732,9 +747,6 @@ fn up_detach_skips_git_credentials_when_remote_user_cannot_access_private_runtim
             .assert()
             .success()
             .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains(
-                "Git credential forwarding is unavailable",
-            ))
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("test-secret").not());
     });
@@ -1086,6 +1098,289 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
                 labels
                     .values()
                     .all(|value| !value.contains("github-test-secret"))
+            );
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_mounts_ssh_agent_socket_and_sets_container_env() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let socket_workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "postStartCommand": "test \"${SSH_AUTH_SOCK:-}\" = /run/decune/ssh-agent.sock && test -S /run/decune/ssh-agent.sock"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            https = "off"
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let socket_path = socket_workspace.path().join("agent.sock");
+    let _listener = UnixListener::bind(&socket_path).unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("SSH_AUTH_SOCK", &socket_path)
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            let env = inspect.config.unwrap_or_default().env.unwrap_or_default();
+            assert!(
+                env.iter()
+                    .any(|entry| entry == "SSH_AUTH_SOCK=/run/decune/ssh-agent.sock")
+            );
+        });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_copies_host_git_user_config_when_https_is_off() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            &format!(
+                r#"
+            FROM alpine:3.20
+            RUN addgroup -g {gid} decunegrp \
+              && adduser -D -u {uid} -G decunegrp -h /home/decune decune \
+              && printf '%s\n' \
+              '#!/bin/sh' \
+              'set -eu' \
+              'if [ "$1" = config ] && [ "$2" = --global ]; then' \
+              '  case "$3" in' \
+              '    user.name|user.email)' \
+              '      mkdir -p "$HOME"' \
+              '      printf "%s=%s\n" "$3" "$4" >> "$HOME/.gitconfig"' \
+              '      exit 0' \
+              '      ;;' \
+              '  esac' \
+              'fi' \
+              'echo "unexpected fake container git command: $*" >&2' \
+              'exit 91' \
+              >/usr/local/bin/git \
+              && chmod +x /usr/local/bin/git
+            "#,
+                uid = current_uid(),
+                gid = current_gid(),
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteUser": "decune",
+              "postStartCommand": "test \"$(id -un)\" = decune && grep -qx 'user.name=Octo User' \"$HOME/.gitconfig\" && grep -qx 'user.email=octo@example.test' \"$HOME/.gitconfig\""
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            https = "off"
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let git_path = host_tools
+        .write_file(
+            "bin/git",
+            "#!/bin/sh\nif [ \"$1\" = config ] && [ \"$2\" = --global ] && [ \"$3\" = --get ]; then case \"$4\" in user.name) printf 'Octo User\\n'; exit 0 ;; user.email) printf 'octo@example.test\\n'; exit 0 ;; esac; fi\nexit 1\n",
+        )
+        .unwrap();
+    fs::set_permissions(&git_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        git_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("PATH", &fake_path)
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_copies_host_global_gitconfig_when_https_is_off_without_leaking_secret() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_home = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            &format!(
+                r#"
+            FROM alpine:3.20
+            RUN addgroup -g {gid} decunegrp \
+              && adduser -D -u {uid} -G decunegrp -h /home/decune decune
+            "#,
+                uid = current_uid(),
+                gid = current_gid(),
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteUser": "decune",
+              "postStartCommand": "test \"$(id -un)\" = decune && test -f \"$HOME/.gitconfig\" && grep -q \"$(printf %s%s global -secret)\" \"$HOME/.gitconfig\""
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            copy_user = false
+            copy_global_config = true
+            https = "off"
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    host_home
+        .write_file(
+            ".gitconfig",
+            "[credential]\n  helper = store\n[decune]\n  token = global-secret\n",
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("HOME", host_home.path())
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("global-secret").not());
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            let config = inspect.config.unwrap_or_default();
+            let env = config.env.unwrap_or_default();
+            assert!(env.iter().all(|entry| !entry.contains("global-secret")));
+            let labels = config.labels.unwrap_or_default();
+            assert!(
+                labels
+                    .values()
+                    .all(|value| !value.contains("global-secret"))
             );
         });
     });

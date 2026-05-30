@@ -465,7 +465,11 @@ fn prepare_git_credential_runtime_with_gitconfig(
     runtime_dir: &Path,
     host_gitconfig: Option<&Path>,
 ) -> Result<GitCredentialRuntime> {
-    if !git_host_helper_enabled(&config.credentials.git) {
+    let helper_enabled = git_host_helper_enabled(&config.credentials.git);
+    let copy_global_config =
+        config.credentials.git.enabled && config.credentials.git.copy_global_config;
+
+    if !helper_enabled && !copy_global_config {
         return Ok(GitCredentialRuntime::empty());
     }
 
@@ -483,41 +487,47 @@ fn prepare_git_credential_runtime_with_gitconfig(
         )
     })?;
 
-    let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
-    fs::write(&helper_path, git_credential_helper_launcher()).with_context(|| {
-        format!(
-            "Failed to stage Git credential helper: {}",
-            helper_path.display()
-        )
-    })?;
-    fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o755)).with_context(|| {
-        format!(
-            "Failed to set Git credential helper permissions: {}",
-            helper_path.display()
-        )
-    })?;
+    let mut cleanup_paths = Vec::new();
+    if helper_enabled {
+        let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
+        fs::write(&helper_path, git_credential_helper_launcher()).with_context(|| {
+            format!(
+                "Failed to stage Git credential helper: {}",
+                helper_path.display()
+            )
+        })?;
+        fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o755)).with_context(
+            || {
+                format!(
+                    "Failed to set Git credential helper permissions: {}",
+                    helper_path.display()
+                )
+            },
+        )?;
+        cleanup_paths.push(helper_path);
 
-    let linux_x86_64_helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_LINUX_X86_64_NAME);
-    fs::write(
-        &linux_x86_64_helper_path,
-        GIT_CREDENTIAL_HELPER_LINUX_X86_64,
-    )
-    .with_context(|| {
-        format!(
-            "Failed to stage Linux x86_64 Git credential helper: {}",
-            linux_x86_64_helper_path.display()
+        let linux_x86_64_helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_LINUX_X86_64_NAME);
+        fs::write(
+            &linux_x86_64_helper_path,
+            GIT_CREDENTIAL_HELPER_LINUX_X86_64,
         )
-    })?;
-    fs::set_permissions(&linux_x86_64_helper_path, fs::Permissions::from_mode(0o755))
         .with_context(|| {
             format!(
-                "Failed to set Linux x86_64 Git credential helper permissions: {}",
+                "Failed to stage Linux x86_64 Git credential helper: {}",
                 linux_x86_64_helper_path.display()
             )
         })?;
+        fs::set_permissions(&linux_x86_64_helper_path, fs::Permissions::from_mode(0o755))
+            .with_context(|| {
+                format!(
+                    "Failed to set Linux x86_64 Git credential helper permissions: {}",
+                    linux_x86_64_helper_path.display()
+                )
+            })?;
+        cleanup_paths.push(linux_x86_64_helper_path);
+    }
 
-    let mut cleanup_paths = vec![helper_path, linux_x86_64_helper_path];
-    if config.credentials.git.copy_global_config
+    if copy_global_config
         && let Some(source) = host_gitconfig
         && source.is_file()
     {
@@ -535,6 +545,10 @@ fn prepare_git_credential_runtime_with_gitconfig(
             )
         })?;
         cleanup_paths.push(target);
+    }
+
+    if cleanup_paths.is_empty() {
+        return Ok(GitCredentialRuntime::empty());
     }
 
     Ok(GitCredentialRuntime {
@@ -557,7 +571,7 @@ pub(crate) async fn setup_git_credentials(
     config: &ResolvedConfig,
     remote_user: &ResolvedRemoteUser,
 ) -> Result<()> {
-    if !git_host_helper_enabled(&config.credentials.git) {
+    if !git_credentials_setup_enabled(&config.credentials.git) {
         return Ok(());
     }
 
@@ -566,7 +580,9 @@ pub(crate) async fn setup_git_credentials(
         return Ok(());
     }
 
-    if !git_credential_runtime_accessible(client, container, remote_user).await {
+    if git_host_helper_enabled(&config.credentials.git)
+        && !git_credential_runtime_accessible(client, container, remote_user).await
+    {
         ui::warn(&format!(
             "Git credential forwarding is unavailable in container: {container}"
         ));
@@ -588,9 +604,12 @@ pub(crate) async fn setup_git_credentials(
     .await
     .with_context(|| format!("Failed to setup Git credentials in container: {container}"));
     if setup_result.is_err() {
-        ui::warn(&format!(
-            "Git credential forwarding is unavailable in container: {container}"
-        ));
+        let message = if git_host_helper_enabled(&config.credentials.git) {
+            "Git credential forwarding is unavailable"
+        } else {
+            "Git credential setup is unavailable"
+        };
+        ui::warn(&format!("{message} in container: {container}"));
     }
 
     Ok(())
@@ -790,23 +809,27 @@ async fn github_cli_available(
 }
 
 pub(crate) fn git_credential_setup_script(credentials: &ResolvedGitCredentials) -> Result<String> {
-    if !git_host_helper_enabled(credentials) {
+    if !git_credentials_setup_enabled(credentials) {
         return Ok(String::new());
     }
 
     let mut script = String::from("set -e\n");
-    script.push_str(
-        "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\n",
-    );
     if credentials.copy_global_config {
         script.push_str(
             "if [ -f /run/decune/host-gitconfig ]; then cp /run/decune/host-gitconfig \"$HOME/.gitconfig\"; fi\n",
         );
     }
-    script.push_str("git config --global --unset-all credential.helper >/dev/null 2>&1 || true\n");
-    script.push_str("git config --global --add credential.helper ");
-    script.push_str(&shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
-    script.push('\n');
+    if git_host_helper_enabled(credentials) {
+        script.push_str(
+            "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\n",
+        );
+        script.push_str(
+            "git config --global --unset-all credential.helper >/dev/null 2>&1 || true\n",
+        );
+        script.push_str("git config --global --add credential.helper ");
+        script.push_str(&shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
+        script.push('\n');
+    }
 
     if credentials.copy_user {
         if let Some(name) = host_git_config_value("user.name")? {
@@ -882,6 +905,13 @@ fn git_host_helper_enabled(credentials: &ResolvedGitCredentials) -> bool {
     credentials.enabled && credentials.https == GitHttpsMode::HostHelper
 }
 
+fn git_credentials_setup_enabled(credentials: &ResolvedGitCredentials) -> bool {
+    credentials.enabled
+        && (credentials.https == GitHttpsMode::HostHelper
+            || credentials.copy_user
+            || credentials.copy_global_config)
+}
+
 fn github_cli_credentials_enabled(credentials: &ResolvedGithubCredentials) -> bool {
     credentials.enabled && credentials.mode == GithubCredentialsMode::GhTokenFile
 }
@@ -899,7 +929,10 @@ fn host_github_auth_token_from(command: &Path) -> Result<Option<String>> {
         Ok(output) => output,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(error).context("Failed to run host GitHub CLI auth token");
+            ui::warn(&format!(
+                "GitHub CLI token forwarding is unavailable: failed to run host gh auth token: {error}"
+            ));
+            return Ok(None);
         }
     };
 
@@ -907,8 +940,15 @@ fn host_github_auth_token_from(command: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let token = String::from_utf8(output.stdout)
-        .context("Host GitHub CLI auth token returned non-UTF-8 output")?;
+    let token = match String::from_utf8(output.stdout) {
+        Ok(token) => token,
+        Err(_) => {
+            ui::warn(
+                "GitHub CLI token forwarding is unavailable: host gh auth token returned non-UTF-8 output",
+            );
+            return Ok(None);
+        }
+    };
     Ok(normalize_github_token(&token))
 }
 
@@ -986,8 +1026,10 @@ fn host_git_config_value_from(command: &Path, key: &str) -> Result<Option<String
         Ok(output) => output,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(error)
-                .with_context(|| format!("Failed to read host Git config value: {key}"));
+            ui::warn(&format!(
+                "Host Git config value is unavailable for {key}: {error}"
+            ));
+            return Ok(None);
         }
     };
 
@@ -995,8 +1037,13 @@ fn host_git_config_value_from(command: &Path, key: &str) -> Result<Option<String
         return Ok(None);
     }
 
-    let value = String::from_utf8(output.stdout)
-        .with_context(|| format!("Host Git config value is not UTF-8: {key}"))?;
+    let value = match String::from_utf8(output.stdout) {
+        Ok(value) => value,
+        Err(_) => {
+            ui::warn(&format!("Host Git config value is not UTF-8: {key}"));
+            return Ok(None);
+        }
+    };
     let value = value.trim_end_matches(['\r', '\n']).to_owned();
     if value.is_empty() {
         Ok(None)
@@ -1087,7 +1134,7 @@ mod tests {
     };
     use crate::config::{
         resolved::ResolvedConfig,
-        types::{GithubCredentialsMode, SshAgentMode},
+        types::{GitHttpsMode, GithubCredentialsMode, SshAgentMode},
     };
 
     #[test]
@@ -1196,6 +1243,44 @@ mod tests {
     }
 
     #[test]
+    fn host_gitconfig_is_staged_when_https_is_off_and_copy_global_config_is_enabled() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join(".gitconfig"), "[user]\n\tname = Octo\n").unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::Off;
+        config.credentials.git.copy_user = false;
+        config.credentials.git.copy_global_config = true;
+
+        let runtime = prepare_git_credential_runtime_with_gitconfig(
+            &config,
+            &runtime_dir,
+            Some(&home.join(".gitconfig")),
+        )
+        .unwrap();
+
+        assert_eq!(runtime.mounts().len(), 1);
+        assert_eq!(runtime.mounts()[0].target, "/run/decune");
+        assert_eq!(mode(&runtime_dir.join("host-gitconfig")), 0o644);
+    }
+
+    #[test]
+    fn setup_script_runs_copy_global_config_when_https_is_off() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::Off;
+        config.credentials.git.copy_user = false;
+        config.credentials.git.copy_global_config = true;
+
+        let script = git_credential_setup_script(&config.credentials.git).unwrap();
+
+        assert!(script.contains("cp /run/decune/host-gitconfig \"$HOME/.gitconfig\""));
+        assert!(!script.contains("credential.helper"));
+        assert!(!script.contains("Unsupported Git credential helper container architecture"));
+    }
+
+    #[test]
     fn missing_host_git_is_treated_as_absent_user_config() {
         let missing_git = PathBuf::from("/definitely/missing/decune-test-git");
 
@@ -1205,10 +1290,58 @@ mod tests {
     }
 
     #[test]
+    fn unexecutable_host_git_is_treated_as_absent_user_config() {
+        let temp = TempDir::new().unwrap();
+        let git = temp.path().join("git");
+        fs::write(&git, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let value = host_git_config_value_from(&git, "user.name").unwrap();
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn non_utf8_host_git_config_output_is_treated_as_absent_user_config() {
+        let temp = TempDir::new().unwrap();
+        let git = temp.path().join("git");
+        fs::write(&git, "#!/bin/sh\nprintf '\\377\\376'\n").unwrap();
+        fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let value = host_git_config_value_from(&git, "user.name").unwrap();
+
+        assert_eq!(value, None);
+    }
+
+    #[test]
     fn missing_host_gh_is_treated_as_absent_token() {
         let missing_gh = PathBuf::from("/definitely/missing/decune-test-gh");
 
         let token = host_github_auth_token_from(&missing_gh).unwrap();
+
+        assert_eq!(token, None);
+    }
+
+    #[test]
+    fn unexecutable_host_gh_is_treated_as_absent_token() {
+        let temp = TempDir::new().unwrap();
+        let gh = temp.path().join("gh");
+        fs::write(&gh, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let token = host_github_auth_token_from(&gh).unwrap();
+
+        assert_eq!(token, None);
+    }
+
+    #[test]
+    fn non_utf8_host_gh_token_output_is_treated_as_absent_token() {
+        let temp = TempDir::new().unwrap();
+        let gh = temp.path().join("gh");
+        fs::write(&gh, "#!/bin/sh\nprintf '\\377\\376'\n").unwrap();
+        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+
+        let token = host_github_auth_token_from(&gh).unwrap();
 
         assert_eq!(token, None);
     }
