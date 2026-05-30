@@ -821,7 +821,7 @@ pub(crate) async fn install_staged_host_gitconfig(
 
     let target = format!("{}/.gitconfig", remote_user.home);
     let script = format!(
-        "set -e\nif [ -f {source} ]; then cp {source} {target}; chown {uid}:{gid} {target}; chmod 600 {target}; fi\n",
+        "set -e\nif [ -f {source} ]; then rm -f {target}; cp {source} {target}; chown {uid}:{gid} {target}; chmod 600 {target}; fi\n",
         source = shell_quote(HOST_GITCONFIG_TARGET),
         target = shell_quote(&target),
         uid = remote_user.uid,
