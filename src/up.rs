@@ -75,6 +75,7 @@ struct WorkspaceLocation {
 pub(crate) struct UpMountSummary {
     pub(crate) source: Option<String>,
     pub(crate) target: String,
+    pub(crate) mount_type: MountType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -153,6 +154,7 @@ impl CredentialRuntime {
             .map(|mount| UpMountSummary {
                 source: mount.source.clone(),
                 target: mount.target.clone(),
+                mount_type: mount.mount_type,
             })
             .collect();
 
@@ -232,6 +234,9 @@ fn container_has_required_mounts(
 
 fn mount_matches_required(existing: &UpMountSummary, required: &UpMountSummary) -> bool {
     if normalize_container_path(&existing.target) != normalize_container_path(&required.target) {
+        return false;
+    }
+    if existing.mount_type != required.mount_type {
         return false;
     }
 
@@ -1325,9 +1330,11 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
         mounts
             .into_iter()
             .filter_map(|mount| {
+                let mount_type = mount_type_from_summary(mount.typ.as_deref())?;
                 mount.destination.map(|target| UpMountSummary {
                     source: mount.source,
                     target,
+                    mount_type,
                 })
             })
             .collect()
@@ -1344,6 +1351,15 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
         mounts,
         running,
     })
+}
+
+fn mount_type_from_summary(value: Option<&str>) -> Option<MountType> {
+    match value {
+        Some("bind") => Some(MountType::Bind),
+        Some("volume") => Some(MountType::Volume),
+        Some("tmpfs") => Some(MountType::Tmpfs),
+        _ => None,
+    }
 }
 
 fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
@@ -1558,6 +1574,78 @@ mod tests {
             decision,
             ExistingContainerDecision::Recreate {
                 containers: vec![container]
+            }
+        );
+    }
+
+    #[test]
+    fn existing_container_decision_recreates_when_required_mount_type_changed_for_github_cli_tmpfs()
+    {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary_with_type(
+                Some("/tmp/gh-config"),
+                GITHUB_CLI_CONFIG_TARGET,
+                MountType::Bind,
+            )]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container.clone()],
+            "hash123",
+            &[mount_summary_with_type(
+                None,
+                GITHUB_CLI_CONFIG_TARGET,
+                MountType::Tmpfs,
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+    }
+
+    #[test]
+    fn existing_container_decision_reuses_when_required_tmpfs_mount_is_present() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary_with_type(
+                None,
+                GITHUB_CLI_CONFIG_TARGET,
+                MountType::Tmpfs,
+            )]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container],
+            "hash123",
+            &[mount_summary_with_type(
+                None,
+                GITHUB_CLI_CONFIG_TARGET,
+                MountType::Tmpfs,
+            )],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::ReuseRunning {
+                id: "container-id".to_owned(),
+                name: "decune-project-abc123".to_owned()
             }
         );
     }
@@ -3590,9 +3678,18 @@ user = "root"
     }
 
     fn mount_summary(source: Option<&str>, target: &str) -> UpMountSummary {
+        mount_summary_with_type(source, target, MountType::Bind)
+    }
+
+    fn mount_summary_with_type(
+        source: Option<&str>,
+        target: &str,
+        mount_type: MountType,
+    ) -> UpMountSummary {
         UpMountSummary {
             source: source.map(ToOwned::to_owned),
             target: target.to_owned(),
+            mount_type,
         }
     }
 
