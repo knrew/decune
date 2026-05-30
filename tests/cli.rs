@@ -2218,6 +2218,241 @@ on_conflict = "replace-symlink"
 }
 
 #[test]
+fn up_detach_fails_dotfile_setup_when_conflict_policy_is_fail_if_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace.create_dir("dotfiles").unwrap();
+    workspace
+        .write_file("dotfiles/gitconfig", "[user]\nname = decune\n")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '[user]\nname = original\n' > /root/.gitconfig
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+version = 1
+
+[[dotfiles]]
+source = "dotfiles/gitconfig"
+target = ".gitconfig"
+on_conflict = "fail"
+"#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("Failed to setup dotfiles"))
+            .stderr(predicate::str::contains("Dotfile target already exists"));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_backs_up_existing_dotfile_target_when_requested_if_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace.create_dir("dotfiles").unwrap();
+    workspace
+        .write_file("dotfiles/gitconfig", "[user]\nname = decune\n")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "postStartCommand": "test -L /root/.gitconfig && test \"$(readlink /root/.gitconfig)\" = \"/opt/decune/dotfiles/.gitconfig\" && backup=$(find /root -maxdepth 1 -name '.gitconfig.decune-backup-*' -type f | head -n 1) && test -n \"$backup\" && grep -q original \"$backup\" && grep -q decune /root/.gitconfig"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '[user]\nname = original\n' > /root/.gitconfig
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+version = 1
+
+[[dotfiles]]
+source = "dotfiles/gitconfig"
+target = ".gitconfig"
+on_conflict = "backup"
+"#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_sets_up_dotfile_in_nonstandard_remote_user_home_if_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace.create_dir("dotfiles").unwrap();
+    workspace
+        .write_file("dotfiles/toolrc", "configured\n")
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let image_tag = format!(
+        "decune-test/nonstandard-home-dotfiles-{}:latest",
+        workspace_id(&workspace_root)
+    );
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            format!(
+                r#"
+                {{
+                  "image": "{image_tag}",
+                  "remoteUser": "node",
+                  "postStartCommand": "test -L /usr/local/share/node/.config/tool && test \"$(readlink /usr/local/share/node/.config/tool)\" = \"/opt/decune/dotfiles/.config/tool\" && grep -q configured /usr/local/share/node/.config/tool && test ! -e /home/node/.config/tool"
+                }}
+                "#
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+version = 1
+
+[[dotfiles]]
+source = "dotfiles/toolrc"
+target = ".config/tool"
+"#,
+        )
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        remove_image_if_exists(&image_tag).await.unwrap();
+        create_image_with_nonstandard_home_user(&workspace_root, &image_tag)
+            .await
+            .unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn rebuild_recreates_container_and_preserves_managed_volume_when_docker_tests_are_enabled() {
     if support::skip_unless_docker_tests_enabled() {
         return;

@@ -305,6 +305,9 @@ fn symlink_resolution(resolve_symlink: bool) -> SymlinkResolution {
 mod tests {
     use std::{fs, path::Path, process::Command};
 
+    #[cfg(unix)]
+    use std::os::unix::fs as unix_fs;
+
     use super::*;
     use crate::config::{
         path::ConfigPathOrigin,
@@ -358,6 +361,35 @@ mod tests {
                 bind_options: None,
                 volume_options: None,
             }]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preserves_dotfile_symlink_source_when_requested() {
+        let workspace = tempfile::tempdir().unwrap();
+        let real_source = workspace.path().join("real-gitconfig");
+        let link_source = workspace.path().join("linked-gitconfig");
+        fs::write(&real_source, "[user]\nname = decune\n").unwrap();
+        unix_fs::symlink(&real_source, &link_source).unwrap();
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: "linked-gitconfig".to_owned(),
+                target: ".gitconfig".to_owned(),
+                read_only: true,
+                resolve_symlink: false,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            dotfile_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(
+            mounts[0].source.as_deref(),
+            Some(link_source.to_str().unwrap())
         );
     }
 
