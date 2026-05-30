@@ -72,12 +72,18 @@ struct WorkspaceLocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UpMountSummary {
+    pub(crate) source: Option<String>,
+    pub(crate) target: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct UpContainerSummary {
     pub(crate) id: String,
     pub(crate) name: String,
     pub(crate) image_id: Option<String>,
     pub(crate) config_hash: Option<String>,
-    pub(crate) mount_targets: Option<Vec<String>>,
+    pub(crate) mounts: Option<Vec<UpMountSummary>>,
     pub(crate) running: bool,
 }
 
@@ -129,34 +135,37 @@ struct StartedUpContainer {
 struct CredentialRuntime {
     _git_credentials: GitCredentialRuntime,
     _ssh_agent: SshAgentRuntime,
-    required_mount_targets: Vec<String>,
+    required_mounts: Vec<UpMountSummary>,
 }
 
 impl CredentialRuntime {
     fn new(git_credentials: GitCredentialRuntime, ssh_agent: SshAgentRuntime) -> Self {
-        let required_mount_targets = git_credentials
+        let required_mounts = git_credentials
             .mounts()
             .iter()
             .chain(ssh_agent.mounts())
-            .map(|mount| mount.target.clone())
+            .map(|mount| UpMountSummary {
+                source: mount.source.clone(),
+                target: mount.target.clone(),
+            })
             .collect();
 
         Self {
             _git_credentials: git_credentials,
             _ssh_agent: ssh_agent,
-            required_mount_targets,
+            required_mounts,
         }
     }
 
-    fn required_mount_targets(&self) -> &[String] {
-        &self.required_mount_targets
+    fn required_mounts(&self) -> &[UpMountSummary] {
+        &self.required_mounts
     }
 }
 
 pub(crate) fn decide_existing_container(
     containers: &[UpContainerSummary],
     expected_config_hash: &str,
-    required_mount_targets: &[String],
+    required_mounts: &[UpMountSummary],
     rebuild: bool,
 ) -> Result<ExistingContainerDecision> {
     if rebuild {
@@ -177,7 +186,7 @@ pub(crate) fn decide_existing_container(
         bail!("Dev container configuration changed. Run decune rebuild to recreate it.");
     }
 
-    if !container_has_required_mount_targets(container, required_mount_targets) {
+    if !container_has_required_mounts(container, required_mounts) {
         return Ok(ExistingContainerDecision::Recreate {
             containers: containers.to_vec(),
         });
@@ -196,23 +205,33 @@ pub(crate) fn decide_existing_container(
     }
 }
 
-fn container_has_required_mount_targets(
+fn container_has_required_mounts(
     container: &UpContainerSummary,
-    required_mount_targets: &[String],
+    required_mounts: &[UpMountSummary],
 ) -> bool {
-    if required_mount_targets.is_empty() {
+    if required_mounts.is_empty() {
         return true;
     }
 
-    let Some(existing_targets) = &container.mount_targets else {
+    let Some(existing_mounts) = &container.mounts else {
         return false;
     };
-    required_mount_targets.iter().all(|required| {
-        let required = normalize_container_path(required);
-        existing_targets
+    required_mounts.iter().all(|required| {
+        existing_mounts
             .iter()
-            .any(|target| normalize_container_path(target) == required)
+            .any(|mount| mount_matches_required(mount, required))
     })
+}
+
+fn mount_matches_required(existing: &UpMountSummary, required: &UpMountSummary) -> bool {
+    if normalize_container_path(&existing.target) != normalize_container_path(&required.target) {
+        return false;
+    }
+
+    match required.source.as_deref() {
+        Some(required_source) => existing.source.as_deref() == Some(required_source),
+        None => true,
+    }
 }
 
 pub(crate) fn default_workspace_folder(workspace: &Workspace) -> String {
@@ -395,7 +414,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         match decide_existing_container(
             &containers,
             &existing_plan.resources.config_hash,
-            credentials.required_mount_targets(),
+            credentials.required_mounts(),
             false,
         )? {
             ExistingContainerDecision::ReuseRunning { id, name } => {
@@ -459,7 +478,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
     match decide_existing_container(
         &containers,
         &plan.resources.config_hash,
-        credentials.required_mount_targets(),
+        credentials.required_mounts(),
         options.rebuild,
     )? {
         ExistingContainerDecision::Create => {
@@ -1261,10 +1280,15 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
     let config_hash = container
         .labels
         .and_then(|labels| labels.get(CONFIG_HASH_LABEL).cloned());
-    let mount_targets = container.mounts.map(|mounts| {
+    let mounts = container.mounts.map(|mounts| {
         mounts
             .into_iter()
-            .filter_map(|mount| mount.destination)
+            .filter_map(|mount| {
+                mount.destination.map(|target| UpMountSummary {
+                    source: mount.source,
+                    target,
+                })
+            })
             .collect()
     });
     let running = container
@@ -1276,7 +1300,7 @@ fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> 
         name,
         image_id: container.image_id,
         config_hash,
-        mount_targets,
+        mounts,
         running,
     })
 }
@@ -1327,7 +1351,7 @@ mod tests {
     use crate::workspace::Workspace;
 
     use super::{
-        ExistingContainerDecision, UpContainerSummary, UpOptions, UpPlan,
+        ExistingContainerDecision, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
         add_credential_runtime_mounts_with_ssh_socket, build_up_plan,
         build_up_plan_with_image_metadata, create_and_start_container, decide_existing_container,
         default_workspace_folder, first_successful_shell_candidate, list_workspace_containers,
@@ -1399,7 +1423,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
-            mount_targets: Some(Vec::new()),
+            mounts: Some(Vec::new()),
             running: true,
         };
 
@@ -1421,7 +1445,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
-            mount_targets: Some(Vec::new()),
+            mounts: Some(Vec::new()),
             running: false,
         };
 
@@ -1443,14 +1467,47 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
-            mount_targets: Some(vec!["/workspaces/project".to_owned()]),
+            mounts: Some(vec![mount_summary(None, "/workspaces/project")]),
             running: true,
         };
 
         let decision = decide_existing_container(
             &[container.clone()],
             "hash123",
-            &["/run/decune".to_owned()],
+            &[mount_summary(None, "/run/decune")],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+    }
+
+    #[test]
+    fn existing_container_decision_recreates_when_required_mount_source_changed() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary(
+                Some("/tmp/agent-a.sock"),
+                SSH_AGENT_SOCKET_TARGET,
+            )]),
+            running: true,
+        };
+
+        let decision = decide_existing_container(
+            &[container.clone()],
+            "hash123",
+            &[mount_summary(
+                Some("/tmp/agent-b.sock"),
+                SSH_AGENT_SOCKET_TARGET,
+            )],
             false,
         )
         .unwrap();
@@ -1521,7 +1578,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
-            mount_targets: Some(Vec::new()),
+            mounts: Some(Vec::new()),
             running: true,
         };
 
@@ -1537,7 +1594,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
-            mount_targets: Some(Vec::new()),
+            mounts: Some(Vec::new()),
             running: true,
         };
 
@@ -3423,6 +3480,13 @@ user = "root"
         input.resolved_mounts = mount_hash_inputs(&[mount]);
 
         config_hash(&input)
+    }
+
+    fn mount_summary(source: Option<&str>, target: &str) -> UpMountSummary {
+        UpMountSummary {
+            source: source.map(ToOwned::to_owned),
+            target: target.to_owned(),
+        }
     }
 
     fn test_up_plan_with_config(config: ResolvedConfig) -> UpPlan {
