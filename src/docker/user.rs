@@ -408,8 +408,6 @@ mod tests {
         image::{PullPolicy, ensure_image, remove_image},
     };
 
-    const DOCKER_TESTS_ENV: &str = "DECUNE_DOCKER_TESTS";
-
     #[test]
     fn selects_explicit_remote_user_before_image_sources() {
         let selected = select_remote_user(RemoteUserSelectionInput {
@@ -544,12 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_root_user_from_root_image_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set {DOCKER_TESTS_ENV}=1 to run Docker integration tests");
-            return;
-        }
-
+    fn resolves_root_user_from_root_image() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -588,12 +581,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_non_root_user_from_image_config_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set {DOCKER_TESTS_ENV}=1 to run Docker integration tests");
-            return;
-        }
-
+    fn resolves_non_root_user_from_image_config() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -634,12 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn resolves_grouped_user_from_image_config_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set {DOCKER_TESTS_ENV}=1 to run Docker integration tests");
-            return;
-        }
-
+    fn resolves_grouped_user_from_image_config() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -680,12 +663,7 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_to_root_when_explicit_user_is_missing_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set {DOCKER_TESTS_ENV}=1 to run Docker integration tests");
-            return;
-        }
-
+    fn falls_back_to_root_when_explicit_user_is_missing() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -724,11 +702,6 @@ mod tests {
 
     #[test]
     fn resolves_configured_remote_user_without_image_config_inspect_when_image_tag_is_missing() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set {DOCKER_TESTS_ENV}=1 to run Docker integration tests");
-            return;
-        }
-
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -780,10 +753,6 @@ mod tests {
             let image_cleanup = remove_image(&client, &image, true).await;
             result.and(container_cleanup).and(image_cleanup).unwrap();
         });
-    }
-
-    fn docker_tests_enabled() -> bool {
-        std::env::var_os(DOCKER_TESTS_ENV).as_deref() == Some(std::ffi::OsStr::new("1"))
     }
 
     async fn build_non_root_test_image(client: &DockerClient, image: &str) -> Result<()> {

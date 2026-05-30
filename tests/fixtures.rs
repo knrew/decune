@@ -1,6 +1,6 @@
 mod support;
 
-use std::{ffi::OsStr, fs};
+use std::fs;
 
 use support::TempWorkspace;
 
@@ -43,23 +43,4 @@ fn temp_workspace_rejects_paths_outside_workspace() {
     let error = workspace.write_file("../outside", b"contents").unwrap_err();
 
     assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
-}
-
-#[test]
-fn docker_test_flag_requires_exact_one() {
-    assert!(support::docker_tests_enabled_from(Some(OsStr::new("1"))));
-    assert!(!support::docker_tests_enabled_from(Some(OsStr::new(
-        "true"
-    ))));
-    assert!(!support::docker_tests_enabled_from(Some(OsStr::new(""))));
-    assert!(!support::docker_tests_enabled_from(None));
-}
-
-#[test]
-fn docker_skip_helper_matches_current_environment() {
-    if support::docker_tests_enabled() {
-        assert!(!support::skip_unless_docker_tests_enabled());
-    } else {
-        assert!(support::skip_unless_docker_tests_enabled());
-    }
 }

@@ -1,13 +1,9 @@
 use std::{
-    env,
-    ffi::OsStr,
     fs, io,
     path::{Component, Path, PathBuf},
 };
 
 use tempfile::TempDir;
-
-pub const DOCKER_TESTS_ENV: &str = "DECUNE_DOCKER_TESTS";
 
 #[derive(Debug)]
 pub struct TempWorkspace {
@@ -62,22 +58,5 @@ impl TempWorkspace {
         }
 
         Ok(self.path().join(relative_path))
-    }
-}
-
-pub fn docker_tests_enabled() -> bool {
-    docker_tests_enabled_from(env::var_os(DOCKER_TESTS_ENV).as_deref())
-}
-
-pub fn docker_tests_enabled_from(value: Option<&OsStr>) -> bool {
-    matches!(value, Some(value) if value == OsStr::new("1"))
-}
-
-pub fn skip_unless_docker_tests_enabled() -> bool {
-    if docker_tests_enabled() {
-        false
-    } else {
-        eprintln!("skipped: set {DOCKER_TESTS_ENV}=1 to run Docker integration tests");
-        true
     }
 }
