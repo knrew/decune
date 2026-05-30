@@ -108,7 +108,7 @@ fn resolved_mount_spec(
 ) -> Result<DockerMountSpec> {
     let target = expand_variables(&mount.target, variables)
         .with_context(|| format!("Failed to expand mount target: {}", mount.target))?;
-    validate_target(&target)?;
+    let target = validate_target(&target)?;
 
     match mount.mount_type {
         MountType::Bind => {
@@ -166,16 +166,14 @@ pub(crate) fn devcontainer_mount_spec(
     variables: &VariableContext,
 ) -> Result<DockerMountSpec> {
     let parsed = parse_devcontainer_mount(mount, variables)?;
-    validate_target(&parsed.target)?;
+    let target = validate_target(&parsed.target)?;
 
     match parsed.mount_type {
         MountType::Bind => {
-            let source = parsed.source.as_deref().ok_or_else(|| {
-                anyhow!(
-                    "Bind mount source is required for target: {}",
-                    parsed.target
-                )
-            })?;
+            let source = parsed
+                .source
+                .as_deref()
+                .ok_or_else(|| anyhow!("Bind mount source is required for target: {}", target))?;
             let source = resolve_expanded_bind_source(
                 source,
                 HostPathOptions::new(
@@ -188,13 +186,13 @@ pub(crate) fn devcontainer_mount_spec(
             .with_context(|| {
                 format!(
                     "Failed to resolve devcontainer bind mount source for target: {}",
-                    parsed.target
+                    target
                 )
             })?;
 
             Ok(DockerMountSpec {
                 source: Some(source),
-                target: parsed.target,
+                target,
                 mount_type: MountType::Bind,
                 read_only: parsed.read_only,
                 consistency: parsed.consistency,
@@ -204,14 +202,14 @@ pub(crate) fn devcontainer_mount_spec(
         }
         MountType::Volume => Ok(DockerMountSpec {
             source: parsed.source,
-            target: parsed.target,
+            target,
             mount_type: MountType::Volume,
             read_only: parsed.read_only,
             consistency: parsed.consistency,
             bind_options: None,
             volume_options: parsed.volume_options,
         }),
-        MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {}", parsed.target),
+        MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {}", target),
     }
 }
 
@@ -482,16 +480,37 @@ fn symlink_resolution(resolve_symlink: bool) -> SymlinkResolution {
     }
 }
 
-fn validate_target(target: &str) -> Result<()> {
+fn validate_target(target: &str) -> Result<String> {
     if !target.starts_with('/') {
         bail!("Mount target must be an absolute container path: {target}")
     }
 
-    if is_reserved_decune_target(target) {
+    let normalized = normalize_container_path(target);
+    if is_reserved_decune_target(&normalized) {
         bail!("Mount target is reserved for decune internal use: {target}");
     }
 
-    Ok(())
+    Ok(normalized)
+}
+
+pub(crate) fn normalize_container_path(target: &str) -> String {
+    let mut components = Vec::new();
+
+    for component in target.split('/') {
+        match component {
+            "" | "." => {}
+            ".." => {
+                components.pop();
+            }
+            value => components.push(value),
+        }
+    }
+
+    if components.is_empty() {
+        "/".to_owned()
+    } else {
+        format!("/{}", components.join("/"))
+    }
 }
 
 fn is_reserved_decune_target(target: &str) -> bool {
@@ -728,6 +747,45 @@ mod tests {
     }
 
     #[test]
+    fn devcontainer_mount_replaces_global_decune_mount_with_equivalent_target() {
+        let workspace = tempfile::tempdir().unwrap();
+        let global_source = workspace.path().join("global-cache");
+        let devcontainer_source = workspace.path().join("devcontainer-cache");
+        fs::create_dir_all(&global_source).unwrap();
+        fs::create_dir_all(&devcontainer_source).unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some(global_source.to_str().unwrap().to_owned()),
+                target: "/cache".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+                resolve_symlink: true,
+                create: None,
+                origin: ConfigPathOrigin::Global,
+            }],
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localWorkspaceFolder}/devcontainer-cache,target=/cache/.,type=bind,readonly=true"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(
+            mounts[0].source.as_deref(),
+            Some(devcontainer_source.to_str().unwrap())
+        );
+        assert_eq!(mounts[0].target, "/cache");
+        assert!(mounts[0].read_only);
+    }
+
+    #[test]
     fn parses_devcontainer_string_mount() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("tools");
@@ -951,12 +1009,61 @@ mod tests {
     }
 
     #[test]
+    fn rejects_decune_mount_target_that_normalizes_under_reserved_opt_decune_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some("project-cache".to_owned()),
+                target: "/opt/./decune//cache".to_owned(),
+                mount_type: MountType::Volume,
+                read_only: false,
+                resolve_symlink: true,
+                create: None,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let error = config_mount_specs(&config, workspace.path(), &variables(workspace.path()))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target is reserved for decune internal use")
+        );
+    }
+
+    #[test]
     fn rejects_devcontainer_mount_target_under_reserved_run_decune_path() {
         let workspace = tempfile::tempdir().unwrap();
         let config = ResolvedConfig {
             devcontainer: crate::config::resolved::ResolvedDevcontainer {
                 mounts: vec![LayerDevcontainerMount::String(
                     "source=agent,target=/run/decune/ssh-agent.sock,type=volume".to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let error = config_mount_specs(&config, workspace.path(), &variables(workspace.path()))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target is reserved for decune internal use")
+        );
+    }
+
+    #[test]
+    fn rejects_devcontainer_mount_target_that_normalizes_under_reserved_run_decune_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=agent,target=/run//decune/./ssh-agent.sock,type=volume".to_owned(),
                 )],
                 ..Default::default()
             },

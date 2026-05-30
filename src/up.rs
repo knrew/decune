@@ -40,7 +40,9 @@ use crate::{
             image_devcontainer_metadata_layers_if_present,
             image_has_devcontainer_metadata_label_if_present, remove_image, tag_image,
         },
-        mounts::{DockerMountSpec, config_mount_specs, devcontainer_mount_spec},
+        mounts::{
+            DockerMountSpec, config_mount_specs, devcontainer_mount_spec, normalize_container_path,
+        },
         resource::DockerResources,
         user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
     },
@@ -927,7 +929,11 @@ fn reject_workspace_mount_target_conflicts(
     workspace_target: &str,
     mounts: &[DockerMountSpec],
 ) -> Result<()> {
-    if mounts.iter().any(|mount| mount.target == workspace_target) {
+    let workspace_target = normalize_container_path(workspace_target);
+    if mounts
+        .iter()
+        .any(|mount| normalize_container_path(&mount.target) == workspace_target)
+    {
         bail!("Mount target conflicts with workspace mount target: {workspace_target}");
     }
 
@@ -1474,6 +1480,43 @@ version = 1
 [[mounts]]
 source = "project-cache"
 target = "{}"
+type = "volume"
+"#,
+                default_workspace_folder(&workspace)
+            ),
+        )
+        .unwrap();
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target conflicts with workspace mount target")
+        );
+    }
+
+    #[test]
+    fn build_up_plan_rejects_mount_target_that_normalizes_to_workspace_mount() {
+        let workspace = test_workspace("normalized-workspace-mount-conflict-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            format!(
+                r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "{}/."
 type = "volume"
 "#,
                 default_workspace_folder(&workspace)
