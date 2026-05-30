@@ -1,7 +1,10 @@
 use std::{collections::BTreeMap, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
-use bollard::models::{Mount, MountType as DockerMountType};
+use bollard::models::{
+    Mount, MountBindOptions, MountBindOptionsPropagationEnum, MountType as DockerMountType,
+    MountVolumeOptions,
+};
 use serde_json::Value as JsonValue;
 
 use crate::config::{
@@ -15,12 +18,15 @@ use crate::config::{
     variables::{VariableContext, expand_variables},
 };
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct DockerMountSpec {
     pub(crate) source: Option<String>,
     pub(crate) target: String,
     pub(crate) mount_type: MountType,
     pub(crate) read_only: bool,
+    pub(crate) consistency: Option<String>,
+    pub(crate) bind_options: Option<MountBindOptions>,
+    pub(crate) volume_options: Option<MountVolumeOptions>,
 }
 
 impl DockerMountSpec {
@@ -30,6 +36,9 @@ impl DockerMountSpec {
             source: self.source.clone(),
             typ: Some(docker_mount_type(self.mount_type)),
             read_only: Some(self.read_only),
+            consistency: self.consistency.clone(),
+            bind_options: self.bind_options.clone(),
+            volume_options: self.volume_options.clone(),
             ..Default::default()
         }
     }
@@ -91,6 +100,9 @@ fn resolved_mount_spec(
                 target,
                 mount_type: MountType::Bind,
                 read_only: mount.read_only,
+                consistency: None,
+                bind_options: None,
+                volume_options: None,
             })
         }
         MountType::Volume => {
@@ -108,6 +120,9 @@ fn resolved_mount_spec(
                 target,
                 mount_type: MountType::Volume,
                 read_only: mount.read_only,
+                consistency: None,
+                bind_options: None,
+                volume_options: None,
             })
         }
         MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {}", target),
@@ -136,7 +151,8 @@ fn devcontainer_mount_spec(
                     crate::config::path::ConfigPathOrigin::Project,
                     workspace_root,
                     variables,
-                ),
+                )
+                .with_create(bind_path_create(parsed.bind_options.as_ref())),
             )
             .with_context(|| {
                 format!(
@@ -150,6 +166,9 @@ fn devcontainer_mount_spec(
                 target: parsed.target,
                 mount_type: MountType::Bind,
                 read_only: parsed.read_only,
+                consistency: parsed.consistency,
+                bind_options: parsed.bind_options,
+                volume_options: None,
             })
         }
         MountType::Volume => Ok(DockerMountSpec {
@@ -157,17 +176,23 @@ fn devcontainer_mount_spec(
             target: parsed.target,
             mount_type: MountType::Volume,
             read_only: parsed.read_only,
+            consistency: parsed.consistency,
+            bind_options: None,
+            volume_options: parsed.volume_options,
         }),
         MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {}", parsed.target),
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 struct ParsedMount {
     source: Option<String>,
     target: String,
     mount_type: MountType,
     read_only: bool,
+    consistency: Option<String>,
+    bind_options: Option<MountBindOptions>,
+    volume_options: Option<MountVolumeOptions>,
 }
 
 fn parse_devcontainer_mount(
@@ -178,10 +203,12 @@ fn parse_devcontainer_mount(
         LayerDevcontainerMount::String(value) => parse_devcontainer_mount_fields(
             expand_mount_fields(docker_mount_string_fields(value)?, variables)
                 .with_context(|| format!("Failed to parse devcontainer mount: {value}"))?,
+            true,
         ),
         LayerDevcontainerMount::Object(values) => parse_devcontainer_mount_fields(
             expand_mount_fields(devcontainer_mount_object_fields(values)?, variables)
                 .context("Failed to parse devcontainer mount object")?,
+            false,
         ),
     }
 }
@@ -201,7 +228,10 @@ fn docker_mount_string_fields(input: &str) -> Result<BTreeMap<String, MountField
             );
         } else {
             let key = normalize_key(segment);
-            if key == "readonly" {
+            if matches!(
+                key.as_str(),
+                "readonly" | "bind-create-src" | "volume-nocopy"
+            ) {
                 fields.insert(key, MountFieldValue::Bool(true));
             } else {
                 bail!("Unsupported Docker mount flag: {segment}");
@@ -259,6 +289,7 @@ fn expand_mount_fields(
 
 fn parse_devcontainer_mount_fields(
     mut fields: BTreeMap<String, MountFieldValue>,
+    docker_options: bool,
 ) -> Result<ParsedMount> {
     let mount_type = match string_field(&mut fields, "type")?.as_deref() {
         Some("bind") => MountType::Bind,
@@ -271,6 +302,21 @@ fn parse_devcontainer_mount_fields(
         string_field(&mut fields, "target")?.ok_or_else(|| anyhow!("Mount target is required"))?;
     let source = string_field(&mut fields, "source")?;
     let read_only = bool_field(&mut fields, "readonly")?.unwrap_or(false);
+    let consistency = if docker_options {
+        consistency_field(&mut fields)?
+    } else {
+        None
+    };
+    let bind_options = if docker_options && mount_type == MountType::Bind {
+        bind_options(&mut fields)?
+    } else {
+        None
+    };
+    let volume_options = if docker_options && mount_type == MountType::Volume {
+        volume_options(&mut fields)?
+    } else {
+        None
+    };
 
     if !fields.is_empty() {
         bail!(
@@ -284,7 +330,61 @@ fn parse_devcontainer_mount_fields(
         target,
         mount_type,
         read_only,
+        consistency,
+        bind_options,
+        volume_options,
     })
+}
+
+fn consistency_field(fields: &mut BTreeMap<String, MountFieldValue>) -> Result<Option<String>> {
+    let Some(consistency) = string_field(fields, "consistency")? else {
+        return Ok(None);
+    };
+
+    match consistency.as_str() {
+        "default" | "consistent" | "cached" | "delegated" => Ok(Some(consistency)),
+        value => bail!("Unsupported mount consistency: {value}"),
+    }
+}
+
+fn bind_options(
+    fields: &mut BTreeMap<String, MountFieldValue>,
+) -> Result<Option<MountBindOptions>> {
+    let propagation = string_field(fields, "bind-propagation")?
+        .map(|value| {
+            value
+                .parse::<MountBindOptionsPropagationEnum>()
+                .map_err(|_| anyhow!("Unsupported bind propagation: {value}"))
+        })
+        .transpose()?;
+    let create_mountpoint = bool_field(fields, "bind-create-src")?;
+
+    if propagation.is_none() && create_mountpoint.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(MountBindOptions {
+        propagation,
+        create_mountpoint,
+        ..Default::default()
+    }))
+}
+
+fn volume_options(
+    fields: &mut BTreeMap<String, MountFieldValue>,
+) -> Result<Option<MountVolumeOptions>> {
+    let no_copy = bool_field(fields, "volume-nocopy")?;
+    let subpath = string_field(fields, "volume-subpath")?;
+
+    if no_copy.is_none() && subpath.is_none() {
+        return Ok(None);
+    }
+
+    Ok(Some(MountVolumeOptions {
+        no_copy,
+        subpath,
+        ..Default::default()
+    }))
 }
 
 fn string_field(
@@ -333,6 +433,13 @@ fn path_create(create: Option<MountCreate>) -> PathCreate {
     match create {
         Some(MountCreate::Directory) => PathCreate::Directory,
         None => PathCreate::None,
+    }
+}
+
+fn bind_path_create(bind_options: Option<&MountBindOptions>) -> PathCreate {
+    match bind_options.and_then(|options| options.create_mountpoint) {
+        Some(true) => PathCreate::Directory,
+        Some(false) | None => PathCreate::None,
     }
 }
 
@@ -412,6 +519,9 @@ mod tests {
                 target: "/cache".to_owned(),
                 mount_type: MountType::Bind,
                 read_only: true,
+                consistency: None,
+                bind_options: None,
+                volume_options: None,
             }]
         );
     }
@@ -519,6 +629,108 @@ mod tests {
         assert_eq!(mounts[0].target, "/tools");
         assert_eq!(mounts[0].mount_type, MountType::Bind);
         assert!(mounts[0].read_only);
+    }
+
+    #[test]
+    fn parses_devcontainer_bind_mount_consistency() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("tools");
+        fs::create_dir_all(&source).unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localWorkspaceFolder}/tools,target=/tools,type=bind,consistency=cached"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+        let bollard_mount = mounts[0].to_bollard_mount();
+
+        assert_eq!(bollard_mount.consistency.as_deref(), Some("cached"));
+    }
+
+    #[test]
+    fn parses_devcontainer_bind_mount_propagation() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("tools");
+        fs::create_dir_all(&source).unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localWorkspaceFolder}/tools,target=/tools,type=bind,bind-propagation=rshared"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+        let bollard_mount = mounts[0].to_bollard_mount();
+
+        assert_eq!(
+            bollard_mount
+                .bind_options
+                .unwrap()
+                .propagation
+                .unwrap()
+                .to_string(),
+            "rshared"
+        );
+    }
+
+    #[test]
+    fn parses_devcontainer_bind_create_source_option() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("generated/cache");
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localWorkspaceFolder}/generated/cache,target=/cache,type=bind,bind-create-src"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+        let bollard_mount = mounts[0].to_bollard_mount();
+
+        assert!(source.is_dir());
+        assert_eq!(
+            bollard_mount.bind_options.unwrap().create_mountpoint,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn parses_devcontainer_volume_mount_options() {
+        let workspace = tempfile::tempdir().unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=project-cache,target=/cache,type=volume,volume-nocopy,volume-subpath=deps"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+        let volume_options = mounts[0].to_bollard_mount().volume_options.unwrap();
+
+        assert_eq!(volume_options.no_copy, Some(true));
+        assert_eq!(volume_options.subpath.as_deref(), Some("deps"));
     }
 
     #[test]

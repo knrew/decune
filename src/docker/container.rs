@@ -35,7 +35,7 @@ pub(crate) struct ContainerHostConfig {
     pub(crate) dns_search: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct ContainerCreateSpec {
     pub(crate) image: String,
     pub(crate) name: String,
@@ -424,6 +424,9 @@ mod tests {
                 target: "/workspaces/project".to_owned(),
                 mount_type: MountType::Bind,
                 read_only: false,
+                consistency: None,
+                bind_options: None,
+                volume_options: None,
             }],
         });
 
@@ -509,6 +512,9 @@ mod tests {
                 target: "/workspaces/project".to_owned(),
                 mount_type: MountType::Bind,
                 read_only: true,
+                consistency: None,
+                bind_options: None,
+                volume_options: None,
             }],
             publish_ports: vec![DockerPublishPort {
                 container: 8080,
@@ -908,6 +914,9 @@ mod tests {
                         target: "/mnt/decune-test".to_owned(),
                         mount_type: MountType::Bind,
                         read_only: true,
+                        consistency: None,
+                        bind_options: None,
+                        volume_options: None,
                     }],
                     publish_ports: vec![DockerPublishPort {
                         container: 8080,

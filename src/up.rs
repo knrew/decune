@@ -787,6 +787,9 @@ fn workspace_mounts(
         target: default_workspace_folder(workspace),
         mount_type: MountType::Bind,
         read_only: false,
+        consistency: None,
+        bind_options: None,
+        volume_options: None,
     }];
     if mount_resolution == MountResolution::Resolve {
         mounts.extend(config_mount_specs(config, workspace.root(), variables)?);
