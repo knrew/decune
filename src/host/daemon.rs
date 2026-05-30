@@ -75,6 +75,7 @@ impl HostDaemon {
         Self::start_with_access(
             runtime_dir,
             HostDaemonAccess::for_remote_user(remote_uid, remote_gid),
+            remote_uid,
             Arc::new(SystemGitCredentialExecutor),
         )
         .await
@@ -85,12 +86,19 @@ impl HostDaemon {
         runtime_dir: impl AsRef<Path>,
         git_credentials: Arc<dyn GitCredentialExecutor>,
     ) -> Result<Self> {
-        Self::start_with_access(runtime_dir, HostDaemonAccess::private(), git_credentials).await
+        Self::start_with_access(
+            runtime_dir,
+            HostDaemonAccess::private(),
+            current_uid(),
+            git_credentials,
+        )
+        .await
     }
 
     async fn start_with_access(
         runtime_dir: impl AsRef<Path>,
         access: HostDaemonAccess,
+        allowed_peer_uid: u32,
         git_credentials: Arc<dyn GitCredentialExecutor>,
     ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
@@ -106,7 +114,7 @@ impl HostDaemon {
                 )
             })?;
 
-        let task = tokio::spawn(run_host_daemon(listener, git_credentials));
+        let task = tokio::spawn(run_host_daemon(listener, allowed_peer_uid, git_credentials));
 
         Ok(Self {
             socket_path,
@@ -291,13 +299,26 @@ fn remove_socket_file(socket_path: &Path) -> io::Result<()> {
     }
 }
 
-async fn run_host_daemon(listener: UnixListener, git_credentials: Arc<dyn GitCredentialExecutor>) {
+async fn run_host_daemon(
+    listener: UnixListener,
+    allowed_peer_uid: u32,
+    git_credentials: Arc<dyn GitCredentialExecutor>,
+) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             break;
         };
+        if !peer_uid_is_allowed(&stream, allowed_peer_uid) {
+            continue;
+        }
         tokio::spawn(handle_connection(stream, Arc::clone(&git_credentials)));
     }
+}
+
+fn peer_uid_is_allowed(stream: &UnixStream, allowed_uid: u32) -> bool {
+    stream
+        .peer_cred()
+        .is_ok_and(|credentials| credentials.uid() == allowed_uid)
 }
 
 async fn handle_connection(
@@ -330,7 +351,7 @@ mod tests {
         net::{UnixListener, UnixStream},
     };
 
-    use super::{HostDaemon, HostDaemonAccess, current_gid, current_uid};
+    use super::{HostDaemon, HostDaemonAccess, current_gid, current_uid, peer_uid_is_allowed};
     use crate::host::credentials::{GitCredentialCommand, GitCredentialExecutor};
 
     #[derive(Debug)]
@@ -411,6 +432,23 @@ mod tests {
             assert_eq!(mode(&socket_path), 0o666);
 
             daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn peer_uid_check_only_allows_configured_uid() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let (stream, _peer) = UnixStream::pair().unwrap();
+            let current_uid = current_uid();
+            let other_uid = current_uid.wrapping_add(1);
+
+            assert!(peer_uid_is_allowed(&stream, current_uid));
+            assert!(!peer_uid_is_allowed(&stream, other_uid));
         });
     }
 

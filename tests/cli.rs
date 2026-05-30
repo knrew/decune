@@ -661,14 +661,19 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
     let host_home = support::TempWorkspace::new().unwrap();
     let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
     let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+    let attacker_uid = if current_uid() == 20003 { 20004 } else { 20003 };
+    let attacker_gid = if current_gid() == 20003 { 20004 } else { 20003 };
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
             &format!(
                 r#"
-            FROM alpine:3.20
-            RUN addgroup -g {remote_gid} decunegrp \
-              && adduser -D -u {remote_uid} -G decunegrp -h /home/decune decune \
+            FROM ubuntu:24.04
+            RUN groupadd -g {remote_gid} decunegrp \
+              && useradd -m -u {remote_uid} -g decunegrp decune \
+              && groupadd -g {attacker_gid} attackergrp \
+              && useradd -m -u {attacker_uid} -g attackergrp attacker \
+              && echo 'attacker:decune-test' | chpasswd \
               && printf '%s\n' \
               '#!/bin/sh' \
               'set -eu' \
@@ -714,7 +719,7 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
               },
               "remoteUser": "decune",
               "updateRemoteUserUID": false,
-              "postStartCommand": "test \"$(id -un)\" = decune && test -x /run/decune/git-credential-decune && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && grep -q 'password=test-secret' /tmp/decune-credential"
+              "postStartCommand": "test \"$(id -un)\" = decune && test -x /run/decune/git-credential-decune && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && grep -q 'password=test-secret' /tmp/decune-credential && if printf 'decune-test\n' | su attacker -s /bin/sh -c \"printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi"
             }
             "#,
         )
@@ -748,6 +753,7 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("attacker reached host daemon").not())
             .stderr(predicate::str::contains("test-secret").not());
     });
 
