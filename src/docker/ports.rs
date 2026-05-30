@@ -26,7 +26,7 @@ pub(crate) fn resolve_forward_ports(ports: &[ResolvedPort]) -> Result<Vec<Resolv
     resolve_forward_ports_with(ports, host_port_available)
 }
 
-fn resolve_forward_ports_with<F>(
+pub(crate) fn resolve_forward_ports_with<F>(
     ports: &[ResolvedPort],
     mut host_port_available: F,
 ) -> Result<Vec<ResolvedForwardPort>>

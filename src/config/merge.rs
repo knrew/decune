@@ -19,14 +19,18 @@ pub(crate) fn resolve_config(input: ConfigMergeInput) -> ResolvedConfig {
     let mut accumulator = MergeAccumulator::default();
 
     for layer in input.image_metadata {
-        accumulator.apply_layer(layer);
+        accumulator.apply_layer(layer, PortSourcePriority::ImageMetadata);
     }
 
-    for layer in [input.global, input.devcontainer, input.project, input.cli]
-        .into_iter()
-        .flatten()
-    {
-        accumulator.apply_layer(layer);
+    for (layer, source_priority) in [
+        (input.global, PortSourcePriority::Global),
+        (input.devcontainer, PortSourcePriority::Devcontainer),
+        (input.project, PortSourcePriority::Project),
+        (input.cli, PortSourcePriority::Cli),
+    ] {
+        if let Some(layer) = layer {
+            accumulator.apply_layer(layer, source_priority);
+        }
     }
 
     accumulator.into_resolved()
@@ -50,26 +54,38 @@ struct MergeAccumulator {
 struct MergedPort {
     port: ResolvedPort,
     forward_attribute_keys: Vec<String>,
+    source_priority: PortSourcePriority,
 }
 
 impl MergedPort {
-    fn plain(port: LayerPort) -> Self {
+    fn plain(port: LayerPort, source_priority: PortSourcePriority) -> Self {
         Self {
             port,
             forward_attribute_keys: Vec::new(),
+            source_priority,
         }
     }
 
-    fn forward(port: LayerForwardPort) -> Self {
+    fn forward(port: LayerForwardPort, source_priority: PortSourcePriority) -> Self {
         Self {
             port: port.port,
             forward_attribute_keys: port.attribute_keys,
+            source_priority,
         }
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum PortSourcePriority {
+    ImageMetadata,
+    Global,
+    Devcontainer,
+    Project,
+    Cli,
+}
+
 impl MergeAccumulator {
-    fn apply_layer(&mut self, layer: ConfigLayer) {
+    fn apply_layer(&mut self, layer: ConfigLayer, source_priority: PortSourcePriority) {
         if let Some(shell) = layer.shell {
             self.shell = Some(shell);
         }
@@ -87,11 +103,11 @@ impl MergeAccumulator {
         }
 
         for port in layer.ports {
-            self.merge_port(port);
+            self.merge_port(port, source_priority);
         }
 
         for port in layer.forward_ports {
-            self.merge_forward_port(port);
+            self.merge_forward_port(port, source_priority);
         }
 
         if let Some(auto_ports) = layer.auto_ports {
@@ -188,7 +204,7 @@ impl MergeAccumulator {
         }
     }
 
-    fn merge_port(&mut self, port: LayerPort) {
+    fn merge_port(&mut self, port: LayerPort, source_priority: PortSourcePriority) {
         if !port.enabled {
             remove_by_identity(&mut self.ports, |existing| {
                 existing.port.protocol == port.protocol
@@ -200,15 +216,15 @@ impl MergeAccumulator {
 
         replace_by_identity(
             &mut self.ports,
-            MergedPort::plain(port),
+            MergedPort::plain(port, source_priority),
             same_merged_port_identity,
         );
     }
 
-    fn merge_forward_port(&mut self, port: LayerForwardPort) {
+    fn merge_forward_port(&mut self, port: LayerForwardPort, source_priority: PortSourcePriority) {
         replace_by_identity(
             &mut self.ports,
-            MergedPort::forward(port),
+            MergedPort::forward(port, source_priority),
             same_merged_port_identity,
         );
     }
@@ -332,6 +348,8 @@ impl MergeAccumulator {
 
     fn into_resolved(mut self) -> ResolvedConfig {
         self.apply_forward_port_attributes();
+        self.ports
+            .sort_by_key(|entry| std::cmp::Reverse(entry.source_priority));
 
         ResolvedConfig {
             shell: self.shell,
@@ -1241,6 +1259,67 @@ label = "project"
         assert_eq!(config.ports.entries.len(), 1);
         assert_eq!(config.ports.entries[0].host, Some(6000));
         assert_eq!(config.ports.entries[0].label, None);
+    }
+
+    #[test]
+    fn manual_host_port_conflicts_are_resolved_by_source_priority() {
+        let devcontainer = crate::devcontainer::metadata::parse_metadata(serde_json::json!({
+            "image": "ubuntu:24.04",
+            "forwardPorts": ["8080:3002"]
+        }))
+        .unwrap()
+        .to_config_layer()
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+container = 3000
+host = 8080
+"#,
+            )),
+            devcontainer: Some(devcontainer),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+container = 3001
+host = 8080
+"#,
+            )),
+            cli: Some(ConfigLayer {
+                ports: vec![LayerPort {
+                    enabled: true,
+                    container: 3003,
+                    host: Some(8080),
+                    host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                    protocol: PortProtocol::Tcp,
+                    require_local: false,
+                    label: None,
+                }],
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        let resolved =
+            crate::docker::ports::resolve_forward_ports_with(&config.ports.entries, |_, _| {
+                Ok(true)
+            })
+            .unwrap();
+        let ports = resolved
+            .iter()
+            .map(|port| (port.container, port.host))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            ports,
+            vec![(3003, 8080), (3001, 8081), (3002, 8082), (3000, 8083)]
+        );
     }
 
     #[test]
