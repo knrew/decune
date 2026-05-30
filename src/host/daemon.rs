@@ -1,10 +1,10 @@
 use std::{
     fs, io,
-    os::unix::fs::PermissionsExt,
+    os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
     net::{UnixListener, UnixStream},
@@ -26,14 +26,8 @@ impl HostDaemon {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
         prepare_runtime_dir(&runtime_dir)?;
         let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
-        remove_stale_socket(&socket_path)?;
 
-        let listener = UnixListener::bind(&socket_path).with_context(|| {
-            format!(
-                "Failed to bind host daemon socket: {}",
-                socket_path.display()
-            )
-        })?;
+        let listener = bind_host_daemon_socket(&socket_path).await?;
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).with_context(
             || {
                 format!(
@@ -94,13 +88,69 @@ fn prepare_runtime_dir(runtime_dir: &Path) -> Result<()> {
     })
 }
 
-fn remove_stale_socket(socket_path: &Path) -> Result<()> {
-    match fs::remove_file(socket_path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+async fn bind_host_daemon_socket(socket_path: &Path) -> Result<UnixListener> {
+    match UnixListener::bind(socket_path) {
+        Ok(listener) => Ok(listener),
+        Err(error) if error.kind() == io::ErrorKind::AddrInUse => {
+            remove_stale_socket(socket_path).await?;
+            UnixListener::bind(socket_path).with_context(|| {
+                format!(
+                    "Failed to bind host daemon socket after removing stale socket: {}",
+                    socket_path.display()
+                )
+            })
+        }
         Err(error) => Err(error).with_context(|| {
             format!(
-                "Failed to remove stale host daemon socket: {}",
+                "Failed to bind host daemon socket: {}",
+                socket_path.display()
+            )
+        }),
+    }
+}
+
+async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
+    let metadata = match fs::symlink_metadata(socket_path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to inspect host daemon socket path: {}",
+                    socket_path.display()
+                )
+            });
+        }
+    };
+
+    if !metadata.file_type().is_socket() {
+        bail!(
+            "Host daemon socket path exists but is not a socket: {}",
+            socket_path.display()
+        );
+    }
+
+    match UnixStream::connect(socket_path).await {
+        Ok(_stream) => bail!(
+            "Host daemon socket is already in use: {}",
+            socket_path.display()
+        ),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ) =>
+        {
+            remove_socket_file(socket_path).with_context(|| {
+                format!(
+                    "Failed to remove stale host daemon socket: {}",
+                    socket_path.display()
+                )
+            })
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to probe host daemon socket: {}",
                 socket_path.display()
             )
         }),
@@ -109,15 +159,19 @@ fn remove_stale_socket(socket_path: &Path) -> Result<()> {
 
 #[cfg(test)]
 fn remove_socket_if_present(socket_path: &Path) -> Result<()> {
+    remove_socket_file(socket_path).with_context(|| {
+        format!(
+            "Failed to remove host daemon socket: {}",
+            socket_path.display()
+        )
+    })
+}
+
+fn remove_socket_file(socket_path: &Path) -> io::Result<()> {
     match fs::remove_file(socket_path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| {
-            format!(
-                "Failed to remove host daemon socket: {}",
-                socket_path.display()
-            )
-        }),
+        Err(error) => Err(error),
     }
 }
 
@@ -153,7 +207,7 @@ mod tests {
     use tempfile::TempDir;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
-        net::UnixStream,
+        net::{UnixListener, UnixStream},
     };
 
     use super::HostDaemon;
@@ -215,6 +269,72 @@ mod tests {
             );
 
             daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_start_fails_without_removing_active_socket() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let runtime_dir = temp.path().join("runtime");
+            let daemon = HostDaemon::start(runtime_dir.clone()).await.unwrap();
+            let socket_path = daemon.socket_path().to_path_buf();
+
+            let second_daemon = HostDaemon::start(runtime_dir).await;
+            assert!(second_daemon.is_err());
+
+            let response = send_request(
+                &socket_path,
+                json!({
+                    "version": 1,
+                    "type": "credential"
+                }),
+            )
+            .await;
+
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": false,
+                    "error": {
+                        "code": "not_implemented",
+                        "message": "Host daemon request is not implemented yet: credential"
+                    }
+                })
+            );
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_removes_stale_socket_before_binding() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let runtime_dir = temp.path().join("runtime");
+            fs::create_dir_all(&runtime_dir).unwrap();
+            let socket_path = runtime_dir.join("host-daemon.sock");
+            let stale_listener = UnixListener::bind(&socket_path).unwrap();
+            drop(stale_listener);
+            assert!(socket_path.exists());
+
+            let daemon = HostDaemon::start(runtime_dir).await.unwrap();
+            assert_eq!(daemon.socket_path(), socket_path.as_path());
+            assert_eq!(mode(&socket_path), 0o600);
+
+            daemon.stop().await.unwrap();
+            assert!(!socket_path.exists());
         });
     }
 
