@@ -14,10 +14,11 @@ use tokio::{
 
 use crate::host::{
     credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
-    protocol::handle_host_daemon_request,
+    protocol::{HostDaemonResponse, handle_host_daemon_request},
 };
 
 const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
+const MAX_HOST_DAEMON_REQUEST_BYTES: u64 = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HostDaemonAccess {
@@ -326,11 +327,19 @@ async fn handle_connection(
     git_credentials: Arc<dyn GitCredentialExecutor>,
 ) {
     let mut request = Vec::new();
-    if stream.read_to_end(&mut request).await.is_err() {
+    let read_failed = {
+        let mut limited_stream = (&mut stream).take(MAX_HOST_DAEMON_REQUEST_BYTES + 1);
+        limited_stream.read_to_end(&mut request).await.is_err()
+    };
+    if read_failed {
         return;
     }
 
-    let response = handle_host_daemon_request(&request, git_credentials.as_ref());
+    let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES as usize {
+        HostDaemonResponse::request_too_large(MAX_HOST_DAEMON_REQUEST_BYTES as usize)
+    } else {
+        handle_host_daemon_request(&request, git_credentials.as_ref())
+    };
     let Ok(response) = serde_json::to_vec(&response) else {
         return;
     };
@@ -351,7 +360,10 @@ mod tests {
         net::{UnixListener, UnixStream},
     };
 
-    use super::{HostDaemon, HostDaemonAccess, current_gid, current_uid, peer_uid_is_allowed};
+    use super::{
+        HostDaemon, HostDaemonAccess, MAX_HOST_DAEMON_REQUEST_BYTES, current_gid, current_uid,
+        peer_uid_is_allowed,
+    };
     use crate::host::credentials::{GitCredentialCommand, GitCredentialExecutor};
 
     #[derive(Debug)]
@@ -572,6 +584,38 @@ mod tests {
     }
 
     #[test]
+    fn daemon_rejects_oversized_request_with_structured_error() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+            let request = vec![b' '; MAX_HOST_DAEMON_REQUEST_BYTES as usize + 1];
+
+            let response = send_raw_request(daemon.socket_path(), &request).await;
+
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": false,
+                    "error": {
+                        "code": "request_too_large",
+                        "message": "Host daemon request exceeds 65536 bytes"
+                    }
+                })
+            );
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
     fn daemon_removes_stale_socket_before_binding() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -673,11 +717,16 @@ mod tests {
     }
 
     async fn send_request(socket_path: &Path, request: Value) -> Value {
+        send_raw_request(
+            socket_path,
+            serde_json::to_string(&request).unwrap().as_bytes(),
+        )
+        .await
+    }
+
+    async fn send_raw_request(socket_path: &Path, request: &[u8]) -> Value {
         let mut stream = UnixStream::connect(socket_path).await.unwrap();
-        stream
-            .write_all(serde_json::to_string(&request).unwrap().as_bytes())
-            .await
-            .unwrap();
+        stream.write_all(request).await.unwrap();
         stream.shutdown().await.unwrap();
 
         let mut response = Vec::new();

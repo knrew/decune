@@ -33,6 +33,13 @@ struct HostDaemonError {
 }
 
 impl HostDaemonResponse {
+    pub(crate) fn request_too_large(max_bytes: usize) -> Self {
+        Self::error(
+            "request_too_large",
+            format!("Host daemon request exceeds {max_bytes} bytes"),
+        )
+    }
+
     fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
         Self {
             version: HOST_DAEMON_PROTOCOL_VERSION,

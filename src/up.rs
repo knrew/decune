@@ -48,7 +48,8 @@ use crate::{
     },
     host::{
         credentials::{
-            GitCredentialRuntime, GithubCliRuntime, SshAgentRuntime,
+            DECUNE_RUNTIME_TARGET, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET,
+            GitCredentialRuntime, GithubCliRuntime, SSH_AGENT_SOCKET_TARGET, SshAgentRuntime,
             prepare_git_credential_runtime, prepare_github_cli_runtime, prepare_ssh_agent_runtime,
         },
         daemon::HostDaemon,
@@ -59,6 +60,12 @@ use crate::{
 
 const CONFIG_HASH_LABEL: &str = "decune.config_hash";
 const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
+const DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS: &[&str] = &[
+    DECUNE_RUNTIME_TARGET,
+    SSH_AGENT_SOCKET_TARGET,
+    GITHUB_CLI_TOKEN_DIR_TARGET,
+    GITHUB_CLI_CONFIG_TARGET,
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MountResolution {
@@ -138,7 +145,42 @@ struct CredentialRuntime {
     _git_credentials: GitCredentialRuntime,
     _github_cli: GithubCliRuntime,
     _ssh_agent: SshAgentRuntime,
+    mount_policy: CredentialRuntimeMountPolicy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CredentialRuntimeMountPolicy {
     required_mounts: Vec<UpMountSummary>,
+    managed_targets: Vec<String>,
+}
+
+impl CredentialRuntimeMountPolicy {
+    fn new(required_mounts: Vec<UpMountSummary>) -> Self {
+        Self {
+            required_mounts,
+            managed_targets: DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS
+                .iter()
+                .map(|target| (*target).to_owned())
+                .collect(),
+        }
+    }
+
+    fn required_mounts(&self) -> &[UpMountSummary] {
+        &self.required_mounts
+    }
+
+    fn required_mount_for_existing(&self, existing: &UpMountSummary) -> bool {
+        self.required_mounts
+            .iter()
+            .any(|required| mount_matches_required(existing, required))
+    }
+
+    fn is_managed_target(&self, target: &str) -> bool {
+        let target = normalize_container_path(target);
+        self.managed_targets
+            .iter()
+            .any(|managed| target == normalize_container_path(managed))
+    }
 }
 
 impl CredentialRuntime {
@@ -164,19 +206,19 @@ impl CredentialRuntime {
             _git_credentials: git_credentials,
             _github_cli: github_cli,
             _ssh_agent: ssh_agent,
-            required_mounts,
+            mount_policy: CredentialRuntimeMountPolicy::new(required_mounts),
         }
     }
 
-    fn required_mounts(&self) -> &[UpMountSummary] {
-        &self.required_mounts
+    fn mount_policy(&self) -> &CredentialRuntimeMountPolicy {
+        &self.mount_policy
     }
 }
 
 pub(crate) fn decide_existing_container(
     containers: &[UpContainerSummary],
     expected_config_hash: &str,
-    required_mounts: &[UpMountSummary],
+    mount_policy: &CredentialRuntimeMountPolicy,
     rebuild: bool,
 ) -> Result<ExistingContainerDecision> {
     if rebuild {
@@ -197,7 +239,7 @@ pub(crate) fn decide_existing_container(
         bail!("Dev container configuration changed. Run decune rebuild to recreate it.");
     }
 
-    if !container_has_required_mounts(container, required_mounts) {
+    if !container_matches_credential_mount_policy(container, mount_policy) {
         return Ok(ExistingContainerDecision::Recreate {
             containers: containers.to_vec(),
         });
@@ -216,6 +258,14 @@ pub(crate) fn decide_existing_container(
     }
 }
 
+fn container_matches_credential_mount_policy(
+    container: &UpContainerSummary,
+    mount_policy: &CredentialRuntimeMountPolicy,
+) -> bool {
+    container_has_required_mounts(container, mount_policy.required_mounts())
+        && !container_has_stale_managed_mount(container, mount_policy)
+}
+
 fn container_has_required_mounts(
     container: &UpContainerSummary,
     required_mounts: &[UpMountSummary],
@@ -231,6 +281,20 @@ fn container_has_required_mounts(
         existing_mounts
             .iter()
             .any(|mount| mount_matches_required(mount, required))
+    })
+}
+
+fn container_has_stale_managed_mount(
+    container: &UpContainerSummary,
+    mount_policy: &CredentialRuntimeMountPolicy,
+) -> bool {
+    let Some(existing_mounts) = &container.mounts else {
+        return false;
+    };
+
+    existing_mounts.iter().any(|mount| {
+        mount_policy.is_managed_target(&mount.target)
+            && !mount_policy.required_mount_for_existing(mount)
     })
 }
 
@@ -431,7 +495,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         match decide_existing_container(
             &containers,
             &existing_plan.resources.config_hash,
-            credentials.required_mounts(),
+            credentials.mount_policy(),
             false,
         )? {
             ExistingContainerDecision::ReuseRunning { id, name } => {
@@ -495,7 +559,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
     match decide_existing_container(
         &containers,
         &plan.resources.config_hash,
-        credentials.required_mounts(),
+        credentials.mount_policy(),
         options.rebuild,
     )? {
         ExistingContainerDecision::Create => {
@@ -1436,21 +1500,25 @@ mod tests {
     use crate::docker::image::{PullPolicy, ensure_image, remove_image};
     use crate::docker::mounts::DockerMountSpec;
     use crate::docker::resource::DockerResources;
-    use crate::host::credentials::{GITHUB_CLI_CONFIG_TARGET, SSH_AGENT_SOCKET_TARGET};
+    use crate::host::credentials::{
+        GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET, SSH_AGENT_SOCKET_TARGET,
+    };
     use crate::workspace::Workspace;
 
     use super::{
-        ExistingContainerDecision, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
-        add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-        build_up_plan, build_up_plan_with_image_metadata, container_summary,
-        create_and_start_container, decide_existing_container, default_workspace_folder,
-        first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
-        run_attached_up, run_detached_up, shell_command_candidates,
+        CredentialRuntimeMountPolicy, ExistingContainerDecision, UpContainerSummary,
+        UpMountSummary, UpOptions, UpPlan, add_credential_runtime_mounts_with_inputs,
+        add_credential_runtime_mounts_with_ssh_socket, build_up_plan,
+        build_up_plan_with_image_metadata, container_summary, create_and_start_container,
+        decide_existing_container, default_workspace_folder, first_successful_shell_candidate,
+        list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
+        shell_command_candidates,
     };
 
     #[test]
     fn existing_container_decision_creates_when_no_container_exists() {
-        let decision = decide_existing_container(&[], "hash123", &[], false).unwrap();
+        let decision =
+            decide_existing_container(&[], "hash123", &mount_policy(&[]), false).unwrap();
 
         assert_eq!(decision, ExistingContainerDecision::Create);
     }
@@ -1517,7 +1585,8 @@ mod tests {
             running: true,
         };
 
-        let decision = decide_existing_container(&[container], "hash123", &[], false).unwrap();
+        let decision =
+            decide_existing_container(&[container], "hash123", &mount_policy(&[]), false).unwrap();
 
         assert_eq!(
             decision,
@@ -1539,7 +1608,8 @@ mod tests {
             running: false,
         };
 
-        let decision = decide_existing_container(&[container], "hash123", &[], false).unwrap();
+        let decision =
+            decide_existing_container(&[container], "hash123", &mount_policy(&[]), false).unwrap();
 
         assert_eq!(
             decision,
@@ -1564,7 +1634,7 @@ mod tests {
         let decision = decide_existing_container(
             &[container.clone()],
             "hash123",
-            &[mount_summary(None, "/run/decune")],
+            &mount_policy(&[mount_summary(None, "/run/decune")]),
             false,
         )
         .unwrap();
@@ -1594,10 +1664,10 @@ mod tests {
         let decision = decide_existing_container(
             &[container.clone()],
             "hash123",
-            &[mount_summary(
+            &mount_policy(&[mount_summary(
                 Some("/tmp/agent-b.sock"),
                 SSH_AGENT_SOCKET_TARGET,
-            )],
+            )]),
             false,
         )
         .unwrap();
@@ -1629,11 +1699,11 @@ mod tests {
         let decision = decide_existing_container(
             &[container.clone()],
             "hash123",
-            &[mount_summary_with_type(
+            &mount_policy(&[mount_summary_with_type(
                 None,
                 GITHUB_CLI_CONFIG_TARGET,
                 MountType::Tmpfs,
-            )],
+            )]),
             false,
         )
         .unwrap();
@@ -1664,11 +1734,11 @@ mod tests {
         let decision = decide_existing_container(
             &[container],
             "hash123",
-            &[mount_summary_with_type(
+            &mount_policy(&[mount_summary_with_type(
                 None,
                 GITHUB_CLI_CONFIG_TARGET,
                 MountType::Tmpfs,
-            )],
+            )]),
             false,
         )
         .unwrap();
@@ -1701,12 +1771,12 @@ mod tests {
         let decision = decide_existing_container(
             &[container.clone()],
             "hash123",
-            &[mount_summary_with_type_and_read_only(
+            &mount_policy(&[mount_summary_with_type_and_read_only(
                 Some("/tmp/gh-token"),
                 "/run/decune/gh-token",
                 MountType::Bind,
                 true,
-            )],
+            )]),
             false,
         )
         .unwrap();
@@ -1738,12 +1808,12 @@ mod tests {
         let decision = decide_existing_container(
             &[container],
             "hash123",
-            &[mount_summary_with_type_and_read_only(
+            &mount_policy(&[mount_summary_with_type_and_read_only(
                 Some("/tmp/gh-token"),
                 "/run/decune/gh-token",
                 MountType::Bind,
                 true,
-            )],
+            )]),
             false,
         )
         .unwrap();
@@ -1753,6 +1823,63 @@ mod tests {
             ExistingContainerDecision::ReuseRunning {
                 id: "container-id".to_owned(),
                 name: "decune-project-abc123".to_owned()
+            }
+        );
+    }
+
+    #[test]
+    fn existing_container_decision_recreates_when_ssh_agent_mount_is_stale() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![mount_summary(
+                Some("/tmp/agent-a.sock"),
+                SSH_AGENT_SOCKET_TARGET,
+            )]),
+            running: true,
+        };
+
+        let decision =
+            decide_existing_container(&[container.clone()], "hash123", &mount_policy(&[]), false)
+                .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+    }
+
+    #[test]
+    fn existing_container_decision_recreates_when_github_cli_mounts_are_stale() {
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("hash123".to_owned()),
+            mounts: Some(vec![
+                mount_summary_with_type_and_read_only(
+                    Some("/tmp/gh-token"),
+                    GITHUB_CLI_TOKEN_DIR_TARGET,
+                    MountType::Bind,
+                    true,
+                ),
+                mount_summary_with_type(None, GITHUB_CLI_CONFIG_TARGET, MountType::Tmpfs),
+            ]),
+            running: true,
+        };
+
+        let decision =
+            decide_existing_container(&[container.clone()], "hash123", &mount_policy(&[]), false)
+                .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
             }
         );
     }
@@ -1915,7 +2042,8 @@ mod tests {
             running: true,
         };
 
-        let error = decide_existing_container(&[container], "new-hash", &[], false).unwrap_err();
+        let error = decide_existing_container(&[container], "new-hash", &mount_policy(&[]), false)
+            .unwrap_err();
 
         assert!(error.to_string().contains("Run decune rebuild"));
     }
@@ -1932,7 +2060,8 @@ mod tests {
         };
 
         let decision =
-            decide_existing_container(&[container.clone()], "new-hash", &[], true).unwrap();
+            decide_existing_container(&[container.clone()], "new-hash", &mount_policy(&[]), true)
+                .unwrap();
 
         assert_eq!(
             decision,
@@ -3817,6 +3946,10 @@ user = "root"
 
     fn mount_summary(source: Option<&str>, target: &str) -> UpMountSummary {
         mount_summary_with_type(source, target, MountType::Bind)
+    }
+
+    fn mount_policy(required_mounts: &[UpMountSummary]) -> CredentialRuntimeMountPolicy {
+        CredentialRuntimeMountPolicy::new(required_mounts.to_vec())
     }
 
     fn mount_summary_with_type(
