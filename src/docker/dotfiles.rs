@@ -61,12 +61,18 @@ pub(crate) async fn setup_dotfiles(
 
 fn dotfile_setup_script(config: &ResolvedConfig, remote_home: &str) -> Result<String> {
     let mut script = String::new();
+    if !config.dotfiles.is_empty() {
+        script.push_str("set -e\n");
+    }
+
     for dotfile in &config.dotfiles {
         let target = remote_home_target(remote_home, &dotfile.target)?;
         let source = staging_target(&dotfile.target)?;
+        let parent = container_parent(&target)?;
         script.push_str(&dotfile_setup_script_entry(
             &source,
             &target,
+            &parent,
             dotfile.on_conflict,
         ));
     }
@@ -112,17 +118,46 @@ fn staging_target(target: &str) -> Result<String> {
 
 fn remote_home_target(remote_home: &str, target: &str) -> Result<String> {
     let components = relative_target_components(target)?;
-    let remote_home = remote_home.trim_end_matches('/');
-    if remote_home.is_empty() {
-        bail!("Remote user home must not be empty");
+    let remote_home = normalized_remote_home(remote_home)?;
+    if remote_home == "/" {
+        return Ok(format!("/{}", components.join("/")));
     }
 
     Ok(format!("{remote_home}/{}", components.join("/")))
 }
 
-fn dotfile_setup_script_entry(source: &str, target: &str, on_conflict: DotfileConflict) -> String {
+fn normalized_remote_home(remote_home: &str) -> Result<&str> {
+    let trimmed = remote_home.trim_end_matches('/');
+    if trimmed.is_empty() && remote_home.starts_with('/') {
+        return Ok("/");
+    }
+    if trimmed.is_empty() {
+        bail!("Remote user home must not be empty");
+    }
+
+    Ok(trimmed)
+}
+
+fn container_parent(target: &str) -> Result<String> {
+    let (parent, _) = target
+        .rsplit_once('/')
+        .ok_or_else(|| anyhow::anyhow!("Dotfile target must be absolute: {target}"))?;
+    if parent.is_empty() {
+        return Ok("/".to_owned());
+    }
+
+    Ok(parent.to_owned())
+}
+
+fn dotfile_setup_script_entry(
+    source: &str,
+    target: &str,
+    parent: &str,
+    on_conflict: DotfileConflict,
+) -> String {
     let source = shell_quote(source);
     let target = shell_quote(target);
+    let parent = shell_quote(parent);
     let conflict_body = match on_conflict {
         DotfileConflict::Fail => format!(
             "printf '%s\\n' {message} >&2\nexit 1\n",
@@ -138,7 +173,7 @@ fn dotfile_setup_script_entry(source: &str, target: &str, on_conflict: DotfileCo
     };
 
     format!(
-        "src={source}\ndest={target}\nparent=${{dest%/*}}\nmkdir -p \"$parent\"\nif [ -L \"$dest\" ] && [ \"$(readlink \"$dest\")\" = \"$src\" ]; then\n  :\nelif [ -e \"$dest\" ] || [ -L \"$dest\" ]; then\n{conflict_body}  ln -s \"$src\" \"$dest\"\nelse\n  ln -s \"$src\" \"$dest\"\nfi\n"
+        "src={source}\ndest={target}\nparent={parent}\nmkdir -p \"$parent\"\nif [ -L \"$dest\" ] && [ \"$(readlink \"$dest\")\" = \"$src\" ]; then\n  :\nelif [ -e \"$dest\" ] || [ -L \"$dest\" ]; then\n{conflict_body}  ln -s \"$src\" \"$dest\"\nelse\n  ln -s \"$src\" \"$dest\"\nfi\n"
     )
 }
 
@@ -183,7 +218,7 @@ fn symlink_resolution(resolve_symlink: bool) -> SymlinkResolution {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{fs, path::Path, process::Command};
 
     use super::*;
     use crate::config::{
@@ -288,6 +323,60 @@ mod tests {
         assert!(script.contains("/opt/decune/dotfiles/.config/nvim"));
         assert!(script.contains("/home/vscode/.config/nvim"));
         assert!(script.contains("Dotfile target already exists"));
+    }
+
+    #[test]
+    fn setup_script_fails_when_intermediate_dotfile_setup_fails() {
+        let remote_home = tempfile::tempdir().unwrap();
+        fs::write(remote_home.path().join(".config"), "not a directory").unwrap();
+        let config = ResolvedConfig {
+            dotfiles: vec![
+                ResolvedDotfile {
+                    source: ".decune/nvim".to_owned(),
+                    target: ".config/nvim".to_owned(),
+                    read_only: true,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Fail,
+                    origin: ConfigPathOrigin::Project,
+                },
+                ResolvedDotfile {
+                    source: ".decune/gitconfig".to_owned(),
+                    target: ".gitconfig".to_owned(),
+                    read_only: true,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Fail,
+                    origin: ConfigPathOrigin::Project,
+                },
+            ],
+            ..ResolvedConfig::default()
+        };
+
+        let script = dotfile_setup_script(&config, remote_home.path().to_str().unwrap()).unwrap();
+        let output = Command::new("/bin/sh")
+            .args(["-lc", &script])
+            .output()
+            .unwrap();
+
+        assert!(!output.status.success());
+    }
+
+    #[test]
+    fn setup_script_allows_root_remote_home() {
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: ".decune/gitconfig".to_owned(),
+                target: ".gitconfig".to_owned(),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let script = dotfile_setup_script(&config, "/").unwrap();
+
+        assert!(script.contains("dest='/.gitconfig'"));
     }
 
     #[test]
