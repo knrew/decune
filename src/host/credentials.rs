@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    env, fs, io,
     io::{Read, Write},
     os::unix::fs::PermissionsExt,
     os::unix::net::UnixStream,
@@ -21,10 +21,14 @@ use crate::{
 
 pub(crate) const DECUNE_RUNTIME_TARGET: &str = "/run/decune";
 const GIT_CREDENTIAL_HELPER_NAME: &str = "git-credential-decune";
+const GIT_CREDENTIAL_HELPER_LINUX_X86_64_NAME: &str = "git-credential-decune-linux-x86_64";
 const HOST_GITCONFIG_NAME: &str = "host-gitconfig";
 const HOST_DAEMON_SOCKET_TARGET: &str = "/run/decune/host-daemon.sock";
 const GIT_CREDENTIAL_HELPER_TARGET: &str = "/run/decune/git-credential-decune";
 const REQUEST_TYPE_CREDENTIAL: &str = "credential";
+// host の decune binary は container OS/libc と一致しないため，Linux static helper を展開する．
+const GIT_CREDENTIAL_HELPER_LINUX_X86_64: &[u8] =
+    include_bytes!("assets/git-credential-decune-linux-x86_64");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -176,6 +180,18 @@ pub(crate) fn prepare_git_credential_runtime(
     config: &ResolvedConfig,
     runtime_dir: &Path,
 ) -> Result<GitCredentialRuntime> {
+    prepare_git_credential_runtime_with_gitconfig(
+        config,
+        runtime_dir,
+        host_gitconfig_path().as_deref(),
+    )
+}
+
+fn prepare_git_credential_runtime_with_gitconfig(
+    config: &ResolvedConfig,
+    runtime_dir: &Path,
+    host_gitconfig: Option<&Path>,
+) -> Result<GitCredentialRuntime> {
     if !git_host_helper_enabled(&config.credentials.git) {
         return Ok(GitCredentialRuntime::empty());
     }
@@ -186,7 +202,8 @@ pub(crate) fn prepare_git_credential_runtime(
             runtime_dir.display()
         )
     })?;
-    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
+    set_private_runtime_parent(runtime_dir)?;
+    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o755)).with_context(|| {
         format!(
             "Failed to set Git credential runtime directory permissions: {}",
             runtime_dir.display()
@@ -194,32 +211,51 @@ pub(crate) fn prepare_git_credential_runtime(
     })?;
 
     let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
-    fs::copy(current_exe_path()?, &helper_path).with_context(|| {
+    fs::write(&helper_path, git_credential_helper_launcher()).with_context(|| {
         format!(
             "Failed to stage Git credential helper: {}",
             helper_path.display()
         )
     })?;
-    fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o700)).with_context(|| {
+    fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o755)).with_context(|| {
         format!(
             "Failed to set Git credential helper permissions: {}",
             helper_path.display()
         )
     })?;
 
-    let mut cleanup_paths = vec![helper_path];
+    let linux_x86_64_helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_LINUX_X86_64_NAME);
+    fs::write(
+        &linux_x86_64_helper_path,
+        GIT_CREDENTIAL_HELPER_LINUX_X86_64,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to stage Linux x86_64 Git credential helper: {}",
+            linux_x86_64_helper_path.display()
+        )
+    })?;
+    fs::set_permissions(&linux_x86_64_helper_path, fs::Permissions::from_mode(0o755))
+        .with_context(|| {
+            format!(
+                "Failed to set Linux x86_64 Git credential helper permissions: {}",
+                linux_x86_64_helper_path.display()
+            )
+        })?;
+
+    let mut cleanup_paths = vec![helper_path, linux_x86_64_helper_path];
     if config.credentials.git.copy_global_config
-        && let Some(source) = host_gitconfig_path()
+        && let Some(source) = host_gitconfig
         && source.is_file()
     {
         let target = runtime_dir.join(HOST_GITCONFIG_NAME);
-        fs::copy(&source, &target).with_context(|| {
+        fs::copy(source, &target).with_context(|| {
             format!(
                 "Failed to stage host Git config for credential setup: {}",
                 source.display()
             )
         })?;
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o600)).with_context(|| {
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o644)).with_context(|| {
             format!(
                 "Failed to set staged host Git config permissions: {}",
                 target.display()
@@ -411,10 +447,21 @@ fn run_host_git_credential(command: GitCredentialCommand, input: &str) -> Result
 }
 
 fn host_git_config_value(key: &str) -> Result<Option<String>> {
-    let output = Command::new("git")
+    host_git_config_value_from(Path::new("git"), key)
+}
+
+fn host_git_config_value_from(command: &Path, key: &str) -> Result<Option<String>> {
+    let output = match Command::new(command)
         .args(["config", "--global", "--get", key])
         .output()
-        .with_context(|| format!("Failed to read host Git config value: {key}"))?;
+    {
+        Ok(output) => output,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to read host Git config value: {key}"));
+        }
+    };
 
     if !output.status.success() {
         return Ok(None);
@@ -437,8 +484,42 @@ fn host_gitconfig_path() -> Option<PathBuf> {
         .map(|home| home.join(".gitconfig"))
 }
 
-fn current_exe_path() -> Result<PathBuf> {
-    env::current_exe().context("Failed to resolve current executable path")
+fn set_private_runtime_parent(runtime_dir: &Path) -> Result<()> {
+    let Some(parent) = runtime_dir
+        .parent()
+        .filter(|path| is_decune_runtime_parent(path))
+    else {
+        return Ok(());
+    };
+
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).with_context(|| {
+        format!(
+            "Failed to set decune runtime parent directory permissions: {}",
+            parent.display()
+        )
+    })
+}
+
+fn is_decune_runtime_parent(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name == "decune" || name.starts_with("decune-"))
+}
+
+fn git_credential_helper_launcher() -> &'static [u8] {
+    b"#!/bin/sh
+set -eu
+arch=\"$(uname -m 2>/dev/null || true)\"
+case \"$arch\" in
+  x86_64|amd64)
+    exec /run/decune/git-credential-decune-linux-x86_64 \"$@\"
+    ;;
+  *)
+    echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2
+    exit 1
+    ;;
+esac
+"
 }
 
 fn git_credential_action_from_args() -> Result<GitCredentialAction> {
@@ -459,10 +540,21 @@ fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        GitCredentialAction, GitCredentialCommand, git_credential_helper_request_json,
-        parse_git_credential_helper_response,
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
     };
+
+    use tempfile::TempDir;
+
+    use super::{
+        GIT_CREDENTIAL_HELPER_NAME, GitCredentialAction, GitCredentialCommand,
+        git_credential_helper_request_json, host_git_config_value_from,
+        parse_git_credential_helper_response, prepare_git_credential_runtime,
+        prepare_git_credential_runtime_with_gitconfig,
+    };
+    use crate::config::resolved::ResolvedConfig;
 
     #[test]
     fn helper_request_json_preserves_git_protocol_input() {
@@ -514,5 +606,59 @@ mod tests {
             GitCredentialCommand::from_action(GitCredentialAction::Erase),
             GitCredentialCommand::Reject
         );
+    }
+
+    #[test]
+    fn runtime_stages_container_helper_with_remote_user_permissions() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let runtime =
+            prepare_git_credential_runtime(&ResolvedConfig::default(), &runtime_dir).unwrap();
+        let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
+
+        assert_eq!(runtime.mounts().len(), 1);
+        assert_eq!(mode(&runtime_dir), 0o755);
+        assert_eq!(mode(&helper_path), 0o755);
+        assert_ne!(
+            fs::read(&helper_path).unwrap(),
+            fs::read(current_exe()).unwrap()
+        );
+    }
+
+    #[test]
+    fn host_gitconfig_is_readable_by_remote_user_when_copied() {
+        let temp = TempDir::new().unwrap();
+        let home = temp.path().join("home");
+        fs::create_dir_all(&home).unwrap();
+        fs::write(home.join(".gitconfig"), "[user]\n\tname = Octo\n").unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.copy_global_config = true;
+
+        let _runtime = prepare_git_credential_runtime_with_gitconfig(
+            &config,
+            &runtime_dir,
+            Some(&home.join(".gitconfig")),
+        )
+        .unwrap();
+
+        assert_eq!(mode(&runtime_dir.join("host-gitconfig")), 0o644);
+    }
+
+    #[test]
+    fn missing_host_git_is_treated_as_absent_user_config() {
+        let missing_git = PathBuf::from("/definitely/missing/decune-test-git");
+
+        let value = host_git_config_value_from(&missing_git, "user.name").unwrap();
+
+        assert_eq!(value, None);
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn current_exe() -> PathBuf {
+        std::env::current_exe().unwrap()
     }
 }

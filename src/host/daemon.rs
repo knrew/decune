@@ -40,7 +40,7 @@ impl HostDaemon {
         let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
 
         let listener = bind_host_daemon_socket(&socket_path).await?;
-        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o600)).with_context(
+        fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o666)).with_context(
             || {
                 format!(
                     "Failed to set host daemon socket permissions: {}",
@@ -92,12 +92,35 @@ fn prepare_runtime_dir(runtime_dir: &Path) -> Result<()> {
             runtime_dir.display()
         )
     })?;
-    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
+    set_private_runtime_parent(runtime_dir)?;
+    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o755)).with_context(|| {
         format!(
             "Failed to set host daemon runtime directory permissions: {}",
             runtime_dir.display()
         )
     })
+}
+
+fn set_private_runtime_parent(runtime_dir: &Path) -> Result<()> {
+    let Some(parent) = runtime_dir
+        .parent()
+        .filter(|path| is_decune_runtime_parent(path))
+    else {
+        return Ok(());
+    };
+
+    fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).with_context(|| {
+        format!(
+            "Failed to set decune runtime parent directory permissions: {}",
+            parent.display()
+        )
+    })
+}
+
+fn is_decune_runtime_parent(path: &Path) -> bool {
+    path.file_name()
+        .and_then(|value| value.to_str())
+        .is_some_and(|name| name == "decune" || name.starts_with("decune-"))
 }
 
 async fn bind_host_daemon_socket(socket_path: &Path) -> Result<UnixListener> {
@@ -240,7 +263,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_creates_private_runtime_dir_and_socket() {
+    fn daemon_creates_remote_user_accessible_runtime_dir_and_socket() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -253,8 +276,8 @@ mod tests {
             let socket_path = daemon.socket_path().to_path_buf();
 
             assert_eq!(socket_path, runtime_dir.join("host-daemon.sock"));
-            assert_eq!(mode(&runtime_dir), 0o700);
-            assert_eq!(mode(&socket_path), 0o600);
+            assert_eq!(mode(&runtime_dir), 0o755);
+            assert_eq!(mode(&socket_path), 0o666);
 
             daemon.stop().await.unwrap();
             assert!(!socket_path.exists());
@@ -398,7 +421,7 @@ mod tests {
 
             let daemon = HostDaemon::start(runtime_dir).await.unwrap();
             assert_eq!(daemon.socket_path(), socket_path.as_path());
-            assert_eq!(mode(&socket_path), 0o600);
+            assert_eq!(mode(&socket_path), 0o666);
 
             daemon.stop().await.unwrap();
             assert!(!socket_path.exists());
