@@ -1,4 +1,4 @@
-name: Rust
+name: CI
 
 on:
   push:
@@ -19,8 +19,41 @@ env:
   CARGO_INCREMENTAL: 0
 
 jobs:
-  fmt:
-    name: fmt
+  taplo:
+    name: taplo
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - name: Check TOML formatting
+        uses: docker://docker.io/tamasfe/taplo:0.10.0
+        with:
+          args: fmt --check --diff
+
+  yamllint:
+    name: yamllint
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    env:
+      YAMLLINT_VERSION: 1.38.0
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v6
+        with:
+          python-version: 3.14
+      - name: Install yamllint
+        run: python -m pip install "yamllint==${YAMLLINT_VERSION}"
+      - name: Check YAML formatting
+        run: yamllint -f github .
+
+  cargo-fmt:
+    name: cargo-fmt
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -34,8 +67,8 @@ jobs:
       - name: Cargo fmt
         run: cargo fmt --all --check --verbose
 
-  clippy:
-    name: clippy
+  cargo-clippy:
+    name: cargo-clippy
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -49,8 +82,8 @@ jobs:
       - name: Cargo clippy
         run: cargo clippy --workspace --all-features -- -D warnings
 
-  check:
-    name: check (${{ matrix.profile }})
+  cargo-check:
+    name: cargo-check (${{ matrix.profile }})
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -69,8 +102,8 @@ jobs:
       - name: Cargo check
         run: cargo check ${{ matrix.release_flag }} --workspace --all-targets --all-features --verbose
 
-  test:
-    name: test (${{ matrix.profile }})
+  cargo-test:
+    name: cargo-test (${{ matrix.profile }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
