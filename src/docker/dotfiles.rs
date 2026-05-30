@@ -24,8 +24,7 @@ pub(crate) fn dotfile_mount_specs(
     workspace_root: &Path,
     variables: &VariableContext,
 ) -> Result<Vec<DockerMountSpec>> {
-    config
-        .dotfiles
+    expanded_dotfiles(&config.dotfiles, variables)?
         .iter()
         .map(|dotfile| dotfile_mount_spec(dotfile, workspace_root, variables))
         .collect()
@@ -65,21 +64,21 @@ fn dotfile_setup_script(
     remote_home: &str,
     variables: &VariableContext,
 ) -> Result<String> {
+    let dotfiles = expanded_dotfiles(&config.dotfiles, variables)?;
     let mut script = String::new();
-    if !config.dotfiles.is_empty() {
+    if !dotfiles.is_empty() {
         script.push_str("set -e\n");
     }
 
-    for dotfile in &config.dotfiles {
-        let dotfile_target = expanded_dotfile_target(dotfile, variables)?;
-        let target = remote_home_target(remote_home, &dotfile_target)?;
-        let source = staging_target(&dotfile_target)?;
+    for dotfile in dotfiles {
+        let target = remote_home_target(remote_home, &dotfile.target)?;
+        let source = staging_target(&dotfile.target)?;
         let parent = container_parent(&target)?;
         script.push_str(&dotfile_setup_script_entry(
             &source,
             &target,
             &parent,
-            dotfile.on_conflict,
+            dotfile.dotfile.on_conflict,
         ));
     }
 
@@ -87,22 +86,21 @@ fn dotfile_setup_script(
 }
 
 fn dotfile_mount_spec(
-    dotfile: &ResolvedDotfile,
+    dotfile: &ExpandedDotfile<'_>,
     workspace_root: &Path,
     variables: &VariableContext,
 ) -> Result<DockerMountSpec> {
-    let dotfile_target = expanded_dotfile_target(dotfile, variables)?;
-    let target = staging_target(&dotfile_target)?;
+    let target = staging_target(&dotfile.target)?;
     let source = resolve_host_path(
-        &dotfile.source,
-        &HostPathOptions::new(dotfile.origin, workspace_root, variables)
+        &dotfile.dotfile.source,
+        &HostPathOptions::new(dotfile.dotfile.origin, workspace_root, variables)
             .with_create(PathCreate::None)
-            .with_symlink_resolution(symlink_resolution(dotfile.resolve_symlink)),
+            .with_symlink_resolution(symlink_resolution(dotfile.dotfile.resolve_symlink)),
     )
     .with_context(|| {
         format!(
             "Failed to resolve dotfile source for target: {}",
-            dotfile.target
+            dotfile.dotfile.target
         )
     })?;
 
@@ -110,11 +108,53 @@ fn dotfile_mount_spec(
         source: Some(source.display().to_string()),
         target,
         mount_type: MountType::Bind,
-        read_only: dotfile.read_only,
+        read_only: dotfile.dotfile.read_only,
         consistency: None,
         bind_options: None,
         volume_options: None,
     })
+}
+
+struct ExpandedDotfile<'a> {
+    dotfile: &'a ResolvedDotfile,
+    target: String,
+}
+
+fn expanded_dotfiles<'a>(
+    dotfiles: &'a [ResolvedDotfile],
+    variables: &VariableContext,
+) -> Result<Vec<ExpandedDotfile<'a>>> {
+    let mut expanded = Vec::new();
+
+    for dotfile in dotfiles {
+        let target = normalized_expanded_dotfile_target(dotfile, variables)?;
+        replace_dotfile_by_target(&mut expanded, ExpandedDotfile { dotfile, target });
+    }
+
+    Ok(expanded)
+}
+
+fn replace_dotfile_by_target<'a>(
+    dotfiles: &mut Vec<ExpandedDotfile<'a>>,
+    dotfile: ExpandedDotfile<'a>,
+) {
+    match dotfiles
+        .iter()
+        .position(|existing| existing.target == dotfile.target)
+    {
+        Some(index) => dotfiles[index] = dotfile,
+        None => dotfiles.push(dotfile),
+    }
+}
+
+fn normalized_expanded_dotfile_target(
+    dotfile: &ResolvedDotfile,
+    variables: &VariableContext,
+) -> Result<String> {
+    let target = expanded_dotfile_target(dotfile, variables)?;
+    let components = relative_target_components(&target)?;
+
+    Ok(components.join("/"))
 }
 
 fn expanded_dotfile_target(
@@ -342,6 +382,50 @@ mod tests {
     }
 
     #[test]
+    fn dotfile_mount_specs_replaces_duplicate_expanded_target() {
+        let workspace = tempfile::tempdir().unwrap();
+        let global_source = workspace.path().join("global-gitconfig");
+        let project_source = workspace.path().join("project-gitconfig");
+        fs::write(&global_source, "global").unwrap();
+        fs::write(&project_source, "project").unwrap();
+        let config = ResolvedConfig {
+            dotfiles: vec![
+                ResolvedDotfile {
+                    source: global_source.display().to_string(),
+                    target: ".config/${remoteUser}/gitconfig".to_owned(),
+                    read_only: true,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Fail,
+                    origin: ConfigPathOrigin::Global,
+                },
+                ResolvedDotfile {
+                    source: project_source.display().to_string(),
+                    target: ".config/vscode/gitconfig".to_owned(),
+                    read_only: false,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Backup,
+                    origin: ConfigPathOrigin::Project,
+                },
+            ],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            dotfile_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(
+            mounts[0].source.as_deref(),
+            Some(project_source.canonicalize().unwrap().to_str().unwrap())
+        );
+        assert_eq!(
+            mounts[0].target,
+            "/opt/decune/dotfiles/.config/vscode/gitconfig"
+        );
+        assert!(!mounts[0].read_only);
+    }
+
+    #[test]
     fn rejects_dotfile_target_variables_that_expand_to_absolute_path() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("dotfile");
@@ -388,6 +472,44 @@ mod tests {
 
         assert!(script.contains("/opt/decune/dotfiles/.config/vscode/nvim"));
         assert!(script.contains("/home/vscode/.config/vscode/nvim"));
+    }
+
+    #[test]
+    fn dotfile_setup_script_replaces_duplicate_expanded_target() {
+        let config = ResolvedConfig {
+            dotfiles: vec![
+                ResolvedDotfile {
+                    source: ".decune/global-gitconfig".to_owned(),
+                    target: ".config/${remoteUser}/gitconfig".to_owned(),
+                    read_only: true,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Fail,
+                    origin: ConfigPathOrigin::Global,
+                },
+                ResolvedDotfile {
+                    source: ".decune/project-gitconfig".to_owned(),
+                    target: ".config/vscode/gitconfig".to_owned(),
+                    read_only: false,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Backup,
+                    origin: ConfigPathOrigin::Project,
+                },
+            ],
+            ..ResolvedConfig::default()
+        };
+
+        let script =
+            dotfile_setup_script(&config, "/home/vscode", &variables(Path::new("/workspace")))
+                .unwrap();
+
+        assert_eq!(
+            script
+                .matches("dest='/home/vscode/.config/vscode/gitconfig'")
+                .count(),
+            1
+        );
+        assert!(script.contains(".decune-backup-$(date +%s)"));
+        assert!(!script.contains("Dotfile target already exists\n"));
     }
 
     #[test]
