@@ -8,8 +8,8 @@ use crate::config::{
     canonical::{CanonicalWriter, sha256_hex},
     resolved::{
         ResolvedConfig, ResolvedDevcontainer, ResolvedDevcontainerMount,
-        ResolvedDevcontainerSource, ResolvedHook, ResolvedPublishPort, ResolvedRunArg,
-        ResolvedUserEnvProbe,
+        ResolvedDevcontainerSource, ResolvedDotfile, ResolvedDotfileEntry, ResolvedHook,
+        ResolvedPublishPort, ResolvedRunArg, ResolvedUserEnvProbe,
     },
     types::{
         Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, HookLocation, MountCreate,
@@ -216,22 +216,24 @@ fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) 
             });
         });
         writer.field("dotfiles", |writer| {
-            writer.seq(config.dotfiles.iter(), |writer, dotfile| {
-                writer.object("Dotfile", |writer| {
-                    writer.field("source", |writer| writer.string(&dotfile.source));
-                    writer.field("target", |writer| writer.string(&dotfile.target));
-                    writer.field("read_only", |writer| writer.bool(dotfile.read_only));
-                    writer.field("resolve_symlink", |writer| {
-                        writer.bool(dotfile.resolve_symlink);
-                    });
-                    writer.field("on_conflict", |writer| {
-                        writer.string(dotfile_conflict_name(dotfile.on_conflict));
-                    });
-                    writer.field("origin", |writer| {
-                        writer.string(config_path_origin_name(dotfile.origin));
-                    });
+            if config.dotfile_entries.is_empty() {
+                writer.seq(config.dotfiles.iter(), write_enabled_dotfile);
+            } else {
+                writer.seq(config.dotfile_entries.iter(), |writer, entry| match entry {
+                    ResolvedDotfileEntry::Enabled(dotfile) => {
+                        write_enabled_dotfile(writer, dotfile);
+                    }
+                    ResolvedDotfileEntry::Disabled(dotfile) => {
+                        writer.object("Dotfile", |writer| {
+                            writer.field("target", |writer| writer.string(&dotfile.target));
+                            writer.field("enabled", |writer| writer.bool(false));
+                            writer.field("origin", |writer| {
+                                writer.string(config_path_origin_name(dotfile.origin));
+                            });
+                        });
+                    }
                 });
-            });
+            }
         });
         writer.field("mounts", |writer| {
             writer.seq(config.mounts.iter(), |writer, mount| {
@@ -336,6 +338,23 @@ fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) 
                     write_hooks(writer, &config.hooks.after_post_attach);
                 });
             });
+        });
+    });
+}
+
+fn write_enabled_dotfile(writer: &mut CanonicalWriter, dotfile: &ResolvedDotfile) {
+    writer.object("Dotfile", |writer| {
+        writer.field("source", |writer| writer.string(&dotfile.source));
+        writer.field("target", |writer| writer.string(&dotfile.target));
+        writer.field("read_only", |writer| writer.bool(dotfile.read_only));
+        writer.field("resolve_symlink", |writer| {
+            writer.bool(dotfile.resolve_symlink);
+        });
+        writer.field("on_conflict", |writer| {
+            writer.string(dotfile_conflict_name(dotfile.on_conflict));
+        });
+        writer.field("origin", |writer| {
+            writer.string(config_path_origin_name(dotfile.origin));
         });
     });
 }
@@ -1212,6 +1231,54 @@ version = 1
 enabled = false
 "#,
         );
+
+        assert_ne!(hash_for(&enabled), hash_for(&disabled));
+    }
+
+    #[test]
+    fn disabled_dotfile_tombstone_changes_hash() {
+        let enabled = resolve_config(ConfigMergeInput {
+            global: Some(ConfigLayer::from_raw_decune(
+                toml::from_str(
+                    r#"
+version = 1
+
+[[dotfiles]]
+source = "~/.config/gitconfig"
+target = ".config/${remoteUser}/gitconfig"
+"#,
+                )
+                .unwrap(),
+            )),
+            ..ConfigMergeInput::default()
+        });
+        let disabled = resolve_config(ConfigMergeInput {
+            global: Some(ConfigLayer::from_raw_decune(
+                toml::from_str(
+                    r#"
+version = 1
+
+[[dotfiles]]
+source = "~/.config/gitconfig"
+target = ".config/${remoteUser}/gitconfig"
+"#,
+                )
+                .unwrap(),
+            )),
+            project: Some(ConfigLayer::from_raw_decune(
+                toml::from_str(
+                    r#"
+version = 1
+
+[[dotfiles]]
+target = ".config/vscode/gitconfig"
+enabled = false
+"#,
+                )
+                .unwrap(),
+            )),
+            ..ConfigMergeInput::default()
+        });
 
         assert_ne!(hash_for(&enabled), hash_for(&disabled));
     }

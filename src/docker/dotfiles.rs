@@ -5,7 +5,7 @@ use anyhow::{Context, Result, bail};
 use crate::{
     config::{
         path::{HostPathOptions, PathCreate, SymlinkResolution, resolve_host_path},
-        resolved::{ResolvedConfig, ResolvedDotfile},
+        resolved::{ResolvedConfig, ResolvedDotfile, ResolvedDotfileEntry},
         types::{DotfileConflict, MountType},
         variables::{VariableContext, expand_variables},
     },
@@ -24,7 +24,7 @@ pub(crate) fn dotfile_mount_specs(
     workspace_root: &Path,
     variables: &VariableContext,
 ) -> Result<Vec<DockerMountSpec>> {
-    expanded_dotfiles(&config.dotfiles, variables)?
+    expanded_dotfiles(config, variables)?
         .iter()
         .map(|dotfile| dotfile_mount_spec(dotfile, workspace_root, variables))
         .collect()
@@ -64,7 +64,7 @@ fn dotfile_setup_script(
     remote_home: &str,
     variables: &VariableContext,
 ) -> Result<String> {
-    let dotfiles = expanded_dotfiles(&config.dotfiles, variables)?;
+    let dotfiles = expanded_dotfiles(config, variables)?;
     let mut script = String::new();
     if !dotfiles.is_empty() {
         script.push_str("set -e\n");
@@ -120,18 +120,50 @@ struct ExpandedDotfile<'a> {
     target: String,
 }
 
+enum DotfileEntryRef<'a> {
+    Enabled(&'a ResolvedDotfile),
+    Disabled(&'a str),
+}
+
 fn expanded_dotfiles<'a>(
-    dotfiles: &'a [ResolvedDotfile],
+    config: &'a ResolvedConfig,
     variables: &VariableContext,
 ) -> Result<Vec<ExpandedDotfile<'a>>> {
     let mut expanded = Vec::new();
 
-    for dotfile in dotfiles {
-        let target = normalized_expanded_dotfile_target(dotfile, variables)?;
-        replace_dotfile_by_target(&mut expanded, ExpandedDotfile { dotfile, target });
+    for entry in dotfile_entries(config) {
+        match entry {
+            DotfileEntryRef::Enabled(dotfile) => {
+                let target = normalized_expanded_dotfile_target(&dotfile.target, variables)?;
+                replace_dotfile_by_target(&mut expanded, ExpandedDotfile { dotfile, target });
+            }
+            DotfileEntryRef::Disabled(target) => {
+                let target = normalized_expanded_dotfile_target(target, variables)?;
+                remove_dotfile_by_target(&mut expanded, &target);
+            }
+        }
     }
 
     Ok(expanded)
+}
+
+fn dotfile_entries(config: &ResolvedConfig) -> Vec<DotfileEntryRef<'_>> {
+    if config.dotfile_entries.is_empty() {
+        return config
+            .dotfiles
+            .iter()
+            .map(DotfileEntryRef::Enabled)
+            .collect();
+    }
+
+    config
+        .dotfile_entries
+        .iter()
+        .map(|entry| match entry {
+            ResolvedDotfileEntry::Enabled(dotfile) => DotfileEntryRef::Enabled(dotfile),
+            ResolvedDotfileEntry::Disabled(dotfile) => DotfileEntryRef::Disabled(&dotfile.target),
+        })
+        .collect()
 }
 
 fn replace_dotfile_by_target<'a>(
@@ -147,22 +179,20 @@ fn replace_dotfile_by_target<'a>(
     }
 }
 
-fn normalized_expanded_dotfile_target(
-    dotfile: &ResolvedDotfile,
-    variables: &VariableContext,
-) -> Result<String> {
-    let target = expanded_dotfile_target(dotfile, variables)?;
+fn remove_dotfile_by_target(dotfiles: &mut Vec<ExpandedDotfile<'_>>, target: &str) {
+    dotfiles.retain(|existing| existing.target != target);
+}
+
+fn normalized_expanded_dotfile_target(target: &str, variables: &VariableContext) -> Result<String> {
+    let target = expanded_dotfile_target(target, variables)?;
     let components = relative_target_components(&target)?;
 
     Ok(components.join("/"))
 }
 
-fn expanded_dotfile_target(
-    dotfile: &ResolvedDotfile,
-    variables: &VariableContext,
-) -> Result<String> {
-    expand_variables(&dotfile.target, variables)
-        .with_context(|| format!("Failed to expand dotfile target: {}", dotfile.target))
+fn expanded_dotfile_target(target: &str, variables: &VariableContext) -> Result<String> {
+    expand_variables(target, variables)
+        .with_context(|| format!("Failed to expand dotfile target: {target}"))
 }
 
 fn staging_target(target: &str) -> Result<String> {
@@ -278,7 +308,7 @@ mod tests {
     use super::*;
     use crate::config::{
         path::ConfigPathOrigin,
-        resolved::{ResolvedConfig, ResolvedDotfile},
+        resolved::{ResolvedConfig, ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry},
         types::{DotfileConflict, MountType},
         variables::VariableContext,
     };
@@ -426,6 +456,37 @@ mod tests {
     }
 
     #[test]
+    fn dotfile_mount_specs_disables_global_dotfile_by_expanded_target() {
+        let workspace = tempfile::tempdir().unwrap();
+        let global_source = workspace.path().join("global-gitconfig");
+        fs::write(&global_source, "global").unwrap();
+        let global_dotfile = ResolvedDotfile {
+            source: global_source.display().to_string(),
+            target: ".config/${remoteUser}/gitconfig".to_owned(),
+            read_only: true,
+            resolve_symlink: true,
+            on_conflict: DotfileConflict::Fail,
+            origin: ConfigPathOrigin::Global,
+        };
+        let config = ResolvedConfig {
+            dotfile_entries: vec![
+                ResolvedDotfileEntry::Enabled(global_dotfile.clone()),
+                ResolvedDotfileEntry::Disabled(ResolvedDotfileDisable {
+                    target: ".config/vscode/gitconfig".to_owned(),
+                    origin: ConfigPathOrigin::Project,
+                }),
+            ],
+            dotfiles: vec![global_dotfile],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            dotfile_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert!(mounts.is_empty());
+    }
+
+    #[test]
     fn rejects_dotfile_target_variables_that_expand_to_absolute_path() {
         let workspace = tempfile::tempdir().unwrap();
         let source = workspace.path().join("dotfile");
@@ -510,6 +571,35 @@ mod tests {
         );
         assert!(script.contains(".decune-backup-$(date +%s)"));
         assert!(!script.contains("Dotfile target already exists\n"));
+    }
+
+    #[test]
+    fn dotfile_setup_script_disables_global_dotfile_by_expanded_target() {
+        let global_dotfile = ResolvedDotfile {
+            source: ".decune/global-gitconfig".to_owned(),
+            target: ".config/${remoteUser}/gitconfig".to_owned(),
+            read_only: true,
+            resolve_symlink: true,
+            on_conflict: DotfileConflict::Fail,
+            origin: ConfigPathOrigin::Global,
+        };
+        let config = ResolvedConfig {
+            dotfile_entries: vec![
+                ResolvedDotfileEntry::Enabled(global_dotfile.clone()),
+                ResolvedDotfileEntry::Disabled(ResolvedDotfileDisable {
+                    target: ".config/vscode/gitconfig".to_owned(),
+                    origin: ConfigPathOrigin::Project,
+                }),
+            ],
+            dotfiles: vec![global_dotfile],
+            ..ResolvedConfig::default()
+        };
+
+        let script =
+            dotfile_setup_script(&config, "/home/vscode", &variables(Path::new("/workspace")))
+                .unwrap();
+
+        assert!(script.is_empty());
     }
 
     #[test]
