@@ -385,6 +385,22 @@ pub(crate) fn prepare_github_cli_runtime_with_token(
     })
 }
 
+pub(crate) fn remove_github_cli_token_file(runtime_dir: &Path) -> Result<()> {
+    let token_file = runtime_dir
+        .join(GITHUB_CLI_TOKEN_DIR_NAME)
+        .join(GITHUB_CLI_TOKEN_FILE_NAME);
+    match fs::remove_file(&token_file) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to remove GitHub CLI token file: {}",
+                token_file.display()
+            )
+        }),
+    }
+}
+
 pub(crate) fn prepare_ssh_agent_runtime_with_socket(
     config: &ResolvedConfig,
     socket_path: Option<&Path>,
@@ -397,7 +413,11 @@ pub(crate) fn prepare_ssh_agent_runtime_with_socket(
         return ssh_agent_unavailable(config, "SSH_AUTH_SOCK is not available");
     };
 
-    match inspect_ssh_agent_socket(socket_path)? {
+    let socket_status = match inspect_ssh_agent_socket(socket_path) {
+        Ok(status) => status,
+        Err(error) => return ssh_agent_inspect_failed(config, error),
+    };
+    match socket_status {
         SshAgentSocketStatus::Available => {}
         SshAgentSocketStatus::Missing => {
             return ssh_agent_unavailable(config, "SSH_AUTH_SOCK is not available");
@@ -458,6 +478,21 @@ fn ssh_agent_unavailable(config: &ResolvedConfig, reason: &str) -> Result<SshAge
     match config.credentials.git.ssh_agent {
         SshAgentMode::Required => bail!("SSH agent forwarding is required, but {reason}"),
         SshAgentMode::Auto | SshAgentMode::Off => Ok(SshAgentRuntime::empty()),
+    }
+}
+
+fn ssh_agent_inspect_failed(
+    config: &ResolvedConfig,
+    error: anyhow::Error,
+) -> Result<SshAgentRuntime> {
+    match config.credentials.git.ssh_agent {
+        SshAgentMode::Required => Err(error)
+            .context("SSH agent forwarding is required, but failed to inspect SSH_AUTH_SOCK"),
+        SshAgentMode::Auto => {
+            ui::warn(&format!("SSH agent forwarding is unavailable: {error:#}"));
+            Ok(SshAgentRuntime::empty())
+        }
+        SshAgentMode::Off => Ok(SshAgentRuntime::empty()),
     }
 }
 
@@ -576,17 +611,64 @@ pub(crate) async fn setup_git_credentials(
         return Ok(());
     }
 
-    let script = git_credential_setup_script(&config.credentials.git)?;
-    if script.is_empty() {
+    setup_git_credential_helper(client, container, config, remote_user).await?;
+    setup_git_user_config(client, container, config, remote_user).await?;
+    Ok(())
+}
+
+async fn setup_git_credential_helper(
+    client: &crate::docker::client::DockerClient,
+    container: &str,
+    config: &ResolvedConfig,
+    remote_user: &ResolvedRemoteUser,
+) -> Result<()> {
+    if !git_host_helper_enabled(&config.credentials.git) {
         return Ok(());
     }
 
-    if git_host_helper_enabled(&config.credentials.git)
-        && !git_credential_runtime_accessible(client, container, remote_user).await
-    {
+    if !git_credential_runtime_accessible(client, container, remote_user).await {
         ui::warn(&format!(
             "Git credential forwarding is unavailable in container: {container}"
         ));
+        return Ok(());
+    }
+
+    let script = git_credential_helper_setup_script(&config.credentials.git);
+    let env = BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]);
+    let setup_result = exec_capture(
+        client,
+        container,
+        &ExecCommandSpec {
+            command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
+            user: Some(remote_user.user.clone()),
+            working_dir: Some(remote_user.home.clone()),
+            env,
+            tty: false,
+        },
+    )
+    .await
+    .with_context(|| format!("Failed to setup Git credentials in container: {container}"));
+    if setup_result.is_err() {
+        ui::warn(&format!(
+            "Git credential forwarding is unavailable in container: {container}"
+        ));
+    }
+
+    Ok(())
+}
+
+async fn setup_git_user_config(
+    client: &crate::docker::client::DockerClient,
+    container: &str,
+    config: &ResolvedConfig,
+    remote_user: &ResolvedRemoteUser,
+) -> Result<()> {
+    if !git_user_config_copy_enabled(&config.credentials.git) {
+        return Ok(());
+    }
+
+    let script = git_user_config_setup_script(&config.credentials.git)?;
+    if script.is_empty() {
         return Ok(());
     }
 
@@ -603,14 +685,11 @@ pub(crate) async fn setup_git_credentials(
         },
     )
     .await
-    .with_context(|| format!("Failed to setup Git credentials in container: {container}"));
+    .with_context(|| format!("Failed to copy Git user config in container: {container}"));
     if setup_result.is_err() {
-        let message = if git_host_helper_enabled(&config.credentials.git) {
-            "Git credential forwarding is unavailable"
-        } else {
-            "Git credential setup is unavailable"
-        };
-        ui::warn(&format!("{message} in container: {container}"));
+        ui::warn(&format!(
+            "Git user config copy is unavailable in container: {container}"
+        ));
     }
 
     Ok(())
@@ -864,38 +943,57 @@ pub(crate) fn remove_staged_host_gitconfig(runtime_dir: &Path) -> Result<()> {
     }
 }
 
-pub(crate) fn git_credential_setup_script(credentials: &ResolvedGitCredentials) -> Result<String> {
-    if !git_credentials_setup_enabled(credentials) {
+fn git_credential_helper_setup_script(credentials: &ResolvedGitCredentials) -> String {
+    if !git_host_helper_enabled(credentials) {
+        return String::new();
+    }
+    let mut script = String::from("set -e\n");
+    script.push_str(
+        "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\n",
+    );
+    script.push_str("git config --global --unset-all credential.helper >/dev/null 2>&1 || true\n");
+    script.push_str("git config --global --add credential.helper ");
+    script.push_str(&shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
+    script.push('\n');
+    script
+}
+
+fn git_user_config_setup_script(credentials: &ResolvedGitCredentials) -> Result<String> {
+    if !git_user_config_copy_enabled(credentials) {
         return Ok(String::new());
     }
 
+    let name = host_git_config_value("user.name")?;
+    let email = host_git_config_value("user.email")?;
+    Ok(git_user_config_setup_script_from_values(
+        credentials,
+        name.as_deref(),
+        email.as_deref(),
+    ))
+}
+
+fn git_user_config_setup_script_from_values(
+    credentials: &ResolvedGitCredentials,
+    name: Option<&str>,
+    email: Option<&str>,
+) -> String {
+    if !git_user_config_copy_enabled(credentials) || (name.is_none() && email.is_none()) {
+        return String::new();
+    }
+
     let mut script = String::from("set -e\n");
-    if git_host_helper_enabled(credentials) {
-        script.push_str(
-            "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\n",
-        );
-        script.push_str(
-            "git config --global --unset-all credential.helper >/dev/null 2>&1 || true\n",
-        );
-        script.push_str("git config --global --add credential.helper ");
-        script.push_str(&shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
+    if let Some(name) = name {
+        script.push_str("git config --global user.name ");
+        script.push_str(&shell_quote(name));
+        script.push('\n');
+    }
+    if let Some(email) = email {
+        script.push_str("git config --global user.email ");
+        script.push_str(&shell_quote(email));
         script.push('\n');
     }
 
-    if credentials.copy_user {
-        if let Some(name) = host_git_config_value("user.name")? {
-            script.push_str("git config --global user.name ");
-            script.push_str(&shell_quote(&name));
-            script.push('\n');
-        }
-        if let Some(email) = host_git_config_value("user.email")? {
-            script.push_str("git config --global user.email ");
-            script.push_str(&shell_quote(&email));
-            script.push('\n');
-        }
-    }
-
-    Ok(script)
+    script
 }
 
 fn github_cli_setup_script(credentials: &ResolvedGithubCredentials) -> String {
@@ -958,6 +1056,10 @@ fn git_host_helper_enabled(credentials: &ResolvedGitCredentials) -> bool {
 
 fn git_credentials_setup_enabled(credentials: &ResolvedGitCredentials) -> bool {
     credentials.enabled && (credentials.https == GitHttpsMode::HostHelper || credentials.copy_user)
+}
+
+fn git_user_config_copy_enabled(credentials: &ResolvedGitCredentials) -> bool {
+    credentials.enabled && credentials.copy_user
 }
 
 fn github_cli_credentials_enabled(credentials: &ResolvedGithubCredentials) -> bool {
@@ -1164,8 +1266,9 @@ fn shell_quote(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
+        ffi::OsString,
         fs,
-        os::unix::{fs::PermissionsExt, net::UnixListener},
+        os::unix::{ffi::OsStringExt, fs::PermissionsExt, net::UnixListener},
         path::{Path, PathBuf},
     };
 
@@ -1174,11 +1277,12 @@ mod tests {
     use super::{
         GIT_CREDENTIAL_HELPER_NAME, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET,
         GitCredentialAction, GitCredentialCommand, SSH_AGENT_SOCKET_TARGET,
-        git_credential_helper_request_json, git_credential_setup_script, github_cli_setup_script,
+        git_credential_helper_request_json, git_credential_helper_setup_script,
+        git_user_config_setup_script_from_values, github_cli_setup_script,
         host_git_config_value_from, host_github_auth_token_from,
         parse_git_credential_helper_response, prepare_git_credential_runtime,
         prepare_git_credential_runtime_with_gitconfig, prepare_github_cli_runtime_with_token,
-        prepare_ssh_agent_runtime_with_socket,
+        prepare_ssh_agent_runtime_with_socket, remove_github_cli_token_file,
     };
     use crate::config::{
         resolved::ResolvedConfig,
@@ -1255,10 +1359,10 @@ mod tests {
     }
 
     #[test]
-    fn setup_script_rejects_unsupported_container_architectures_before_configuring_helper() {
+    fn helper_setup_script_rejects_unsupported_container_architectures_before_configuring_helper() {
         let config = ResolvedConfig::default();
 
-        let script = git_credential_setup_script(&config.credentials.git).unwrap();
+        let script = git_credential_helper_setup_script(&config.credentials.git);
 
         let arch_guard = script
             .find("Unsupported Git credential helper container architecture")
@@ -1268,6 +1372,24 @@ mod tests {
             .unwrap();
         assert!(script.contains("x86_64|amd64)"));
         assert!(arch_guard < helper_config);
+    }
+
+    #[test]
+    fn user_config_setup_script_is_independent_from_helper_architecture_guard() {
+        let config = ResolvedConfig::default();
+
+        let helper_script = git_credential_helper_setup_script(&config.credentials.git);
+        let user_script = git_user_config_setup_script_from_values(
+            &config.credentials.git,
+            Some("Octo User"),
+            Some("octo@example.test"),
+        );
+
+        assert!(helper_script.contains("Unsupported Git credential helper container architecture"));
+        assert!(user_script.contains("git config --global user.name 'Octo User'"));
+        assert!(user_script.contains("git config --global user.email 'octo@example.test'"));
+        assert!(!user_script.contains("credential.helper"));
+        assert!(!user_script.contains("Unsupported Git credential helper container architecture"));
     }
 
     #[test]
@@ -1321,7 +1443,7 @@ mod tests {
         config.credentials.git.copy_user = false;
         config.credentials.git.copy_global_config = true;
 
-        let script = git_credential_setup_script(&config.credentials.git).unwrap();
+        let script = git_credential_helper_setup_script(&config.credentials.git);
 
         assert!(script.is_empty());
         assert!(!script.contains("credential.helper"));
@@ -1492,6 +1614,37 @@ mod tests {
     }
 
     #[test]
+    fn github_token_cleanup_removes_only_token_file_and_keeps_token_directory() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let token_dir = runtime_dir.join("gh-token");
+        fs::create_dir_all(&token_dir).unwrap();
+        fs::write(token_dir.join("token"), "test-secret\n").unwrap();
+        fs::write(token_dir.join("metadata"), "keep\n").unwrap();
+
+        remove_github_cli_token_file(&runtime_dir).unwrap();
+
+        assert!(token_dir.is_dir());
+        assert!(!token_dir.join("token").exists());
+        assert_eq!(
+            fs::read_to_string(token_dir.join("metadata")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    #[test]
+    fn github_token_cleanup_ignores_missing_token_file() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let token_dir = runtime_dir.join("gh-token");
+        fs::create_dir_all(&token_dir).unwrap();
+
+        remove_github_cli_token_file(&runtime_dir).unwrap();
+
+        assert!(token_dir.is_dir());
+    }
+
+    #[test]
     fn github_runtime_omits_mount_when_disabled() {
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
@@ -1628,6 +1781,31 @@ mod tests {
     }
 
     #[test]
+    fn ssh_agent_auto_omits_mount_and_container_env_when_socket_inspection_fails() {
+        let socket_path = invalid_path_with_nul();
+
+        let runtime =
+            prepare_ssh_agent_runtime_with_socket(&ResolvedConfig::default(), Some(&socket_path))
+                .unwrap();
+
+        assert!(runtime.mounts().is_empty());
+        assert!(runtime.container_env().is_empty());
+    }
+
+    #[test]
+    fn ssh_agent_required_errors_when_socket_inspection_fails() {
+        let socket_path = invalid_path_with_nul();
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.ssh_agent = SshAgentMode::Required;
+
+        let error = prepare_ssh_agent_runtime_with_socket(&config, Some(&socket_path)).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("SSH agent forwarding is required"));
+        assert!(message.contains("Failed to inspect SSH_AUTH_SOCK"));
+    }
+
+    #[test]
     fn ssh_agent_off_omits_mount_and_container_env() {
         let temp = TempDir::new().unwrap();
         let socket_path = temp.path().join("agent.sock");
@@ -1667,5 +1845,9 @@ mod tests {
 
     fn current_exe() -> PathBuf {
         std::env::current_exe().unwrap()
+    }
+
+    fn invalid_path_with_nul() -> PathBuf {
+        PathBuf::from(OsString::from_vec(b"invalid\0socket".to_vec()))
     }
 }

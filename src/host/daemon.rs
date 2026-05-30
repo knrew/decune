@@ -350,7 +350,12 @@ async fn handle_connection(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path, sync::Arc};
+    use std::{
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::Path,
+        sync::{Arc, Mutex},
+    };
 
     use anyhow::Result;
     use serde_json::{Value, json};
@@ -373,6 +378,18 @@ mod tests {
         fn run(&self, command: GitCredentialCommand, _input: &str) -> Result<String> {
             assert_eq!(command, GitCredentialCommand::Fill);
             Ok("username=octo\npassword=SECRET\n".to_owned())
+        }
+    }
+
+    #[derive(Debug, Default)]
+    struct RecordingGitCredentialExecutor {
+        calls: Mutex<Vec<(GitCredentialCommand, String)>>,
+    }
+
+    impl GitCredentialExecutor for RecordingGitCredentialExecutor {
+        fn run(&self, command: GitCredentialCommand, input: &str) -> Result<String> {
+            self.calls.lock().unwrap().push((command, input.to_owned()));
+            Ok(String::new())
         }
     }
 
@@ -577,6 +594,54 @@ mod tests {
                     "ok": true,
                     "output": "username=octo\npassword=SECRET\n"
                 })
+            );
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_handles_git_credential_erase_request() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let executor = Arc::new(RecordingGitCredentialExecutor::default());
+            let daemon = HostDaemon::start_with_git_credential_executor(
+                temp.path().join("runtime"),
+                executor.clone(),
+            )
+            .await
+            .unwrap();
+
+            let response = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "credential",
+                    "action": "erase",
+                    "input": "protocol=https\nhost=github.com\nusername=octo\n\n"
+                }),
+            )
+            .await;
+
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": true,
+                    "output": ""
+                })
+            );
+            assert_eq!(
+                executor.calls.lock().unwrap().as_slice(),
+                [(
+                    GitCredentialCommand::Reject,
+                    "protocol=https\nhost=github.com\nusername=octo\n\n".to_owned()
+                )]
             );
 
             daemon.stop().await.unwrap();

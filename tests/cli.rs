@@ -1648,6 +1648,122 @@ fn up_detach_copies_host_git_user_config_when_https_is_off() {
 }
 
 #[test]
+fn up_detach_copies_host_git_user_config_when_helper_setup_fails() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            &format!(
+                r#"
+            FROM alpine:3.20
+            RUN addgroup -g {gid} decunegrp \
+              && adduser -D -u {uid} -G decunegrp -h /home/decune decune \
+              && printf '%s\n' \
+              '#!/bin/sh' \
+              'set -eu' \
+              'if [ "$1" = config ] && [ "$2" = --global ]; then' \
+              '  case "$3 $4" in' \
+              '    "--unset-all credential.helper")' \
+              '      exit 0' \
+              '      ;;' \
+              '    "--add credential.helper")' \
+              '      echo "helper setup blocked" >&2' \
+              '      exit 87' \
+              '      ;;' \
+              '  esac' \
+              '  case "$3" in' \
+              '    user.name|user.email)' \
+              '      mkdir -p "$HOME"' \
+              '      printf "%s=%s\n" "$3" "$4" >> "$HOME/.gitconfig"' \
+              '      exit 0' \
+              '      ;;' \
+              '  esac' \
+              'fi' \
+              'echo "unexpected fake container git command: $*" >&2' \
+              'exit 91' \
+              >/usr/local/bin/git \
+              && chmod +x /usr/local/bin/git
+            "#,
+                uid = current_uid(),
+                gid = current_gid(),
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteUser": "decune",
+              "postStartCommand": "test \"$(id -un)\" = decune && grep -qx 'user.name=Octo User' \"$HOME/.gitconfig\" && grep -qx 'user.email=octo@example.test' \"$HOME/.gitconfig\""
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let git_path = host_tools
+        .write_file(
+            "bin/git",
+            "#!/bin/sh\nif [ \"$1\" = config ] && [ \"$2\" = --global ] && [ \"$3\" = --get ]; then case \"$4\" in user.name) printf 'Octo User\\n'; exit 0 ;; user.email) printf 'octo@example.test\\n'; exit 0 ;; esac; fi\nexit 1\n",
+        )
+        .unwrap();
+    fs::set_permissions(&git_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        git_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("PATH", &fake_path)
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains(
+                "Git credential forwarding is unavailable",
+            ));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_copies_host_global_gitconfig_when_https_is_off_without_leaking_secret() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_home = support::TempWorkspace::new().unwrap();
@@ -2878,6 +2994,59 @@ fn down_and_clean_manage_image_container() {
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Cleaned dev container resources"));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn down_removes_github_token_file_and_keeps_token_directory_without_container() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let runtime_home = path_roots.path().join("runtime");
+    let workspace_id = workspace_id(&workspace_root);
+    let token_dir = runtime_home
+        .join("decune")
+        .join(&workspace_id)
+        .join("gh-token");
+    let token_file = token_dir.join("token");
+    let marker_file = token_dir.join("marker");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    fs::create_dir_all(&token_dir).unwrap();
+    fs::write(&token_file, "github-test-secret\n").unwrap();
+    fs::write(&marker_file, "keep\n").unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("down")
+            .arg(&workspace_root)
+            .env("XDG_RUNTIME_DIR", &runtime_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "No dev container found for this workspace",
+            ))
+            .stderr(predicate::str::contains("github-test-secret").not());
+
+        assert!(token_dir.is_dir());
+        assert!(!token_file.exists());
+        assert_eq!(fs::read_to_string(&marker_file).unwrap(), "keep\n");
     });
 
     runtime.block_on(async {
