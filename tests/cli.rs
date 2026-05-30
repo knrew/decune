@@ -1642,6 +1642,72 @@ read_only = true
 }
 
 #[test]
+fn up_detach_uses_workspace_mount_as_workspace_folder_when_docker_tests_are_enabled() {
+    if support::skip_unless_docker_tests_enabled() {
+        return;
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.write_file("marker.txt", "workspace\n").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+              "postStartCommand": "test \"$(pwd)\" = \"/workspace\" && test -f marker.txt"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            let host_config = inspect
+                .host_config
+                .expect("container host config should exist");
+            let mounts = host_config.mounts.unwrap_or_default();
+            let workspace_mount = mounts
+                .iter()
+                .find(|mount| mount.target.as_deref() == Some("/workspace"))
+                .expect("expected workspace mount");
+
+            assert_eq!(workspace_mount.source.as_deref(), workspace_root.to_str());
+        });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_resolves_remote_user_home_mount_target_when_docker_tests_are_enabled() {
     if support::skip_unless_docker_tests_enabled() {
         return;
