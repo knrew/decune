@@ -760,11 +760,14 @@ mod tests {
         let dockerfile_path = context.path().join("Dockerfile");
         std::fs::write(
             &dockerfile_path,
-            r#"
+            format!(
+                r#"
             FROM alpine:3.20
+            LABEL decune.test.image="{image}"
             RUN adduser -D vscode
             USER vscode
-            "#,
+            "#
+            ),
         )?;
 
         build_image(
@@ -789,11 +792,14 @@ mod tests {
         let dockerfile_path = context.path().join("Dockerfile");
         std::fs::write(
             &dockerfile_path,
-            r#"
+            format!(
+                r#"
             FROM alpine:3.20
+            LABEL decune.test.image="{image}"
             RUN adduser -D vscode && addgroup -S shared && addgroup vscode shared
             USER vscode:shared
-            "#,
+            "#
+            ),
         )?;
 
         build_image(

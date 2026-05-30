@@ -548,12 +548,16 @@ fn up_detach_sets_git_credential_home_for_nonroot_remote_user() {
 fn up_detach_denies_host_daemon_socket_to_non_remote_user() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_home = support::TempWorkspace::new().unwrap();
+    let attacker_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+    let attacker_gid = if current_gid() == 20001 { 20002 } else { 20001 };
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            &format!(
+                r#"
             FROM ubuntu:24.04
-            RUN useradd -m attacker \
+            RUN groupadd -g {attacker_gid} attackergrp \
+              && useradd -m -u {attacker_uid} -g attackergrp attacker \
               && printf '%s\n' \
               '#!/bin/sh' \
               'set -eu' \
@@ -585,6 +589,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user() {
               'exit 91' \
               >/usr/local/bin/git && chmod +x /usr/local/bin/git
             "#,
+            ),
         )
         .unwrap();
     workspace
@@ -595,7 +600,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user() {
               "build": {
                 "dockerfile": "Dockerfile"
               },
-              "postStartCommand": "command -v su >/dev/null && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && if su attacker -s /bin/sh -c \"printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi"
+              "postStartCommand": "command -v su >/dev/null && owner=$(stat -c %u /run/decune/host-daemon.sock) && attacker=$(id -u attacker) && if [ \"$owner\" = \"$attacker\" ]; then echo 'attacker fixture uid matches host daemon owner' >&2; exit 24; fi && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && if su attacker -s /bin/sh -c \"printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi"
             }
             "#,
         )
