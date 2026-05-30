@@ -7,7 +7,7 @@ use crate::{
         path::{HostPathOptions, PathCreate, SymlinkResolution, resolve_host_path},
         resolved::{ResolvedConfig, ResolvedDotfile},
         types::{DotfileConflict, MountType},
-        variables::VariableContext,
+        variables::{VariableContext, expand_variables},
     },
     docker::{
         client::DockerClient,
@@ -36,8 +36,9 @@ pub(crate) async fn setup_dotfiles(
     container: &str,
     config: &ResolvedConfig,
     remote_user: &ResolvedRemoteUser,
+    variables: &VariableContext,
 ) -> Result<()> {
-    let script = dotfile_setup_script(config, &remote_user.home)?;
+    let script = dotfile_setup_script(config, &remote_user.home, variables)?;
     if script.is_empty() {
         return Ok(());
     }
@@ -59,15 +60,20 @@ pub(crate) async fn setup_dotfiles(
     Ok(())
 }
 
-fn dotfile_setup_script(config: &ResolvedConfig, remote_home: &str) -> Result<String> {
+fn dotfile_setup_script(
+    config: &ResolvedConfig,
+    remote_home: &str,
+    variables: &VariableContext,
+) -> Result<String> {
     let mut script = String::new();
     if !config.dotfiles.is_empty() {
         script.push_str("set -e\n");
     }
 
     for dotfile in &config.dotfiles {
-        let target = remote_home_target(remote_home, &dotfile.target)?;
-        let source = staging_target(&dotfile.target)?;
+        let dotfile_target = expanded_dotfile_target(dotfile, variables)?;
+        let target = remote_home_target(remote_home, &dotfile_target)?;
+        let source = staging_target(&dotfile_target)?;
         let parent = container_parent(&target)?;
         script.push_str(&dotfile_setup_script_entry(
             &source,
@@ -85,7 +91,8 @@ fn dotfile_mount_spec(
     workspace_root: &Path,
     variables: &VariableContext,
 ) -> Result<DockerMountSpec> {
-    let target = staging_target(&dotfile.target)?;
+    let dotfile_target = expanded_dotfile_target(dotfile, variables)?;
+    let target = staging_target(&dotfile_target)?;
     let source = resolve_host_path(
         &dotfile.source,
         &HostPathOptions::new(dotfile.origin, workspace_root, variables)
@@ -108,6 +115,14 @@ fn dotfile_mount_spec(
         bind_options: None,
         volume_options: None,
     })
+}
+
+fn expanded_dotfile_target(
+    dotfile: &ResolvedDotfile,
+    variables: &VariableContext,
+) -> Result<String> {
+    expand_variables(&dotfile.target, variables)
+        .with_context(|| format!("Failed to expand dotfile target: {}", dotfile.target))
 }
 
 fn staging_target(target: &str) -> Result<String> {
@@ -304,6 +319,78 @@ mod tests {
     }
 
     #[test]
+    fn expands_dotfile_target_variables_for_staging_mount() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("dotfile");
+        fs::write(&source, "dotfile").unwrap();
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: "dotfile".to_owned(),
+                target: ".config/${remoteUser}/nvim".to_owned(),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            dotfile_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts[0].target, "/opt/decune/dotfiles/.config/vscode/nvim");
+    }
+
+    #[test]
+    fn rejects_dotfile_target_variables_that_expand_to_absolute_path() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("dotfile");
+        fs::write(&source, "dotfile").unwrap();
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: "dotfile".to_owned(),
+                target: "${remoteUserHome}/.gitconfig".to_owned(),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let error = dotfile_mount_specs(&config, workspace.path(), &variables(workspace.path()))
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Dotfile target must be relative")
+        );
+    }
+
+    #[test]
+    fn expands_dotfile_target_variables_for_setup_script() {
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: ".decune/nvim".to_owned(),
+                target: ".config/${remoteUser}/nvim".to_owned(),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let script =
+            dotfile_setup_script(&config, "/home/vscode", &variables(Path::new("/workspace")))
+                .unwrap();
+
+        assert!(script.contains("/opt/decune/dotfiles/.config/vscode/nvim"));
+        assert!(script.contains("/home/vscode/.config/vscode/nvim"));
+    }
+
+    #[test]
     fn setup_script_is_idempotent_for_existing_expected_symlink() {
         let config = ResolvedConfig {
             dotfiles: vec![ResolvedDotfile {
@@ -317,7 +404,9 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let script = dotfile_setup_script(&config, "/home/vscode").unwrap();
+        let script =
+            dotfile_setup_script(&config, "/home/vscode", &variables(Path::new("/workspace")))
+                .unwrap();
 
         assert!(script.contains("readlink \"$dest\""));
         assert!(script.contains("/opt/decune/dotfiles/.config/nvim"));
@@ -351,7 +440,12 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let script = dotfile_setup_script(&config, remote_home.path().to_str().unwrap()).unwrap();
+        let script = dotfile_setup_script(
+            &config,
+            remote_home.path().to_str().unwrap(),
+            &variables(Path::new("/workspace")),
+        )
+        .unwrap();
         let output = Command::new("/bin/sh")
             .args(["-lc", &script])
             .output()
@@ -374,7 +468,8 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let script = dotfile_setup_script(&config, "/").unwrap();
+        let script =
+            dotfile_setup_script(&config, "/", &variables(Path::new("/workspace"))).unwrap();
 
         assert!(script.contains("dest='/.gitconfig'"));
     }
@@ -393,7 +488,9 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let script = dotfile_setup_script(&config, "/home/vscode").unwrap();
+        let script =
+            dotfile_setup_script(&config, "/home/vscode", &variables(Path::new("/workspace")))
+                .unwrap();
 
         assert!(script.contains("if [ -L \"$dest\" ]; then"));
         assert!(script.contains("rm \"$dest\""));
@@ -416,7 +513,9 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let script = dotfile_setup_script(&config, "/home/vscode").unwrap();
+        let script =
+            dotfile_setup_script(&config, "/home/vscode", &variables(Path::new("/workspace")))
+                .unwrap();
 
         assert!(script.contains(".decune-backup-$(date +%s)"));
         assert!(script.contains("mv \"$dest\" \"$backup\""));

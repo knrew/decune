@@ -14,6 +14,7 @@ use crate::{
     config::{
         resolved::{ResolvedConfig, ResolvedHook},
         types::{Command, HookLocation},
+        variables::VariableContext,
     },
     devcontainer::metadata::LifecycleProperty,
     docker::{
@@ -180,6 +181,8 @@ pub(crate) struct LifecycleRunContext<'a> {
     pub(crate) container: &'a str,
     pub(crate) config: &'a ResolvedConfig,
     pub(crate) workspace_root: &'a Path,
+    pub(crate) workspace_basename: &'a str,
+    pub(crate) workspace_id: &'a str,
     pub(crate) workspace_folder: &'a str,
     pub(crate) remote_user: ResolvedRemoteUser,
 }
@@ -271,11 +274,13 @@ pub(crate) async fn prepare_container_lifecycle(
 ) -> Result<PreparedLifecycleRunContext<'_>> {
     start_host_daemon()?;
     refresh_decune_setup()?;
+    let dotfile_variables = dotfile_variable_context(&context);
     setup_dotfiles(
         context.client,
         context.container,
         context.config,
         &context.remote_user,
+        &dotfile_variables,
     )
     .await?;
     Ok(PreparedLifecycleRunContext {
@@ -295,6 +300,49 @@ pub(crate) async fn prepare_container_lifecycle(
         workspace_folder: context.workspace_folder,
         remote_user: context.remote_user,
     })
+}
+
+fn dotfile_variable_context(context: &LifecycleRunContext<'_>) -> VariableContext {
+    VariableContext::new(
+        context.workspace_root.to_path_buf(),
+        context.workspace_basename.to_owned(),
+        context.workspace_folder.to_owned(),
+        container_workspace_folder_basename(context.workspace_folder, context.workspace_basename),
+        context.workspace_id.to_owned(),
+        current_uid(),
+        current_gid(),
+        context.remote_user.user.clone(),
+        context.remote_user.home.clone(),
+    )
+}
+
+fn container_workspace_folder_basename(workspace_folder: &str, workspace_basename: &str) -> String {
+    Path::new(workspace_folder)
+        .file_name()
+        .and_then(|value| value.to_str())
+        .filter(|value| !value.is_empty())
+        .unwrap_or(workspace_basename)
+        .to_owned()
+}
+
+#[cfg(unix)]
+fn current_uid() -> u32 {
+    unsafe { libc::getuid() }
+}
+
+#[cfg(not(unix))]
+fn current_uid() -> u32 {
+    0
+}
+
+#[cfg(unix)]
+fn current_gid() -> u32 {
+    unsafe { libc::getgid() }
+}
+
+#[cfg(not(unix))]
+fn current_gid() -> u32 {
+    0
 }
 
 pub(crate) async fn run_container_start_lifecycle(
