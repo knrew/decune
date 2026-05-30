@@ -1125,6 +1125,250 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
 }
 
 #[test]
+fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let empty_tools = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let gh_path = host_tools
+        .write_file(
+            "bin/gh",
+            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
+        )
+        .unwrap();
+    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = gh_path.parent().unwrap().display().to_string();
+    let empty_path = empty_tools.create_dir("bin").unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("PATH", &fake_path)
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("github-test-secret").not());
+
+        let first_id = runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
+            assert!(inspect_has_mount_target(&inspect, "/run/decune/gh-token"));
+            assert!(inspect_has_mount_target(&inspect, "/run/decune/gh"));
+            inspect.id.unwrap()
+        });
+
+        decune()
+            .env("PATH", &empty_path)
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            assert_ne!(inspect.id.as_deref(), Some(first_id.as_str()));
+            assert!(!inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
+            assert!(!inspect_has_mount_target(&inspect, "/run/decune/gh-token"));
+            assert!(!inspect_has_mount_target(&inspect, "/run/decune/gh"));
+        });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'set -eu' \
+              'if [ "$1" = auth ] && [ "$2" = login ]; then' \
+              '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+              '  mkdir -p "$GH_CONFIG_DIR"' \
+              '  cat > "$GH_CONFIG_DIR/token"' \
+              '  exit 0' \
+              'fi' \
+              'if [ "$1" = auth ] && [ "$2" = setup-git ]; then' \
+              '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+              '  exit 0' \
+              'fi' \
+              'echo "unexpected fake gh command: $*" >&2' \
+              'exit 91' \
+              >/usr/local/bin/gh \
+              && chmod +x /usr/local/bin/gh
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+              "workspaceFolder": "/workspace",
+              "postStartCommand": "test \"${GH_CONFIG_DIR:-}\" = /run/decune/gh && grep -qx \"$(cat /workspace/expected-token)\" \"$GH_CONFIG_DIR/token\""
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file("expected-token", "first-secret\n")
+        .unwrap();
+    let host_token_path = host_tools.write_file("token", "first-secret\n").unwrap();
+    let gh_path = host_tools
+        .write_file(
+            "bin/gh",
+            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then cat \"$DECUNE_TEST_GH_TOKEN_FILE\"; exit 0; fi\nexit 91\n",
+        )
+        .unwrap();
+    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        gh_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("PATH", &fake_path)
+            .env("DECUNE_TEST_GH_TOKEN_FILE", &host_token_path)
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("first-secret").not());
+
+        let first_id = runtime.block_on(async {
+            inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap()
+                .id
+                .unwrap()
+        });
+
+        decune()
+            .arg("down")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Stopped dev container"));
+
+        fs::write(&host_token_path, "second-secret\n").unwrap();
+        workspace
+            .write_file("expected-token", "second-secret\n")
+            .unwrap();
+
+        decune()
+            .env("PATH", &fake_path)
+            .env("DECUNE_TEST_GH_TOKEN_FILE", &host_token_path)
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started existing dev container"))
+            .stderr(predicate::str::contains("second-secret").not());
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_mounts_ssh_agent_socket_and_sets_container_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     let socket_workspace = support::TempWorkspace::new().unwrap();
@@ -1185,6 +1429,105 @@ fn up_detach_mounts_ssh_agent_socket_and_sets_container_env() {
                 env.iter()
                     .any(|entry| entry == "SSH_AUTH_SOCK=/run/decune/ssh-agent.sock")
             );
+        });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_recreates_container_when_ssh_agent_socket_becomes_unavailable() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let socket_workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            https = "off"
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let socket_path = socket_workspace.path().join("agent.sock");
+    let _listener = UnixListener::bind(&socket_path).unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("SSH_AUTH_SOCK", &socket_path)
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let first_id = runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            assert!(inspect_has_env(
+                &inspect,
+                "SSH_AUTH_SOCK=/run/decune/ssh-agent.sock"
+            ));
+            assert!(inspect_has_mount_target(
+                &inspect,
+                "/run/decune/ssh-agent.sock"
+            ));
+            inspect.id.unwrap()
+        });
+
+        decune()
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            assert_ne!(inspect.id.as_deref(), Some(first_id.as_str()));
+            assert!(!inspect_has_env(
+                &inspect,
+                "SSH_AUTH_SOCK=/run/decune/ssh-agent.sock"
+            ));
+            assert!(!inspect_has_mount_target(
+                &inspect,
+                "/run/decune/ssh-agent.sock"
+            ));
         });
     });
 
@@ -3872,6 +4215,25 @@ async fn inspect_single_workspace_container(
         .ok_or_else(|| anyhow::anyhow!("workspace container did not include an id"))?;
 
     Ok(docker.inspect_container(id, None).await?)
+}
+
+fn inspect_has_env(inspect: &bollard::models::ContainerInspectResponse, entry: &str) -> bool {
+    inspect
+        .config
+        .as_ref()
+        .and_then(|config| config.env.as_ref())
+        .is_some_and(|env| env.iter().any(|value| value == entry))
+}
+
+fn inspect_has_mount_target(
+    inspect: &bollard::models::ContainerInspectResponse,
+    target: &str,
+) -> bool {
+    inspect.mounts.as_ref().is_some_and(|mounts| {
+        mounts
+            .iter()
+            .any(|mount| mount.destination.as_deref() == Some(target))
+    })
 }
 
 async fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<Vec<String>> {

@@ -277,8 +277,6 @@ pub(crate) fn run_host_initialize_lifecycle(
 pub(crate) async fn prepare_container_lifecycle(
     context: LifecycleRunContext<'_>,
 ) -> Result<PreparedLifecycleRunContext<'_>> {
-    start_host_daemon()?;
-    refresh_decune_setup()?;
     let dotfile_variables = dotfile_variable_context(&context);
     let dotfiles_result = setup_dotfiles(
         context.client,
@@ -422,7 +420,6 @@ pub(crate) async fn run_container_start_lifecycle(
 }
 
 pub(crate) async fn run_attach_lifecycle(context: &PreparedLifecycleRunContext<'_>) -> Result<()> {
-    start_port_forwarding_listeners()?;
     run_container_stage(
         context,
         HookStage::BeforePostAttach,
@@ -809,18 +806,6 @@ fn output_tail(output: &[u8]) -> String {
 
     let start = output.len().saturating_sub(MAX_TAIL_BYTES);
     String::from_utf8_lossy(&output[start..]).trim().to_owned()
-}
-
-fn start_host_daemon() -> Result<()> {
-    Ok(())
-}
-
-fn refresh_decune_setup() -> Result<()> {
-    Ok(())
-}
-
-fn start_port_forwarding_listeners() -> Result<()> {
-    Ok(())
 }
 
 impl TryFrom<LifecycleProperty> for LifecycleStage {
