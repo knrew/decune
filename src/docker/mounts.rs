@@ -60,14 +60,30 @@ pub(crate) fn config_mount_specs(
     let mut mounts = Vec::new();
 
     for mount in &config.devcontainer.mounts {
-        mounts.push(devcontainer_mount_spec(mount, workspace_root, variables)?);
+        replace_mount_by_target(
+            &mut mounts,
+            devcontainer_mount_spec(mount, workspace_root, variables)?,
+        );
     }
 
     for mount in &config.mounts {
-        mounts.push(resolved_mount_spec(mount, workspace_root, variables)?);
+        replace_mount_by_target(
+            &mut mounts,
+            resolved_mount_spec(mount, workspace_root, variables)?,
+        );
     }
 
     Ok(mounts)
+}
+
+fn replace_mount_by_target(mounts: &mut Vec<DockerMountSpec>, mount: DockerMountSpec) {
+    match mounts
+        .iter()
+        .position(|existing| existing.target == mount.target)
+    {
+        Some(index) => mounts[index] = mount,
+        None => mounts.push(mount),
+    }
 }
 
 fn resolved_mount_spec(
@@ -604,6 +620,46 @@ mod tests {
 
         assert_eq!(mounts[0].source.as_deref(), Some("project-cache"));
         assert_eq!(mounts[0].mount_type, MountType::Volume);
+    }
+
+    #[test]
+    fn decune_mount_replaces_devcontainer_mount_with_same_target() {
+        let workspace = tempfile::tempdir().unwrap();
+        let devcontainer_source = workspace.path().join("devcontainer-cache");
+        let decune_source = workspace.path().join("decune-cache");
+        fs::create_dir_all(&devcontainer_source).unwrap();
+        fs::create_dir_all(&decune_source).unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some("decune-cache".to_owned()),
+                target: "/cache".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+                resolve_symlink: true,
+                create: None,
+                origin: ConfigPathOrigin::Project,
+            }],
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localWorkspaceFolder}/devcontainer-cache,target=/cache,type=bind,readonly=true,consistency=cached"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(
+            mounts[0].source.as_deref(),
+            Some(decune_source.canonicalize().unwrap().to_str().unwrap())
+        );
+        assert_eq!(mounts[0].target, "/cache");
+        assert!(!mounts[0].read_only);
+        assert_eq!(mounts[0].consistency, None);
     }
 
     #[test]
