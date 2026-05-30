@@ -673,6 +673,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
               && if getent passwd {uid} >/dev/null; then remote_user="$(getent passwd {uid} | cut -d: -f1)" && if [ "$remote_user" != decune ]; then usermod -l decune "$remote_user"; fi && usermod -d /home/decune -m decune && usermod -g "$remote_group" decune; else useradd -m -u {uid} -g "$remote_group" decune; fi \
               && groupadd -g {attacker_gid} attackergrp \
               && useradd -m -u {attacker_uid} -g attackergrp attacker \
+              && echo 'attacker:decune-test' | chpasswd \
               && printf '%s\n' \
               '#!/bin/sh' \
               'set -eu' \
@@ -714,7 +715,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
               },
               "remoteUser": "decune",
               "updateRemoteUserUID": false,
-              "postStartCommand": "test \"$(id -un)\" = decune && test \"$(id -u)\" = \"__UID__\" && command -v su >/dev/null && owner=$(stat -c %u /run/decune/host-daemon.sock) && attacker=$(id -u attacker) && if [ \"$owner\" = \"$attacker\" ]; then echo 'attacker fixture uid matches host daemon owner' >&2; exit 24; fi && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && if su attacker -s /bin/sh -c \"printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi"
+              "postStartCommand": "test \"$(id -un)\" = decune && test \"$(id -u)\" = \"__UID__\" && command -v su >/dev/null && owner=$(stat -c %u /run/decune/host-daemon.sock) && attacker=$(id -u attacker) && if [ \"$owner\" = \"$attacker\" ]; then echo 'attacker fixture uid matches host daemon owner' >&2; exit 24; fi && printf 'protocol=https\nhost=example.test\n\n' | git credential fill > /tmp/decune-credential && grep -q 'username=octo' /tmp/decune-credential && rm -f /tmp/attacker-started && if printf 'decune-test\n' | su attacker -s /bin/sh -c \"touch /tmp/attacker-started && printf 'protocol=https\nhost=example.test\n\n' | /run/decune/git-credential-decune get >/tmp/attacker-credential 2>/tmp/attacker-error\"; then echo 'attacker reached host daemon' >&2; exit 23; fi && test -f /tmp/attacker-started"
             }
             "#
     .replace("__UID__", &uid.to_string());
@@ -883,6 +884,8 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
 fn up_detach_warns_when_github_cli_is_missing_in_container_without_leaking_token() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let runtime_home = path_roots.path().join("runtime");
     workspace.create_dir(".devcontainer").unwrap();
     workspace
         .write_file(
@@ -918,6 +921,10 @@ fn up_detach_warns_when_github_cli_is_missing_in_container_without_leaking_token
         std::env::var("PATH").unwrap_or_default()
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let runtime_dir = runtime_home.join("decune").join(&workspace_id);
+    let github_token_file = runtime_dir.join("gh-token").join("token");
+    let host_daemon_socket = runtime_dir.join("host-daemon.sock");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -930,6 +937,7 @@ fn up_detach_warns_when_github_cli_is_missing_in_container_without_leaking_token
     let result = std::panic::catch_unwind(|| {
         decune()
             .env("PATH", &fake_path)
+            .env("XDG_RUNTIME_DIR", &runtime_home)
             .args(["up", "--detach"])
             .arg(&workspace_root)
             .assert()
@@ -958,6 +966,9 @@ fn up_detach_warns_when_github_cli_is_missing_in_container_without_leaking_token
                     .all(|value| !value.contains("github-test-secret"))
             );
         });
+
+        assert!(!github_token_file.exists());
+        assert!(!host_daemon_socket.exists());
     });
 
     runtime.block_on(async {
