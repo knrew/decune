@@ -367,6 +367,45 @@ mod tests {
     }
 
     #[test]
+    fn parses_manual_port_forms() {
+        let cli = Cli::parse_from([
+            "decune",
+            "up",
+            "--port",
+            "3000",
+            "--port",
+            "3000:3000",
+            "--port",
+            "127.0.0.1:8080:3000",
+            "--port",
+            "localhost:5173",
+            "--port",
+            "0.0.0.0:8081:5173",
+        ]);
+
+        let Commands::Up(args) = cli.command else {
+            panic!("expected up command");
+        };
+
+        assert_eq!(args.ports.len(), 5);
+        assert_eq!(args.ports[0].container, 3000);
+        assert_eq!(args.ports[0].host, None);
+        assert_eq!(args.ports[0].host_ip, "127.0.0.1");
+        assert_eq!(args.ports[1].container, 3000);
+        assert_eq!(args.ports[1].host, Some(3000));
+        assert_eq!(args.ports[1].host_ip, "127.0.0.1");
+        assert_eq!(args.ports[2].container, 3000);
+        assert_eq!(args.ports[2].host, Some(8080));
+        assert_eq!(args.ports[2].host_ip, "127.0.0.1");
+        assert_eq!(args.ports[3].container, 5173);
+        assert_eq!(args.ports[3].host, None);
+        assert_eq!(args.ports[3].host_ip, "127.0.0.1");
+        assert_eq!(args.ports[4].container, 5173);
+        assert_eq!(args.ports[4].host, Some(8081));
+        assert_eq!(args.ports[4].host_ip, "0.0.0.0");
+    }
+
+    #[test]
     fn parses_rebuild_options() {
         let cli = Cli::parse_from([
             "decune",
@@ -435,6 +474,17 @@ mod tests {
             Cli::try_parse_from(["decune", "up", "--port", "127.0.0.1:abc:3000"]).unwrap_err();
 
         assert!(error.to_string().contains("invalid host port"));
+    }
+
+    #[test]
+    fn unsupported_manual_port_protocol_is_rejected() {
+        let error = Cli::try_parse_from(["decune", "up", "--port", "3000/udp"]).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported manual port protocol")
+        );
     }
 
     #[test]
