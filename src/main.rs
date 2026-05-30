@@ -37,5 +37,10 @@ fn run() -> Result<i32> {
         .build()
         .with_resource_context("initialize async runtime", "tokio runtime")?;
 
+    if host::forward::invoked_as_forward_agent() {
+        runtime.block_on(host::forward::run_forward_agent())?;
+        return Ok(0);
+    }
+
     runtime.block_on(cli::run())
 }
