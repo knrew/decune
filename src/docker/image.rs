@@ -572,12 +572,7 @@ mod tests {
     }
 
     #[test]
-    fn public_image_can_be_pulled_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn public_image_can_be_pulled() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -599,12 +594,7 @@ mod tests {
     }
 
     #[test]
-    fn missing_policy_uses_local_image_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn missing_policy_uses_local_image() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -622,9 +612,5 @@ mod tests {
 
             assert_eq!(outcome, ImagePullOutcome::AlreadyPresent);
         });
-    }
-
-    fn docker_tests_enabled() -> bool {
-        std::env::var_os("DECUNE_DOCKER_TESTS").is_some_and(|value| value == "1")
     }
 }

@@ -130,12 +130,7 @@ mod tests {
     }
 
     #[test]
-    fn ping_and_version_work_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn ping_and_version_work() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -171,10 +166,6 @@ mod tests {
         {
             "tcp://localhost:2375"
         }
-    }
-
-    fn docker_tests_enabled() -> bool {
-        std::env::var_os("DECUNE_DOCKER_TESTS").is_some_and(|value| value == "1")
     }
 
     #[test]

@@ -733,12 +733,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_capture_returns_stdout_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn exec_capture_returns_stdout() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -781,12 +776,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_capture_applies_command_context_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn exec_capture_applies_command_context() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -832,12 +822,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_capture_preserves_tty_console_output_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn exec_capture_preserves_tty_console_output() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -880,12 +865,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_capture_output_returns_non_zero_exit_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn exec_capture_output_returns_non_zero_exit() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -928,12 +908,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_capture_returns_error_for_non_zero_exit_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn exec_capture_returns_error_for_non_zero_exit() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -977,12 +952,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_attach_streams_stdout_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn exec_attach_streams_stdout() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1059,9 +1029,5 @@ mod tests {
 
     fn test_container_name(test_name: &str) -> String {
         format!("decune-test-{test_name}-{}", std::process::id())
-    }
-
-    fn docker_tests_enabled() -> bool {
-        std::env::var_os("DECUNE_DOCKER_TESTS").is_some_and(|value| value == "1")
     }
 }

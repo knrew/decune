@@ -1850,12 +1850,7 @@ type = "bind"
     }
 
     #[test]
-    fn up_detach_creates_and_reuses_container_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_creates_and_reuses_container() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1918,12 +1913,7 @@ type = "bind"
     }
 
     #[test]
-    fn up_detach_reuses_container_when_built_image_tag_is_removed_if_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_reuses_container_when_built_image_tag_is_removed() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1997,11 +1987,6 @@ type = "bind"
 
     #[test]
     fn up_detach_reuses_image_container_when_source_image_tag_is_removed() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2070,12 +2055,7 @@ type = "bind"
     }
 
     #[test]
-    fn up_detach_stops_lifecycle_after_failure_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_stops_lifecycle_after_failure() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2144,11 +2124,6 @@ type = "bind"
 
     #[test]
     fn up_detach_waits_for_parallel_post_start_siblings() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2217,12 +2192,7 @@ type = "bind"
     }
 
     #[test]
-    fn up_detach_does_not_run_post_attach_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_does_not_run_post_attach() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2285,12 +2255,7 @@ type = "bind"
     }
 
     #[test]
-    fn up_attached_runs_post_attach_before_shell_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_attached_runs_post_attach_before_shell() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2363,12 +2328,7 @@ shell = "/usr/local/bin/decune-shell-check"
     }
 
     #[test]
-    fn up_running_attached_runs_post_attach_each_attach_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_running_attached_runs_post_attach_each_attach() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2457,12 +2417,7 @@ shell = "/usr/local/bin/decune-exit-0"
     }
 
     #[test]
-    fn up_attached_stopped_runs_start_attach_shell_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_attached_stopped_runs_start_attach_shell() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2547,12 +2502,7 @@ shell = "/usr/local/bin/decune-shell-check"
     }
 
     #[test]
-    fn rebuild_detach_recreates_without_post_attach_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn rebuild_detach_recreates_without_post_attach() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2628,12 +2578,7 @@ shell = "/usr/local/bin/decune-shell-check"
     }
 
     #[test]
-    fn rebuild_attached_recreates_runs_post_attach_before_shell_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn rebuild_attached_recreates_runs_post_attach_before_shell() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2726,12 +2671,7 @@ shell = "/usr/local/bin/decune-shell-check"
     }
 
     #[test]
-    fn up_detach_applies_remote_env_to_lifecycle_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_applies_remote_env_to_lifecycle() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2796,12 +2736,7 @@ shell = "/usr/local/bin/decune-shell-check"
     }
 
     #[test]
-    fn up_detach_applies_user_env_probe_to_lifecycle_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_applies_user_env_probe_to_lifecycle() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2891,12 +2826,7 @@ shell = "/usr/local/bin/decune-shell-check"
     }
 
     #[test]
-    fn up_detach_omits_remote_probe_env_for_root_post_start_hook_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_omits_remote_probe_env_for_root_post_start_hook() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -2994,12 +2924,7 @@ user = "root"
     }
 
     #[test]
-    fn up_detach_probes_env_with_remote_user_shell_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_probes_env_with_remote_user_shell() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3087,12 +3012,7 @@ user = "root"
     }
 
     #[test]
-    fn up_detach_removes_new_container_when_start_fails_if_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn up_detach_removes_new_container_when_start_fails() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -3211,9 +3131,5 @@ user = "root"
         input.resolved_mounts = mount_hash_inputs(&[mount]);
 
         config_hash(&input)
-    }
-
-    fn docker_tests_enabled() -> bool {
-        std::env::var_os("DECUNE_DOCKER_TESTS").is_some_and(|value| value == "1")
     }
 }

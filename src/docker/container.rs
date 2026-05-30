@@ -666,13 +666,7 @@ mod tests {
     }
 
     #[test]
-    fn minimal_container_can_be_created_started_stopped_and_removed_when_docker_tests_are_enabled()
-    {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn minimal_container_can_be_created_started_stopped_and_removed() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -725,12 +719,7 @@ mod tests {
     }
 
     #[test]
-    fn stop_container_ignores_non_zero_wait_status_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn stop_container_ignores_non_zero_wait_status() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -777,13 +766,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_container_label_filter_finds_only_managed_workspace_when_docker_tests_are_enabled()
-    {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn workspace_container_label_filter_finds_only_managed_workspace() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -872,12 +855,7 @@ mod tests {
     }
 
     #[test]
-    fn create_spec_mounts_read_only_bind_and_publishes_port_when_docker_tests_are_enabled() {
-        if !docker_tests_enabled() {
-            eprintln!("skipped: set DECUNE_DOCKER_TESTS=1 to run Docker integration tests");
-            return;
-        }
-
+    fn create_spec_mounts_read_only_bind_and_publishes_port() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1034,9 +1012,5 @@ mod tests {
         let root = directory.path().join(name);
         fs::create_dir_all(&root).unwrap();
         Workspace::resolve(&root).unwrap()
-    }
-
-    fn docker_tests_enabled() -> bool {
-        std::env::var_os("DECUNE_DOCKER_TESTS").is_some_and(|value| value == "1")
     }
 }

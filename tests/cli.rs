@@ -52,11 +52,7 @@ fn command_help_is_displayed() {
 }
 
 #[test]
-fn up_detach_creates_and_reuses_image_container_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_creates_and_reuses_image_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -118,11 +114,7 @@ fn up_detach_creates_and_reuses_image_container_when_docker_tests_are_enabled() 
 }
 
 #[test]
-fn up_detach_runs_initialize_when_reusing_running_container_if_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_runs_initialize_when_reusing_running_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -177,11 +169,7 @@ fn up_detach_runs_initialize_when_reusing_running_container_if_docker_tests_are_
 }
 
 #[test]
-fn up_detach_runs_initialize_when_starting_stopped_container_if_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_runs_initialize_when_starting_stopped_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -244,11 +232,7 @@ fn up_detach_runs_initialize_when_starting_stopped_container_if_docker_tests_are
 }
 
 #[test]
-fn up_detach_does_not_report_started_when_lifecycle_fails_if_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_does_not_report_started_when_lifecycle_fails() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -295,11 +279,7 @@ fn up_detach_does_not_report_started_when_lifecycle_fails_if_docker_tests_are_en
 }
 
 #[test]
-fn up_attaches_configured_shell_and_returns_shell_exit_code_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_attaches_configured_shell_and_returns_shell_exit_code() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
         .write_file(
@@ -366,11 +346,7 @@ fn up_attaches_configured_shell_and_returns_shell_exit_code_when_docker_tests_ar
 }
 
 #[test]
-fn up_attached_shell_receives_user_env_probe_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_attached_shell_receives_user_env_probe() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
         .write_file(
@@ -453,11 +429,7 @@ fn up_attached_shell_receives_user_env_probe_when_docker_tests_are_enabled() {
 }
 
 #[test]
-fn up_config_shell_failure_does_not_fallback_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_config_shell_failure_does_not_fallback() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -511,11 +483,7 @@ fn up_config_shell_failure_does_not_fallback_when_docker_tests_are_enabled() {
 }
 
 #[test]
-fn up_uses_image_metadata_remote_user_and_remote_env_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_uses_image_metadata_remote_user_and_remote_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_tag = format!(
@@ -579,11 +547,7 @@ fn up_uses_image_metadata_remote_user_and_remote_env_when_docker_tests_are_enabl
 }
 
 #[test]
-fn up_detects_image_metadata_label_change_before_reuse_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detects_image_metadata_label_change_before_reuse() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_tag = format!(
@@ -652,11 +616,7 @@ fn up_detects_image_metadata_label_change_before_reuse_when_docker_tests_are_ena
 }
 
 #[test]
-fn up_reuses_image_metadata_when_source_tag_is_missing_if_docker_tests_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_reuses_image_metadata_when_source_tag_is_missing() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_tag = format!(
@@ -733,11 +693,7 @@ fn up_reuses_image_metadata_when_source_tag_is_missing_if_docker_tests_enabled()
 }
 
 #[test]
-fn up_runs_initialize_before_image_pull_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_runs_initialize_before_image_pull() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_tag = format!(
@@ -792,11 +748,7 @@ fn up_runs_initialize_before_image_pull_when_docker_tests_are_enabled() {
 }
 
 #[test]
-fn up_devcontainer_remote_user_overrides_image_metadata_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_devcontainer_remote_user_overrides_image_metadata() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_tag = format!(
@@ -864,11 +816,7 @@ fn up_devcontainer_remote_user_overrides_image_metadata_when_docker_tests_are_en
 }
 
 #[test]
-fn up_detach_builds_dockerfile_container_and_honors_dockerignore_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_builds_dockerfile_container_and_honors_dockerignore() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -959,11 +907,7 @@ fn up_detach_builds_dockerfile_container_and_honors_dockerignore_when_docker_tes
 }
 
 #[test]
-fn up_dockerfile_metadata_label_warns_and_is_not_merged_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_dockerfile_metadata_label_warns_and_is_not_merged() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -1024,11 +968,7 @@ fn up_dockerfile_metadata_label_warns_and_is_not_merged_when_docker_tests_are_en
 }
 
 #[test]
-fn up_detach_rejects_changed_create_config_without_replacing_container_when_docker_tests_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_rejects_changed_create_config_without_replacing_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -1111,11 +1051,7 @@ fn up_detach_rejects_changed_create_config_without_replacing_container_when_dock
 }
 
 #[test]
-fn down_and_clean_manage_image_container_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn down_and_clean_manage_image_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -1226,11 +1162,7 @@ fn down_and_clean_manage_image_container_when_docker_tests_are_enabled() {
 }
 
 #[test]
-fn up_detach_uses_explicit_config_and_applies_create_settings_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_uses_explicit_config_and_applies_create_settings() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer/explicit").unwrap();
     workspace
@@ -1327,11 +1259,7 @@ fn up_detach_uses_explicit_config_and_applies_create_settings_when_docker_tests_
 }
 
 #[test]
-fn clean_force_stops_running_container_before_removal_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn clean_force_stops_running_container_before_removal() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let marker = workspace_root.join("term-marker");
@@ -1375,11 +1303,7 @@ fn clean_force_stops_running_container_before_removal_when_docker_tests_are_enab
 }
 
 #[test]
-fn clean_force_removes_state_and_runtime_directories_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn clean_force_removes_state_and_runtime_directories() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let path_roots = tempfile::tempdir().unwrap();
@@ -1427,11 +1351,7 @@ fn clean_force_removes_state_and_runtime_directories_when_docker_tests_are_enabl
 }
 
 #[test]
-fn clean_images_removes_workspace_images_only_when_requested_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn clean_images_removes_workspace_images_only_when_requested() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_repository = workspace_image_repository(&workspace_root);
@@ -1489,11 +1409,7 @@ fn clean_images_removes_workspace_images_only_when_requested_when_docker_tests_a
 }
 
 #[test]
-fn up_detach_publishes_app_port_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_publishes_app_port() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -1561,11 +1477,7 @@ fn up_detach_publishes_app_port_when_docker_tests_are_enabled() {
 }
 
 #[test]
-fn up_detach_applies_project_read_only_bind_mount_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_applies_project_read_only_bind_mount() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir(".decune").unwrap();
@@ -1642,11 +1554,7 @@ read_only = true
 }
 
 #[test]
-fn up_detach_uses_workspace_mount_as_workspace_folder_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_uses_workspace_mount_as_workspace_folder() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.write_file("marker.txt", "workspace\n").unwrap();
@@ -1708,11 +1616,7 @@ fn up_detach_uses_workspace_mount_as_workspace_folder_when_docker_tests_are_enab
 }
 
 #[test]
-fn up_detach_resolves_remote_user_home_mount_target_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_resolves_remote_user_home_mount_target() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir("host-cache").unwrap();
@@ -1795,11 +1699,7 @@ fn up_detach_resolves_remote_user_home_mount_target_when_docker_tests_are_enable
 }
 
 #[test]
-fn up_detach_resolves_remote_user_home_mount_target_for_dockerfile_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_resolves_remote_user_home_mount_target_for_dockerfile() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir("host-cache").unwrap();
@@ -1881,11 +1781,7 @@ fn up_detach_resolves_remote_user_home_mount_target_for_dockerfile_when_docker_t
 }
 
 #[test]
-fn up_detach_resolves_bind_mount_after_initialize_command_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_resolves_bind_mount_after_initialize_command() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir(".decune").unwrap();
@@ -1963,11 +1859,7 @@ type = "bind"
 }
 
 #[test]
-fn up_detach_sets_up_dotfile_symlink_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_sets_up_dotfile_symlink() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir(".decune").unwrap();
@@ -2051,11 +1943,7 @@ read_only = true
 
 #[cfg(unix)]
 #[test]
-fn up_detach_resolves_dotfile_symlink_source_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_resolves_dotfile_symlink_source() {
     use std::os::unix::fs as unix_fs;
 
     let workspace = support::TempWorkspace::new().unwrap();
@@ -2140,11 +2028,7 @@ target = ".config/nvim"
 }
 
 #[test]
-fn up_detach_replaces_existing_dotfile_symlink_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_replaces_existing_dotfile_symlink() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir(".decune").unwrap();
@@ -2218,11 +2102,7 @@ on_conflict = "replace-symlink"
 }
 
 #[test]
-fn up_detach_fails_dotfile_setup_when_conflict_policy_is_fail_if_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_fails_dotfile_setup_when_conflict_policy_is_fail() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir(".decune").unwrap();
@@ -2296,11 +2176,7 @@ on_conflict = "fail"
 }
 
 #[test]
-fn up_detach_backs_up_existing_dotfile_target_when_requested_if_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_backs_up_existing_dotfile_target_when_requested() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir(".decune").unwrap();
@@ -2375,11 +2251,7 @@ on_conflict = "backup"
 }
 
 #[test]
-fn up_detach_sets_up_dotfile_in_nonstandard_remote_user_home_if_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn up_detach_sets_up_dotfile_in_nonstandard_remote_user_home() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir(".decune").unwrap();
@@ -2453,11 +2325,7 @@ target = ".config/tool"
 }
 
 #[test]
-fn rebuild_recreates_container_and_preserves_managed_volume_when_docker_tests_are_enabled() {
-    if support::skip_unless_docker_tests_enabled() {
-        return;
-    }
-
+fn rebuild_recreates_container_and_preserves_managed_volume() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
