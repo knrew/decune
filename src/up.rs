@@ -40,8 +40,9 @@ use crate::{
             resolve_exec_env, run_attached_exec_stdio,
         },
         image::{
-            PullPolicy, ensure_image, image_devcontainer_metadata_layers,
-            image_devcontainer_metadata_layers_if_present,
+            PullPolicy, ensure_image,
+            image_devcontainer_metadata_layers_if_present_with_forward_ports,
+            image_devcontainer_metadata_layers_with_forward_ports,
             image_has_devcontainer_metadata_label_if_present, remove_image, tag_image,
         },
         mounts::{
@@ -352,6 +353,7 @@ pub(crate) fn build_up_plan(
         explicit_config_path,
         cli_layer,
         Vec::new(),
+        false,
         MountResolution::Resolve,
         ForwardingResolution::Resolve,
     )
@@ -369,6 +371,7 @@ pub(crate) fn build_up_plan_with_image_metadata(
         explicit_config_path,
         cli_layer,
         image_metadata,
+        false,
         MountResolution::Resolve,
         ForwardingResolution::Resolve,
     )
@@ -385,6 +388,7 @@ fn build_preliminary_up_plan_with_forwarding_resolution(
         explicit_config_path,
         cli_layer,
         Vec::new(),
+        false,
         MountResolution::DeferConfigMounts,
         forwarding_resolution,
     )
@@ -401,6 +405,7 @@ fn build_up_plan_with_forwarding_resolution(
         explicit_config_path,
         cli_layer,
         Vec::new(),
+        false,
         MountResolution::Resolve,
         forwarding_resolution,
     )
@@ -411,6 +416,7 @@ fn build_up_plan_with_image_metadata_and_forwarding_resolution(
     explicit_config_path: Option<&Path>,
     cli_layer: ConfigLayer,
     image_metadata: Vec<ConfigLayer>,
+    ignored_image_metadata_forwarding: bool,
     forwarding_resolution: ForwardingResolution,
 ) -> Result<UpPlan> {
     build_up_plan_inner(
@@ -418,6 +424,7 @@ fn build_up_plan_with_image_metadata_and_forwarding_resolution(
         explicit_config_path,
         cli_layer,
         image_metadata,
+        ignored_image_metadata_forwarding,
         MountResolution::Resolve,
         forwarding_resolution,
     )
@@ -428,6 +435,7 @@ fn build_up_plan_inner(
     explicit_config_path: Option<&Path>,
     cli_layer: ConfigLayer,
     image_metadata: Vec<ConfigLayer>,
+    ignored_image_metadata_forwarding: bool,
     mount_resolution: MountResolution,
     forwarding_resolution: ForwardingResolution,
 ) -> Result<UpPlan> {
@@ -485,7 +493,9 @@ fn build_up_plan_inner(
         ForwardingResolution::IgnoreDetached => Vec::new(),
     };
     let ignored_detached_forwarding = forwarding_resolution == ForwardingResolution::IgnoreDetached
-        && (!metadata.forward_ports().is_empty() || !config.ports.entries.is_empty());
+        && (ignored_image_metadata_forwarding
+            || !metadata.forward_ports().is_empty()
+            || !config.ports.entries.is_empty());
 
     Ok(UpPlan {
         image,
@@ -834,34 +844,44 @@ async fn build_existing_container_decision_plan(
         );
     }
 
-    let image_metadata =
-        match image_devcontainer_metadata_layers_if_present(client, &preliminary_plan.image).await?
-        {
-            Some(image_metadata) => image_metadata,
-            None => {
-                let Some(image_id) = existing_container_image_id else {
-                    return build_up_plan_with_forwarding_resolution(
-                        workspace,
-                        explicit_config_path,
-                        cli_layer,
-                        forwarding_resolution,
-                    );
-                };
-                let Some(image_metadata) =
-                    image_devcontainer_metadata_layers_if_present(client, image_id).await?
-                else {
-                    return build_up_plan_with_forwarding_resolution(
-                        workspace,
-                        explicit_config_path,
-                        cli_layer,
-                        forwarding_resolution,
-                    );
-                };
-                image_metadata
-            }
-        };
+    let include_forward_ports = forwarding_resolution == ForwardingResolution::Resolve;
+    let image_metadata = match image_devcontainer_metadata_layers_if_present_with_forward_ports(
+        client,
+        &preliminary_plan.image,
+        include_forward_ports,
+    )
+    .await?
+    {
+        Some(image_metadata) => image_metadata,
+        None => {
+            let Some(image_id) = existing_container_image_id else {
+                return build_up_plan_with_forwarding_resolution(
+                    workspace,
+                    explicit_config_path,
+                    cli_layer,
+                    forwarding_resolution,
+                );
+            };
+            let Some(image_metadata) =
+                image_devcontainer_metadata_layers_if_present_with_forward_ports(
+                    client,
+                    image_id,
+                    include_forward_ports,
+                )
+                .await?
+            else {
+                return build_up_plan_with_forwarding_resolution(
+                    workspace,
+                    explicit_config_path,
+                    cli_layer,
+                    forwarding_resolution,
+                );
+            };
+            image_metadata
+        }
+    };
 
-    if image_metadata.is_empty() {
+    if image_metadata.layers.is_empty() {
         return build_up_plan_with_forwarding_resolution(
             workspace,
             explicit_config_path,
@@ -874,7 +894,8 @@ async fn build_existing_container_decision_plan(
         workspace,
         explicit_config_path,
         cli_layer,
-        image_metadata,
+        image_metadata.layers,
+        !include_forward_ports && image_metadata.has_forward_ports,
         forwarding_resolution,
     )
 }
@@ -910,9 +931,14 @@ async fn prepare_image_based_metadata(
         },
     )
     .await?;
-    let image_metadata =
-        image_devcontainer_metadata_layers(client, &preliminary_plan.image).await?;
-    if image_metadata.is_empty() {
+    let include_forward_ports = forwarding_resolution == ForwardingResolution::Resolve;
+    let image_metadata = image_devcontainer_metadata_layers_with_forward_ports(
+        client,
+        &preliminary_plan.image,
+        include_forward_ports,
+    )
+    .await?;
+    if image_metadata.layers.is_empty() {
         return Ok((
             build_up_plan_with_forwarding_resolution(
                 workspace,
@@ -928,7 +954,8 @@ async fn prepare_image_based_metadata(
         workspace,
         explicit_config_path,
         cli_layer,
-        image_metadata,
+        image_metadata.layers,
+        !include_forward_ports && image_metadata.has_forward_ports,
         forwarding_resolution,
     )?;
 
