@@ -1239,6 +1239,14 @@ async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<
             ui::warn(&warning);
             return Ok(None);
         }
+        if let Some(arch) = arch.as_deref()
+            && !forward_agent_tool_exists_for_arch(started.workspace.paths().runtime_dir(), arch)
+        {
+            ui::warn(&format!(
+                "Automatic port forwarding is disabled because the port forwarding agent artifact is not available for the container architecture: {arch}"
+            ));
+            return Ok(None);
+        }
     }
 
     let secret = new_forward_agent_secret()?;
@@ -1313,7 +1321,7 @@ fn decide_forward_agent_start(
     }
 
     match container_arch.map(str::trim) {
-        Some("x86_64" | "amd64") => ForwardAgentStartDecision::Start,
+        Some("x86_64" | "amd64" | "aarch64" | "arm64") => ForwardAgentStartDecision::Start,
         Some(arch) if !arch.is_empty() => ForwardAgentStartDecision::SkipAutoWithWarning(format!(
             "Automatic port forwarding is disabled because the container architecture is not supported by the port forwarding agent: {arch}"
         )),
@@ -1321,6 +1329,15 @@ fn decide_forward_agent_start(
             "Automatic port forwarding is disabled because the container architecture could not be detected".to_owned(),
         ),
     }
+}
+
+fn forward_agent_tool_exists_for_arch(runtime_dir: &Path, arch: &str) -> bool {
+    let file_name = match arch.trim() {
+        "x86_64" | "amd64" => "decune-forward-agent-linux-amd64",
+        "aarch64" | "arm64" => "decune-forward-agent-linux-arm64",
+        _ => return false,
+    };
+    runtime_dir.join(file_name).is_file()
 }
 
 async fn detect_container_arch_for_forward_agent(
@@ -1850,17 +1867,21 @@ mod tests {
     #[test]
     fn auto_only_forwarding_skips_unsupported_container_architecture() {
         assert_eq!(
-            super::decide_forward_agent_start(false, true, Some("aarch64")),
+            super::decide_forward_agent_start(false, true, Some("riscv64")),
             super::ForwardAgentStartDecision::SkipAutoWithWarning(
-                "Automatic port forwarding is disabled because the container architecture is not supported by the port forwarding agent: aarch64".to_owned()
+                "Automatic port forwarding is disabled because the container architecture is not supported by the port forwarding agent: riscv64".to_owned()
             )
         );
         assert_eq!(
-            super::decide_forward_agent_start(true, true, Some("aarch64")),
+            super::decide_forward_agent_start(true, true, Some("riscv64")),
             super::ForwardAgentStartDecision::Start
         );
         assert_eq!(
             super::decide_forward_agent_start(false, true, Some("x86_64")),
+            super::ForwardAgentStartDecision::Start
+        );
+        assert_eq!(
+            super::decide_forward_agent_start(false, true, Some("aarch64")),
             super::ForwardAgentStartDecision::Start
         );
     }
@@ -2415,11 +2436,6 @@ mod tests {
 
         assert_eq!(plan.resources.config_hash, "stable-hash");
         assert!(runtime_dir.join("decune-forward-agent").is_file());
-        assert!(
-            runtime_dir
-                .join("decune-forward-agent-linux-x86_64")
-                .is_file()
-        );
         assert!(plan.mounts.iter().any(|mount| {
             mount.target == DECUNE_RUNTIME_TARGET
                 && mount.source.as_deref() == Some(runtime_dir.to_str().unwrap())

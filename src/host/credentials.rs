@@ -9,7 +9,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, anyhow, bail};
-use serde::{Deserialize, Serialize};
+use decune_container_protocol::{
+    GitCredentialAction, GitCredentialHostRequest, HOST_DAEMON_PROTOCOL_VERSION, HostDaemonResponse,
+};
 
 use crate::{
     config::{
@@ -21,13 +23,17 @@ use crate::{
         mounts::DockerMountSpec,
         user::ResolvedRemoteUser,
     },
-    host::runtime::set_private_runtime_parent,
+    host::{
+        container_tools::{
+            ContainerTool, stage_container_tool_variants, stage_container_tool_variants_from_dirs,
+        },
+        runtime::set_private_runtime_parent,
+    },
     ui,
 };
 
 pub(crate) const DECUNE_RUNTIME_TARGET: &str = "/run/decune";
 const GIT_CREDENTIAL_HELPER_NAME: &str = "git-credential-decune";
-const GIT_CREDENTIAL_HELPER_LINUX_X86_64_NAME: &str = "git-credential-decune-linux-x86_64";
 const HOST_GITCONFIG_NAME: &str = "host-gitconfig";
 const GITHUB_CLI_TOKEN_DIR_NAME: &str = "gh-token";
 const GITHUB_CLI_TOKEN_FILE_NAME: &str = "token";
@@ -39,18 +45,6 @@ pub(crate) const GITHUB_CLI_TOKEN_TARGET: &str = "/run/decune/gh-token/token";
 pub(crate) const GITHUB_CLI_CONFIG_TARGET: &str = "/run/decune/gh";
 const GITHUB_CLI_CONFIG_TOKEN_TARGET: &str = "/run/decune/gh/.decune-token";
 pub(crate) const SSH_AGENT_SOCKET_TARGET: &str = "/run/decune/ssh-agent.sock";
-const REQUEST_TYPE_CREDENTIAL: &str = "credential";
-// host の decune binary は container OS/libc と一致しないため，Linux static helper を展開する．
-const GIT_CREDENTIAL_HELPER_LINUX_X86_64: &[u8] =
-    include_bytes!("assets/git-credential-decune-linux-x86_64");
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub(crate) enum GitCredentialAction {
-    Get,
-    Store,
-    Erase,
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum GitCredentialCommand {
@@ -88,12 +82,6 @@ impl GitCredentialExecutor for SystemGitCredentialExecutor {
     fn run(&self, command: GitCredentialCommand, input: &str) -> Result<String> {
         run_host_git_credential(command, input)
     }
-}
-
-#[derive(Debug, Deserialize)]
-pub(crate) struct GitCredentialHostRequest {
-    pub(crate) action: GitCredentialAction,
-    pub(crate) input: String,
 }
 
 #[derive(Debug)]
@@ -184,46 +172,19 @@ impl SshAgentRuntime {
     }
 }
 
-#[derive(Debug, Serialize)]
-struct GitCredentialHelperRequest<'a> {
-    version: u16,
-    #[serde(rename = "type")]
-    request_type: &'static str,
-    action: GitCredentialAction,
-    input: &'a str,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitCredentialHelperResponse {
-    version: u16,
-    ok: bool,
-    output: Option<String>,
-    error: Option<GitCredentialHelperError>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitCredentialHelperError {
-    message: String,
-}
-
 pub(crate) fn git_credential_helper_request_json(
     action: GitCredentialAction,
     input: &str,
 ) -> Result<String> {
-    serde_json::to_string(&GitCredentialHelperRequest {
-        version: crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION,
-        request_type: REQUEST_TYPE_CREDENTIAL,
-        action,
-        input,
-    })
-    .context("Failed to serialize Git credential helper request")
+    serde_json::to_string(&GitCredentialHostRequest::new(action, input))
+        .context("Failed to serialize Git credential helper request")
 }
 
 pub(crate) fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<String> {
-    let response: GitCredentialHelperResponse =
+    let response: HostDaemonResponse =
         serde_json::from_slice(bytes).context("Invalid host daemon response JSON")?;
 
-    if response.version != crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION {
+    if response.version != HOST_DAEMON_PROTOCOL_VERSION {
         bail!(
             "Unsupported host daemon protocol version: {}",
             response.version
@@ -506,6 +467,20 @@ fn prepare_git_credential_runtime_with_gitconfig(
     runtime_dir: &Path,
     host_gitconfig: Option<&Path>,
 ) -> Result<GitCredentialRuntime> {
+    prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
+        config,
+        runtime_dir,
+        host_gitconfig,
+        None,
+    )
+}
+
+fn prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
+    config: &ResolvedConfig,
+    runtime_dir: &Path,
+    host_gitconfig: Option<&Path>,
+    tool_source_dirs: Option<Vec<PathBuf>>,
+) -> Result<GitCredentialRuntime> {
     let helper_enabled = git_host_helper_enabled(&config.credentials.git);
     let copy_global_config =
         config.credentials.git.enabled && config.credentials.git.copy_global_config;
@@ -530,42 +505,47 @@ fn prepare_git_credential_runtime_with_gitconfig(
 
     let mut cleanup_paths = Vec::new();
     if helper_enabled {
-        let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
-        fs::write(&helper_path, git_credential_helper_launcher()).with_context(|| {
-            format!(
-                "Failed to stage Git credential helper: {}",
-                helper_path.display()
-            )
-        })?;
-        fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o755)).with_context(
-            || {
+        let staged_helpers = match tool_source_dirs {
+            Some(source_dirs) => stage_container_tool_variants_from_dirs(
+                ContainerTool::GitCredentialHelper,
+                runtime_dir,
+                source_dirs,
+            )?,
+            None => stage_container_tool_variants(ContainerTool::GitCredentialHelper, runtime_dir)?,
+        };
+        if staged_helpers.is_empty() {
+            ui::warn(
+                "Git credential forwarding is unavailable: no container Git credential helper artifact found",
+            );
+        } else {
+            let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
+            fs::write(&helper_path, git_credential_helper_launcher()).with_context(|| {
                 format!(
-                    "Failed to set Git credential helper permissions: {}",
+                    "Failed to stage Git credential helper launcher: {}",
                     helper_path.display()
                 )
-            },
-        )?;
-        cleanup_paths.push(helper_path);
-
-        let linux_x86_64_helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_LINUX_X86_64_NAME);
-        fs::write(
-            &linux_x86_64_helper_path,
-            GIT_CREDENTIAL_HELPER_LINUX_X86_64,
-        )
-        .with_context(|| {
-            format!(
-                "Failed to stage Linux x86_64 Git credential helper: {}",
-                linux_x86_64_helper_path.display()
-            )
-        })?;
-        fs::set_permissions(&linux_x86_64_helper_path, fs::Permissions::from_mode(0o755))
-            .with_context(|| {
-                format!(
-                    "Failed to set Linux x86_64 Git credential helper permissions: {}",
-                    linux_x86_64_helper_path.display()
-                )
             })?;
-        cleanup_paths.push(linux_x86_64_helper_path);
+            fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o755)).with_context(
+                || {
+                    format!(
+                        "Failed to set Git credential helper launcher permissions: {}",
+                        helper_path.display()
+                    )
+                },
+            )?;
+            cleanup_paths.push(helper_path);
+            for helper in staged_helpers {
+                fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).with_context(
+                    || {
+                        format!(
+                            "Failed to set Git credential helper artifact permissions: {}",
+                            helper.display()
+                        )
+                    },
+                )?;
+                cleanup_paths.push(helper);
+            }
+        }
     }
 
     if copy_global_config
@@ -676,11 +656,14 @@ fn warn_git_credential_setup_unavailable(container: &str, stderr: &[u8]) {
 fn git_credential_setup_warning_detail(stderr: &[u8]) -> Option<String> {
     const UNSUPPORTED_ARCH_PREFIX: &str =
         "Unsupported Git credential helper container architecture:";
+    const MISSING_TOOL_PREFIX: &str = "Missing Git credential helper container tool:";
 
     String::from_utf8_lossy(stderr)
         .lines()
         .map(str::trim)
-        .find(|line| line.starts_with(UNSUPPORTED_ARCH_PREFIX))
+        .find(|line| {
+            line.starts_with(UNSUPPORTED_ARCH_PREFIX) || line.starts_with(MISSING_TOOL_PREFIX)
+        })
         .map(str::to_owned)
 }
 
@@ -976,7 +959,7 @@ fn git_credential_helper_setup_script(credentials: &ResolvedGitCredentials) -> S
     }
     let mut script = String::from("set -e\n");
     script.push_str(
-        "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\n",
+        "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) helper=/run/decune/git-credential-decune-linux-amd64 ;; aarch64|arm64) helper=/run/decune/git-credential-decune-linux-arm64 ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\nif [ ! -x \"$helper\" ]; then echo \"Missing Git credential helper container tool: $helper\" >&2; exit 1; fi\n",
     );
     script.push_str("git config --global --unset-all credential.helper >/dev/null 2>&1 || true\n");
     script.push_str("git config --global --add credential.helper ");
@@ -1242,13 +1225,21 @@ set -eu
 arch=\"$(uname -m 2>/dev/null || true)\"
 case \"$arch\" in
   x86_64|amd64)
-    exec /run/decune/git-credential-decune-linux-x86_64 \"$@\"
+    helper=/run/decune/git-credential-decune-linux-amd64
+    ;;
+  aarch64|arm64)
+    helper=/run/decune/git-credential-decune-linux-arm64
     ;;
   *)
     echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2
     exit 1
     ;;
 esac
+if [ ! -x \"$helper\" ]; then
+  echo \"Missing Git credential helper container tool: $helper\" >&2
+  exit 1
+fi
+exec \"$helper\" \"$@\"
 "
 }
 
@@ -1285,9 +1276,10 @@ mod tests {
         git_credential_helper_request_json, git_credential_helper_setup_script,
         git_credential_setup_warning_detail, git_user_config_setup_script_from_values,
         github_cli_setup_script, host_git_config_value_from, host_github_auth_token_from,
-        parse_git_credential_helper_response, prepare_git_credential_runtime,
-        prepare_git_credential_runtime_with_gitconfig, prepare_github_cli_runtime_with_token,
-        prepare_ssh_agent_runtime_with_socket, remove_github_cli_token_file,
+        parse_git_credential_helper_response, prepare_git_credential_runtime_with_gitconfig,
+        prepare_git_credential_runtime_with_gitconfig_and_tool_dirs,
+        prepare_github_cli_runtime_with_token, prepare_ssh_agent_runtime_with_socket,
+        remove_github_cli_token_file,
     };
     use crate::config::{
         resolved::ResolvedConfig,
@@ -1349,14 +1341,30 @@ mod tests {
     #[test]
     fn runtime_stages_container_helper_in_private_runtime_dir() {
         let temp = TempDir::new().unwrap();
+        let source_dir = temp.path().join("tools");
+        write_container_tool(
+            &source_dir,
+            "linux-amd64",
+            GIT_CREDENTIAL_HELPER_NAME,
+            b"helper",
+        );
         let runtime_dir = temp.path().join("runtime");
-        let runtime =
-            prepare_git_credential_runtime(&ResolvedConfig::default(), &runtime_dir).unwrap();
+        let runtime = prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
+            &ResolvedConfig::default(),
+            &runtime_dir,
+            None,
+            Some(vec![source_dir]),
+        )
+        .unwrap();
         let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
 
         assert_eq!(runtime.mounts().len(), 1);
         assert_eq!(mode(&runtime_dir), 0o700);
         assert_eq!(mode(&helper_path), 0o755);
+        assert_eq!(
+            fs::read(runtime_dir.join("git-credential-decune-linux-amd64")).unwrap(),
+            b"helper"
+        );
         assert_ne!(
             fs::read(&helper_path).unwrap(),
             fs::read(current_exe()).unwrap()
@@ -1376,6 +1384,7 @@ mod tests {
             .find("git config --global --add credential.helper")
             .unwrap();
         assert!(script.contains("x86_64|amd64)"));
+        assert!(script.contains("aarch64|arm64)"));
         assert!(arch_guard < helper_config);
     }
 
@@ -1400,12 +1409,26 @@ mod tests {
     #[test]
     fn setup_warning_detail_preserves_unsupported_container_architecture() {
         let detail = git_credential_setup_warning_detail(
-            b"Unsupported Git credential helper container architecture: aarch64\n",
+            b"Unsupported Git credential helper container architecture: riscv64\n",
         );
 
         assert_eq!(
             detail.as_deref(),
-            Some("Unsupported Git credential helper container architecture: aarch64")
+            Some("Unsupported Git credential helper container architecture: riscv64")
+        );
+    }
+
+    #[test]
+    fn setup_warning_detail_preserves_missing_container_tool() {
+        let detail = git_credential_setup_warning_detail(
+            b"Missing Git credential helper container tool: /run/decune/git-credential-decune-linux-amd64\n",
+        );
+
+        assert_eq!(
+            detail.as_deref(),
+            Some(
+                "Missing Git credential helper container tool: /run/decune/git-credential-decune-linux-amd64"
+            )
         );
     }
 
@@ -1933,6 +1956,12 @@ mod tests {
 
     fn current_exe() -> PathBuf {
         std::env::current_exe().unwrap()
+    }
+
+    fn write_container_tool(source_dir: &Path, platform: &str, name: &str, contents: &[u8]) {
+        let platform_dir = source_dir.join(platform);
+        fs::create_dir_all(&platform_dir).unwrap();
+        fs::write(platform_dir.join(name), contents).unwrap();
     }
 
     fn invalid_path_with_nul() -> PathBuf {

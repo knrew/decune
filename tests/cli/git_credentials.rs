@@ -129,7 +129,7 @@ fn up_detach_warns_with_unsupported_git_credential_helper_container_architecture
             FROM alpine:3.20
             RUN printf '%s\n' \
               '#!/bin/sh' \
-              'echo aarch64' \
+              'echo riscv64' \
               >/usr/local/bin/uname && chmod +x /usr/local/bin/uname && \
               printf '%s\n' \
               '#!/bin/sh' \
@@ -187,7 +187,7 @@ fn up_detach_warns_with_unsupported_git_credential_helper_container_architecture
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains(
-                "Unsupported Git credential helper container architecture: aarch64",
+                "Unsupported Git credential helper container architecture: riscv64",
             ));
     });
 

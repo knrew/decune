@@ -120,7 +120,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
       - name: Check Docker daemon
         run: docker version
+      - name: Build container tools
+        run: scripts/build-container-tools.sh linux-amd64 linux-arm64
       - name: Cargo test
+        env:
+          DECUNE_CONTAINER_TOOLS_DIR: ${{ github.workspace }}/target/container-tools
         run: cargo test ${{ matrix.release_flag }} --workspace --all-features --no-fail-fast --verbose

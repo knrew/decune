@@ -11,7 +11,9 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use serde::{Deserialize, Serialize};
+use decune_container_protocol::{
+    ForwardAgentRequest, ForwardAgentScanRequest, ForwardAgentScanResponse,
+};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
     net::{TcpListener, TcpStream, UnixListener, UnixStream},
@@ -27,13 +29,17 @@ use crate::{
         types::{MountType, OnAutoForward, PortProtocol},
     },
     docker::ports::{ResolvedForwardPort, resolve_auto_forward_ports},
-    host::credentials::DECUNE_RUNTIME_TARGET,
-    host::runtime::set_private_runtime_parent,
+    host::{
+        container_tools::{
+            ContainerTool, stage_container_tool_variants, stage_container_tool_variants_from_dirs,
+        },
+        credentials::DECUNE_RUNTIME_TARGET,
+        runtime::set_private_runtime_parent,
+    },
     ui,
 };
 
 const FORWARD_AGENT_NAME: &str = "decune-forward-agent";
-const FORWARD_AGENT_LINUX_X86_64_NAME: &str = "decune-forward-agent-linux-x86_64";
 const FORWARD_AGENT_SOCKET_NAME: &str = "forward-agent.sock";
 const FORWARD_AGENT_DIAGNOSTIC_NAME: &str = "forward-agent.err";
 const FORWARD_AGENT_SOCKET_TARGET: &str = "/run/decune/forward-agent.sock";
@@ -46,8 +52,6 @@ const FORWARD_AGENT_START_DELAY: Duration = Duration::from_millis(50);
 const FORWARD_AGENT_DIAGNOSTIC_TAIL_BYTES: usize = 4096;
 const AUTO_FORWARD_INITIAL_DELAY: Duration = Duration::from_secs(3);
 const AUTO_FORWARD_SCAN_INTERVAL: Duration = Duration::from_secs(2);
-const FORWARD_AGENT_LINUX_X86_64: &[u8] =
-    include_bytes!("assets/decune-forward-agent-linux-x86_64");
 
 #[derive(Debug)]
 pub(crate) struct ForwardRuntime {
@@ -88,26 +92,6 @@ impl Drop for ForwardListener {
     fn drop(&mut self) {
         self.task.abort();
     }
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ForwardAgentRequest {
-    port: Option<u16>,
-    shutdown: Option<bool>,
-    secret: Option<String>,
-    scan: Option<ForwardAgentScanRequest>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ForwardAgentScanRequest {
-    min: u16,
-    max: u16,
-    ignore: Vec<u16>,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-struct ForwardAgentScanResponse {
-    ports: Vec<u16>,
 }
 
 #[derive(Debug, Clone)]
@@ -178,13 +162,24 @@ pub(crate) fn invoked_as_forward_agent() -> bool {
             .map(Path::new)
             .and_then(Path::file_name)
             .and_then(|value| value.to_str()),
-        Some(FORWARD_AGENT_NAME | FORWARD_AGENT_LINUX_X86_64_NAME)
+        Some(
+            FORWARD_AGENT_NAME
+                | "decune-forward-agent-linux-amd64"
+                | "decune-forward-agent-linux-arm64",
+        )
     )
 }
 
 pub(crate) fn prepare_forward_runtime(
     _forward_ports: &[ResolvedForwardPort],
     runtime_dir: &Path,
+) -> Result<ForwardRuntime> {
+    prepare_forward_runtime_with_tool_dirs(runtime_dir, None)
+}
+
+fn prepare_forward_runtime_with_tool_dirs(
+    runtime_dir: &Path,
+    tool_source_dirs: Option<Vec<PathBuf>>,
 ) -> Result<ForwardRuntime> {
     fs::create_dir_all(runtime_dir).with_context(|| {
         format!(
@@ -212,21 +207,14 @@ pub(crate) fn prepare_forward_runtime(
             agent_path.display()
         )
     })?;
-    let linux_x86_64_agent_path = runtime_dir.join(FORWARD_AGENT_LINUX_X86_64_NAME);
-    fs::write(&linux_x86_64_agent_path, FORWARD_AGENT_LINUX_X86_64).with_context(|| {
-        format!(
-            "Failed to stage Linux x86_64 port forwarding agent: {}",
-            linux_x86_64_agent_path.display()
-        )
-    })?;
-    fs::set_permissions(&linux_x86_64_agent_path, fs::Permissions::from_mode(0o755)).with_context(
-        || {
-            format!(
-                "Failed to set Linux x86_64 port forwarding agent permissions: {}",
-                linux_x86_64_agent_path.display()
-            )
-        },
-    )?;
+    let staged_agents = match tool_source_dirs {
+        Some(source_dirs) => stage_container_tool_variants_from_dirs(
+            ContainerTool::ForwardAgent,
+            runtime_dir,
+            source_dirs,
+        )?,
+        None => stage_container_tool_variants(ContainerTool::ForwardAgent, runtime_dir)?,
+    };
 
     Ok(ForwardRuntime {
         mounts: vec![crate::docker::mounts::DockerMountSpec {
@@ -238,12 +226,13 @@ pub(crate) fn prepare_forward_runtime(
             bind_options: None,
             volume_options: None,
         }],
-        cleanup_paths: vec![
-            agent_path,
-            linux_x86_64_agent_path,
-            runtime_dir.join(FORWARD_AGENT_SOCKET_NAME),
-            runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
-        ],
+        cleanup_paths: std::iter::once(agent_path)
+            .chain(staged_agents)
+            .chain([
+                runtime_dir.join(FORWARD_AGENT_SOCKET_NAME),
+                runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
+            ])
+            .collect(),
     })
 }
 
@@ -966,7 +955,10 @@ diag=\"/run/decune/forward-agent.err\"
 arch=\"$(uname -m 2>/dev/null || true)\"
 case \"$arch\" in
   x86_64|amd64)
-    exec /run/decune/decune-forward-agent-linux-x86_64 \"$@\" 2>>\"$diag\"
+    agent=/run/decune/decune-forward-agent-linux-amd64
+    ;;
+  aarch64|arm64)
+    agent=/run/decune/decune-forward-agent-linux-arm64
     ;;
   *)
     message=\"Unsupported port forwarding agent container architecture: ${arch:-unknown}\"
@@ -975,6 +967,13 @@ case \"$arch\" in
     exit 1
     ;;
 esac
+if [ ! -x \"$agent\" ]; then
+    message=\"Missing port forwarding agent container tool: $agent\"
+    echo \"$message\" >&2
+    echo \"$message\" >> \"$diag\" 2>/dev/null || true
+    exit 1
+fi
+exec \"$agent\" \"$@\" 2>>\"$diag\"
 "
 }
 
@@ -1187,15 +1186,22 @@ mod tests {
     #[test]
     fn runtime_stages_container_agent_even_without_forward_ports() {
         let temp = TempDir::new().unwrap();
+        let source_dir = temp.path().join("tools");
+        write_container_tool(&source_dir, "linux-amd64", FORWARD_AGENT_NAME, b"agent");
         let runtime_dir = temp.path().join("runtime");
 
-        let runtime = prepare_forward_runtime(&[], &runtime_dir).unwrap();
+        let runtime =
+            prepare_forward_runtime_with_tool_dirs(&runtime_dir, Some(vec![source_dir])).unwrap();
 
         assert!(runtime_dir.join("decune-forward-agent").is_file());
         assert!(
             runtime_dir
-                .join("decune-forward-agent-linux-x86_64")
+                .join("decune-forward-agent-linux-amd64")
                 .is_file()
+        );
+        assert_eq!(
+            fs::read(runtime_dir.join("decune-forward-agent-linux-amd64")).unwrap(),
+            b"agent"
         );
         assert_ne!(
             fs::read(runtime_dir.join("decune-forward-agent")).unwrap(),
@@ -1317,7 +1323,7 @@ mod tests {
         runtime.block_on(async {
             fs::write(
                 temp.path().join("forward-agent.err"),
-                "Unsupported port forwarding agent container architecture: aarch64\n",
+                "Unsupported port forwarding agent container architecture: riscv64\n",
             )
             .unwrap();
 
@@ -1460,5 +1466,11 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn write_container_tool(source_dir: &Path, platform: &str, name: &str, contents: &[u8]) {
+        let platform_dir = source_dir.join(platform);
+        fs::create_dir_all(&platform_dir).unwrap();
+        fs::write(platform_dir.join(name), contents).unwrap();
     }
 }
