@@ -326,6 +326,78 @@ fn up_attached_auto_forwards_new_container_listen_port() {
     }
 }
 
+#[test]
+fn up_detach_publishes_app_port_to_requested_host_port() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_port = available_host_port();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+                '#!/bin/sh' \
+                'printf "HTTP/1.0 200 OK\r\nContent-Length: 10\r\n\r\nforward-ok"' \
+                >/usr/local/bin/decune-http-response \
+              && chmod +x /usr/local/bin/decune-http-response
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            &format!(
+                r#"
+            {{
+              "build": {{
+                "dockerfile": "Dockerfile"
+              }},
+              "workspaceMount": "source=${{localWorkspaceFolder}},target=/workspace,type=bind",
+              "workspaceFolder": "/workspace",
+              "appPort": ["127.0.0.1:{host_port}:4321"],
+              "postStartCommand": "nc -lk -p 4321 -e /usr/local/bin/decune-http-response >/tmp/decune-nc.log 2>&1 </dev/null &"
+            }}
+            "#
+            ),
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach", "--no-auto-forward"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        if let Err(error) = wait_for_forwarded_http_response(host_port) {
+            panic!("published HTTP response did not arrive: {error}");
+        }
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 fn available_host_port() -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.local_addr().unwrap().port()
