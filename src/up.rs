@@ -35,7 +35,8 @@ use crate::{
         },
         dotfiles::dotfile_mount_specs,
         exec::{
-            ExecCommandSpec, exec_attach, exec_detached, resolve_exec_env, run_attached_exec_stdio,
+            ExecCommandSpec, exec_attach, exec_detached, inspect_exec, resolve_exec_env,
+            run_attached_exec_stdio,
         },
         image::{
             PullPolicy, ensure_image, image_devcontainer_metadata_layers,
@@ -57,8 +58,9 @@ use crate::{
         },
         daemon::HostDaemon,
         forward::{
-            ForwardRuntime, ForwardSession, forward_agent_command, new_forward_agent_secret,
-            prepare_forward_runtime, start_forward_session, wait_for_forward_agent,
+            ForwardAgentStatus, ForwardRuntime, ForwardSession, forward_agent_command,
+            new_forward_agent_secret, prepare_forward_runtime, start_forward_session,
+            wait_for_forward_agent_with_status,
         },
     },
     ui,
@@ -1079,7 +1081,7 @@ async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<
     }
 
     let secret = new_forward_agent_secret()?;
-    exec_detached(
+    let agent_exec_id = exec_detached(
         &started.client,
         &started.outcome.container_name,
         &forward_agent_command(&started.plan.forward_ports, &secret),
@@ -1091,7 +1093,24 @@ async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<
             started.outcome.container_name
         )
     })?;
-    let agent_socket_path = wait_for_forward_agent(started.workspace.paths().runtime_dir())
+    let agent_socket_path =
+        wait_for_forward_agent_with_status(started.workspace.paths().runtime_dir(), || async {
+            let inspect = inspect_exec(
+                &started.client,
+                &agent_exec_id,
+                &started.outcome.container_name,
+            )
+            .await?;
+            Ok(
+                if inspect.running == Some(false) || inspect.exit_code.is_some() {
+                    ForwardAgentStatus::Exited {
+                        exit_code: inspect.exit_code,
+                    }
+                } else {
+                    ForwardAgentStatus::Running
+                },
+            )
+        })
         .await
         .with_context(|| {
             format!(

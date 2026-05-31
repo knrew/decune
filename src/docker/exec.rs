@@ -305,7 +305,7 @@ async fn start_exec_and_capture_output(
     })
 }
 
-async fn inspect_exec(
+pub(crate) async fn inspect_exec(
     client: &DockerClient,
     exec_id: &str,
     container: &str,

@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeSet,
-    env, fs, io,
+    env, fs,
+    future::Future,
+    io,
     io::Read as _,
     net::IpAddr,
     os::unix::fs::{FileTypeExt, PermissionsExt},
@@ -27,12 +29,14 @@ use crate::{
 const FORWARD_AGENT_NAME: &str = "decune-forward-agent";
 const FORWARD_AGENT_LINUX_X86_64_NAME: &str = "decune-forward-agent-linux-x86_64";
 const FORWARD_AGENT_SOCKET_NAME: &str = "forward-agent.sock";
+const FORWARD_AGENT_DIAGNOSTIC_NAME: &str = "forward-agent.err";
 const FORWARD_AGENT_SOCKET_TARGET: &str = "/run/decune/forward-agent.sock";
 const FORWARD_AGENT_TARGET: &str = "/run/decune/decune-forward-agent";
 const FORWARD_AGENT_ALLOWED_PORTS_ENV: &str = "DECUNE_FORWARD_AGENT_ALLOWED_PORTS";
 const FORWARD_AGENT_SECRET_ENV: &str = "DECUNE_FORWARD_AGENT_SECRET";
 const FORWARD_AGENT_START_RETRIES: usize = 100;
 const FORWARD_AGENT_START_DELAY: Duration = Duration::from_millis(50);
+const FORWARD_AGENT_DIAGNOSTIC_TAIL_BYTES: usize = 4096;
 const FORWARD_AGENT_LINUX_X86_64: &[u8] =
     include_bytes!("assets/decune-forward-agent-linux-x86_64");
 
@@ -70,11 +74,23 @@ struct ForwardListener {
     local_addr: std::net::SocketAddr,
 }
 
+impl Drop for ForwardListener {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct ForwardAgentRequest {
     port: Option<u16>,
     shutdown: Option<bool>,
     secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ForwardAgentStatus {
+    Running,
+    Exited { exit_code: Option<i64> },
 }
 
 #[derive(Debug, Clone)]
@@ -186,6 +202,7 @@ pub(crate) fn prepare_forward_runtime(
             agent_path,
             linux_x86_64_agent_path,
             runtime_dir.join(FORWARD_AGENT_SOCKET_NAME),
+            runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
         ],
     })
 }
@@ -218,7 +235,20 @@ pub(crate) fn new_forward_agent_secret() -> Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-pub(crate) async fn wait_for_forward_agent(runtime_dir: &Path) -> Result<PathBuf> {
+#[cfg(test)]
+async fn wait_for_forward_agent(runtime_dir: &Path) -> Result<PathBuf> {
+    wait_for_forward_agent_with_status(runtime_dir, || async { Ok(ForwardAgentStatus::Running) })
+        .await
+}
+
+pub(crate) async fn wait_for_forward_agent_with_status<F, Fut>(
+    runtime_dir: &Path,
+    mut agent_status: F,
+) -> Result<PathBuf>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<ForwardAgentStatus>>,
+{
     let socket_path = runtime_dir.join(FORWARD_AGENT_SOCKET_NAME);
     for _ in 0..FORWARD_AGENT_START_RETRIES {
         match UnixStream::connect(&socket_path).await {
@@ -232,6 +262,10 @@ pub(crate) async fn wait_for_forward_agent(runtime_dir: &Path) -> Result<PathBuf
                     io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
                 ) =>
             {
+                if let Some(error) = forward_agent_start_error(runtime_dir, agent_status().await?)?
+                {
+                    bail!("{error}");
+                }
                 sleep(FORWARD_AGENT_START_DELAY).await;
             }
             Err(error) => {
@@ -256,6 +290,27 @@ pub(crate) async fn start_forward_session(
     agent_socket_path: PathBuf,
     secret: String,
 ) -> Result<ForwardSession> {
+    let listeners = match start_forward_listeners(forward_ports, &agent_socket_path, &secret).await
+    {
+        Ok(listeners) => listeners,
+        Err(error) => {
+            let _ = send_agent_shutdown(&agent_socket_path, &secret).await;
+            return Err(error);
+        }
+    };
+
+    Ok(ForwardSession {
+        agent_socket_path,
+        secret,
+        listeners,
+    })
+}
+
+async fn start_forward_listeners(
+    forward_ports: &[ResolvedForwardPort],
+    agent_socket_path: &Path,
+    secret: &str,
+) -> Result<Vec<ForwardListener>> {
     let mut listeners = Vec::new();
     for port in forward_ports {
         if port.protocol != PortProtocol::Tcp {
@@ -281,8 +336,8 @@ pub(crate) async fn start_forward_session(
             )
         })?;
         let target_port = port.container;
-        let socket_path = agent_socket_path.clone();
-        let secret = secret.clone();
+        let socket_path = agent_socket_path.to_path_buf();
+        let secret = secret.to_owned();
         let task = tokio::spawn(async move {
             run_forward_listener(listener, socket_path, target_port, secret).await;
         });
@@ -293,11 +348,7 @@ pub(crate) async fn start_forward_session(
         });
     }
 
-    Ok(ForwardSession {
-        agent_socket_path,
-        secret,
-        listeners,
-    })
+    Ok(listeners)
 }
 
 impl ForwardSession {
@@ -541,17 +592,70 @@ async fn write_agent_request(stream: &mut UnixStream, request: ForwardAgentReque
 fn forward_agent_launcher() -> &'static [u8] {
     b"#!/bin/sh
 set -eu
+diag=\"/run/decune/forward-agent.err\"
+: > \"$diag\" 2>/dev/null || true
 arch=\"$(uname -m 2>/dev/null || true)\"
 case \"$arch\" in
   x86_64|amd64)
-    exec /run/decune/decune-forward-agent-linux-x86_64 \"$@\"
+    exec /run/decune/decune-forward-agent-linux-x86_64 \"$@\" 2>>\"$diag\"
     ;;
   *)
-    echo \"Unsupported port forwarding agent container architecture: ${arch:-unknown}\" >&2
+    message=\"Unsupported port forwarding agent container architecture: ${arch:-unknown}\"
+    echo \"$message\" >&2
+    echo \"$message\" >> \"$diag\" 2>/dev/null || true
     exit 1
     ;;
 esac
 "
+}
+
+fn forward_agent_start_error(
+    runtime_dir: &Path,
+    status: ForwardAgentStatus,
+) -> Result<Option<String>> {
+    let diagnostic = read_forward_agent_diagnostic(runtime_dir)?;
+    if let ForwardAgentStatus::Exited { exit_code } = status {
+        let exit_code = exit_code
+            .map(|code| format!(" with exit code {code}"))
+            .unwrap_or_default();
+        return Ok(Some(match diagnostic {
+            Some(diagnostic) => format!(
+                "Port forwarding agent exited before its socket became available{exit_code}. diagnostic: {diagnostic}"
+            ),
+            None => {
+                format!(
+                    "Port forwarding agent exited before its socket became available{exit_code}"
+                )
+            }
+        }));
+    }
+
+    Ok(diagnostic.map(|diagnostic| format!("Port forwarding agent failed to start: {diagnostic}")))
+}
+
+fn read_forward_agent_diagnostic(runtime_dir: &Path) -> Result<Option<String>> {
+    let path = runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to read port forwarding agent diagnostic: {}",
+                    path.display()
+                )
+            });
+        }
+    };
+    let start = bytes
+        .len()
+        .saturating_sub(FORWARD_AGENT_DIAGNOSTIC_TAIL_BYTES);
+    let diagnostic = String::from_utf8_lossy(&bytes[start..]).trim().to_owned();
+    if diagnostic.is_empty() {
+        return Ok(None);
+    }
+
+    Ok(Some(diagnostic))
 }
 
 fn allowed_ports_env(forward_ports: &[ResolvedForwardPort]) -> String {
@@ -595,6 +699,7 @@ mod tests {
 
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::timeout;
 
     use super::*;
 
@@ -708,6 +813,72 @@ mod tests {
             session.stop().await;
             agent_task.await.unwrap();
             assert!(TcpStream::connect(local_addr).await.is_err());
+        });
+    }
+
+    #[test]
+    fn wait_for_forward_agent_reports_agent_diagnostic() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            fs::write(
+                temp.path().join("forward-agent.err"),
+                "Unsupported port forwarding agent container architecture: aarch64\n",
+            )
+            .unwrap();
+
+            let error = wait_for_forward_agent(temp.path()).await.unwrap_err();
+            let message = format!("{error:#}");
+
+            assert!(message.contains("Unsupported port forwarding agent container architecture"));
+            assert!(!message.contains("Timed out waiting"));
+        });
+    }
+
+    #[test]
+    fn listener_start_failure_stops_agent() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let occupied = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+            let occupied_port = occupied.local_addr().unwrap().port();
+            let agent_socket = temp.path().join("forward-agent.sock");
+            let agent_task = tokio::spawn({
+                let agent_socket = agent_socket.clone();
+                async move {
+                    run_forward_agent_at_with_access(
+                        &agent_socket,
+                        ForwardAgentAccess::new([9], "test-secret".to_owned()),
+                    )
+                    .await
+                    .unwrap()
+                }
+            });
+            wait_for_socket(&agent_socket).await;
+
+            let error = start_forward_session(
+                &[forward_port(occupied_port, 9)],
+                agent_socket.clone(),
+                "test-secret".to_owned(),
+            )
+            .await
+            .unwrap_err();
+            let message = format!("{error:#}");
+
+            assert!(message.contains("Failed to bind port forwarding listener"));
+            timeout(Duration::from_secs(1), agent_task)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(!agent_socket.exists());
         });
     }
 
