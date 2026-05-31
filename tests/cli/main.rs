@@ -12,5 +12,6 @@ mod host_git_config;
 mod image_metadata;
 mod lifecycle;
 mod mounts;
+mod ports;
 mod rebuild;
 mod ssh_agent;

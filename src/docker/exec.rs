@@ -50,8 +50,8 @@ pub(crate) struct AttachedExec {
     pub(crate) results: StartExecResults,
 }
 
-const EXEC_EXIT_CODE_RETRY_LIMIT: usize = 10;
-const EXEC_EXIT_CODE_RETRY_DELAY: Duration = Duration::from_millis(20);
+const EXEC_EXIT_CODE_RETRY_LIMIT: usize = 100;
+const EXEC_EXIT_CODE_RETRY_DELAY: Duration = Duration::from_millis(50);
 
 pub(crate) async fn exec_capture(
     client: &DockerClient,
@@ -74,10 +74,7 @@ pub(crate) async fn exec_capture_output(
 
     let exec_id = create_exec(client, container, spec, ExecAttachMode::Capture).await?;
     let mut output = start_exec_and_capture_output(client, &exec_id, container, spec.tty).await?;
-    let inspect = inspect_exec(client, &exec_id, container).await?;
-    output.exit_code = inspect
-        .exit_code
-        .context("Failed to read Docker exec exit code")?;
+    output.exit_code = inspect_exec_exit_code(client, &exec_id, container).await?;
 
     Ok(output)
 }
@@ -111,6 +108,47 @@ pub(crate) async fn exec_attach_stdio(
     let attached = exec_attach(client, container, spec).await?;
 
     run_attached_exec_stdio(client, container, spec, attached).await
+}
+
+pub(crate) async fn exec_detached(
+    client: &DockerClient,
+    container: &str,
+    spec: &ExecCommandSpec,
+) -> Result<String> {
+    validate_exec_spec(spec)?;
+
+    let options = CreateExecOptions {
+        attach_stdin: Some(false),
+        attach_stdout: Some(false),
+        attach_stderr: Some(false),
+        tty: Some(false),
+        env: non_empty_vec(env_entries(&spec.env)),
+        cmd: Some(spec.command.clone()),
+        user: spec.user.clone(),
+        working_dir: spec.working_dir.clone(),
+        ..Default::default()
+    };
+    let response = client
+        .raw()
+        .create_exec(container, options)
+        .await
+        .with_context(|| {
+            format!("Failed to create detached Docker exec in container: {container}")
+        })?;
+    let start_options = StartExecOptions {
+        detach: true,
+        tty: false,
+        output_capacity: None,
+    };
+    client
+        .raw()
+        .start_exec(&response.id, Some(start_options))
+        .await
+        .with_context(|| {
+            format!("Failed to start detached Docker exec in container: {container}")
+        })?;
+
+    Ok(response.id)
 }
 
 pub(crate) async fn run_attached_exec_stdio(
@@ -267,7 +305,7 @@ async fn start_exec_and_capture_output(
     })
 }
 
-async fn inspect_exec(
+pub(crate) async fn inspect_exec(
     client: &DockerClient,
     exec_id: &str,
     container: &str,
