@@ -103,8 +103,9 @@ where
         .iter()
         .map(|port| port.container)
         .collect::<BTreeSet<_>>();
-    let published_containers = publish_ports
+    let published_tcp_containers = publish_ports
         .iter()
+        .filter(|port| port.protocol == PortProtocol::Tcp)
         .map(|port| port.container)
         .collect::<BTreeSet<_>>();
     let ignored = auto_ports.ignore.iter().copied().collect::<BTreeSet<_>>();
@@ -116,7 +117,7 @@ where
             || container >= auto_ports.max
             || ignored.contains(&container)
             || manual_containers.contains(&container)
-            || published_containers.contains(&container)
+            || published_tcp_containers.contains(&container)
         {
             continue;
         }
@@ -237,6 +238,7 @@ impl DockerPublishPort {
 fn docker_protocol(protocol: PortProtocol) -> &'static str {
     match protocol {
         PortProtocol::Tcp => "tcp",
+        PortProtocol::Udp => "udp",
     }
 }
 
@@ -355,6 +357,50 @@ mod tests {
                 .map(|port| port.port.container)
                 .collect::<Vec<_>>(),
             vec![2000, 6999]
+        );
+    }
+
+    #[test]
+    fn auto_forward_excludes_only_tcp_published_ports() {
+        let auto = ResolvedAutoPorts {
+            enabled: true,
+            min: 1024,
+            max: 32768,
+            ignore: Vec::new(),
+            on_auto_forward: OnAutoForward::Notify,
+        };
+        let publish = vec![
+            ResolvedPublishPort {
+                container: 3000,
+                host: Some(3000),
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            },
+            ResolvedPublishPort {
+                container: 3001,
+                host: Some(3001),
+                host_ip: None,
+                protocol: PortProtocol::Udp,
+            },
+        ];
+
+        let resolved = resolve_auto_forward_ports_with(
+            [3000, 3001],
+            &[],
+            &publish,
+            &auto,
+            &BTreeMap::new(),
+            None,
+            |_, _| Ok(true),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved
+                .into_iter()
+                .map(|port| port.port.container)
+                .collect::<Vec<_>>(),
+            vec![3001]
         );
     }
 

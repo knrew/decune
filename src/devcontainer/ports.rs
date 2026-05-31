@@ -134,7 +134,7 @@ fn parse_port(port: &DevcontainerPort, mode: PortMode) -> Result<ParsedPort> {
 }
 
 fn parse_port_string(value: &str, mode: PortMode) -> Result<ParsedPort> {
-    let (value, protocol) = parse_port_protocol(value)?;
+    let (value, protocol) = parse_port_protocol(value, mode)?;
     let segments = value.split(':').collect::<Vec<_>>();
 
     match segments.as_slice() {
@@ -172,10 +172,11 @@ fn parse_port_string(value: &str, mode: PortMode) -> Result<ParsedPort> {
     }
 }
 
-fn parse_port_protocol(value: &str) -> Result<(&str, PortProtocol)> {
+fn parse_port_protocol(value: &str, mode: PortMode) -> Result<(&str, PortProtocol)> {
     match value.split_once('/') {
         None => Ok((value, PortProtocol::Tcp)),
         Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
+        Some((port, "udp")) if mode == PortMode::Publish => Ok((port, PortProtocol::Udp)),
         Some((_, protocol)) => Err(anyhow!(
             "Unsupported devcontainer port protocol: {protocol}"
         )),
@@ -286,6 +287,24 @@ mod tests {
                 host: None,
                 host_ip: None,
                 protocol: PortProtocol::Tcp,
+            }
+        );
+    }
+
+    #[test]
+    fn app_port_accepts_udp_protocol_for_docker_publish() {
+        let port = publish_port_to_layer(&DevcontainerPort::String(
+            "127.0.0.1:5353:53/udp".to_owned(),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            port,
+            LayerPublishPort {
+                container: 53,
+                host: Some(5353),
+                host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
+                protocol: PortProtocol::Udp,
             }
         );
     }

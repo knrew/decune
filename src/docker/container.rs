@@ -627,6 +627,38 @@ mod tests {
     }
 
     #[test]
+    fn create_container_body_uses_publish_port_protocol_in_docker_keys() {
+        let spec = ContainerCreateSpec {
+            image: "alpine:latest".to_owned(),
+            name: "decune-project-abc123def456".to_owned(),
+            entrypoint: None,
+            command: None,
+            labels: BTreeMap::new(),
+            env: BTreeMap::new(),
+            working_dir: None,
+            user: None,
+            mounts: Vec::new(),
+            publish_ports: vec![DockerPublishPort {
+                container: 53,
+                host: Some(5353),
+                host_ip: Some("127.0.0.1".to_owned()),
+                protocol: PortProtocol::Udp,
+            }],
+            host_config: ContainerHostConfig::default(),
+        };
+
+        let body = create_container_body(&spec);
+        let host_config = body.host_config.unwrap();
+        let port_bindings = host_config.port_bindings.unwrap();
+        let bindings = port_bindings.get("53/udp").unwrap().as_ref().unwrap();
+
+        assert_eq!(body.exposed_ports, Some(vec!["53/udp".to_owned()]));
+        assert_eq!(bindings.len(), 1);
+        assert_eq!(bindings[0].host_port.as_deref(), Some("5353"));
+        assert_eq!(bindings[0].host_ip.as_deref(), Some("127.0.0.1"));
+    }
+
+    #[test]
     fn devcontainer_keepalive_command_exits_promptly_on_term() {
         let (entrypoint, command) = devcontainer_keepalive_command();
 
