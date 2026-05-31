@@ -681,6 +681,7 @@ fn user_env_probe_name(value: ResolvedUserEnvProbe) -> &'static str {
 fn port_protocol_name(value: PortProtocol) -> &'static str {
     match value {
         PortProtocol::Tcp => "tcp",
+        PortProtocol::Udp => "udp",
     }
 }
 

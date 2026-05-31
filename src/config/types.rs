@@ -58,6 +58,7 @@ impl From<RawMountCreate> for MountCreate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PortProtocol {
     Tcp,
+    Udp,
 }
 
 impl From<RawPortProtocol> for PortProtocol {

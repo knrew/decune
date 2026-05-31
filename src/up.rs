@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     future::Future,
     path::{Path, PathBuf},
 };
@@ -35,8 +36,8 @@ use crate::{
         },
         dotfiles::dotfile_mount_specs,
         exec::{
-            ExecCommandSpec, exec_attach, exec_detached, inspect_exec, resolve_exec_env,
-            run_attached_exec_stdio,
+            ExecCommandSpec, exec_attach, exec_capture, exec_detached, inspect_exec,
+            resolve_exec_env, run_attached_exec_stdio,
         },
         image::{
             PullPolicy, ensure_image, image_devcontainer_metadata_layers,
@@ -58,9 +59,9 @@ use crate::{
         },
         daemon::HostDaemon,
         forward::{
-            ForwardAgentStatus, ForwardRuntime, ForwardSession, forward_agent_command,
-            new_forward_agent_secret, prepare_forward_runtime, start_forward_session,
-            wait_for_forward_agent_with_status,
+            AutoForwardConfig, ForwardAgentStatus, ForwardRuntime, ForwardSession,
+            forward_agent_command, new_forward_agent_secret, prepare_forward_runtime,
+            start_forward_session_with_auto, wait_for_forward_agent_with_status,
         },
     },
     ui,
@@ -1076,8 +1077,31 @@ async fn run_attach_lifecycle_for_up(lifecycle: &PreparedLifecycleRunContext<'_>
 }
 
 async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<ForwardSession>> {
-    if started.plan.forward_ports.is_empty() {
+    let auto_forward = AutoForwardConfig::from_config(&started.plan.config);
+    if started.plan.forward_ports.is_empty() && auto_forward.is_none() {
         return Ok(None);
+    }
+    if started.plan.forward_ports.is_empty() && auto_forward.is_some() {
+        let arch = match detect_container_arch_for_forward_agent(
+            &started.client,
+            &started.outcome.container_name,
+        )
+        .await
+        {
+            Ok(arch) => arch,
+            Err(error) => {
+                ui::warn(&format!(
+                    "Automatic port forwarding is disabled because the container architecture could not be detected: {error:#}"
+                ));
+                return Ok(None);
+            }
+        };
+        if let ForwardAgentStartDecision::SkipAutoWithWarning(warning) =
+            decide_forward_agent_start(false, true, arch.as_deref())
+        {
+            ui::warn(&warning);
+            return Ok(None);
+        }
     }
 
     let secret = new_forward_agent_secret()?;
@@ -1118,9 +1142,14 @@ async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<
                 started.outcome.container_name
             )
         })?;
-    let session = start_forward_session(&started.plan.forward_ports, agent_socket_path, secret)
-        .await
-        .context("Failed to start port forwarding listeners")?;
+    let session = start_forward_session_with_auto(
+        &started.plan.forward_ports,
+        auto_forward,
+        agent_socket_path,
+        secret,
+    )
+    .await
+    .context("Failed to start port forwarding listeners")?;
 
     Ok(Some(session))
 }
@@ -1129,6 +1158,56 @@ async fn stop_forwarding(forwarding: Option<ForwardSession>) {
     if let Some(session) = forwarding {
         session.stop().await;
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ForwardAgentStartDecision {
+    Start,
+    SkipAutoWithWarning(String),
+}
+
+fn decide_forward_agent_start(
+    has_manual_forward_ports: bool,
+    auto_forward_enabled: bool,
+    container_arch: Option<&str>,
+) -> ForwardAgentStartDecision {
+    if has_manual_forward_ports || !auto_forward_enabled {
+        return ForwardAgentStartDecision::Start;
+    }
+
+    match container_arch.map(str::trim) {
+        Some("x86_64" | "amd64") => ForwardAgentStartDecision::Start,
+        Some(arch) if !arch.is_empty() => ForwardAgentStartDecision::SkipAutoWithWarning(format!(
+            "Automatic port forwarding is disabled because the container architecture is not supported by the port forwarding agent: {arch}"
+        )),
+        _ => ForwardAgentStartDecision::SkipAutoWithWarning(
+            "Automatic port forwarding is disabled because the container architecture could not be detected".to_owned(),
+        ),
+    }
+}
+
+async fn detect_container_arch_for_forward_agent(
+    client: &DockerClient,
+    container_name: &str,
+) -> Result<Option<String>> {
+    let output = exec_capture(
+        client,
+        container_name,
+        &ExecCommandSpec {
+            command: vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                "uname -m 2>/dev/null || true".to_owned(),
+            ],
+            user: Some("0".to_owned()),
+            working_dir: None,
+            env: BTreeMap::new(),
+            tty: false,
+        },
+    )
+    .await?;
+    let arch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+    Ok((!arch.is_empty()).then_some(arch))
 }
 
 async fn attach_shell(client: &DockerClient, plan: &UpPlan, container_name: &str) -> Result<i64> {
@@ -1623,6 +1702,24 @@ mod tests {
         assert_eq!(
             shell_command_candidates(Some(" /bin/zsh "), Some("/bin/fish")),
             vec!["/bin/zsh".to_owned()]
+        );
+    }
+
+    #[test]
+    fn auto_only_forwarding_skips_unsupported_container_architecture() {
+        assert_eq!(
+            super::decide_forward_agent_start(false, true, Some("aarch64")),
+            super::ForwardAgentStartDecision::SkipAutoWithWarning(
+                "Automatic port forwarding is disabled because the container architecture is not supported by the port forwarding agent: aarch64".to_owned()
+            )
+        );
+        assert_eq!(
+            super::decide_forward_agent_start(true, true, Some("aarch64")),
+            super::ForwardAgentStartDecision::Start
+        );
+        assert_eq!(
+            super::decide_forward_agent_start(false, true, Some("x86_64")),
+            super::ForwardAgentStartDecision::Start
         );
     }
 

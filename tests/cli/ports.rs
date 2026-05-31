@@ -223,9 +223,122 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
     }
 }
 
+#[test]
+fn up_attached_auto_forwards_new_container_listen_port() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let container_port = available_host_port_in_range(20_000, 32_000);
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+                '#!/bin/sh' \
+                'sleep 60' \
+                'exit 0' \
+                >/usr/local/bin/decune-wait-shell \
+              && chmod +x /usr/local/bin/decune-wait-shell \
+              && printf '%s\n' \
+                '#!/bin/sh' \
+                'printf "HTTP/1.0 200 OK\r\nContent-Length: 10\r\n\r\nforward-ok"' \
+                >/usr/local/bin/decune-http-response \
+              && chmod +x /usr/local/bin/decune-http-response
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            &format!(
+                r#"
+            {{
+              "build": {{
+                "dockerfile": "Dockerfile"
+              }},
+              "workspaceMount": "source=${{localWorkspaceFolder}},target=/workspace,type=bind",
+              "workspaceFolder": "/workspace",
+              "postStartCommand": "nc -lk -s 127.0.0.1 -p {container_port} -e /usr/local/bin/decune-http-response >/tmp/decune-nc.log 2>&1 </dev/null &"
+            }}
+            "#
+            ),
+        )
+        .unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-wait-shell"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let stderr_path = workspace_root.join(".decune-up-stderr");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let mut child = None;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("decune"));
+        command
+            .arg("up")
+            .arg(&workspace_root)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(File::create(&stderr_path).unwrap()));
+        child = Some(command.spawn().unwrap());
+
+        if let Err(error) = wait_for_forwarded_http_response(container_port) {
+            let status = child.as_mut().unwrap().try_wait().unwrap();
+            let stderr = fs::read_to_string(&stderr_path).unwrap_or_default();
+            panic!(
+                "auto forwarded HTTP response did not arrive: {error}; child_status={status:?}; stderr={stderr}"
+            );
+        }
+        let child = child.as_mut().unwrap();
+        child.kill().unwrap();
+        let _ = child.wait().unwrap();
+    }));
+
+    if let Some(mut child) = child {
+        if child.try_wait().unwrap().is_none() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
 fn available_host_port() -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.local_addr().unwrap().port()
+}
+
+fn available_host_port_in_range(start: u16, end: u16) -> u16 {
+    for port in start..end {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", port)) {
+            drop(listener);
+            return port;
+        }
+    }
+    panic!("no available host port in range {start}..{end}");
 }
 
 fn wait_for_forwarded_http_response(host_port: u16) -> Result<(), String> {

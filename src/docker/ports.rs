@@ -1,8 +1,14 @@
-use std::net::TcpListener;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::TcpListener,
+};
 
 use anyhow::{Context, Result, bail};
 
-use crate::config::{resolved::ResolvedPort, types::PortProtocol};
+use crate::config::{
+    resolved::{ResolvedAutoPorts, ResolvedPort, ResolvedPortAttributes, ResolvedPublishPort},
+    types::{DEFAULT_PORT_HOST_IP, OnAutoForward, PortProtocol},
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DockerPublishPort {
@@ -20,6 +26,12 @@ pub(crate) struct ResolvedForwardPort {
     pub(crate) protocol: PortProtocol,
     pub(crate) require_local: bool,
     pub(crate) label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedAutoForwardPort {
+    pub(crate) port: ResolvedForwardPort,
+    pub(crate) on_auto_forward: OnAutoForward,
 }
 
 pub(crate) fn resolve_forward_ports(ports: &[ResolvedPort]) -> Result<Vec<ResolvedForwardPort>> {
@@ -50,6 +62,104 @@ where
     }
 
     Ok(resolved)
+}
+
+pub(crate) fn resolve_auto_forward_ports(
+    detected_ports: impl IntoIterator<Item = u16>,
+    existing_forward_ports: &[ResolvedForwardPort],
+    publish_ports: &[ResolvedPublishPort],
+    auto_ports: &ResolvedAutoPorts,
+    port_attributes: &BTreeMap<String, ResolvedPortAttributes>,
+    other_ports_attributes: Option<&ResolvedPortAttributes>,
+) -> Result<Vec<ResolvedAutoForwardPort>> {
+    resolve_auto_forward_ports_with(
+        detected_ports,
+        existing_forward_ports,
+        publish_ports,
+        auto_ports,
+        port_attributes,
+        other_ports_attributes,
+        host_port_available,
+    )
+}
+
+pub(crate) fn resolve_auto_forward_ports_with<F>(
+    detected_ports: impl IntoIterator<Item = u16>,
+    existing_forward_ports: &[ResolvedForwardPort],
+    publish_ports: &[ResolvedPublishPort],
+    auto_ports: &ResolvedAutoPorts,
+    port_attributes: &BTreeMap<String, ResolvedPortAttributes>,
+    other_ports_attributes: Option<&ResolvedPortAttributes>,
+    mut host_port_available: F,
+) -> Result<Vec<ResolvedAutoForwardPort>>
+where
+    F: FnMut(&str, u16) -> Result<bool>,
+{
+    if !auto_ports.enabled {
+        return Ok(Vec::new());
+    }
+
+    let manual_containers = existing_forward_ports
+        .iter()
+        .map(|port| port.container)
+        .collect::<BTreeSet<_>>();
+    let published_tcp_containers = publish_ports
+        .iter()
+        .filter(|port| port.protocol == PortProtocol::Tcp)
+        .map(|port| port.container)
+        .collect::<BTreeSet<_>>();
+    let ignored = auto_ports.ignore.iter().copied().collect::<BTreeSet<_>>();
+    let mut resolved = existing_forward_ports.to_vec();
+    let mut additions = Vec::new();
+
+    for container in detected_ports.into_iter().collect::<BTreeSet<_>>() {
+        if container < auto_ports.min
+            || container >= auto_ports.max
+            || ignored.contains(&container)
+            || manual_containers.contains(&container)
+            || published_tcp_containers.contains(&container)
+        {
+            continue;
+        }
+
+        let attributes = port_attributes
+            .get(&container.to_string())
+            .or(other_ports_attributes);
+        let on_auto_forward = attributes
+            .and_then(|attributes| attributes.on_auto_forward)
+            .unwrap_or(auto_ports.on_auto_forward);
+        if on_auto_forward == OnAutoForward::Ignore {
+            continue;
+        }
+
+        let port = ResolvedPort {
+            enabled: true,
+            container,
+            host: Some(container),
+            host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: attributes
+                .and_then(|attributes| attributes.require_local_port)
+                .unwrap_or(false),
+            label: attributes.and_then(|attributes| attributes.label.clone()),
+        };
+        let host = resolve_host_port(&port, container, &resolved, &mut host_port_available)?;
+        let port = ResolvedForwardPort {
+            container,
+            host,
+            host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: port.require_local,
+            label: port.label,
+        };
+        resolved.push(port.clone());
+        additions.push(ResolvedAutoForwardPort {
+            port,
+            on_auto_forward,
+        });
+    }
+
+    Ok(additions)
 }
 
 fn resolve_host_port<F>(
@@ -128,6 +238,7 @@ impl DockerPublishPort {
 fn docker_protocol(protocol: PortProtocol) -> &'static str {
     match protocol {
         PortProtocol::Tcp => "tcp",
+        PortProtocol::Udp => "udp",
     }
 }
 
@@ -204,6 +315,160 @@ mod tests {
         assert_eq!(resolved[1].host, 3001);
     }
 
+    #[test]
+    fn auto_forward_excludes_ignored_manual_published_and_attribute_ignored_ports() {
+        let auto = ResolvedAutoPorts {
+            enabled: true,
+            min: 2000,
+            max: 7000,
+            ignore: vec![3001],
+            on_auto_forward: OnAutoForward::Notify,
+        };
+        let manual = vec![forward_port(3002, 3002)];
+        let publish = vec![ResolvedPublishPort {
+            container: 3003,
+            host: Some(3003),
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        }];
+        let attributes = BTreeMap::from([(
+            "3004".to_owned(),
+            ResolvedPortAttributes {
+                label: None,
+                on_auto_forward: Some(OnAutoForward::Ignore),
+                require_local_port: None,
+            },
+        )]);
+
+        let resolved = resolve_auto_forward_ports_with(
+            [1023, 2000, 3001, 3002, 3003, 3004, 6999, 7000],
+            &manual,
+            &publish,
+            &auto,
+            &attributes,
+            None,
+            |_, _| Ok(true),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved
+                .into_iter()
+                .map(|port| port.port.container)
+                .collect::<Vec<_>>(),
+            vec![2000, 6999]
+        );
+    }
+
+    #[test]
+    fn auto_forward_excludes_only_tcp_published_ports() {
+        let auto = ResolvedAutoPorts {
+            enabled: true,
+            min: 1024,
+            max: 32768,
+            ignore: Vec::new(),
+            on_auto_forward: OnAutoForward::Notify,
+        };
+        let publish = vec![
+            ResolvedPublishPort {
+                container: 3000,
+                host: Some(3000),
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            },
+            ResolvedPublishPort {
+                container: 3001,
+                host: Some(3001),
+                host_ip: None,
+                protocol: PortProtocol::Udp,
+            },
+        ];
+
+        let resolved = resolve_auto_forward_ports_with(
+            [3000, 3001],
+            &[],
+            &publish,
+            &auto,
+            &BTreeMap::new(),
+            None,
+            |_, _| Ok(true),
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolved
+                .into_iter()
+                .map(|port| port.port.container)
+                .collect::<Vec<_>>(),
+            vec![3001]
+        );
+    }
+
+    #[test]
+    fn auto_forward_uses_attributes_and_falls_back_host_ports() {
+        let auto = ResolvedAutoPorts {
+            enabled: true,
+            min: 1024,
+            max: 32768,
+            ignore: Vec::new(),
+            on_auto_forward: OnAutoForward::Notify,
+        };
+        let attributes = BTreeMap::from([(
+            "4321".to_owned(),
+            ResolvedPortAttributes {
+                label: Some("web".to_owned()),
+                on_auto_forward: Some(OnAutoForward::Silent),
+                require_local_port: Some(false),
+            },
+        )]);
+
+        let resolved = resolve_auto_forward_ports_with(
+            [4321],
+            &[forward_port(4321, 1234)],
+            &[],
+            &auto,
+            &attributes,
+            None,
+            |_, port| Ok(port != 4321),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].port.container, 4321);
+        assert_eq!(resolved[0].port.host, 4322);
+        assert_eq!(resolved[0].port.label.as_deref(), Some("web"));
+        assert_eq!(resolved[0].on_auto_forward, OnAutoForward::Silent);
+    }
+
+    #[test]
+    fn auto_forward_respects_other_ports_ignore_default() {
+        let auto = ResolvedAutoPorts {
+            enabled: true,
+            min: 1024,
+            max: 32768,
+            ignore: Vec::new(),
+            on_auto_forward: OnAutoForward::Notify,
+        };
+        let other = ResolvedPortAttributes {
+            label: None,
+            on_auto_forward: Some(OnAutoForward::Ignore),
+            require_local_port: None,
+        };
+
+        let resolved = resolve_auto_forward_ports_with(
+            [4321],
+            &[],
+            &[],
+            &auto,
+            &BTreeMap::new(),
+            Some(&other),
+            |_, _| Ok(true),
+        )
+        .unwrap();
+
+        assert!(resolved.is_empty());
+    }
+
     fn manual_port(
         container: u16,
         host: Option<u16>,
@@ -217,6 +482,17 @@ mod tests {
             host_ip: host_ip.to_owned(),
             protocol: PortProtocol::Tcp,
             require_local,
+            label: None,
+        }
+    }
+
+    fn forward_port(host: u16, container: u16) -> ResolvedForwardPort {
+        ResolvedForwardPort {
+            container,
+            host,
+            host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
             label: None,
         }
     }
