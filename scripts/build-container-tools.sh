@@ -5,6 +5,14 @@ root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 out=${DECUNE_CONTAINER_TOOLS_OUT:-"$root/target/container-tools"}
 RUSTFLAGS="${RUSTFLAGS:-} -C strip=symbols"
 export RUSTFLAGS
+cd "$root"
+
+cargo_metadata=$(cargo metadata --format-version 1 --no-deps)
+cargo_target_dir=$(printf '%s\n' "$cargo_metadata" | sed -n 's/.*"target_directory":"\([^"]*\)".*/\1/p')
+if [ -z "$cargo_target_dir" ]; then
+    echo "Failed to determine Cargo target directory" >&2
+    exit 1
+fi
 
 if [ "$#" -eq 0 ]; then
     set -- linux-amd64 linux-arm64
@@ -40,7 +48,7 @@ for platform in "$@"; do
     mkdir -p "$out/$platform"
 
     for tool in git-credential-decune decune-forward-agent; do
-        source="$root/target/$target/release/$tool"
+        source="$cargo_target_dir/$target/release/$tool"
         dest="$out/$platform/$tool"
         cp "$source" "$dest"
         chmod 0755 "$dest"
