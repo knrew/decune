@@ -1664,7 +1664,9 @@ mod tests {
         MountBindOptionsPropagationEnum, MountPoint, MountVolumeOptions,
     };
 
-    use crate::config::resolved::{ResolvedConfig, ResolvedDevcontainerSource};
+    use crate::config::resolved::{
+        ResolvedConfig, ResolvedDevcontainerSource, ResolvedPublishPort,
+    };
     use crate::config::types::{GitHttpsMode, GithubCredentialsMode, MountType, PortProtocol};
     use crate::config::{ConfigHashInput, ConfigLayer, config_hash};
     use crate::docker::client::DockerClient;
@@ -2420,6 +2422,73 @@ mod tests {
                 .join(".devcontainer/devcontainer.json")
                 .display()
                 .to_string()
+        );
+    }
+
+    #[test]
+    fn build_up_plan_separates_forward_ports_from_app_port_publish() {
+        let workspace = test_workspace("port-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        let baseline = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "forwardPorts": [3000]
+            }
+            "#,
+        );
+        let forwarding = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "forwardPorts": [3000],
+              "appPort": ["127.0.0.1:18080:8080"]
+            }
+            "#,
+        );
+        let published = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(
+            forwarding.forward_ports,
+            vec![ResolvedForwardPort {
+                container: 3000,
+                host: 3000,
+                host_ip: "127.0.0.1".to_owned(),
+                protocol: PortProtocol::Tcp,
+                require_local: false,
+                label: None,
+            }]
+        );
+        assert!(forwarding.config.devcontainer.publish_ports.is_empty());
+        assert_eq!(
+            published.config.devcontainer.publish_ports,
+            vec![ResolvedPublishPort {
+                container: 8080,
+                host: Some(18080),
+                host_ip: Some("127.0.0.1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }]
+        );
+        assert_eq!(
+            baseline.resources.config_hash,
+            forwarding.resources.config_hash
+        );
+        assert_ne!(
+            forwarding.resources.config_hash,
+            published.resources.config_hash
         );
     }
 

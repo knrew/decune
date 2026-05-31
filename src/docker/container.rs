@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use anyhow::{Context, Result, bail};
 use bollard::{
@@ -255,7 +255,12 @@ fn env_entries(env: &BTreeMap<String, String>) -> Vec<String> {
 }
 
 fn publish_port_keys(publish_ports: &[DockerPublishPort]) -> Vec<String> {
-    publish_ports.iter().map(DockerPublishPort::key).collect()
+    publish_ports
+        .iter()
+        .map(DockerPublishPort::key)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn publish_port_bindings(publish_ports: &[DockerPublishPort]) -> Option<PortMap> {
@@ -615,6 +620,7 @@ mod tests {
         };
 
         let body = create_container_body(&spec);
+        assert_eq!(body.exposed_ports, Some(vec!["80/tcp".to_owned()]));
         let host_config = body.host_config.unwrap();
         let port_bindings = host_config.port_bindings.unwrap();
         let bindings = port_bindings.get("80/tcp").unwrap().as_ref().unwrap();
