@@ -2633,6 +2633,47 @@ mod tests {
     }
 
     #[test]
+    fn detached_up_plan_keeps_config_hash_stable_when_forward_ports_are_ignored() {
+        let workspace = test_workspace("detached-forward-port-hash-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "forwardPorts": [3000]
+            }
+            "#,
+        );
+
+        let attached = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        let detached = build_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::IgnoreDetached,
+        )
+        .unwrap();
+
+        assert_eq!(
+            attached.forward_ports,
+            vec![ResolvedForwardPort {
+                container: 3000,
+                host: 3000,
+                host_ip: "127.0.0.1".to_owned(),
+                protocol: PortProtocol::Tcp,
+                require_local: false,
+                label: None,
+            }]
+        );
+        assert!(detached.forward_ports.is_empty());
+        assert!(detached.ignored_detached_forwarding);
+        assert_eq!(
+            attached.resources.config_hash,
+            detached.resources.config_hash
+        );
+    }
+
+    #[test]
     fn detached_up_plan_ignores_forward_ports_without_binding_host_port() {
         let workspace = test_workspace("detached-port-plan");
         write_devcontainer(
