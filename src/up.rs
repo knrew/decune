@@ -83,6 +83,12 @@ enum MountResolution {
     DeferConfigMounts,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ForwardingResolution {
+    Resolve,
+    IgnoreDetached,
+}
+
 struct WorkspaceLocation {
     workspace_folder: String,
     workspace_mount: DockerMountSpec,
@@ -334,6 +340,7 @@ pub(crate) fn default_workspace_folder(workspace: &Workspace) -> String {
     format!("/workspaces/{}", workspace.basename())
 }
 
+#[cfg(test)]
 pub(crate) fn build_up_plan(
     workspace: &Workspace,
     explicit_config_path: Option<&Path>,
@@ -345,9 +352,11 @@ pub(crate) fn build_up_plan(
         cli_layer,
         Vec::new(),
         MountResolution::Resolve,
+        ForwardingResolution::Resolve,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn build_up_plan_with_image_metadata(
     workspace: &Workspace,
     explicit_config_path: Option<&Path>,
@@ -360,13 +369,15 @@ pub(crate) fn build_up_plan_with_image_metadata(
         cli_layer,
         image_metadata,
         MountResolution::Resolve,
+        ForwardingResolution::Resolve,
     )
 }
 
-fn build_preliminary_up_plan(
+fn build_preliminary_up_plan_with_forwarding_resolution(
     workspace: &Workspace,
     explicit_config_path: Option<&Path>,
     cli_layer: ConfigLayer,
+    forwarding_resolution: ForwardingResolution,
 ) -> Result<UpPlan> {
     build_up_plan_inner(
         workspace,
@@ -374,6 +385,40 @@ fn build_preliminary_up_plan(
         cli_layer,
         Vec::new(),
         MountResolution::DeferConfigMounts,
+        forwarding_resolution,
+    )
+}
+
+fn build_up_plan_with_forwarding_resolution(
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    forwarding_resolution: ForwardingResolution,
+) -> Result<UpPlan> {
+    build_up_plan_inner(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        Vec::new(),
+        MountResolution::Resolve,
+        forwarding_resolution,
+    )
+}
+
+fn build_up_plan_with_image_metadata_and_forwarding_resolution(
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    image_metadata: Vec<ConfigLayer>,
+    forwarding_resolution: ForwardingResolution,
+) -> Result<UpPlan> {
+    build_up_plan_inner(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        image_metadata,
+        MountResolution::Resolve,
+        forwarding_resolution,
     )
 }
 
@@ -383,6 +428,7 @@ fn build_up_plan_inner(
     cli_layer: ConfigLayer,
     image_metadata: Vec<ConfigLayer>,
     mount_resolution: MountResolution,
+    forwarding_resolution: ForwardingResolution,
 ) -> Result<UpPlan> {
     let devcontainer_json = DevcontainerJson::load(workspace.root(), explicit_config_path)?;
     let metadata = parse_metadata(devcontainer_json.value().clone())?;
@@ -430,7 +476,10 @@ fn build_up_plan_inner(
         devcontainer_json.path().display().to_string(),
     );
     let image = image_source(&config, &resources)?;
-    let forward_ports = resolve_forward_ports(&config.ports.entries)?;
+    let forward_ports = match forwarding_resolution {
+        ForwardingResolution::Resolve => resolve_forward_ports(&config.ports.entries)?,
+        ForwardingResolution::IgnoreDetached => Vec::new(),
+    };
 
     Ok(UpPlan {
         image,
@@ -445,7 +494,8 @@ fn build_up_plan_inner(
 }
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
-    let started = ensure_container_started(options).await?;
+    let started = ensure_container_started(options, ForwardingResolution::IgnoreDetached).await?;
+    warn_about_detached_forwarding(&started.plan.config);
     let _host_daemon = start_host_daemon_for_up(&started).await?;
     {
         let lifecycle = prepare_up_lifecycle(&started).await?;
@@ -457,7 +507,7 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
 }
 
 pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
-    let started = ensure_container_started(options).await?;
+    let started = ensure_container_started(options, ForwardingResolution::Resolve).await?;
     let _host_daemon = start_host_daemon_for_up(&started).await?;
     let lifecycle = prepare_up_lifecycle(&started).await?;
     run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
@@ -480,12 +530,24 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     Ok(clamp_exit_code(exit_code))
 }
 
-async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContainer> {
+fn warn_about_detached_forwarding(config: &ResolvedConfig) {
+    if !config.ports.entries.is_empty() {
+        ui::warn(
+            "Port forwarding is ignored in detached mode; use appPort for detached publishing",
+        );
+    }
+}
+
+async fn ensure_container_started(
+    options: UpOptions,
+    forwarding_resolution: ForwardingResolution,
+) -> Result<StartedUpContainer> {
     let workspace = Workspace::resolve(&options.workspace)?;
-    let preliminary_plan = build_preliminary_up_plan(
+    let preliminary_plan = build_preliminary_up_plan_with_forwarding_resolution(
         &workspace,
         options.config_path.as_deref(),
         options.cli_layer.clone(),
+        forwarding_resolution,
     )?;
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
 
@@ -500,6 +562,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
             options.cli_layer.clone(),
             containers.first().and_then(existing_container_image_id),
             &preliminary_plan,
+            forwarding_resolution,
         )
         .await?;
         let (existing_plan, _) = finalize_up_plan_mounts(
@@ -563,6 +626,7 @@ async fn ensure_container_started(options: UpOptions) -> Result<StartedUpContain
         options.cli_layer,
         preliminary_plan,
         options.pull,
+        forwarding_resolution,
     )
     .await?;
     let (plan, mount_image_prepared) = finalize_up_plan_mounts(
@@ -750,11 +814,17 @@ async fn build_existing_container_decision_plan(
     cli_layer: ConfigLayer,
     existing_container_image_id: Option<&str>,
     preliminary_plan: &UpPlan,
+    forwarding_resolution: ForwardingResolution,
 ) -> Result<UpPlan> {
     if preliminary_plan.build_context.is_some() {
         let image = existing_container_image_id.unwrap_or(&preliminary_plan.image);
         warn_about_unsupported_dockerfile_image_metadata(client, image).await?;
-        return build_up_plan(workspace, explicit_config_path, cli_layer);
+        return build_up_plan_with_forwarding_resolution(
+            workspace,
+            explicit_config_path,
+            cli_layer,
+            forwarding_resolution,
+        );
     }
 
     let image_metadata =
@@ -763,22 +833,43 @@ async fn build_existing_container_decision_plan(
             Some(image_metadata) => image_metadata,
             None => {
                 let Some(image_id) = existing_container_image_id else {
-                    return build_up_plan(workspace, explicit_config_path, cli_layer);
+                    return build_up_plan_with_forwarding_resolution(
+                        workspace,
+                        explicit_config_path,
+                        cli_layer,
+                        forwarding_resolution,
+                    );
                 };
                 let Some(image_metadata) =
                     image_devcontainer_metadata_layers_if_present(client, image_id).await?
                 else {
-                    return build_up_plan(workspace, explicit_config_path, cli_layer);
+                    return build_up_plan_with_forwarding_resolution(
+                        workspace,
+                        explicit_config_path,
+                        cli_layer,
+                        forwarding_resolution,
+                    );
                 };
                 image_metadata
             }
         };
 
     if image_metadata.is_empty() {
-        return build_up_plan(workspace, explicit_config_path, cli_layer);
+        return build_up_plan_with_forwarding_resolution(
+            workspace,
+            explicit_config_path,
+            cli_layer,
+            forwarding_resolution,
+        );
     }
 
-    build_up_plan_with_image_metadata(workspace, explicit_config_path, cli_layer, image_metadata)
+    build_up_plan_with_image_metadata_and_forwarding_resolution(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        image_metadata,
+        forwarding_resolution,
+    )
 }
 
 async fn prepare_image_based_metadata(
@@ -788,10 +879,16 @@ async fn prepare_image_based_metadata(
     cli_layer: ConfigLayer,
     preliminary_plan: UpPlan,
     pull: bool,
+    forwarding_resolution: ForwardingResolution,
 ) -> Result<(UpPlan, bool)> {
     if preliminary_plan.build_context.is_some() {
         return Ok((
-            build_up_plan(workspace, explicit_config_path, cli_layer)?,
+            build_up_plan_with_forwarding_resolution(
+                workspace,
+                explicit_config_path,
+                cli_layer,
+                forwarding_resolution,
+            )?,
             false,
         ));
     }
@@ -810,16 +907,22 @@ async fn prepare_image_based_metadata(
         image_devcontainer_metadata_layers(client, &preliminary_plan.image).await?;
     if image_metadata.is_empty() {
         return Ok((
-            build_up_plan(workspace, explicit_config_path, cli_layer)?,
+            build_up_plan_with_forwarding_resolution(
+                workspace,
+                explicit_config_path,
+                cli_layer,
+                forwarding_resolution,
+            )?,
             true,
         ));
     }
 
-    let plan = build_up_plan_with_image_metadata(
+    let plan = build_up_plan_with_image_metadata_and_forwarding_resolution(
         workspace,
         explicit_config_path,
         cli_layer,
         image_metadata,
+        forwarding_resolution,
     )?;
 
     Ok((plan, true))
@@ -1656,7 +1759,10 @@ async fn warn_about_unsupported_dockerfile_image_metadata(
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, ops::Deref, os::unix::net::UnixListener, path::PathBuf};
+    use std::{
+        collections::BTreeMap, fs, net::TcpListener, ops::Deref, os::unix::net::UnixListener,
+        path::PathBuf,
+    };
 
     use anyhow::Context;
     use bollard::models::{
@@ -1683,12 +1789,12 @@ mod tests {
 
     use super::{
         CredentialRuntimeMountPolicy, DECUNE_RUNTIME_TARGET, ExistingContainerDecision,
-        UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
+        ForwardingResolution, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
         add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-        build_up_plan, build_up_plan_with_image_metadata, container_summary,
-        create_and_start_container, decide_existing_container, default_workspace_folder,
-        first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
-        run_attached_up, run_detached_up, shell_command_candidates,
+        build_up_plan, build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
+        container_summary, create_and_start_container, decide_existing_container,
+        default_workspace_folder, first_successful_shell_candidate, list_workspace_containers,
+        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
     };
 
     #[test]
@@ -2490,6 +2596,47 @@ mod tests {
             forwarding.resources.config_hash,
             published.resources.config_hash
         );
+    }
+
+    #[test]
+    fn detached_up_plan_ignores_forward_ports_without_binding_host_port() {
+        let workspace = test_workspace("detached-port-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let host_port = listener.local_addr().unwrap().port();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            format!(
+                r#"
+version = 1
+
+[[ports]]
+container = 4321
+host = {host_port}
+require_local = true
+"#
+            ),
+        )
+        .unwrap();
+
+        let plan = build_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::IgnoreDetached,
+        )
+        .unwrap();
+
+        assert!(plan.forward_ports.is_empty());
+        assert_eq!(plan.config.ports.entries.len(), 1);
     }
 
     #[test]

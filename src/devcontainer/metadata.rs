@@ -1124,7 +1124,7 @@ mod tests {
     fn converts_forward_ports_to_forwarding_config_layer() {
         let metadata = parse_metadata(json!({
             "image": "ubuntu:24.04",
-            "forwardPorts": [3000, "127.0.0.1:5433:5432"],
+            "forwardPorts": [3000, "localhost:5432"],
             "portsAttributes": {
                 "3000": {
                     "label": "web",
@@ -1157,7 +1157,7 @@ mod tests {
                 LayerPort {
                     enabled: true,
                     container: 5432,
-                    host: Some(5433),
+                    host: None,
                     host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
                     protocol: PortProtocol::Tcp,
                     require_local: false,

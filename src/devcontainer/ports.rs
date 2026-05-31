@@ -38,7 +38,7 @@ pub(crate) fn forwarding_port_to_layer(
     port: &DevcontainerPort,
     attributes: &BTreeMap<String, DevcontainerPortAttributes>,
 ) -> Result<LayerForwardPort> {
-    let parsed = parse_port(port, PortMode::Forward)?;
+    let parsed = parse_forwarding_port(port)?;
     let attribute_keys = attribute_keys_for_port(parsed.container, port);
     let port_attributes = attributes_for_keys(attributes, &attribute_keys);
 
@@ -61,7 +61,7 @@ pub(crate) fn forwarding_port_to_layer(
 }
 
 pub(crate) fn publish_port_to_layer(port: &DevcontainerPort) -> Result<LayerPublishPort> {
-    let parsed = parse_port(port, PortMode::Publish)?;
+    let parsed = parse_publish_port(port)?;
 
     Ok(LayerPublishPort {
         container: parsed.container,
@@ -109,51 +109,80 @@ struct ParsedPort {
     protocol: PortProtocol,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PortMode {
-    Forward,
-    Publish,
-}
-
-fn parse_port(port: &DevcontainerPort, mode: PortMode) -> Result<ParsedPort> {
+fn parse_forwarding_port(port: &DevcontainerPort) -> Result<ParsedPort> {
     match port {
         DevcontainerPort::Number(container) => Ok(ParsedPort {
             container: *container,
-            host: match mode {
-                PortMode::Forward => None,
-                PortMode::Publish => Some(*container),
-            },
-            host_ip: match mode {
-                PortMode::Forward => Some(DEFAULT_PORT_HOST_IP.to_owned()),
-                PortMode::Publish => None,
-            },
+            host: None,
+            host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
             protocol: PortProtocol::Tcp,
         }),
-        DevcontainerPort::String(value) => parse_port_string(value, mode),
+        DevcontainerPort::String(value) => parse_forwarding_port_string(value),
     }
 }
 
-fn parse_port_string(value: &str, mode: PortMode) -> Result<ParsedPort> {
-    let (value, protocol) = parse_port_protocol(value, mode)?;
+fn parse_publish_port(port: &DevcontainerPort) -> Result<ParsedPort> {
+    match port {
+        DevcontainerPort::Number(container) => Ok(ParsedPort {
+            container: *container,
+            host: Some(*container),
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        }),
+        DevcontainerPort::String(value) => parse_publish_port_string(value),
+    }
+}
+
+fn parse_forwarding_port_string(original: &str) -> Result<ParsedPort> {
+    let (value, protocol) = parse_forwarding_port_protocol(original)?;
+    let segments = value.split(':').collect::<Vec<_>>();
+
+    match segments.as_slice() {
+        [host, container] if is_local_forwarding_host(host) => Ok(ParsedPort {
+            container: parse_u16_port(container, "container port")?,
+            host: None,
+            host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
+            protocol,
+        }),
+        [host, container] if is_numeric_port_candidate(host) => {
+            let _ = parse_u16_port(container, "container port")?;
+            Err(anyhow!(
+                "Invalid devcontainer forwardPorts entry: {original}. Use a numeric JSON value for a current-container port; host-port mappings are not supported in forwardPorts"
+            ))
+        }
+        [host, container] => {
+            let _ = parse_u16_port(container, "container port")?;
+            Err(anyhow!(
+                "Unsupported devcontainer forwardPorts host: {host}. Docker Compose service forwarding is not supported"
+            ))
+        }
+        [container] => {
+            let _ = parse_u16_port(container, "container port")?;
+            Err(anyhow!(
+                "Invalid devcontainer forwardPorts entry: {original}. Use a numeric JSON value or localhost:<port>"
+            ))
+        }
+        _ => Err(anyhow!(
+            "Invalid devcontainer forwardPorts entry: {original}"
+        )),
+    }
+}
+
+fn parse_publish_port_string(value: &str) -> Result<ParsedPort> {
+    let (value, protocol) = parse_publish_port_protocol(value)?;
     let segments = value.split(':').collect::<Vec<_>>();
 
     match segments.as_slice() {
         [container] => Ok(ParsedPort {
             container: parse_u16_port(container, "container port")?,
             host: None,
-            host_ip: match mode {
-                PortMode::Forward => Some(DEFAULT_PORT_HOST_IP.to_owned()),
-                PortMode::Publish => None,
-            },
+            host_ip: None,
             protocol,
         }),
         [left, container] if is_numeric_port_candidate(left) => Ok(ParsedPort {
             container: parse_u16_port(container, "container port")?,
             host: Some(parse_u16_port(left, "host port")?),
-            host_ip: match mode {
-                PortMode::Forward => Some(DEFAULT_PORT_HOST_IP.to_owned()),
-                PortMode::Publish => None,
-            },
+            host_ip: None,
             protocol,
         }),
         [host_ip, container] => Ok(ParsedPort {
@@ -172,11 +201,21 @@ fn parse_port_string(value: &str, mode: PortMode) -> Result<ParsedPort> {
     }
 }
 
-fn parse_port_protocol(value: &str, mode: PortMode) -> Result<(&str, PortProtocol)> {
+fn parse_forwarding_port_protocol(value: &str) -> Result<(&str, PortProtocol)> {
     match value.split_once('/') {
         None => Ok((value, PortProtocol::Tcp)),
         Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
-        Some((port, "udp")) if mode == PortMode::Publish => Ok((port, PortProtocol::Udp)),
+        Some((_, protocol)) => Err(anyhow!(
+            "Unsupported devcontainer port protocol: {protocol}"
+        )),
+    }
+}
+
+fn parse_publish_port_protocol(value: &str) -> Result<(&str, PortProtocol)> {
+    match value.split_once('/') {
+        None => Ok((value, PortProtocol::Tcp)),
+        Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
+        Some((port, "udp")) => Ok((port, PortProtocol::Udp)),
         Some((_, protocol)) => Err(anyhow!(
             "Unsupported devcontainer port protocol: {protocol}"
         )),
@@ -191,6 +230,10 @@ fn parse_u16_port(value: &str, label: &str) -> Result<u16> {
 
 fn is_numeric_port_candidate(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|character| character.is_ascii_digit())
+}
+
+fn is_local_forwarding_host(value: &str) -> bool {
+    matches!(value, "localhost")
 }
 
 fn normalize_host_ip(value: &str) -> Result<String> {
@@ -250,6 +293,79 @@ mod tests {
             error
                 .to_string()
                 .contains("Unsupported devcontainer port protocol")
+        );
+    }
+
+    #[test]
+    fn string_forward_port_requires_localhost_host() {
+        let port = forwarding_port_to_layer(
+            &DevcontainerPort::String("localhost:5432".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap();
+
+        assert_eq!(port.port.host_ip, DEFAULT_PORT_HOST_IP);
+        assert_eq!(port.port.container, 5432);
+        assert_eq!(port.port.host, None);
+    }
+
+    #[test]
+    fn string_numeric_forward_port_is_rejected() {
+        let error = forwarding_port_to_layer(
+            &DevcontainerPort::String("3000".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Use a numeric JSON value or localhost:<port>")
+        );
+    }
+
+    #[test]
+    fn publish_style_forward_port_mapping_is_rejected() {
+        let error = forwarding_port_to_layer(
+            &DevcontainerPort::String("3000:3000".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("host-port mappings are not supported")
+        );
+    }
+
+    #[test]
+    fn compose_service_forward_port_host_is_rejected() {
+        let error = forwarding_port_to_layer(
+            &DevcontainerPort::String("db:5432".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Docker Compose service forwarding is not supported")
+        );
+    }
+
+    #[test]
+    fn three_segment_forward_port_mapping_is_rejected() {
+        let error = forwarding_port_to_layer(
+            &DevcontainerPort::String("127.0.0.1:5433:5432".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid devcontainer forwardPorts entry")
         );
     }
 
@@ -315,18 +431,6 @@ mod tests {
             publish_port_to_layer(&DevcontainerPort::String("99999:3000".to_owned())).unwrap_err();
 
         assert!(error.to_string().contains("Invalid host port"));
-    }
-
-    #[test]
-    fn localhost_host_ip_is_normalized_for_forward_ports() {
-        let port = forwarding_port_to_layer(
-            &DevcontainerPort::String("localhost:5432".to_owned()),
-            &empty_attributes(),
-        )
-        .unwrap();
-
-        assert_eq!(port.port.host_ip, DEFAULT_PORT_HOST_IP);
-        assert_eq!(port.port.container, 5432);
     }
 
     fn empty_attributes() -> BTreeMap<String, DevcontainerPortAttributes> {
