@@ -786,18 +786,31 @@ fn detect_listen_ports(scan: &ForwardAgentScanRequest) -> Result<Vec<u16>> {
         .context("Failed to read /proc/net/tcp for automatic port forwarding")?;
     let tcp6 = fs::read_to_string("/proc/net/tcp6")
         .context("Failed to read /proc/net/tcp6 for automatic port forwarding")?;
+    let tcp6_dual_stack = !read_ipv6_bindv6only()?;
     listen_ports_from_proc_contents(
         tcp.as_str(),
         tcp6.as_str(),
+        tcp6_dual_stack,
         scan.min,
         scan.max,
         &scan.ignore,
     )
 }
 
+fn read_ipv6_bindv6only() -> Result<bool> {
+    let value = fs::read_to_string("/proc/sys/net/ipv6/bindv6only")
+        .context("Failed to read /proc/sys/net/ipv6/bindv6only for automatic port forwarding")?;
+    match value.trim() {
+        "0" => Ok(false),
+        "1" => Ok(true),
+        value => bail!("Invalid /proc/sys/net/ipv6/bindv6only value: {value}"),
+    }
+}
+
 fn listen_ports_from_proc_contents(
     tcp_content: &str,
     tcp6_content: &str,
+    tcp6_dual_stack: bool,
     min: u16,
     max: u16,
     ignore: &[u16],
@@ -814,7 +827,7 @@ fn listen_ports_from_proc_contents(
         }
     }
     for line in tcp6_content.lines().skip(1) {
-        let Some(port) = parse_proc_net_tcp6_listen_port(line)? else {
+        let Some(port) = parse_proc_net_tcp6_listen_port(line, tcp6_dual_stack)? else {
             continue;
         };
         if port >= min && port < max && !ignored.contains(&port) {
@@ -859,7 +872,7 @@ fn parse_proc_net_tcp_address(address_hex: &str) -> Result<Ipv4Addr> {
     Ok(Ipv4Addr::from(address.to_le_bytes()))
 }
 
-fn parse_proc_net_tcp6_listen_port(line: &str) -> Result<Option<u16>> {
+fn parse_proc_net_tcp6_listen_port(line: &str, tcp6_dual_stack: bool) -> Result<Option<u16>> {
     let fields = line.split_whitespace().collect::<Vec<_>>();
     if fields.len() < 4 || fields[3] != "0A" {
         return Ok(None);
@@ -868,7 +881,7 @@ fn parse_proc_net_tcp6_listen_port(line: &str) -> Result<Option<u16>> {
     let (address_hex, port_hex) = local_address
         .rsplit_once(':')
         .ok_or_else(|| anyhow::anyhow!("Invalid /proc/net/tcp6 local address: {local_address}"))?;
-    if !proc_net_tcp6_address_is_ipv4_reachable(address_hex)? {
+    if !proc_net_tcp6_address_is_ipv4_reachable(address_hex, tcp6_dual_stack)? {
         return Ok(None);
     }
     let port = u16::from_str_radix(port_hex, 16)
@@ -877,9 +890,16 @@ fn parse_proc_net_tcp6_listen_port(line: &str) -> Result<Option<u16>> {
     Ok(Some(port))
 }
 
-fn proc_net_tcp6_address_is_ipv4_reachable(address_hex: &str) -> Result<bool> {
+fn proc_net_tcp6_address_is_ipv4_reachable(
+    address_hex: &str,
+    tcp6_dual_stack: bool,
+) -> Result<bool> {
     let address = parse_proc_net_tcp6_address(address_hex)?;
-    let Some(ipv4) = Ipv6Addr::from(address).to_ipv4_mapped() else {
+    let ipv6 = Ipv6Addr::from(address);
+    if ipv6.is_unspecified() {
+        return Ok(tcp6_dual_stack);
+    }
+    let Some(ipv4) = ipv6.to_ipv4_mapped() else {
         return Ok(false);
     };
 
@@ -1026,7 +1046,7 @@ mod tests {
    0: 0000000000000000FFFF00000100007F:10E3 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 3 1 0000000000000000 100 0 0 10 0
 ";
 
-        let ports = listen_ports_from_proc_contents(tcp, tcp6, 4321, 4324, &[4323]).unwrap();
+        let ports = listen_ports_from_proc_contents(tcp, tcp6, true, 4321, 4324, &[4323]).unwrap();
 
         assert_eq!(ports, vec![4321]);
     }
@@ -1041,7 +1061,7 @@ mod tests {
    3: 020012AC:10E4 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 4 1 0000000000000000 100 0 0 10 0
 ";
 
-        let ports = listen_ports_from_proc_contents(tcp, "", 4321, 4325, &[]).unwrap();
+        let ports = listen_ports_from_proc_contents(tcp, "", true, 4321, 4325, &[]).unwrap();
 
         assert_eq!(ports, vec![4321, 4322, 4323]);
     }
@@ -1053,7 +1073,7 @@ mod tests {
    0: 00000000000000000000000001000000:10E1 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 3 1 0000000000000000 100 0 0 10 0
 ";
 
-        let ports = listen_ports_from_proc_contents("", tcp6, 4321, 4322, &[]).unwrap();
+        let ports = listen_ports_from_proc_contents("", tcp6, true, 4321, 4322, &[]).unwrap();
 
         assert!(ports.is_empty());
     }
@@ -1065,9 +1085,33 @@ mod tests {
    0: 0000000000000000FFFF00000100007F:10E1 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 3 1 0000000000000000 100 0 0 10 0
 ";
 
-        let ports = listen_ports_from_proc_contents("", tcp6, 4321, 4322, &[]).unwrap();
+        let ports = listen_ports_from_proc_contents("", tcp6, true, 4321, 4322, &[]).unwrap();
 
         assert_eq!(ports, vec![4321]);
+    }
+
+    #[test]
+    fn proc_net_tcp6_parser_detects_dual_stack_unspecified_listen_ports() {
+        let tcp6 = "\
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:10E1 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 3 1 0000000000000000 100 0 0 10 0
+";
+
+        let ports = listen_ports_from_proc_contents("", tcp6, true, 4321, 4322, &[]).unwrap();
+
+        assert_eq!(ports, vec![4321]);
+    }
+
+    #[test]
+    fn proc_net_tcp6_parser_ignores_unspecified_listen_ports_when_ipv6_only() {
+        let tcp6 = "\
+  sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000000000000000000000000000:10E1 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 3 1 0000000000000000 100 0 0 10 0
+";
+
+        let ports = listen_ports_from_proc_contents("", tcp6, false, 4321, 4322, &[]).unwrap();
+
+        assert!(ports.is_empty());
     }
 
     #[test]
