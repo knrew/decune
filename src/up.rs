@@ -58,9 +58,9 @@ use crate::{
         },
         daemon::HostDaemon,
         forward::{
-            ForwardAgentStatus, ForwardRuntime, ForwardSession, forward_agent_command,
-            new_forward_agent_secret, prepare_forward_runtime, start_forward_session,
-            wait_for_forward_agent_with_status,
+            AutoForwardConfig, ForwardAgentStatus, ForwardRuntime, ForwardSession,
+            forward_agent_command, new_forward_agent_secret, prepare_forward_runtime,
+            start_forward_session_with_auto, wait_for_forward_agent_with_status,
         },
     },
     ui,
@@ -1076,7 +1076,8 @@ async fn run_attach_lifecycle_for_up(lifecycle: &PreparedLifecycleRunContext<'_>
 }
 
 async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<ForwardSession>> {
-    if started.plan.forward_ports.is_empty() {
+    let auto_forward = AutoForwardConfig::from_config(&started.plan.config);
+    if started.plan.forward_ports.is_empty() && auto_forward.is_none() {
         return Ok(None);
     }
 
@@ -1118,9 +1119,14 @@ async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<
                 started.outcome.container_name
             )
         })?;
-    let session = start_forward_session(&started.plan.forward_ports, agent_socket_path, secret)
-        .await
-        .context("Failed to start port forwarding listeners")?;
+    let session = start_forward_session_with_auto(
+        &started.plan.forward_ports,
+        auto_forward,
+        agent_socket_path,
+        secret,
+    )
+    .await
+    .context("Failed to start port forwarding listeners")?;
 
     Ok(Some(session))
 }
