@@ -4,7 +4,7 @@ use std::{
     future::Future,
     io,
     io::Read as _,
-    net::{IpAddr, Ipv6Addr},
+    net::{IpAddr, Ipv4Addr, Ipv6Addr},
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
@@ -831,13 +831,32 @@ fn parse_proc_net_tcp_listen_port(line: &str) -> Result<Option<u16>> {
         return Ok(None);
     }
     let local_address = fields[1];
-    let (_, port_hex) = local_address
+    let (address_hex, port_hex) = local_address
         .rsplit_once(':')
         .ok_or_else(|| anyhow::anyhow!("Invalid /proc/net/tcp local address: {local_address}"))?;
+    if !proc_net_tcp_address_is_ipv4_reachable(address_hex)? {
+        return Ok(None);
+    }
     let port = u16::from_str_radix(port_hex, 16)
         .with_context(|| format!("Invalid /proc/net/tcp local port: {port_hex}"))?;
 
     Ok(Some(port))
+}
+
+fn proc_net_tcp_address_is_ipv4_reachable(address_hex: &str) -> Result<bool> {
+    let address = parse_proc_net_tcp_address(address_hex)?;
+
+    Ok(address.is_loopback() || address.is_unspecified())
+}
+
+fn parse_proc_net_tcp_address(address_hex: &str) -> Result<Ipv4Addr> {
+    if address_hex.len() != 8 {
+        bail!("Invalid /proc/net/tcp local address: {address_hex}");
+    }
+    let address = u32::from_str_radix(address_hex, 16)
+        .with_context(|| format!("Invalid /proc/net/tcp local address: {address_hex}"))?;
+
+    Ok(Ipv4Addr::from(address.to_le_bytes()))
 }
 
 fn parse_proc_net_tcp6_listen_port(line: &str) -> Result<Option<u16>> {
@@ -1010,6 +1029,21 @@ mod tests {
         let ports = listen_ports_from_proc_contents(tcp, tcp6, 4321, 4324, &[4323]).unwrap();
 
         assert_eq!(ports, vec![4321]);
+    }
+
+    #[test]
+    fn proc_net_tcp_parser_ignores_ipv4_addresses_unreachable_from_localhost() {
+        let tcp = "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 00000000:10E1 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 1 1 0000000000000000 100 0 0 10 0
+   1: 0100007F:10E2 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 2 1 0000000000000000 100 0 0 10 0
+   2: 0200007F:10E3 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 3 1 0000000000000000 100 0 0 10 0
+   3: 020012AC:10E4 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 4 1 0000000000000000 100 0 0 10 0
+";
+
+        let ports = listen_ports_from_proc_contents(tcp, "", 4321, 4325, &[]).unwrap();
+
+        assert_eq!(ports, vec![4321, 4322, 4323]);
     }
 
     #[test]
