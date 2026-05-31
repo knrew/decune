@@ -1,5 +1,7 @@
 use std::{
+    collections::BTreeSet,
     env, fs, io,
+    io::Read as _,
     net::IpAddr,
     os::unix::fs::{FileTypeExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -19,14 +21,20 @@ use crate::{
     config::types::{MountType, PortProtocol},
     docker::ports::ResolvedForwardPort,
     host::credentials::DECUNE_RUNTIME_TARGET,
+    host::runtime::set_private_runtime_parent,
 };
 
 const FORWARD_AGENT_NAME: &str = "decune-forward-agent";
+const FORWARD_AGENT_LINUX_X86_64_NAME: &str = "decune-forward-agent-linux-x86_64";
 const FORWARD_AGENT_SOCKET_NAME: &str = "forward-agent.sock";
 const FORWARD_AGENT_SOCKET_TARGET: &str = "/run/decune/forward-agent.sock";
 const FORWARD_AGENT_TARGET: &str = "/run/decune/decune-forward-agent";
+const FORWARD_AGENT_ALLOWED_PORTS_ENV: &str = "DECUNE_FORWARD_AGENT_ALLOWED_PORTS";
+const FORWARD_AGENT_SECRET_ENV: &str = "DECUNE_FORWARD_AGENT_SECRET";
 const FORWARD_AGENT_START_RETRIES: usize = 100;
 const FORWARD_AGENT_START_DELAY: Duration = Duration::from_millis(50);
+const FORWARD_AGENT_LINUX_X86_64: &[u8] =
+    include_bytes!("assets/decune-forward-agent-linux-x86_64");
 
 #[derive(Debug)]
 pub(crate) struct ForwardRuntime {
@@ -35,13 +43,6 @@ pub(crate) struct ForwardRuntime {
 }
 
 impl ForwardRuntime {
-    pub(crate) fn empty() -> Self {
-        Self {
-            mounts: Vec::new(),
-            cleanup_paths: Vec::new(),
-        }
-    }
-
     pub(crate) fn mounts(&self) -> &[crate::docker::mounts::DockerMountSpec] {
         &self.mounts
     }
@@ -58,6 +59,7 @@ impl Drop for ForwardRuntime {
 #[derive(Debug)]
 pub(crate) struct ForwardSession {
     agent_socket_path: PathBuf,
+    secret: String,
     listeners: Vec<ForwardListener>,
 }
 
@@ -72,6 +74,46 @@ struct ForwardListener {
 struct ForwardAgentRequest {
     port: Option<u16>,
     shutdown: Option<bool>,
+    secret: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+struct ForwardAgentAccess {
+    allowed_ports: BTreeSet<u16>,
+    secret: String,
+}
+
+impl ForwardAgentAccess {
+    fn new(allowed_ports: impl IntoIterator<Item = u16>, secret: String) -> Self {
+        Self {
+            allowed_ports: allowed_ports.into_iter().collect(),
+            secret,
+        }
+    }
+
+    fn from_env() -> Result<Self> {
+        let secret = env::var(FORWARD_AGENT_SECRET_ENV)
+            .with_context(|| format!("Missing {FORWARD_AGENT_SECRET_ENV} for forward agent"))?;
+        if secret.is_empty() {
+            bail!("Forward agent secret is empty");
+        }
+        let allowed_ports = parse_allowed_ports_env(
+            &env::var(FORWARD_AGENT_ALLOWED_PORTS_ENV).unwrap_or_default(),
+        )?;
+        if allowed_ports.is_empty() {
+            bail!("Forward agent has no allowed target ports");
+        }
+
+        Ok(Self::new(allowed_ports, secret))
+    }
+
+    fn allows_port(&self, port: u16) -> bool {
+        self.allowed_ports.contains(&port)
+    }
+
+    fn secret_matches(&self, secret: Option<&str>) -> bool {
+        secret == Some(self.secret.as_str())
+    }
 }
 
 pub(crate) fn invoked_as_forward_agent() -> bool {
@@ -85,21 +127,24 @@ pub(crate) fn invoked_as_forward_agent() -> bool {
 }
 
 pub(crate) fn prepare_forward_runtime(
-    forward_ports: &[ResolvedForwardPort],
+    _forward_ports: &[ResolvedForwardPort],
     runtime_dir: &Path,
 ) -> Result<ForwardRuntime> {
-    if forward_ports.is_empty() {
-        return Ok(ForwardRuntime::empty());
-    }
-
     fs::create_dir_all(runtime_dir).with_context(|| {
         format!(
             "Failed to create port forwarding runtime directory: {}",
             runtime_dir.display()
         )
     })?;
+    set_private_runtime_parent(runtime_dir)?;
+    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
+        format!(
+            "Failed to set port forwarding runtime directory permissions: {}",
+            runtime_dir.display()
+        )
+    })?;
     let agent_path = runtime_dir.join(FORWARD_AGENT_NAME);
-    fs::copy(current_exe()?, &agent_path).with_context(|| {
+    fs::write(&agent_path, forward_agent_launcher()).with_context(|| {
         format!(
             "Failed to stage port forwarding agent: {}",
             agent_path.display()
@@ -111,6 +156,21 @@ pub(crate) fn prepare_forward_runtime(
             agent_path.display()
         )
     })?;
+    let linux_x86_64_agent_path = runtime_dir.join(FORWARD_AGENT_LINUX_X86_64_NAME);
+    fs::write(&linux_x86_64_agent_path, FORWARD_AGENT_LINUX_X86_64).with_context(|| {
+        format!(
+            "Failed to stage Linux x86_64 port forwarding agent: {}",
+            linux_x86_64_agent_path.display()
+        )
+    })?;
+    fs::set_permissions(&linux_x86_64_agent_path, fs::Permissions::from_mode(0o755)).with_context(
+        || {
+            format!(
+                "Failed to set Linux x86_64 port forwarding agent permissions: {}",
+                linux_x86_64_agent_path.display()
+            )
+        },
+    )?;
 
     Ok(ForwardRuntime {
         mounts: vec![crate::docker::mounts::DockerMountSpec {
@@ -122,18 +182,40 @@ pub(crate) fn prepare_forward_runtime(
             bind_options: None,
             volume_options: None,
         }],
-        cleanup_paths: vec![agent_path, runtime_dir.join(FORWARD_AGENT_SOCKET_NAME)],
+        cleanup_paths: vec![
+            agent_path,
+            linux_x86_64_agent_path,
+            runtime_dir.join(FORWARD_AGENT_SOCKET_NAME),
+        ],
     })
 }
 
-pub(crate) fn forward_agent_command() -> crate::docker::exec::ExecCommandSpec {
+pub(crate) fn forward_agent_command(
+    forward_ports: &[ResolvedForwardPort],
+    secret: &str,
+) -> crate::docker::exec::ExecCommandSpec {
     crate::docker::exec::ExecCommandSpec {
         command: vec![FORWARD_AGENT_TARGET.to_owned()],
         user: None,
         working_dir: None,
-        env: Default::default(),
+        env: std::collections::BTreeMap::from([
+            (
+                FORWARD_AGENT_ALLOWED_PORTS_ENV.to_owned(),
+                allowed_ports_env(forward_ports),
+            ),
+            (FORWARD_AGENT_SECRET_ENV.to_owned(), secret.to_owned()),
+        ]),
         tty: false,
     }
+}
+
+pub(crate) fn new_forward_agent_secret() -> Result<String> {
+    let mut bytes = [0u8; 32];
+    fs::File::open("/dev/urandom")
+        .context("Failed to open /dev/urandom for port forwarding secret")?
+        .read_exact(&mut bytes)
+        .context("Failed to read port forwarding secret")?;
+    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
 pub(crate) async fn wait_for_forward_agent(runtime_dir: &Path) -> Result<PathBuf> {
@@ -172,6 +254,7 @@ pub(crate) async fn wait_for_forward_agent(runtime_dir: &Path) -> Result<PathBuf
 pub(crate) async fn start_forward_session(
     forward_ports: &[ResolvedForwardPort],
     agent_socket_path: PathBuf,
+    secret: String,
 ) -> Result<ForwardSession> {
     let mut listeners = Vec::new();
     for port in forward_ports {
@@ -199,8 +282,9 @@ pub(crate) async fn start_forward_session(
         })?;
         let target_port = port.container;
         let socket_path = agent_socket_path.clone();
+        let secret = secret.clone();
         let task = tokio::spawn(async move {
-            run_forward_listener(listener, socket_path, target_port).await;
+            run_forward_listener(listener, socket_path, target_port, secret).await;
         });
         listeners.push(ForwardListener {
             task,
@@ -211,6 +295,7 @@ pub(crate) async fn start_forward_session(
 
     Ok(ForwardSession {
         agent_socket_path,
+        secret,
         listeners,
     })
 }
@@ -226,7 +311,7 @@ impl ForwardSession {
             listener.task.abort();
         }
         self.listeners.clear();
-        let _ = send_agent_shutdown(&self.agent_socket_path).await;
+        let _ = send_agent_shutdown(&self.agent_socket_path, &self.secret).await;
     }
 }
 
@@ -241,14 +326,20 @@ impl Drop for ForwardSession {
 pub(crate) async fn run_forward_agent() -> Result<()> {
     let socket_path = env::var("DECUNE_FORWARD_AGENT_SOCKET")
         .unwrap_or_else(|_| FORWARD_AGENT_SOCKET_TARGET.to_owned());
-    run_forward_agent_at(Path::new(&socket_path)).await
+    run_forward_agent_at_with_access(Path::new(&socket_path), ForwardAgentAccess::from_env()?).await
 }
 
-async fn run_forward_listener(listener: TcpListener, agent_socket_path: PathBuf, target_port: u16) {
+async fn run_forward_listener(
+    listener: TcpListener,
+    agent_socket_path: PathBuf,
+    target_port: u16,
+    secret: String,
+) {
     while let Ok((client, _)) = listener.accept().await {
         let socket_path = agent_socket_path.clone();
+        let secret = secret.clone();
         tokio::spawn(async move {
-            let _ = proxy_client_connection(client, &socket_path, target_port).await;
+            let _ = proxy_client_connection(client, &socket_path, target_port, &secret).await;
         });
     }
 }
@@ -257,6 +348,7 @@ async fn proxy_client_connection(
     mut client: TcpStream,
     agent_socket_path: &Path,
     target_port: u16,
+    secret: &str,
 ) -> Result<()> {
     let mut agent = UnixStream::connect(agent_socket_path)
         .await
@@ -271,6 +363,7 @@ async fn proxy_client_connection(
         ForwardAgentRequest {
             port: Some(target_port),
             shutdown: None,
+            secret: Some(secret.to_owned()),
         },
     )
     .await?;
@@ -280,7 +373,10 @@ async fn proxy_client_connection(
     Ok(())
 }
 
-async fn run_forward_agent_at(socket_path: &Path) -> Result<()> {
+async fn run_forward_agent_at_with_access(
+    socket_path: &Path,
+    access: ForwardAgentAccess,
+) -> Result<()> {
     bind_forward_agent_socket(socket_path).await?;
     let listener = UnixListener::bind(socket_path).with_context(|| {
         format!(
@@ -302,7 +398,7 @@ async fn run_forward_agent_at(socket_path: &Path) -> Result<()> {
                 socket_path.display()
             )
         })?;
-        match read_agent_request(stream).await {
+        match read_agent_request(stream, &access).await {
             Ok(AgentRequest::Forward { stream, port }) => {
                 tokio::spawn(async move {
                     let _ = proxy_agent_connection(stream, port).await;
@@ -326,17 +422,26 @@ enum AgentRequest {
     Shutdown,
 }
 
-async fn read_agent_request(stream: UnixStream) -> Result<AgentRequest> {
+async fn read_agent_request(
+    stream: UnixStream,
+    access: &ForwardAgentAccess,
+) -> Result<AgentRequest> {
     let mut stream = stream;
     let line = read_agent_request_line(&mut stream).await?;
     let request: ForwardAgentRequest =
         serde_json::from_slice(&line).context("Invalid port forwarding agent request JSON")?;
+    if !access.secret_matches(request.secret.as_deref()) {
+        bail!("Port forwarding agent request is not authorized");
+    }
     if request.shutdown.unwrap_or(false) {
         return Ok(AgentRequest::Shutdown);
     }
     let port = request
         .port
         .ok_or_else(|| anyhow::anyhow!("Port forwarding agent request is missing target port"))?;
+    if !access.allows_port(port) {
+        bail!("Port forwarding agent request targets an unauthorized port: {port}");
+    }
 
     Ok(AgentRequest::Forward { stream, port })
 }
@@ -402,7 +507,7 @@ async fn bind_forward_agent_socket(socket_path: &Path) -> Result<()> {
     Ok(())
 }
 
-async fn send_agent_shutdown(socket_path: &Path) -> Result<()> {
+async fn send_agent_shutdown(socket_path: &Path, secret: &str) -> Result<()> {
     let mut stream = UnixStream::connect(socket_path).await.with_context(|| {
         format!(
             "Failed to connect to port forwarding agent socket for shutdown: {}",
@@ -414,6 +519,7 @@ async fn send_agent_shutdown(socket_path: &Path) -> Result<()> {
         ForwardAgentRequest {
             port: None,
             shutdown: Some(true),
+            secret: Some(secret.to_owned()),
         },
     )
     .await
@@ -432,6 +538,45 @@ async fn write_agent_request(stream: &mut UnixStream, request: ForwardAgentReque
         .context("Failed to finish port forwarding request")
 }
 
+fn forward_agent_launcher() -> &'static [u8] {
+    b"#!/bin/sh
+set -eu
+arch=\"$(uname -m 2>/dev/null || true)\"
+case \"$arch\" in
+  x86_64|amd64)
+    exec /run/decune/decune-forward-agent-linux-x86_64 \"$@\"
+    ;;
+  *)
+    echo \"Unsupported port forwarding agent container architecture: ${arch:-unknown}\" >&2
+    exit 1
+    ;;
+esac
+"
+}
+
+fn allowed_ports_env(forward_ports: &[ResolvedForwardPort]) -> String {
+    forward_ports
+        .iter()
+        .map(|port| port.container)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|port| port.to_string())
+        .collect::<Vec<_>>()
+        .join(",")
+}
+
+fn parse_allowed_ports_env(value: &str) -> Result<BTreeSet<u16>> {
+    let mut ports = BTreeSet::new();
+    for raw in value.split(',').filter(|part| !part.is_empty()) {
+        let port = raw
+            .parse::<u16>()
+            .with_context(|| format!("Invalid forward agent allowed port: {raw}"))?;
+        ports.insert(port);
+    }
+    Ok(ports)
+}
+
+#[cfg(test)]
 fn current_exe() -> Result<PathBuf> {
     env::current_exe().context("Failed to locate current decune executable")
 }
@@ -446,12 +591,37 @@ fn remove_socket_file(socket_path: &Path) -> io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::net::TcpListener as StdTcpListener;
+    use std::{fs, net::TcpListener as StdTcpListener, os::unix::fs::PermissionsExt};
 
     use tempfile::TempDir;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     use super::*;
+
+    #[test]
+    fn runtime_stages_container_agent_even_without_forward_ports() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        let runtime = prepare_forward_runtime(&[], &runtime_dir).unwrap();
+
+        assert!(runtime_dir.join("decune-forward-agent").is_file());
+        assert!(
+            runtime_dir
+                .join("decune-forward-agent-linux-x86_64")
+                .is_file()
+        );
+        assert_ne!(
+            fs::read(runtime_dir.join("decune-forward-agent")).unwrap(),
+            fs::read(current_exe().unwrap()).unwrap()
+        );
+        assert_eq!(mode(&runtime_dir), 0o700);
+        assert!(runtime.mounts().iter().any(|mount| {
+            mount.target == DECUNE_RUNTIME_TARGET
+                && mount.source.as_deref() == Some(runtime_dir.to_str().unwrap())
+                && !mount.read_only
+        }));
+    }
 
     #[test]
     fn forwards_streams_through_agent_to_localhost_target() {
@@ -473,13 +643,23 @@ mod tests {
             let agent_socket = temp.path().join("forward-agent.sock");
             let agent_task = tokio::spawn({
                 let agent_socket = agent_socket.clone();
-                async move { run_forward_agent_at(&agent_socket).await.unwrap() }
+                async move {
+                    run_forward_agent_at_with_access(
+                        &agent_socket,
+                        ForwardAgentAccess::new([target_port], "test-secret".to_owned()),
+                    )
+                    .await
+                    .unwrap()
+                }
             });
             wait_for_socket(&agent_socket).await;
-            let session =
-                start_forward_session(&[forward_port(0, target_port)], agent_socket.clone())
-                    .await
-                    .unwrap();
+            let session = start_forward_session(
+                &[forward_port(0, target_port)],
+                agent_socket.clone(),
+                "test-secret".to_owned(),
+            )
+            .await
+            .unwrap();
 
             let mut client = TcpStream::connect(session.local_addr(0)).await.unwrap();
             client.write_all(b"ping").await.unwrap();
@@ -506,17 +686,82 @@ mod tests {
             let agent_socket = temp.path().join("forward-agent.sock");
             let agent_task = tokio::spawn({
                 let agent_socket = agent_socket.clone();
-                async move { run_forward_agent_at(&agent_socket).await.unwrap() }
+                async move {
+                    run_forward_agent_at_with_access(
+                        &agent_socket,
+                        ForwardAgentAccess::new([9], "test-secret".to_owned()),
+                    )
+                    .await
+                    .unwrap()
+                }
             });
             wait_for_socket(&agent_socket).await;
-            let session = start_forward_session(&[forward_port(0, 9)], agent_socket)
-                .await
-                .unwrap();
+            let session = start_forward_session(
+                &[forward_port(0, 9)],
+                agent_socket,
+                "test-secret".to_owned(),
+            )
+            .await
+            .unwrap();
             let local_addr = session.local_addr(0);
 
             session.stop().await;
             agent_task.await.unwrap();
             assert!(TcpStream::connect(local_addr).await.is_err());
+        });
+    }
+
+    #[test]
+    fn agent_rejects_unauthorized_port_and_shutdown_requests() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let agent_socket = temp.path().join("forward-agent.sock");
+            let agent_task = tokio::spawn({
+                let agent_socket = agent_socket.clone();
+                async move {
+                    run_forward_agent_at_with_access(
+                        &agent_socket,
+                        ForwardAgentAccess::new([4321], "test-secret".to_owned()),
+                    )
+                    .await
+                    .unwrap()
+                }
+            });
+            wait_for_socket(&agent_socket).await;
+
+            send_raw_agent_request(
+                &agent_socket,
+                br#"{"port":4321,"shutdown":null,"secret":"wrong"}"#,
+            )
+            .await;
+            assert!(agent_socket.exists());
+
+            send_raw_agent_request(
+                &agent_socket,
+                br#"{"port":5432,"shutdown":null,"secret":"test-secret"}"#,
+            )
+            .await;
+            assert!(agent_socket.exists());
+
+            send_raw_agent_request(
+                &agent_socket,
+                br#"{"port":null,"shutdown":true,"secret":"wrong"}"#,
+            )
+            .await;
+            assert!(agent_socket.exists());
+
+            send_raw_agent_request(
+                &agent_socket,
+                br#"{"port":null,"shutdown":true,"secret":"test-secret"}"#,
+            )
+            .await;
+            agent_task.await.unwrap();
+            assert!(!agent_socket.exists());
         });
     }
 
@@ -541,5 +786,17 @@ mod tests {
             sleep(Duration::from_millis(25)).await;
         }
         panic!("socket did not become available");
+    }
+
+    async fn send_raw_agent_request(socket_path: &Path, request: &[u8]) {
+        let mut stream = UnixStream::connect(socket_path).await.unwrap();
+        stream.write_all(request).await.unwrap();
+        stream.write_all(b"\n").await.unwrap();
+        let mut response = Vec::new();
+        let _ = stream.read_to_end(&mut response).await;
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 }

@@ -57,8 +57,8 @@ use crate::{
         },
         daemon::HostDaemon,
         forward::{
-            ForwardRuntime, ForwardSession, forward_agent_command, prepare_forward_runtime,
-            start_forward_session, wait_for_forward_agent,
+            ForwardRuntime, ForwardSession, forward_agent_command, new_forward_agent_secret,
+            prepare_forward_runtime, start_forward_session, wait_for_forward_agent,
         },
     },
     ui,
@@ -1078,10 +1078,11 @@ async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<
         return Ok(None);
     }
 
+    let secret = new_forward_agent_secret()?;
     exec_detached(
         &started.client,
         &started.outcome.container_name,
-        &forward_agent_command(),
+        &forward_agent_command(&started.plan.forward_ports, &secret),
     )
     .await
     .with_context(|| {
@@ -1098,7 +1099,7 @@ async fn start_forwarding_for_up(started: &StartedUpContainer) -> Result<Option<
                 started.outcome.container_name
             )
         })?;
-    let session = start_forward_session(&started.plan.forward_ports, agent_socket_path)
+    let session = start_forward_session(&started.plan.forward_ports, agent_socket_path, secret)
         .await
         .context("Failed to start port forwarding listeners")?;
 
@@ -1566,7 +1567,7 @@ mod tests {
     };
 
     use crate::config::resolved::{ResolvedConfig, ResolvedDevcontainerSource};
-    use crate::config::types::{GitHttpsMode, MountType, PortProtocol};
+    use crate::config::types::{GitHttpsMode, GithubCredentialsMode, MountType, PortProtocol};
     use crate::config::{ConfigHashInput, ConfigLayer, config_hash};
     use crate::docker::client::DockerClient;
     use crate::docker::container::{remove_container, stop_container};
@@ -2138,6 +2139,84 @@ mod tests {
                 .required_mounts()
                 .iter()
                 .any(|mount| mount.target == DECUNE_RUNTIME_TARGET)
+        );
+    }
+
+    #[test]
+    fn credential_runtime_mounts_add_forward_runtime_without_ports() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+        let plan = test_up_plan_with_config(config);
+
+        let (plan, runtime) =
+            add_credential_runtime_mounts_with_inputs(plan, &runtime_dir, None, None).unwrap();
+
+        assert_eq!(plan.resources.config_hash, "stable-hash");
+        assert!(runtime_dir.join("decune-forward-agent").is_file());
+        assert!(
+            runtime_dir
+                .join("decune-forward-agent-linux-x86_64")
+                .is_file()
+        );
+        assert!(plan.mounts.iter().any(|mount| {
+            mount.target == DECUNE_RUNTIME_TARGET
+                && mount.source.as_deref() == Some(runtime_dir.to_str().unwrap())
+                && !mount.read_only
+        }));
+        assert!(
+            runtime
+                .mount_policy()
+                .required_mounts()
+                .iter()
+                .any(|mount| mount.target == DECUNE_RUNTIME_TARGET)
+        );
+    }
+
+    #[test]
+    fn existing_container_decision_reuses_runtime_mount_when_forward_ports_are_added_later() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+        let mut plan = test_up_plan_with_config(config);
+        plan.forward_ports = vec![ResolvedForwardPort {
+            container: 4321,
+            host: 54321,
+            host_ip: "127.0.0.1".to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
+            label: None,
+        }];
+        let (_plan, runtime) =
+            add_credential_runtime_mounts_with_inputs(plan, runtime_dir.path(), None, None)
+                .unwrap();
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("stable-hash".to_owned()),
+            mounts: Some(vec![mount_summary(
+                runtime_dir.path().to_str(),
+                DECUNE_RUNTIME_TARGET,
+            )]),
+            running: true,
+        };
+
+        let decision =
+            decide_existing_container(&[container], "stable-hash", runtime.mount_policy(), false)
+                .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::ReuseRunning {
+                id: "container-id".to_owned(),
+                name: "decune-project-abc123".to_owned()
+            }
         );
     }
 

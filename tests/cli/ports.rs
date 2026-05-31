@@ -13,19 +13,12 @@ use crate::harness::*;
 fn up_attached_forwards_manual_port_to_container_localhost() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
-    stage_host_glibc(&workspace);
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
             r#"
             FROM alpine:3.20
-            RUN mkdir -p /usr/lib64 /lib64
-            COPY libgcc_s.so.1 /usr/lib/libgcc_s.so.1
-            COPY libm.so.6 /usr/lib/libm.so.6
-            COPY libc.so.6 /usr/lib/libc.so.6
-            COPY ld-linux-x86-64.so.2 /usr/lib64/ld-linux-x86-64.so.2
-            RUN ln -sf /usr/lib64/ld-linux-x86-64.so.2 /lib64/ld-linux-x86-64.so.2 \
-              && printf '%s\n' \
+            RUN printf '%s\n' \
                 '#!/bin/sh' \
                 'sleep 60' \
                 'exit 0' \
@@ -119,21 +112,6 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
 
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
-    }
-}
-
-fn stage_host_glibc(workspace: &support::TempWorkspace) {
-    let libs = [
-        ("/usr/lib/libgcc_s.so.1", ".devcontainer/libgcc_s.so.1"),
-        ("/usr/lib/libm.so.6", ".devcontainer/libm.so.6"),
-        ("/usr/lib/libc.so.6", ".devcontainer/libc.so.6"),
-        (
-            "/usr/lib64/ld-linux-x86-64.so.2",
-            ".devcontainer/ld-linux-x86-64.so.2",
-        ),
-    ];
-    for (source, target) in libs {
-        fs::copy(source, workspace.path().join(target)).unwrap();
     }
 }
 
