@@ -782,11 +782,26 @@ async fn write_agent_scan_response(stream: &mut UnixStream, ports: &[u16]) -> Re
 }
 
 fn detect_listen_ports(scan: &ForwardAgentScanRequest) -> Result<Vec<u16>> {
-    let tcp = fs::read_to_string("/proc/net/tcp")
-        .context("Failed to read /proc/net/tcp for automatic port forwarding")?;
-    let tcp6 = fs::read_to_string("/proc/net/tcp6")
-        .context("Failed to read /proc/net/tcp6 for automatic port forwarding")?;
-    let tcp6_dual_stack = !read_ipv6_bindv6only()?;
+    detect_listen_ports_from_proc_paths(
+        scan,
+        Path::new("/proc/net/tcp"),
+        Path::new("/proc/net/tcp6"),
+        Path::new("/proc/sys/net/ipv6/bindv6only"),
+    )
+}
+
+fn detect_listen_ports_from_proc_paths(
+    scan: &ForwardAgentScanRequest,
+    tcp_path: &Path,
+    tcp6_path: &Path,
+    bindv6only_path: &Path,
+) -> Result<Vec<u16>> {
+    let tcp = read_required_proc_file(tcp_path)?;
+    let tcp6 = read_proc_file(tcp6_path)?.unwrap_or_default();
+    let tcp6_dual_stack = match read_ipv6_bindv6only(bindv6only_path)? {
+        Some(bindv6only) => !bindv6only,
+        None => false,
+    };
     listen_ports_from_proc_contents(
         tcp.as_str(),
         tcp6.as_str(),
@@ -797,12 +812,35 @@ fn detect_listen_ports(scan: &ForwardAgentScanRequest) -> Result<Vec<u16>> {
     )
 }
 
-fn read_ipv6_bindv6only() -> Result<bool> {
-    let value = fs::read_to_string("/proc/sys/net/ipv6/bindv6only")
-        .context("Failed to read /proc/sys/net/ipv6/bindv6only for automatic port forwarding")?;
+fn read_proc_file(path: &Path) -> Result<Option<String>> {
+    match fs::read_to_string(path) {
+        Ok(value) => Ok(Some(value)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to read {} for automatic port forwarding",
+                path.display()
+            )
+        }),
+    }
+}
+
+fn read_required_proc_file(path: &Path) -> Result<String> {
+    read_proc_file(path)?.ok_or_else(|| {
+        anyhow::anyhow!(
+            "Failed to read {} for automatic port forwarding: file does not exist",
+            path.display()
+        )
+    })
+}
+
+fn read_ipv6_bindv6only(path: &Path) -> Result<Option<bool>> {
+    let Some(value) = read_proc_file(path)? else {
+        return Ok(None);
+    };
     match value.trim() {
-        "0" => Ok(false),
-        "1" => Ok(true),
+        "0" => Ok(Some(false)),
+        "1" => Ok(Some(true)),
         value => bail!("Invalid /proc/sys/net/ipv6/bindv6only value: {value}"),
     }
 }
@@ -1047,6 +1085,37 @@ mod tests {
 ";
 
         let ports = listen_ports_from_proc_contents(tcp, tcp6, true, 4321, 4324, &[4323]).unwrap();
+
+        assert_eq!(ports, vec![4321]);
+    }
+
+    #[test]
+    fn detect_listen_ports_continues_when_ipv6_proc_files_are_missing() {
+        let temp = TempDir::new().unwrap();
+        let net_dir = temp.path().join("net");
+        fs::create_dir(&net_dir).unwrap();
+        let tcp_path = net_dir.join("tcp");
+        fs::write(
+            &tcp_path,
+            "\
+  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
+   0: 0100007F:10E1 00000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 1 1 0000000000000000 100 0 0 10 0
+",
+        )
+        .unwrap();
+        let scan = ForwardAgentScanRequest {
+            min: 4321,
+            max: 4322,
+            ignore: Vec::new(),
+        };
+
+        let ports = detect_listen_ports_from_proc_paths(
+            &scan,
+            &tcp_path,
+            &net_dir.join("tcp6"),
+            &temp.path().join("sys/net/ipv6/bindv6only"),
+        )
+        .unwrap();
 
         assert_eq!(ports, vec![4321]);
     }
