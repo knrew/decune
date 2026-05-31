@@ -170,17 +170,31 @@ impl DevcontainerMetadata {
     }
 
     pub(crate) fn to_config_layer(&self) -> Result<ConfigLayer> {
+        self.to_config_layer_with_forward_ports(true)
+    }
+
+    pub(crate) fn to_config_layer_without_forward_ports(&self) -> Result<ConfigLayer> {
+        self.to_config_layer_with_forward_ports(false)
+    }
+
+    fn to_config_layer_with_forward_ports(
+        &self,
+        include_forward_ports: bool,
+    ) -> Result<ConfigLayer> {
         let mut layer = ConfigLayer {
             features: self
                 .features
                 .iter()
                 .map(|(id, value)| feature_to_layer(id, value))
                 .collect::<Result<Vec<_>>>()?,
-            forward_ports: self
-                .forward_ports
-                .iter()
-                .map(|port| forwarding_port_to_layer(port, &self.ports_attributes))
-                .collect::<Result<Vec<_>>>()?,
+            forward_ports: if include_forward_ports {
+                self.forward_ports
+                    .iter()
+                    .map(|port| forwarding_port_to_layer(port, &self.ports_attributes))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                Vec::new()
+            },
             devcontainer: Some(self.to_devcontainer_layer()?),
             ..ConfigLayer::default()
         };

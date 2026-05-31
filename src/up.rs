@@ -130,6 +130,7 @@ pub(crate) struct UpPlan {
     pub(crate) workspace_folder: String,
     pub(crate) mounts: Vec<DockerMountSpec>,
     pub(crate) forward_ports: Vec<ResolvedForwardPort>,
+    pub(crate) ignored_detached_forwarding: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -432,7 +433,10 @@ fn build_up_plan_inner(
 ) -> Result<UpPlan> {
     let devcontainer_json = DevcontainerJson::load(workspace.root(), explicit_config_path)?;
     let metadata = parse_metadata(devcontainer_json.value().clone())?;
-    let devcontainer_layer = metadata.to_config_layer()?;
+    let devcontainer_layer = match forwarding_resolution {
+        ForwardingResolution::Resolve => metadata.to_config_layer()?,
+        ForwardingResolution::IgnoreDetached => metadata.to_config_layer_without_forward_ports()?,
+    };
     let global_layer = ConfigLayer::from_raw_decune_with_origin(
         load_config_file(workspace.paths().global_config_path())?,
         crate::config::path::ConfigPathOrigin::Global,
@@ -480,6 +484,8 @@ fn build_up_plan_inner(
         ForwardingResolution::Resolve => resolve_forward_ports(&config.ports.entries)?,
         ForwardingResolution::IgnoreDetached => Vec::new(),
     };
+    let ignored_detached_forwarding = forwarding_resolution == ForwardingResolution::IgnoreDetached
+        && (!metadata.forward_ports().is_empty() || !config.ports.entries.is_empty());
 
     Ok(UpPlan {
         image,
@@ -490,12 +496,13 @@ fn build_up_plan_inner(
         workspace_folder: workspace_location.workspace_folder,
         mounts,
         forward_ports,
+        ignored_detached_forwarding,
     })
 }
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     let started = ensure_container_started(options, ForwardingResolution::IgnoreDetached).await?;
-    warn_about_detached_forwarding(&started.plan.config);
+    warn_about_detached_forwarding(&started.plan);
     let _host_daemon = start_host_daemon_for_up(&started).await?;
     {
         let lifecycle = prepare_up_lifecycle(&started).await?;
@@ -530,8 +537,8 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     Ok(clamp_exit_code(exit_code))
 }
 
-fn warn_about_detached_forwarding(config: &ResolvedConfig) {
-    if !config.ports.entries.is_empty() {
+fn warn_about_detached_forwarding(plan: &UpPlan) {
+    if plan.ignored_detached_forwarding {
         ui::warn(
             "Port forwarding is ignored in detached mode; use appPort for detached publishing",
         );
@@ -2637,6 +2644,33 @@ require_local = true
 
         assert!(plan.forward_ports.is_empty());
         assert_eq!(plan.config.ports.entries.len(), 1);
+        assert!(plan.ignored_detached_forwarding);
+    }
+
+    #[test]
+    fn detached_up_plan_ignores_unsupported_devcontainer_forward_ports_before_conversion() {
+        let workspace = test_workspace("detached-unsupported-forward-port-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "forwardPorts": ["db:5432"]
+            }
+            "#,
+        );
+
+        let plan = build_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::IgnoreDetached,
+        )
+        .unwrap();
+
+        assert!(plan.forward_ports.is_empty());
+        assert!(plan.config.ports.entries.is_empty());
+        assert!(plan.ignored_detached_forwarding);
     }
 
     #[test]
@@ -4510,6 +4544,7 @@ user = "root"
             workspace_folder: "/workspaces/project".to_owned(),
             mounts: Vec::new(),
             forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
         }
     }
 
