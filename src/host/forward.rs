@@ -897,7 +897,7 @@ fn parse_proc_net_tcp_listen_port(line: &str) -> Result<Option<u16>> {
 fn proc_net_tcp_address_is_ipv4_reachable(address_hex: &str) -> Result<bool> {
     let address = parse_proc_net_tcp_address(address_hex)?;
 
-    Ok(address.is_loopback() || address.is_unspecified())
+    Ok(address == Ipv4Addr::LOCALHOST || address.is_unspecified())
 }
 
 fn parse_proc_net_tcp_address(address_hex: &str) -> Result<Ipv4Addr> {
@@ -941,7 +941,7 @@ fn proc_net_tcp6_address_is_ipv4_reachable(
         return Ok(false);
     };
 
-    Ok(ipv4.is_loopback() || ipv4.is_unspecified())
+    Ok(ipv4 == Ipv4Addr::LOCALHOST || ipv4.is_unspecified())
 }
 
 fn parse_proc_net_tcp6_address(address_hex: &str) -> Result<[u8; 16]> {
@@ -1132,7 +1132,7 @@ mod tests {
 
         let ports = listen_ports_from_proc_contents(tcp, "", true, 4321, 4325, &[]).unwrap();
 
-        assert_eq!(ports, vec![4321, 4322, 4323]);
+        assert_eq!(ports, vec![4321, 4322]);
     }
 
     #[test]
@@ -1152,9 +1152,10 @@ mod tests {
         let tcp6 = "\
   sl  local_address                         remote_address                        st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode
    0: 0000000000000000FFFF00000100007F:10E1 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 3 1 0000000000000000 100 0 0 10 0
+   1: 0000000000000000FFFF00000200007F:10E2 00000000000000000000000000000000:0000 0A 00000000:00000000 00:00000000 00000000 0 0 4 1 0000000000000000 100 0 0 10 0
 ";
 
-        let ports = listen_ports_from_proc_contents("", tcp6, true, 4321, 4322, &[]).unwrap();
+        let ports = listen_ports_from_proc_contents("", tcp6, true, 4321, 4323, &[]).unwrap();
 
         assert_eq!(ports, vec![4321]);
     }
