@@ -32,6 +32,7 @@ const FORWARD_AGENT_SOCKET_NAME: &str = "forward-agent.sock";
 const FORWARD_AGENT_DIAGNOSTIC_NAME: &str = "forward-agent.err";
 const FORWARD_AGENT_SOCKET_TARGET: &str = "/run/decune/forward-agent.sock";
 const FORWARD_AGENT_TARGET: &str = "/run/decune/decune-forward-agent";
+const FORWARD_AGENT_USER: &str = "0";
 const FORWARD_AGENT_ALLOWED_PORTS_ENV: &str = "DECUNE_FORWARD_AGENT_ALLOWED_PORTS";
 const FORWARD_AGENT_SECRET_ENV: &str = "DECUNE_FORWARD_AGENT_SECRET";
 const FORWARD_AGENT_START_RETRIES: usize = 100;
@@ -213,7 +214,7 @@ pub(crate) fn forward_agent_command(
 ) -> crate::docker::exec::ExecCommandSpec {
     crate::docker::exec::ExecCommandSpec {
         command: vec![FORWARD_AGENT_TARGET.to_owned()],
-        user: None,
+        user: Some(FORWARD_AGENT_USER.to_owned()),
         working_dir: None,
         env: std::collections::BTreeMap::from([
             (
@@ -726,6 +727,13 @@ mod tests {
                 && mount.source.as_deref() == Some(runtime_dir.to_str().unwrap())
                 && !mount.read_only
         }));
+    }
+
+    #[test]
+    fn forward_agent_command_runs_as_root_for_runtime_mount_access() {
+        let spec = forward_agent_command(&[forward_port(54321, 4321)], "test-secret");
+
+        assert_eq!(spec.user.as_deref(), Some("0"));
     }
 
     #[test]
