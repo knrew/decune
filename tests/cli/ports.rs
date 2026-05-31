@@ -10,6 +10,34 @@ use std::{
 use crate::harness::*;
 
 #[test]
+fn up_detach_rejects_cli_port_before_workspace_resolution() {
+    decune()
+        .args(["up", "--detach", "-p", "3000", "/decune/missing-workspace"])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Port forwarding is not supported with --detach",
+        ));
+}
+
+#[test]
+fn rebuild_detach_rejects_cli_port_before_workspace_resolution() {
+    decune()
+        .args([
+            "rebuild",
+            "--detach",
+            "-p",
+            "3000",
+            "/decune/missing-workspace",
+        ])
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Port forwarding is not supported with --detach",
+        ));
+}
+
+#[test]
 fn up_attached_forwards_manual_port_to_container_localhost() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
@@ -355,6 +383,7 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
               }},
               "workspaceMount": "source=${{localWorkspaceFolder}},target=/workspace,type=bind",
               "workspaceFolder": "/workspace",
+              "forwardPorts": [4321],
               "appPort": ["127.0.0.1:{host_port}:4321"],
               "postStartCommand": "nc -lk -p 4321 -e /usr/local/bin/decune-http-response >/tmp/decune-nc.log 2>&1 </dev/null &"
             }}
@@ -380,7 +409,10 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
             .assert()
             .success()
             .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("Started dev container"));
+            .stderr(
+                predicate::str::contains("Port forwarding is ignored in detached mode")
+                    .and(predicate::str::contains("Started dev container")),
+            );
 
         if let Err(error) = wait_for_forwarded_http_response(host_port) {
             panic!("published HTTP response did not arrive: {error}");

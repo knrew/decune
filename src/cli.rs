@@ -1,6 +1,6 @@
 use std::{path::PathBuf, str::FromStr};
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 
 use crate::config::{
@@ -151,6 +151,8 @@ async fn run_up(args: UpArgs) -> Result<i32> {
         workspace,
     } = args;
 
+    reject_detached_cli_ports(detach, &ports)?;
+
     let options = UpOptions {
         workspace,
         config_path: config,
@@ -180,6 +182,8 @@ async fn run_rebuild(args: RebuildArgs) -> Result<i32> {
     } = args;
 
     let _update_features = update_features;
+
+    reject_detached_cli_ports(detach, &ports)?;
 
     let options = UpOptions {
         workspace,
@@ -223,6 +227,16 @@ async fn run_clean(args: CleanArgs) -> Result<i32> {
     })
     .await?;
     Ok(0)
+}
+
+fn reject_detached_cli_ports(detach: bool, ports: &[ManualPort]) -> Result<()> {
+    if detach && !ports.is_empty() {
+        bail!(
+            "Port forwarding is not supported with --detach; use appPort for detached publishing"
+        );
+    }
+
+    Ok(())
 }
 
 fn cli_config_layer(ports: Vec<ManualPort>, no_auto_forward: bool) -> ConfigLayer {
@@ -316,7 +330,7 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::Cli;
-    use super::{Commands, PortProtocol};
+    use super::{Commands, PortProtocol, reject_detached_cli_ports};
 
     #[test]
     fn clap_definition_is_valid() {
@@ -436,6 +450,18 @@ mod tests {
         assert_eq!(args.ports.len(), 1);
         assert_eq!(args.ports[0].container, 80);
         assert_eq!(args.ports[0].host, Some(8080));
+    }
+
+    #[test]
+    fn detached_cli_ports_are_rejected() {
+        let cli = Cli::parse_from(["decune", "up", "--detach", "-p", "3000"]);
+        let Commands::Up(args) = cli.command else {
+            panic!("expected up command");
+        };
+
+        let error = reject_detached_cli_ports(args.detach, &args.ports).unwrap_err();
+
+        assert!(error.to_string().contains("use appPort"));
     }
 
     #[test]

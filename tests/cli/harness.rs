@@ -271,6 +271,82 @@ pub(crate) async fn create_image_without_devcontainer_metadata(
     Ok(())
 }
 
+pub(crate) async fn create_image_with_devcontainer_metadata_label(
+    image_tag: &str,
+    metadata: &str,
+) -> anyhow::Result<()> {
+    let docker = Docker::connect_with_defaults()?;
+    ensure_alpine_image(&docker).await?;
+
+    let container_name = format!(
+        "decune-image-metadata-label-{}",
+        image_tag
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+            .collect::<String>()
+    );
+    let remove_options = RemoveContainerOptionsBuilder::default()
+        .force(true)
+        .v(true)
+        .build();
+    let _ = docker
+        .remove_container(&container_name, Some(remove_options.clone()))
+        .await;
+
+    let create_options = CreateContainerOptionsBuilder::default()
+        .name(&container_name)
+        .build();
+    let body = ContainerCreateBody {
+        image: Some("alpine:3.20".to_owned()),
+        cmd: Some(vec!["true".to_owned()]),
+        ..Default::default()
+    };
+
+    docker.create_container(Some(create_options), body).await?;
+    docker
+        .start_container(
+            &container_name,
+            Some(StartContainerOptionsBuilder::default().build()),
+        )
+        .await?;
+
+    let mut wait_stream = docker.wait_container(
+        &container_name,
+        Some(WaitContainerOptionsBuilder::default().build()),
+    );
+    let wait = wait_stream
+        .try_next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("container wait stream ended before status"))?;
+    anyhow::ensure!(
+        wait.status_code == 0,
+        "image metadata label fixture container exited with {}",
+        wait.status_code
+    );
+
+    let (repo, tag) = image_tag
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("test image tag must include a tag: {image_tag}"))?;
+    let labels = HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]);
+    let commit_options = CommitContainerOptionsBuilder::default()
+        .container(&container_name)
+        .repo(repo)
+        .tag(tag)
+        .pause(false)
+        .build();
+    let config = ContainerConfig {
+        labels: Some(labels),
+        ..Default::default()
+    };
+
+    docker.commit_container(commit_options, config).await?;
+    docker
+        .remove_container(&container_name, Some(remove_options))
+        .await?;
+
+    Ok(())
+}
+
 pub(crate) async fn tag_image(source: &str, target: &str) -> anyhow::Result<()> {
     let docker = Docker::connect_with_defaults()?;
     let (repo, tag) = target

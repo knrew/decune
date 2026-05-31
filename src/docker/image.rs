@@ -20,6 +20,12 @@ use crate::{
 
 pub(crate) const DEVCONTAINER_METADATA_LABEL: &str = "devcontainer.metadata";
 
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ImageMetadataLayers {
+    pub(crate) layers: Vec<ConfigLayer>,
+    pub(crate) has_forward_ports: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PullPolicy {
     Missing,
@@ -125,10 +131,11 @@ pub(crate) fn image_tags_for_repository(
         .collect()
 }
 
-pub(crate) async fn image_devcontainer_metadata_layers(
+pub(crate) async fn image_devcontainer_metadata_layers_with_forward_ports(
     client: &DockerClient,
     image: &str,
-) -> Result<Vec<ConfigLayer>> {
+    include_forward_ports: bool,
+) -> Result<ImageMetadataLayers> {
     let inspect = client
         .raw()
         .inspect_image(image)
@@ -139,13 +146,14 @@ pub(crate) async fn image_devcontainer_metadata_layers(
         .as_ref()
         .and_then(|labels| labels.get(DEVCONTAINER_METADATA_LABEL).map(String::as_str));
 
-    parse_devcontainer_metadata_label(image, label)
+    parse_devcontainer_metadata_label_with_forward_ports(image, label, include_forward_ports)
 }
 
-pub(crate) async fn image_devcontainer_metadata_layers_if_present(
+pub(crate) async fn image_devcontainer_metadata_layers_if_present_with_forward_ports(
     client: &DockerClient,
     image: &str,
-) -> Result<Option<Vec<ConfigLayer>>> {
+    include_forward_ports: bool,
+) -> Result<Option<ImageMetadataLayers>> {
     let inspect = match client.raw().inspect_image(image).await {
         Ok(inspect) => inspect,
         Err(error) if is_image_not_found(&error) => return Ok(None),
@@ -159,7 +167,8 @@ pub(crate) async fn image_devcontainer_metadata_layers_if_present(
         .as_ref()
         .and_then(|labels| labels.get(DEVCONTAINER_METADATA_LABEL).map(String::as_str));
 
-    parse_devcontainer_metadata_label(image, label).map(Some)
+    parse_devcontainer_metadata_label_with_forward_ports(image, label, include_forward_ports)
+        .map(Some)
 }
 
 pub(crate) async fn image_has_devcontainer_metadata_label_if_present(
@@ -179,12 +188,22 @@ pub(crate) async fn image_has_devcontainer_metadata_label_if_present(
     Ok(Some(has_devcontainer_metadata_label(labels.as_ref())))
 }
 
-pub(crate) fn parse_devcontainer_metadata_label(
+#[cfg(test)]
+fn parse_devcontainer_metadata_label(image: &str, label: Option<&str>) -> Result<Vec<ConfigLayer>> {
+    parse_devcontainer_metadata_label_with_forward_ports(image, label, true)
+        .map(|metadata| metadata.layers)
+}
+
+pub(crate) fn parse_devcontainer_metadata_label_with_forward_ports(
     image: &str,
     label: Option<&str>,
-) -> Result<Vec<ConfigLayer>> {
+    include_forward_ports: bool,
+) -> Result<ImageMetadataLayers> {
     let Some(label) = label else {
-        return Ok(Vec::new());
+        return Ok(ImageMetadataLayers {
+            layers: Vec::new(),
+            has_forward_ports: false,
+        });
     };
 
     let value: Value = serde_json::from_str(label).with_context(|| {
@@ -194,17 +213,33 @@ pub(crate) fn parse_devcontainer_metadata_label(
     })?;
 
     match value {
-        Value::Object(_) => Ok(vec![metadata_value_to_layer(image, value)?]),
-        Value::Array(values) => values
+        Value::Object(_) => {
+            let (layer, has_forward_ports) =
+                metadata_value_to_layer(image, value, include_forward_ports)?;
+            Ok(ImageMetadataLayers {
+                layers: vec![layer],
+                has_forward_ports,
+            })
+        }
+        Value::Array(values) => {
+            let entries = values
             .into_iter()
             .enumerate()
             .map(|(index, value)| match value {
-                Value::Object(_) => metadata_value_to_layer(image, value),
+                Value::Object(_) => metadata_value_to_layer(image, value, include_forward_ports),
                 _ => bail!(
                     "Docker image label {DEVCONTAINER_METADATA_LABEL} for image {image} array entry {index} must be an object"
                 ),
             })
-            .collect(),
+            .collect::<Result<Vec<_>>>()?;
+            let has_forward_ports = entries
+                .iter()
+                .any(|(_, has_forward_ports)| *has_forward_ports);
+            Ok(ImageMetadataLayers {
+                layers: entries.into_iter().map(|(layer, _)| layer).collect(),
+                has_forward_ports,
+            })
+        }
         _ => bail!(
             "Docker image label {DEVCONTAINER_METADATA_LABEL} for image {image} must be a JSON object or array"
         ),
@@ -225,9 +260,21 @@ async fn local_image_presence(client: &DockerClient, image: &str) -> Result<Loca
     }
 }
 
-fn metadata_value_to_layer(image: &str, value: Value) -> Result<ConfigLayer> {
+fn metadata_value_to_layer(
+    image: &str,
+    value: Value,
+    include_forward_ports: bool,
+) -> Result<(ConfigLayer, bool)> {
     parse_image_metadata_layer(value)
-        .and_then(|metadata| metadata.to_config_layer())
+        .and_then(|metadata| {
+            let has_forward_ports = !metadata.forward_ports().is_empty();
+            let layer = if include_forward_ports {
+                metadata.to_config_layer()?
+            } else {
+                metadata.to_config_layer_without_forward_ports()?
+            };
+            Ok((layer, has_forward_ports))
+        })
         .with_context(|| {
             format!(
                 "Failed to convert Docker image label {DEVCONTAINER_METADATA_LABEL} for image: {image}"

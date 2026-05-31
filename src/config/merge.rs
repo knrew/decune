@@ -1213,7 +1213,7 @@ label = "public"
     fn manual_port_priority_is_cli_project_devcontainer_global() {
         let devcontainer = crate::devcontainer::metadata::parse_metadata(serde_json::json!({
             "image": "ubuntu:24.04",
-            "forwardPorts": ["3000:3000"]
+            "forwardPorts": [3000]
         }))
         .unwrap()
         .to_config_layer()
@@ -1265,7 +1265,7 @@ label = "project"
     fn manual_host_port_conflicts_are_resolved_by_source_priority() {
         let devcontainer = crate::devcontainer::metadata::parse_metadata(serde_json::json!({
             "image": "ubuntu:24.04",
-            "forwardPorts": ["8080:3002"]
+            "forwardPorts": [3002]
         }))
         .unwrap()
         .to_config_layer()
@@ -1318,7 +1318,7 @@ host = 8080
 
         assert_eq!(
             ports,
-            vec![(3003, 8080), (3001, 8081), (3002, 8082), (3000, 8083)]
+            vec![(3003, 8080), (3001, 8081), (3002, 3002), (3000, 8082)]
         );
     }
 

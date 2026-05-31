@@ -170,17 +170,31 @@ impl DevcontainerMetadata {
     }
 
     pub(crate) fn to_config_layer(&self) -> Result<ConfigLayer> {
+        self.to_config_layer_with_forward_ports(true)
+    }
+
+    pub(crate) fn to_config_layer_without_forward_ports(&self) -> Result<ConfigLayer> {
+        self.to_config_layer_with_forward_ports(false)
+    }
+
+    fn to_config_layer_with_forward_ports(
+        &self,
+        include_forward_ports: bool,
+    ) -> Result<ConfigLayer> {
         let mut layer = ConfigLayer {
             features: self
                 .features
                 .iter()
                 .map(|(id, value)| feature_to_layer(id, value))
                 .collect::<Result<Vec<_>>>()?,
-            forward_ports: self
-                .forward_ports
-                .iter()
-                .map(|port| forwarding_port_to_layer(port, &self.ports_attributes))
-                .collect::<Result<Vec<_>>>()?,
+            forward_ports: if include_forward_ports {
+                self.forward_ports
+                    .iter()
+                    .map(|port| forwarding_port_to_layer(port, &self.ports_attributes))
+                    .collect::<Result<Vec<_>>>()?
+            } else {
+                Vec::new()
+            },
             devcontainer: Some(self.to_devcontainer_layer()?),
             ..ConfigLayer::default()
         };
@@ -1124,7 +1138,7 @@ mod tests {
     fn converts_forward_ports_to_forwarding_config_layer() {
         let metadata = parse_metadata(json!({
             "image": "ubuntu:24.04",
-            "forwardPorts": [3000, "127.0.0.1:5433:5432"],
+            "forwardPorts": [3000, "localhost:5432"],
             "portsAttributes": {
                 "3000": {
                     "label": "web",
@@ -1157,7 +1171,7 @@ mod tests {
                 LayerPort {
                     enabled: true,
                     container: 5432,
-                    host: Some(5433),
+                    host: None,
                     host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
                     protocol: PortProtocol::Tcp,
                     require_local: false,
