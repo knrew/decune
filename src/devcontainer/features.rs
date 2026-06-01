@@ -2,7 +2,7 @@
 #![allow(dead_code)]
 
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, OpenOptions},
     io::{ErrorKind, Read, Seek, SeekFrom},
     path::{Component, Path, PathBuf},
@@ -158,6 +158,14 @@ pub(crate) struct FeatureInstallPlanEntry {
     pub(crate) feature: crate::config::resolved::ResolvedFeature,
     pub(crate) metadata: FeatureMetadata,
     pub(crate) option_env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FeatureDependencyRequest<'a> {
+    pub(crate) parent_canonical_id: &'a str,
+    pub(crate) dependency: &'a str,
+    pub(crate) canonical_id: String,
+    pub(crate) options: BTreeMap<String, toml::Value>,
 }
 
 pub(crate) trait OciRegistryClient {
@@ -703,10 +711,14 @@ pub(crate) fn read_feature_metadata(path: &Path) -> Result<FeatureMetadata> {
         .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))
 }
 
-pub(crate) fn resolve_feature_install_order(
+pub(crate) fn resolve_feature_install_order<F>(
     inputs: Vec<FeatureInstallInput>,
     override_feature_install_order: &[String],
-) -> Result<Vec<FeatureInstallPlanEntry>> {
+    mut resolve_dependency: F,
+) -> Result<Vec<FeatureInstallPlanEntry>>
+where
+    F: FnMut(&FeatureDependencyRequest<'_>) -> Result<FeatureInstallInput>,
+{
     let mut nodes = BTreeMap::new();
     for input in inputs {
         let key = input.feature.canonical_id.clone();
@@ -715,16 +727,61 @@ pub(crate) fn resolve_feature_install_order(
         }
     }
 
+    let mut scan_queue = nodes.keys().cloned().collect::<VecDeque<_>>();
+    while let Some(canonical_id) = scan_queue.pop_front() {
+        let input = nodes
+            .get(&canonical_id)
+            .expect("queued Feature must exist in install graph");
+        let depends_on = input
+            .metadata
+            .depends_on
+            .iter()
+            .map(|(dependency, options)| (dependency.clone(), options.clone()))
+            .collect::<Vec<_>>();
+
+        for (dependency, options) in depends_on {
+            let dependency_id = canonical_feature_dependency_id(&dependency);
+            if nodes.contains_key(&dependency_id) {
+                continue;
+            }
+
+            let options = feature_dependency_options(&canonical_id, &dependency, &options)?;
+            let request = FeatureDependencyRequest {
+                parent_canonical_id: &canonical_id,
+                dependency: &dependency,
+                canonical_id: dependency_id.clone(),
+                options,
+            };
+            let mut dependency_input = resolve_dependency(&request).with_context(|| {
+                format!(
+                    "Failed to resolve Feature dependency {} for Feature {}",
+                    request.dependency, request.parent_canonical_id
+                )
+            })?;
+            if dependency_input.feature.canonical_id != dependency_id {
+                bail!(
+                    "Feature dependency resolver returned {} for {}, expected {}",
+                    dependency_input.feature.canonical_id,
+                    request.dependency,
+                    dependency_id
+                );
+            }
+            dependency_input.feature.options = request.options.clone();
+            if nodes
+                .insert(dependency_id.clone(), dependency_input)
+                .is_some()
+            {
+                bail!("Duplicate Feature in install worklist: {dependency_id}");
+            }
+            scan_queue.push_back(dependency_id);
+        }
+    }
+
     let mut dependencies = BTreeMap::new();
     for (canonical_id, input) in &nodes {
         let mut required = BTreeSet::new();
         for dependency in input.metadata.depends_on.keys() {
             let dependency_id = canonical_feature_dependency_id(dependency);
-            if !nodes.contains_key(&dependency_id) {
-                bail!(
-                    "Feature {canonical_id} depends on {dependency_id}, but it is not in the resolved Feature worklist"
-                );
-            }
             required.insert(dependency_id);
         }
         for dependency in &input.metadata.installs_after {
@@ -794,6 +851,9 @@ pub(crate) fn feature_option_env(
     let mut env = BTreeMap::new();
 
     for (option, schema) in &metadata.options {
+        if option == "enabled" {
+            continue;
+        }
         validate_feature_option_schema(&feature.id, option, schema)?;
         if feature.options.contains_key(option) {
             continue;
@@ -1044,6 +1104,55 @@ fn validate_archive_entry_type(entry_type: EntryType, path: &Path) -> Result<()>
 
 fn canonical_feature_dependency_id(value: &str) -> String {
     crate::config::layer::canonical_feature_id(value)
+}
+
+fn feature_dependency_options(
+    parent_canonical_id: &str,
+    dependency: &str,
+    value: &serde_json::Value,
+) -> Result<BTreeMap<String, toml::Value>> {
+    match value {
+        serde_json::Value::Object(values) => values
+            .iter()
+            .map(|(option, value)| {
+                Ok((
+                    option.clone(),
+                    feature_dependency_option_value(
+                        parent_canonical_id,
+                        dependency,
+                        option,
+                        value,
+                    )?,
+                ))
+            })
+            .collect(),
+        serde_json::Value::String(version) => Ok(BTreeMap::from([(
+            "version".to_owned(),
+            toml::Value::String(version.clone()),
+        )])),
+        _ => {
+            bail!(
+                "Unsupported Feature dependsOn value for {parent_canonical_id} dependency {dependency}"
+            )
+        }
+    }
+}
+
+fn feature_dependency_option_value(
+    parent_canonical_id: &str,
+    dependency: &str,
+    option: &str,
+    value: &serde_json::Value,
+) -> Result<toml::Value> {
+    match value {
+        serde_json::Value::String(value) => Ok(toml::Value::String(value.clone())),
+        serde_json::Value::Bool(value) => Ok(toml::Value::Boolean(*value)),
+        _ => {
+            bail!(
+                "Unsupported Feature dependsOn option value for {parent_canonical_id} dependency {dependency}.{option}"
+            )
+        }
+    }
 }
 
 fn override_feature_install_priorities(override_order: &[String]) -> BTreeMap<String, usize> {
@@ -1741,6 +1850,7 @@ mod tests {
                 ),
             ],
             &[],
+            missing_feature_dependency,
         )
         .unwrap();
 
@@ -1753,6 +1863,62 @@ mod tests {
                 "ghcr.io/example/features/tool",
                 "ghcr.io/example/features/lint",
             ]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_resolves_missing_depends_on_recursively() {
+        let plan = resolve_feature_install_order(
+            vec![feature_install_input(
+                "ghcr.io/example/features/tool:1",
+                FeatureMetadata {
+                    depends_on: BTreeMap::from([(
+                        "ghcr.io/example/features/base:1".to_owned(),
+                        serde_json::json!({
+                            "version": "1.2"
+                        }),
+                    )]),
+                    ..FeatureMetadata::default()
+                },
+            )],
+            &[],
+            |request| match request.canonical_id.as_str() {
+                "ghcr.io/example/features/base" => Ok(feature_install_input(
+                    &request.dependency,
+                    FeatureMetadata {
+                        depends_on: BTreeMap::from([(
+                            "ghcr.io/example/features/common:1".to_owned(),
+                            serde_json::json!("3"),
+                        )]),
+                        ..FeatureMetadata::default()
+                    },
+                )),
+                "ghcr.io/example/features/common" => Ok(feature_install_input(
+                    &request.dependency,
+                    FeatureMetadata::default(),
+                )),
+                _ => bail!("unexpected dependency {}", request.dependency),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.canonical_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/common",
+                "ghcr.io/example/features/base",
+                "ghcr.io/example/features/tool",
+            ]
+        );
+        assert_eq!(
+            plan[1].feature.options.get("version"),
+            Some(&toml::Value::String("1.2".to_owned()))
+        );
+        assert_eq!(
+            plan[0].feature.options.get("version"),
+            Some(&toml::Value::String("3".to_owned()))
         );
     }
 
@@ -1774,6 +1940,7 @@ mod tests {
                 ),
             ],
             &["ghcr.io/example/features/gamma".to_owned()],
+            missing_feature_dependency,
         )
         .unwrap();
 
@@ -1812,6 +1979,7 @@ mod tests {
                 ),
             ],
             &[],
+            missing_feature_dependency,
         )
         .unwrap_err();
 
@@ -1856,6 +2024,39 @@ mod tests {
 
         assert_eq!(env.get("VERSION").map(String::as_str), Some("1.2"));
         assert_eq!(env.get("INSTALLTOOLS").map(String::as_str), Some("false"));
+        assert!(!env.contains_key("ENABLED"));
+    }
+
+    #[test]
+    fn feature_option_env_skips_reserved_enabled_metadata_default() {
+        let feature = feature_install_input(
+            "ghcr.io/example/features/tool:1",
+            FeatureMetadata {
+                options: BTreeMap::from([
+                    (
+                        "enabled".to_owned(),
+                        FeatureOptionSchema {
+                            option_type: Some("boolean".to_owned()),
+                            default: Some(serde_json::json!(true)),
+                            enum_values: Vec::new(),
+                        },
+                    ),
+                    (
+                        "version".to_owned(),
+                        FeatureOptionSchema {
+                            option_type: Some("string".to_owned()),
+                            default: Some(serde_json::json!("latest")),
+                            enum_values: Vec::new(),
+                        },
+                    ),
+                ]),
+                ..FeatureMetadata::default()
+            },
+        );
+
+        let env = feature_option_env(&feature.feature, &feature.metadata).unwrap();
+
+        assert_eq!(env.get("VERSION").map(String::as_str), Some("latest"));
         assert!(!env.contains_key("ENABLED"));
     }
 
@@ -2126,6 +2327,16 @@ mod tests {
             },
             metadata,
         }
+    }
+
+    fn missing_feature_dependency(
+        request: &FeatureDependencyRequest<'_>,
+    ) -> Result<FeatureInstallInput> {
+        bail!(
+            "unexpected missing Feature dependency {} for {}",
+            request.dependency,
+            request.parent_canonical_id
+        )
     }
 
     trait FeatureInstallInputTestExt {
