@@ -95,10 +95,13 @@ impl FeatureLockFile {
         sorted
     }
 
-    pub(crate) fn digest_for(&self, feature_id: &str) -> Option<&str> {
+    pub(crate) fn digest_for_reference(&self, reference: &OciFeatureRef) -> Option<&str> {
         self.features
             .iter()
-            .find(|entry| entry.id == feature_id)
+            .find(|entry| {
+                entry.id == reference.canonical_id
+                    && feature_lock_reference_matches(&entry.reference, reference)
+            })
             .map(|entry| entry.digest.as_str())
     }
 }
@@ -109,6 +112,12 @@ pub(crate) struct FeatureLockEntry {
     #[serde(rename = "ref")]
     pub(crate) reference: String,
     pub(crate) digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+struct FeatureCacheMetadata {
+    manifest_digest: String,
+    layer_digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,6 +187,7 @@ pub(crate) struct PreparedFeatureInstallEntry {
     pub(crate) feature: ResolvedFeature,
     pub(crate) source_dir: PathBuf,
     pub(crate) option_env: BTreeMap<String, String>,
+    pub(crate) container_env: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone)]
@@ -185,6 +195,7 @@ struct FeatureSource {
     source_dir: PathBuf,
     metadata: FeatureMetadata,
     layer: ConfigLayer,
+    container_env: BTreeMap<String, String>,
     lock_entry: Option<FeatureLockHashEntry>,
     lock_file_entry: Option<FeatureLockEntry>,
 }
@@ -572,13 +583,33 @@ pub(crate) fn resolve_locked_feature_ref(
 
     match feature {
         FeatureRef::Oci(reference) => {
-            if let Some(digest) = lock.digest_for(&reference.canonical_id) {
+            if let Some(digest) = lock.digest_for_reference(reference) {
                 format!("{}@{}", reference.canonical_id, digest)
             } else {
                 reference.original.clone()
             }
         }
         FeatureRef::Local(reference) => reference.path.display().to_string(),
+    }
+}
+
+fn feature_lock_reference_matches(locked: &str, requested: &OciFeatureRef) -> bool {
+    let Ok(FeatureRef::Oci(locked)) = parse_feature_ref(locked) else {
+        return false;
+    };
+
+    oci_feature_ref_lock_key(&locked) == oci_feature_ref_lock_key(requested)
+}
+
+fn oci_feature_ref_lock_key(reference: &OciFeatureRef) -> String {
+    if let Some(digest) = &reference.digest {
+        format!("{}@{digest}", reference.canonical_id)
+    } else {
+        format!(
+            "{}:{}",
+            reference.canonical_id,
+            reference.tag.as_deref().unwrap_or("latest")
+        )
     }
 }
 
@@ -603,7 +634,7 @@ pub(crate) fn pull_oci_feature_with_client(
             )
         })?;
         let archive_path = feature_cache_archive_path(cache_root, digest);
-        if archive_path.exists() {
+        if cached_feature_archive_is_valid(&archive_path, digest)?.is_some() {
             return extract_cached_feature(reference, digest, archive_path, extract_root, true);
         }
     }
@@ -621,7 +652,7 @@ pub(crate) fn pull_oci_feature_with_client(
         )
     })?;
     let archive_path = feature_cache_archive_path(cache_root, &manifest.digest);
-    if archive_path.exists() {
+    if cached_feature_archive_is_valid(&archive_path, &manifest.digest)?.is_some() {
         return extract_cached_feature(
             reference,
             &manifest.digest,
@@ -657,7 +688,14 @@ pub(crate) fn pull_oci_feature_with_client(
             reference.original, layer.digest
         )
     })?;
-    write_cache_archive(&archive_path, &blob)?;
+    write_cache_archive(
+        &archive_path,
+        &blob,
+        &FeatureCacheMetadata {
+            manifest_digest: manifest.digest.clone(),
+            layer_digest: layer.digest.clone(),
+        },
+    )?;
 
     extract_cached_feature(
         reference,
@@ -811,6 +849,7 @@ pub(crate) fn prepare_feature_install_plan(
     let mut prepared_entries = Vec::new();
     let mut metadata_layers = Vec::new();
     let mut lock_entries = Vec::new();
+    let mut cumulative_container_env = BTreeMap::new();
     for entry in entries {
         let source = resolver
             .sources
@@ -821,10 +860,12 @@ pub(crate) fn prepare_feature_install_plan(
                     entry.feature.canonical_id
                 )
             })?;
+        cumulative_container_env.extend(source.container_env.clone());
         prepared_entries.push(PreparedFeatureInstallEntry {
             feature: entry.feature,
             source_dir: source.source_dir.clone(),
             option_env: entry.option_env,
+            container_env: cumulative_container_env.clone(),
         });
         metadata_layers.push(source.layer.clone());
         if let Some(lock_entry) = &source.lock_entry {
@@ -1041,7 +1082,6 @@ fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
         || repository.is_empty()
         || feature_id.is_empty()
         || tag.is_some_and(str::is_empty)
-        || (tag.is_none() && digest.is_none())
     {
         return Err(invalid_feature_ref(
             value,
@@ -1063,7 +1103,9 @@ fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
         registry: registry.to_owned(),
         repository: repository.to_owned(),
         feature_id: feature_id.to_owned(),
-        tag: tag.map(str::to_owned),
+        tag: tag
+            .or_else(|| digest.is_none().then_some("latest"))
+            .map(str::to_owned),
         digest,
         canonical_id,
     })
@@ -1184,11 +1226,13 @@ impl FeatureResolver<'_> {
         let document =
             read_feature_metadata_document(&source_dir.join("devcontainer-feature.json"))?;
         let digest = local_feature_content_digest(&source_dir)?;
+        let container_env = feature_layer_container_env(&document.layer);
 
         Ok(FeatureSource {
             source_dir,
             metadata: document.metadata,
             layer: document.layer,
+            container_env,
             lock_entry: Some(FeatureLockHashEntry {
                 feature_id: reference.canonical_id.clone(),
                 digest,
@@ -1222,11 +1266,13 @@ impl FeatureResolver<'_> {
             &HttpOciRegistryClient::from_docker_config()?,
         )?;
         let document = read_feature_metadata_document(&artifact.metadata_path)?;
+        let container_env = feature_layer_container_env(&document.layer);
 
         Ok(FeatureSource {
             source_dir: artifact.extracted_dir,
             metadata: document.metadata,
             layer: document.layer,
+            container_env,
             lock_entry: Some(FeatureLockHashEntry {
                 feature_id: reference.canonical_id.clone(),
                 digest: artifact.digest.clone(),
@@ -1252,6 +1298,14 @@ fn ensure_feature_files(source_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn feature_layer_container_env(layer: &ConfigLayer) -> BTreeMap<String, String> {
+    layer
+        .devcontainer
+        .as_ref()
+        .map(|devcontainer| devcontainer.container_env.clone())
+        .unwrap_or_default()
 }
 
 fn local_feature_content_digest(source_dir: &Path) -> Result<String> {
@@ -1353,6 +1407,10 @@ fn feature_cache_archive_path(cache_root: &Path, digest: &str) -> PathBuf {
     cache_root.join(format!("{}.tgz", cache_safe_digest(digest)))
 }
 
+fn feature_cache_metadata_path(archive_path: &Path) -> PathBuf {
+    archive_path.with_extension("tgz.toml")
+}
+
 fn select_feature_archive_layer(manifest: &OciManifestResponse) -> Option<&OciLayerDescriptor> {
     manifest
         .layers
@@ -1361,7 +1419,49 @@ fn select_feature_archive_layer(manifest: &OciManifestResponse) -> Option<&OciLa
         .or_else(|| manifest.layers.first())
 }
 
-fn write_cache_archive(path: &Path, content: &[u8]) -> Result<()> {
+fn cached_feature_archive_is_valid(
+    archive_path: &Path,
+    manifest_digest: &str,
+) -> Result<Option<FeatureCacheMetadata>> {
+    if !archive_path.exists() {
+        return Ok(None);
+    }
+    let metadata_path = feature_cache_metadata_path(archive_path);
+    if !metadata_path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&metadata_path).with_context(|| {
+        format!(
+            "Failed to read feature cache metadata: {}",
+            metadata_path.display()
+        )
+    })?;
+    let metadata: FeatureCacheMetadata = toml::from_str(&content).with_context(|| {
+        format!(
+            "Failed to parse feature cache metadata: {}",
+            metadata_path.display()
+        )
+    })?;
+    if metadata.manifest_digest != manifest_digest {
+        return Ok(None);
+    }
+    let archive = fs::read(archive_path).with_context(|| {
+        format!(
+            "Failed to read feature cache archive: {}",
+            archive_path.display()
+        )
+    })?;
+    verify_digest(&archive, &metadata.layer_digest).with_context(|| {
+        format!(
+            "Feature cache archive digest mismatch: {}",
+            archive_path.display()
+        )
+    })?;
+
+    Ok(Some(metadata))
+}
+
+fn write_cache_archive(path: &Path, content: &[u8], metadata: &FeatureCacheMetadata) -> Result<()> {
     let parent = path.parent().ok_or_else(|| {
         anyhow!(
             "Feature cache archive path has no parent: {}",
@@ -1387,7 +1487,32 @@ fn write_cache_archive(path: &Path, content: &[u8]) -> Result<()> {
             path.display(),
             temp_path.display()
         )
-    })
+    })?;
+
+    let metadata_path = feature_cache_metadata_path(path);
+    let metadata_content = toml::to_string(metadata).with_context(|| {
+        format!(
+            "Failed to serialize feature cache metadata: {}",
+            metadata_path.display()
+        )
+    })?;
+    let temp_metadata_path =
+        metadata_path.with_extension(format!("toml.tmp.{}", std::process::id()));
+    fs::write(&temp_metadata_path, metadata_content).with_context(|| {
+        format!(
+            "Failed to write temporary feature cache metadata: {}",
+            temp_metadata_path.display()
+        )
+    })?;
+    fs::rename(&temp_metadata_path, &metadata_path).with_context(|| {
+        format!(
+            "Failed to replace feature cache metadata {} with {}",
+            metadata_path.display(),
+            temp_metadata_path.display()
+        )
+    })?;
+
+    Ok(())
 }
 
 fn verify_digest(content: &[u8], digest: &str) -> Result<()> {
@@ -2020,6 +2145,24 @@ mod tests {
     }
 
     #[test]
+    fn oci_feature_ref_without_tag_defaults_to_latest() {
+        let reference = parse_feature_ref("ghcr.io/devcontainers/features/go").unwrap();
+
+        assert_eq!(
+            reference,
+            FeatureRef::Oci(OciFeatureRef {
+                original: "ghcr.io/devcontainers/features/go".to_owned(),
+                registry: "ghcr.io".to_owned(),
+                repository: "devcontainers/features".to_owned(),
+                feature_id: "go".to_owned(),
+                tag: Some("latest".to_owned()),
+                digest: None,
+                canonical_id: "ghcr.io/devcontainers/features/go".to_owned(),
+            })
+        );
+    }
+
+    #[test]
     fn invalid_feature_ref_error_includes_ref() {
         let error = parse_feature_ref("ghcr.io/features").unwrap_err();
 
@@ -2232,6 +2375,24 @@ mod tests {
     }
 
     #[test]
+    fn lock_digest_is_ignored_when_reference_changed() {
+        let feature = parse_feature_ref("ghcr.io/example/features/tool:2").unwrap();
+        let lock = FeatureLockFile {
+            version: FEATURE_LOCK_VERSION,
+            features: vec![FeatureLockEntry {
+                id: "ghcr.io/example/features/tool".to_owned(),
+                reference: "ghcr.io/example/features/tool:1".to_owned(),
+                digest: "sha256:locked".to_owned(),
+            }],
+        };
+
+        assert_eq!(
+            resolve_locked_feature_ref(&feature, &lock, false),
+            "ghcr.io/example/features/tool:2"
+        );
+    }
+
+    #[test]
     fn feature_archive_rejects_path_traversal_entries() {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("feature.tgz");
@@ -2250,13 +2411,25 @@ mod tests {
         fs::create_dir_all(&cache_root).unwrap();
         let digest = sha256_digest(MANIFEST_DIGEST_HEX);
         let archive = feature_cache_archive_path(&cache_root, &digest);
+        let source_archive = temp.path().join("source.tgz");
         write_feature_archive(
-            &archive,
+            &source_archive,
             &[
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
                 ("devcontainer-feature.json", br#"{"id":"tool"}"#.as_slice()),
             ],
         );
+        let blob = fs::read(&source_archive).unwrap();
+        let layer_digest = format!("sha256:{}", hex_lower(&Sha256::digest(&blob)));
+        write_cache_archive(
+            &archive,
+            &blob,
+            &FeatureCacheMetadata {
+                manifest_digest: digest.clone(),
+                layer_digest,
+            },
+        )
+        .unwrap();
         let reference =
             parse_oci_feature_ref(&format!("ghcr.io/example/features/tool@{digest}")).unwrap();
         let registry = PanicRegistryClient;
@@ -2280,6 +2453,104 @@ mod tests {
         );
         assert!(artifact.install_script_path.exists());
         assert!(artifact.metadata_path.exists());
+    }
+
+    #[test]
+    fn cache_archive_without_integrity_metadata_is_refreshed_from_registry() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let digest = sha256_digest(MANIFEST_DIGEST_HEX);
+        let archive = feature_cache_archive_path(&cache_root, &digest);
+        write_feature_archive(
+            &archive,
+            &[
+                ("install.sh", b"#!/bin/sh\n".as_slice()),
+                ("devcontainer-feature.json", br#"{"id":"stale"}"#.as_slice()),
+            ],
+        );
+        let fresh_archive = temp.path().join("fresh.tgz");
+        write_feature_archive(
+            &fresh_archive,
+            &[
+                ("install.sh", b"#!/bin/sh\n".as_slice()),
+                ("devcontainer-feature.json", br#"{"id":"fresh"}"#.as_slice()),
+            ],
+        );
+        let blob = fs::read(&fresh_archive).unwrap();
+        let layer_digest = format!("sha256:{}", hex_lower(&Sha256::digest(&blob)));
+        let registry = FakeRegistryClient {
+            manifest_calls: Cell::new(0),
+            blob_calls: Cell::new(0),
+            manifest: OciManifestResponse {
+                digest: digest.clone(),
+                layers: vec![OciLayerDescriptor {
+                    digest: layer_digest,
+                    media_type: "application/vnd.devcontainers.layer.v1+tar".to_owned(),
+                    size: blob.len() as u64,
+                }],
+            },
+            blob,
+        };
+        let reference =
+            parse_oci_feature_ref(&format!("ghcr.io/example/features/tool@{digest}")).unwrap();
+
+        let artifact = pull_oci_feature_with_client(
+            &reference,
+            &cache_root,
+            &temp.path().join("extract"),
+            &registry,
+        )
+        .unwrap();
+
+        assert!(!artifact.cache_hit);
+        assert_eq!(registry.manifest_calls.get(), 1);
+        assert_eq!(registry.blob_calls.get(), 1);
+        assert!(
+            fs::read_to_string(artifact.metadata_path)
+                .unwrap()
+                .contains("fresh")
+        );
+    }
+
+    #[test]
+    fn cache_archive_with_integrity_mismatch_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let digest = sha256_digest(MANIFEST_DIGEST_HEX);
+        let archive = feature_cache_archive_path(&cache_root, &digest);
+        let source_archive = temp.path().join("source.tgz");
+        write_feature_archive(
+            &source_archive,
+            &[
+                ("install.sh", b"#!/bin/sh\n".as_slice()),
+                ("devcontainer-feature.json", br#"{"id":"tool"}"#.as_slice()),
+            ],
+        );
+        let blob = fs::read(&source_archive).unwrap();
+        write_cache_archive(
+            &archive,
+            &blob,
+            &FeatureCacheMetadata {
+                manifest_digest: digest.clone(),
+                layer_digest: sha256_digest(MANIFEST_DIGEST_HEX),
+            },
+        )
+        .unwrap();
+        let reference =
+            parse_oci_feature_ref(&format!("ghcr.io/example/features/tool@{digest}")).unwrap();
+        let registry = PanicRegistryClient;
+
+        let error = pull_oci_feature_with_client(
+            &reference,
+            &cache_root,
+            &temp.path().join("extract"),
+            &registry,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("digest mismatch"), "{error:#}");
     }
 
     #[test]

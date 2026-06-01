@@ -606,8 +606,8 @@ fn feature_lock_hash_inputs(
         let _resolved = resolve_locked_feature_ref(&reference, &lock, false);
         let canonical_id = reference.canonical_id().to_owned();
 
-        if matches!(reference, FeatureRef::Oci(_))
-            && let Some(digest) = lock.digest_for(&canonical_id)
+        if let FeatureRef::Oci(reference) = reference
+            && let Some(digest) = lock.digest_for_reference(&reference)
         {
             entries.push(FeatureLockHashEntry {
                 feature_id: canonical_id,
@@ -1289,11 +1289,14 @@ async fn build_feature_layer_image(
         .feature_build_context_dir
         .as_ref()
         .ok_or_else(|| anyhow::anyhow!("Feature build context directory was not prepared"))?;
+    let final_user = image_config_user(client, &plan.base_image)
+        .await?
+        .unwrap_or_else(|| "root".to_owned());
+    let install_env = feature_install_env(plan, &final_user);
     let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
         base_image: plan.base_image.clone(),
-        final_user: image_config_user(client, &plan.base_image)
-            .await?
-            .unwrap_or_else(|| "root".to_owned()),
+        final_user,
+        install_env,
         context_dir: feature_build_context_dir.clone(),
         features: feature_install
             .entries
@@ -1302,6 +1305,7 @@ async fn build_feature_layer_image(
                 id: entry.feature.canonical_id.clone(),
                 source_dir: entry.source_dir.clone(),
                 option_env: entry.option_env.clone(),
+                container_env: entry.container_env.clone(),
             })
             .collect(),
     })?;
@@ -1318,6 +1322,27 @@ async fn build_feature_layer_image(
         },
     )
     .await
+}
+
+fn feature_install_env(plan: &UpPlan, image_user: &str) -> BTreeMap<String, String> {
+    let container_user = plan
+        .config
+        .devcontainer
+        .container_user
+        .as_deref()
+        .unwrap_or(image_user)
+        .to_owned();
+    let remote_user = plan
+        .config
+        .devcontainer
+        .remote_user
+        .clone()
+        .unwrap_or_else(|| container_user.clone());
+
+    BTreeMap::from([
+        ("_CONTAINER_USER".to_owned(), container_user),
+        ("_REMOTE_USER".to_owned(), remote_user),
+    ])
 }
 
 async fn recreate_existing_containers(
