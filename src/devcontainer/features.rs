@@ -158,7 +158,6 @@ pub(crate) struct FeatureOptionSchema {
 pub(crate) struct FeatureMetadataDocument {
     pub(crate) metadata: FeatureMetadata,
     pub(crate) layer: ConfigLayer,
-    pub(crate) raw: JsonValue,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -171,7 +170,6 @@ pub(crate) struct FeatureInstallInput {
 pub(crate) struct PreparedFeatureInstallPlan {
     pub(crate) entries: Vec<PreparedFeatureInstallEntry>,
     pub(crate) metadata_layers: Vec<ConfigLayer>,
-    pub(crate) metadata_label: String,
     pub(crate) lock_entries: Vec<FeatureLockHashEntry>,
 }
 
@@ -187,7 +185,6 @@ struct FeatureSource {
     source_dir: PathBuf,
     metadata: FeatureMetadata,
     layer: ConfigLayer,
-    raw: JsonValue,
     lock_entry: Option<FeatureLockHashEntry>,
     lock_file_entry: Option<FeatureLockEntry>,
 }
@@ -763,11 +760,7 @@ pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetad
             )
         })?;
 
-    Ok(FeatureMetadataDocument {
-        metadata,
-        layer,
-        raw,
-    })
+    Ok(FeatureMetadataDocument { metadata, layer })
 }
 
 pub(crate) fn prepare_feature_install_plan(
@@ -817,7 +810,6 @@ pub(crate) fn prepare_feature_install_plan(
 
     let mut prepared_entries = Vec::new();
     let mut metadata_layers = Vec::new();
-    let mut metadata_values = Vec::new();
     let mut lock_entries = Vec::new();
     for entry in entries {
         let source = resolver
@@ -835,7 +827,6 @@ pub(crate) fn prepare_feature_install_plan(
             option_env: entry.option_env,
         });
         metadata_layers.push(source.layer.clone());
-        metadata_values.push(source.raw.clone());
         if let Some(lock_entry) = &source.lock_entry {
             lock_entries.push(lock_entry.clone());
         }
@@ -859,13 +850,9 @@ pub(crate) fn prepare_feature_install_plan(
             },
         )?;
     }
-    let metadata_label = serde_json::to_string(&metadata_values)
-        .context("Failed to serialize Feature metadata label")?;
-
     Ok(Some(PreparedFeatureInstallPlan {
         entries: prepared_entries,
         metadata_layers,
-        metadata_label,
         lock_entries,
     }))
 }
@@ -1202,7 +1189,6 @@ impl FeatureResolver<'_> {
             source_dir,
             metadata: document.metadata,
             layer: document.layer,
-            raw: document.raw,
             lock_entry: Some(FeatureLockHashEntry {
                 feature_id: reference.canonical_id.clone(),
                 digest,
@@ -1241,7 +1227,6 @@ impl FeatureResolver<'_> {
             source_dir: artifact.extracted_dir,
             metadata: document.metadata,
             layer: document.layer,
-            raw: document.raw,
             lock_entry: Some(FeatureLockHashEntry {
                 feature_id: reference.canonical_id.clone(),
                 digest: artifact.digest.clone(),

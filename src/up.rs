@@ -46,7 +46,7 @@ use crate::{
             resolve_exec_env, run_attached_exec_stdio,
         },
         image::{
-            DEVCONTAINER_METADATA_LABEL, PullPolicy, ensure_image,
+            PullPolicy, ensure_image,
             image_devcontainer_metadata_layers_if_present_with_forward_ports,
             image_devcontainer_metadata_layers_with_forward_ports,
             image_has_devcontainer_metadata_label_if_present, remove_image, tag_image,
@@ -1305,22 +1305,11 @@ async fn build_feature_layer_image(
             })
             .collect(),
     })?;
-    let mut labels = plan
-        .resources
-        .labels
-        .clone()
-        .into_iter()
-        .collect::<BTreeMap<_, _>>();
-    labels.insert(
-        DEVCONTAINER_METADATA_LABEL.to_owned(),
-        feature_install.metadata_label.clone(),
-    );
-
     build_image(
         client,
         DockerBuildInput {
             image_tag: plan.image.clone(),
-            labels: labels.into_iter().collect(),
+            labels: plan.resources.labels.clone().into_iter().collect(),
             context,
             options: DockerBuildOptions {
                 no_cache,

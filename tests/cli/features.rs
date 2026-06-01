@@ -288,3 +288,102 @@ fn up_detach_isolates_feature_option_env_between_features() {
         std::panic::resume_unwind(payload);
     }
 }
+
+#[test]
+fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .create_dir(".devcontainer/features/lifecycle-tool")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "./features/lifecycle-tool": {}
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/lifecycle-tool/devcontainer-feature.json",
+            r#"
+            {
+              "id": "lifecycle-tool",
+              "postStartCommand": "echo feature-post-start >> /tmp/decune-feature-lifecycle"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/lifecycle-tool/install.sh",
+            r#"
+            set -eu
+            mkdir -p /usr/local/share
+            echo installed > /usr/local/share/decune-lifecycle-tool
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            let image = inspect
+                .config
+                .and_then(|config| config.image)
+                .expect("container image should exist");
+            let docker = Docker::connect_with_defaults().unwrap();
+            let image = docker.inspect_image(&image).await.unwrap();
+            let labels = image.config.and_then(|config| config.labels);
+            assert!(
+                !labels
+                    .as_ref()
+                    .is_some_and(|labels| labels.contains_key("devcontainer.metadata")),
+                "final Feature image must not store decune-applied Feature metadata in devcontainer.metadata"
+            );
+        });
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Reusing running dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
