@@ -119,6 +119,109 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
 }
 
 #[test]
+fn up_detach_passes_feature_metadata_remote_user_to_feature_install() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .create_dir(".devcontainer/features/a-create-user")
+        .unwrap();
+    workspace
+        .create_dir(".devcontainer/features/b-check-user")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "./features/a-create-user": {},
+                "./features/b-check-user": {}
+              },
+              "postStartCommand": "test \"$(id -un)\" = featureuser && test -f /usr/local/share/decune-feature-user-checked"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/a-create-user/devcontainer-feature.json",
+            r#"
+            {
+              "id": "a-create-user",
+              "remoteUser": "featureuser"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/a-create-user/install.sh",
+            r#"
+            set -eu
+            test "${_CONTAINER_USER:-}" = root
+            test "${_REMOTE_USER:-}" = featureuser
+            adduser -D -u 1001 featureuser
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/b-check-user/devcontainer-feature.json",
+            r#"
+            {
+              "id": "b-check-user",
+              "dependsOn": {
+                "./features/a-create-user": {}
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/b-check-user/install.sh",
+            r#"
+            set -eu
+            test "${_REMOTE_USER:-}" = featureuser
+            test "${_REMOTE_USER_HOME:-}" = /home/featureuser
+            mkdir -p /usr/local/share
+            echo checked > /usr/local/share/decune-feature-user-checked
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_preserves_base_image_user_after_feature_layer() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace

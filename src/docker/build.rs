@@ -362,10 +362,34 @@ fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
 fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String> {
     let mut script = String::new();
     script.push_str("set -eu\n");
+    script.push_str(
+        r#"decune_feature_user_home() {
+    user="${1:-}"
+    user="${user%%:*}"
+    if [ -z "$user" ]; then
+        return 0
+    fi
+    if command -v getent >/dev/null 2>&1; then
+        record="$(getent passwd "$user" || true)"
+        if [ -n "$record" ]; then
+            printf '%s\n' "$record" | cut -d: -f6
+            return 0
+        fi
+    fi
+    while IFS=: read -r name passwd uid gid gecos home shell; do
+        if [ "$name" = "$user" ] || [ "$uid" = "$user" ]; then
+            printf '%s\n' "$home"
+            return 0
+        fi
+    done </etc/passwd
+    return 0
+}
+"#,
+    );
     for (index, feature) in input.features.iter().enumerate() {
         let name = feature_context_name(index, &feature.id);
         script.push_str(&format!(
-            "(\nset -a\n. /tmp/decune-features/{name}/devcontainer-features.env\nset +a\n"
+            "(\nset -a\n. /tmp/decune-features/{name}/devcontainer-features.env\n_CONTAINER_USER_HOME=\"$(decune_feature_user_home \"${{_CONTAINER_USER:-}}\")\"\n_REMOTE_USER_HOME=\"$(decune_feature_user_home \"${{_REMOTE_USER:-}}\")\"\nexport _CONTAINER_USER_HOME _REMOTE_USER_HOME\nset +a\n"
         ));
         script.push_str(&format!(
             "chmod +x /tmp/decune-features/{name}/install.sh\ncd /tmp/decune-features/{name}\n./install.sh\n)\n"

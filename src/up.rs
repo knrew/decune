@@ -1292,7 +1292,7 @@ async fn build_feature_layer_image(
     let final_user = image_config_user(client, &plan.base_image)
         .await?
         .unwrap_or_else(|| "root".to_owned());
-    let install_env = feature_install_env(client, plan, &final_user).await?;
+    let install_env = feature_install_env(plan, &final_user);
     let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
         base_image: plan.base_image.clone(),
         final_user,
@@ -1324,47 +1324,25 @@ async fn build_feature_layer_image(
     .await
 }
 
-async fn feature_install_env(
-    client: &DockerClient,
-    plan: &UpPlan,
-    image_user: &str,
-) -> Result<BTreeMap<String, String>> {
+fn feature_install_env(plan: &UpPlan, image_user: &str) -> BTreeMap<String, String> {
     let container_user = plan
         .config
         .devcontainer
         .container_user
         .as_deref()
-        .unwrap_or(image_user);
-    let container_user = resolve_remote_user_from_image(
-        client,
-        &plan.base_image,
-        RemoteUserResolveInput {
-            explicit_remote_user: Some(container_user),
-            image_metadata_remote_user: None,
-        },
-    )
-    .await?;
-    let remote_user = match plan.config.devcontainer.remote_user.as_deref() {
-        Some(remote_user) => {
-            resolve_remote_user_from_image(
-                client,
-                &plan.base_image,
-                RemoteUserResolveInput {
-                    explicit_remote_user: Some(remote_user),
-                    image_metadata_remote_user: None,
-                },
-            )
-            .await?
-        }
-        None => container_user.clone(),
-    };
+        .unwrap_or(image_user)
+        .to_owned();
+    let remote_user = plan
+        .config
+        .devcontainer
+        .remote_user
+        .clone()
+        .unwrap_or_else(|| container_user.clone());
 
-    Ok(BTreeMap::from([
-        ("_CONTAINER_USER".to_owned(), container_user.user),
-        ("_CONTAINER_USER_HOME".to_owned(), container_user.home),
-        ("_REMOTE_USER".to_owned(), remote_user.user),
-        ("_REMOTE_USER_HOME".to_owned(), remote_user.home),
-    ]))
+    BTreeMap::from([
+        ("_CONTAINER_USER".to_owned(), container_user),
+        ("_REMOTE_USER".to_owned(), remote_user),
+    ])
 }
 
 async fn recreate_existing_containers(
