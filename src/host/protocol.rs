@@ -1,10 +1,11 @@
 use serde::{Deserialize, Serialize};
 
-use crate::host::credentials::{
-    GitCredentialExecutor, GitCredentialHostRequest, handle_git_credential_request,
-};
+use decune_container_protocol::GitCredentialHostRequest;
 
-pub(crate) const HOST_DAEMON_PROTOCOL_VERSION: u16 = 1;
+use crate::host::credentials::{GitCredentialExecutor, handle_git_credential_request};
+
+pub(crate) const HOST_DAEMON_PROTOCOL_VERSION: u16 =
+    decune_container_protocol::HOST_DAEMON_PROTOCOL_VERSION;
 
 const REQUEST_TYPE_CREDENTIAL: &str = "credential";
 const REQUEST_TYPE_PORT_FORWARD: &str = "portForward";
