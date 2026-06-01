@@ -253,7 +253,10 @@ async fn container_config_user(client: &DockerClient, container: &str) -> Result
     image_config_user(client, image_id).await
 }
 
-async fn image_config_user(client: &DockerClient, image: &str) -> Result<Option<String>> {
+pub(crate) async fn image_config_user(
+    client: &DockerClient,
+    image: &str,
+) -> Result<Option<String>> {
     let inspect = client
         .raw()
         .inspect_image(image)

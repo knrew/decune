@@ -56,7 +56,10 @@ use crate::{
         },
         ports::{ResolvedForwardPort, resolve_forward_ports},
         resource::DockerResources,
-        user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
+        user::{
+            RemoteUserResolveInput, image_config_user, resolve_remote_user,
+            resolve_remote_user_from_image,
+        },
     },
     host::{
         credentials::{
@@ -1288,6 +1291,9 @@ async fn build_feature_layer_image(
         .ok_or_else(|| anyhow::anyhow!("Feature build context directory was not prepared"))?;
     let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
         base_image: plan.base_image.clone(),
+        final_user: image_config_user(client, &plan.base_image)
+            .await?
+            .unwrap_or_else(|| "root".to_owned()),
         context_dir: feature_build_context_dir.clone(),
         features: feature_install
             .entries

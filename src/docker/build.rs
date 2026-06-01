@@ -50,6 +50,7 @@ pub(crate) struct ResolvedBuildContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FeatureLayerBuildInput {
     pub(crate) base_image: String,
+    pub(crate) final_user: String,
     pub(crate) context_dir: PathBuf,
     pub(crate) features: Vec<FeatureLayerBuildFeature>,
 }
@@ -349,8 +350,9 @@ fn resolve_path(base: &Path, value: &str) -> PathBuf {
 }
 
 fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
+    let final_user = dockerfile_user(&input.final_user)?;
     Ok(format!(
-        "FROM {}\nUSER root\nCOPY . /tmp/decune-features/\nRUN /bin/sh /tmp/decune-features/install-features.sh\n",
+        "FROM {}\nUSER root\nCOPY . /tmp/decune-features/\nRUN /bin/sh /tmp/decune-features/install-features.sh\nUSER {final_user}\n",
         input.base_image
     ))
 }
@@ -361,14 +363,29 @@ fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String
     for (index, feature) in input.features.iter().enumerate() {
         let name = feature_context_name(index, &feature.id);
         script.push_str(&format!(
-            "set -a\n. /tmp/decune-features/{name}/devcontainer-features.env\nset +a\n"
+            "(\nset -a\n. /tmp/decune-features/{name}/devcontainer-features.env\nset +a\n"
         ));
         script.push_str(&format!(
-            "chmod +x /tmp/decune-features/{name}/install.sh\ncd /tmp/decune-features/{name}\n/bin/sh ./install.sh\n"
+            "chmod +x /tmp/decune-features/{name}/install.sh\ncd /tmp/decune-features/{name}\n/bin/sh ./install.sh\n)\n"
         ));
     }
     script.push_str("rm -rf /tmp/decune-features\n");
     Ok(script)
+}
+
+fn dockerfile_user(user: &str) -> Result<&str> {
+    let trimmed = user.trim();
+    if trimmed.is_empty() || trimmed != user {
+        bail!("Docker image user must not be empty or contain surrounding whitespace");
+    }
+    if user
+        .chars()
+        .any(|character| character.is_ascii_control() || character.is_whitespace())
+    {
+        bail!("Docker image user contains unsupported whitespace or control characters: {user}");
+    }
+
+    Ok(user)
 }
 
 fn feature_env_file(env: &BTreeMap<String, String>) -> String {
@@ -1029,6 +1046,7 @@ mod tests {
         let context_dir = temp.path().join("context");
         let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
             base_image: "alpine:3.20".to_owned(),
+            final_user: "vscode".to_owned(),
             context_dir,
             features: vec![FeatureLayerBuildFeature {
                 id: "ghcr.io/example/features/tool".to_owned(),
@@ -1053,6 +1071,7 @@ mod tests {
         ));
         assert!(dockerfile.contains("FROM alpine:3.20"));
         assert!(dockerfile.contains("/bin/sh /tmp/decune-features/install-features.sh"));
+        assert!(dockerfile.contains("USER vscode"));
         assert!(install_script.contains("/bin/sh ./install.sh"));
         assert!(install_script.contains("rm -rf /tmp/decune-features"));
         assert_eq!(
