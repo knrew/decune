@@ -36,6 +36,20 @@ pub(crate) fn resolve_config(input: ConfigMergeInput) -> ResolvedConfig {
     accumulator.into_resolved()
 }
 
+pub(crate) fn merge_feature_metadata_layers(
+    mut config: ResolvedConfig,
+    layers: Vec<ConfigLayer>,
+) -> ResolvedConfig {
+    for layer in layers {
+        if let Some(devcontainer) = layer.devcontainer {
+            merge_devcontainer_metadata_into_resolved(&mut config.devcontainer, devcontainer);
+        }
+        config.hooks.append(layer.hooks);
+    }
+
+    config
+}
+
 #[derive(Debug, Default)]
 struct MergeAccumulator {
     shell: Option<String>,
@@ -385,6 +399,62 @@ impl MergeAccumulator {
     }
 }
 
+fn merge_devcontainer_metadata_into_resolved(
+    target: &mut ResolvedDevcontainer,
+    devcontainer: LayerDevcontainerMetadata,
+) {
+    if !devcontainer.override_feature_install_order.is_empty() {
+        target.override_feature_install_order = devcontainer.override_feature_install_order;
+    }
+    target.mounts.extend(devcontainer.mounts);
+    if let Some(workspace_mount) = devcontainer.workspace_mount {
+        target.workspace_mount = Some(workspace_mount);
+    }
+    if let Some(workspace_folder) = devcontainer.workspace_folder {
+        target.workspace_folder = Some(workspace_folder);
+    }
+    target.container_env.extend(devcontainer.container_env);
+    target.remote_env.extend(devcontainer.remote_env);
+    if let Some(remote_user) = devcontainer.remote_user {
+        target.remote_user = Some(remote_user);
+    }
+    if let Some(container_user) = devcontainer.container_user {
+        target.container_user = Some(container_user);
+    }
+    if let Some(update_remote_user_uid) = devcontainer.update_remote_user_uid {
+        target.update_remote_user_uid = update_remote_user_uid;
+    }
+    if let Some(override_command) = devcontainer.override_command {
+        target.override_command = override_command;
+    }
+    if let Some(user_env_probe) = devcontainer.user_env_probe {
+        target.user_env_probe = Some(user_env_probe);
+    }
+    for port in devcontainer.publish_ports {
+        replace_by_identity(&mut target.publish_ports, port, same_publish_port_identity);
+    }
+    target.port_attributes.extend(devcontainer.port_attributes);
+    merge_optional_port_attributes(
+        &mut target.other_ports_attributes,
+        devcontainer.other_ports_attributes,
+    );
+    target.run_args.extend(devcontainer.run_args);
+    if let Some(init) = devcontainer.init {
+        target.init = init;
+    }
+    if let Some(privileged) = devcontainer.privileged {
+        target.privileged = privileged;
+    }
+    target.cap_add.extend(devcontainer.cap_add);
+    target.security_opt.extend(devcontainer.security_opt);
+    if let Some(lifecycle) = devcontainer.lifecycle {
+        match &mut target.lifecycle {
+            Some(target) => target.merge_layer(lifecycle),
+            None => target.lifecycle = Some(lifecycle.into_resolved()),
+        }
+    }
+}
+
 fn replace_by_identity<T, F>(entries: &mut Vec<T>, entry: T, same_identity: F)
 where
     F: Fn(&T, &T) -> bool,
@@ -641,6 +711,56 @@ command = "cli.sh"
                 .get("FROM_GLOBAL")
                 .map(String::as_str),
             Some("1")
+        );
+    }
+
+    #[test]
+    fn feature_metadata_layer_merges_container_env_and_changes_config_hash() {
+        let baseline = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    container_env: [("FROM_DEVCONTAINER".to_owned(), "1".to_owned())].into(),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+        let merged = merge_feature_metadata_layers(
+            baseline.clone(),
+            vec![ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    container_env: [("FROM_FEATURE".to_owned(), "1".to_owned())].into(),
+                    remote_user: Some("feature-user".to_owned()),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }],
+        );
+
+        assert_eq!(
+            merged
+                .devcontainer
+                .container_env
+                .get("FROM_DEVCONTAINER")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            merged
+                .devcontainer
+                .container_env
+                .get("FROM_FEATURE")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            merged.devcontainer.remote_user.as_deref(),
+            Some("feature-user")
+        );
+        assert_ne!(
+            crate::config::config_hash(&crate::config::ConfigHashInput::new(&baseline)),
+            crate::config::config_hash(&crate::config::ConfigHashInput::new(&merged))
         );
     }
 

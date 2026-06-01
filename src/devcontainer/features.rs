@@ -17,8 +17,14 @@ use reqwest::{
     header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, WWW_AUTHENTICATE},
 };
 use serde::{Deserialize, Serialize};
+use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use tar::{Archive, EntryType};
+
+use crate::{
+    config::{FeatureLockHashEntry, layer::ConfigLayer, resolved::ResolvedFeature},
+    devcontainer::metadata::parse_metadata_layer,
+};
 
 pub(crate) const FEATURE_LOCK_VERSION: u32 = 1;
 
@@ -148,9 +154,41 @@ pub(crate) struct FeatureOptionSchema {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct FeatureMetadataDocument {
+    pub(crate) metadata: FeatureMetadata,
+    pub(crate) layer: ConfigLayer,
+    pub(crate) raw: JsonValue,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FeatureInstallInput {
     pub(crate) feature: crate::config::resolved::ResolvedFeature,
     pub(crate) metadata: FeatureMetadata,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedFeatureInstallPlan {
+    pub(crate) entries: Vec<PreparedFeatureInstallEntry>,
+    pub(crate) metadata_layers: Vec<ConfigLayer>,
+    pub(crate) metadata_label: String,
+    pub(crate) lock_entries: Vec<FeatureLockHashEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct PreparedFeatureInstallEntry {
+    pub(crate) feature: ResolvedFeature,
+    pub(crate) source_dir: PathBuf,
+    pub(crate) option_env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+struct FeatureSource {
+    source_dir: PathBuf,
+    metadata: FeatureMetadata,
+    layer: ConfigLayer,
+    raw: JsonValue,
+    lock_entry: Option<FeatureLockHashEntry>,
+    lock_file_entry: Option<FeatureLockEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -705,10 +743,130 @@ fn extract_tar_archive<R: Read>(archive_path: &Path, destination: &Path, reader:
 }
 
 pub(crate) fn read_feature_metadata(path: &Path) -> Result<FeatureMetadata> {
+    read_feature_metadata_document(path).map(|document| document.metadata)
+}
+
+pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetadataDocument> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read Feature metadata: {}", path.display()))?;
-    serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))
+    let raw: JsonValue = serde_json::from_str(&content)
+        .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))?;
+    let metadata = serde_json::from_value(raw.clone())
+        .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))?;
+    let layer = parse_metadata_layer(raw.clone())
+        .and_then(|metadata| metadata.to_config_layer_without_forward_ports())
+        .with_context(|| {
+            format!(
+                "Failed to convert Feature metadata to devcontainer metadata layer: {}",
+                path.display()
+            )
+        })?;
+
+    Ok(FeatureMetadataDocument {
+        metadata,
+        layer,
+        raw,
+    })
+}
+
+pub(crate) fn prepare_feature_install_plan(
+    features: &[ResolvedFeature],
+    devcontainer_file: &Path,
+    workspace_root: &Path,
+    cache_root: &Path,
+    override_feature_install_order: &[String],
+    update_features: bool,
+) -> Result<Option<PreparedFeatureInstallPlan>> {
+    if features.is_empty() {
+        return Ok(None);
+    }
+
+    let devcontainer_dir = devcontainer_file.parent().with_context(|| {
+        format!(
+            "Failed to resolve devcontainer directory for {}",
+            devcontainer_file.display()
+        )
+    })?;
+    let feature_cache_root = cache_root.join("features").join("archives");
+    let extract_root = cache_root.join("features").join("extracted");
+    let lock_path = workspace_root.join(".decune").join("features.lock.toml");
+    let lock = read_feature_lock_file(&lock_path)?;
+    let mut resolver = FeatureResolver {
+        devcontainer_dir,
+        lock: &lock,
+        update_features,
+        feature_cache_root,
+        extract_root,
+        sources: BTreeMap::new(),
+    };
+
+    let inputs = features
+        .iter()
+        .map(|feature| resolver.resolve_input(feature.clone()))
+        .collect::<Result<Vec<_>>>()?;
+    let entries =
+        resolve_feature_install_order(inputs, override_feature_install_order, |request| {
+            let feature = ResolvedFeature {
+                id: dependency_feature_ref(request.dependency),
+                canonical_id: request.canonical_id.clone(),
+                options: request.options.clone(),
+            };
+            resolver.resolve_input(feature)
+        })?;
+
+    let mut prepared_entries = Vec::new();
+    let mut metadata_layers = Vec::new();
+    let mut metadata_values = Vec::new();
+    let mut lock_entries = Vec::new();
+    for entry in entries {
+        let source = resolver
+            .sources
+            .get(&entry.feature.canonical_id)
+            .ok_or_else(|| {
+                anyhow!(
+                    "Feature source was not prepared for {}",
+                    entry.feature.canonical_id
+                )
+            })?;
+        prepared_entries.push(PreparedFeatureInstallEntry {
+            feature: entry.feature,
+            source_dir: source.source_dir.clone(),
+            option_env: entry.option_env,
+        });
+        metadata_layers.push(source.layer.clone());
+        metadata_values.push(source.raw.clone());
+        if let Some(lock_entry) = &source.lock_entry {
+            lock_entries.push(lock_entry.clone());
+        }
+    }
+
+    lock_entries.sort_by(|left, right| left.feature_id.cmp(&right.feature_id));
+    lock_entries.dedup_by(|left, right| left.feature_id == right.feature_id);
+    let mut lock_file_entries = resolver
+        .sources
+        .values()
+        .filter_map(|source| source.lock_file_entry.clone())
+        .collect::<Vec<_>>();
+    lock_file_entries.sort_by(|left, right| left.id.cmp(&right.id));
+    lock_file_entries.dedup_by(|left, right| left.id == right.id);
+    if !lock_file_entries.is_empty() {
+        write_feature_lock_file(
+            &lock_path,
+            &FeatureLockFile {
+                version: FEATURE_LOCK_VERSION,
+                features: lock_file_entries,
+            },
+        )?;
+    }
+    let metadata_label = serde_json::to_string(&metadata_values)
+        .context("Failed to serialize Feature metadata label")?;
+
+    Ok(Some(PreparedFeatureInstallPlan {
+        entries: prepared_entries,
+        metadata_layers,
+        metadata_label,
+        lock_entries,
+    }))
 }
 
 pub(crate) fn resolve_feature_install_order<F>(
@@ -991,6 +1149,127 @@ fn extract_cached_feature(
         metadata_path,
         cache_hit,
     })
+}
+
+struct FeatureResolver<'a> {
+    devcontainer_dir: &'a Path,
+    lock: &'a FeatureLockFile,
+    update_features: bool,
+    feature_cache_root: PathBuf,
+    extract_root: PathBuf,
+    sources: BTreeMap<String, FeatureSource>,
+}
+
+impl FeatureResolver<'_> {
+    fn resolve_input(&mut self, feature: ResolvedFeature) -> Result<FeatureInstallInput> {
+        if let Some(source) = self.sources.get(&feature.canonical_id) {
+            return Ok(FeatureInstallInput {
+                feature,
+                metadata: source.metadata.clone(),
+            });
+        }
+
+        let reference = parse_feature_ref_from_devcontainer_dir(&feature.id, self.devcontainer_dir)
+            .with_context(|| format!("Failed to parse Feature ref: {}", feature.id))?;
+        let source = self.resolve_source(&reference)?;
+        let metadata = source.metadata.clone();
+        self.sources.insert(feature.canonical_id.clone(), source);
+
+        Ok(FeatureInstallInput { feature, metadata })
+    }
+
+    fn resolve_source(&self, reference: &FeatureRef) -> Result<FeatureSource> {
+        match reference {
+            FeatureRef::Local(local) => self.resolve_local_source(local),
+            FeatureRef::Oci(oci) => self.resolve_oci_source(oci),
+        }
+    }
+
+    fn resolve_local_source(&self, reference: &LocalFeatureRef) -> Result<FeatureSource> {
+        let source_dir = reference.path.canonicalize().with_context(|| {
+            format!(
+                "Failed to resolve local Feature directory: {}",
+                reference.path.display()
+            )
+        })?;
+        ensure_feature_files(&source_dir)?;
+        let document =
+            read_feature_metadata_document(&source_dir.join("devcontainer-feature.json"))?;
+
+        Ok(FeatureSource {
+            source_dir,
+            metadata: document.metadata,
+            layer: document.layer,
+            raw: document.raw,
+            lock_entry: None,
+            lock_file_entry: None,
+        })
+    }
+
+    fn resolve_oci_source(&self, reference: &OciFeatureRef) -> Result<FeatureSource> {
+        let locked = resolve_locked_feature_ref(
+            &FeatureRef::Oci(reference.clone()),
+            self.lock,
+            self.update_features,
+        );
+        let locked_reference = parse_feature_ref(&locked).with_context(|| {
+            format!(
+                "Failed to parse locked Feature ref for {}",
+                reference.original
+            )
+        })?;
+        let FeatureRef::Oci(locked_reference) = locked_reference else {
+            bail!(
+                "OCI Feature resolved to a non-OCI reference: {}",
+                reference.original
+            );
+        };
+        let artifact = pull_oci_feature_with_client(
+            &locked_reference,
+            &self.feature_cache_root,
+            &self.extract_root,
+            &HttpOciRegistryClient::from_docker_config()?,
+        )?;
+        let document = read_feature_metadata_document(&artifact.metadata_path)?;
+
+        Ok(FeatureSource {
+            source_dir: artifact.extracted_dir,
+            metadata: document.metadata,
+            layer: document.layer,
+            raw: document.raw,
+            lock_entry: Some(FeatureLockHashEntry {
+                feature_id: reference.canonical_id.clone(),
+                digest: artifact.digest.clone(),
+            }),
+            lock_file_entry: Some(FeatureLockEntry {
+                id: reference.canonical_id.clone(),
+                reference: reference.original.clone(),
+                digest: artifact.digest,
+            }),
+        })
+    }
+}
+
+fn ensure_feature_files(source_dir: &Path) -> Result<()> {
+    for name in ["install.sh", "devcontainer-feature.json"] {
+        let path = source_dir.join(name);
+        if !path.is_file() {
+            bail!(
+                "Feature directory must contain {name}: {}",
+                source_dir.display()
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn dependency_feature_ref(dependency: &str) -> String {
+    if parse_feature_ref(dependency).is_ok() {
+        dependency.to_owned()
+    } else {
+        format!("{dependency}:latest")
+    }
 }
 
 fn feature_cache_archive_path(cache_root: &Path, digest: &str) -> PathBuf {
