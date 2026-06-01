@@ -51,6 +51,7 @@ pub(crate) struct ResolvedBuildContext {
 pub(crate) struct FeatureLayerBuildInput {
     pub(crate) base_image: String,
     pub(crate) final_user: String,
+    pub(crate) install_env: BTreeMap<String, String>,
     pub(crate) context_dir: PathBuf,
     pub(crate) features: Vec<FeatureLayerBuildFeature>,
 }
@@ -60,6 +61,7 @@ pub(crate) struct FeatureLayerBuildFeature {
     pub(crate) id: String,
     pub(crate) source_dir: PathBuf,
     pub(crate) option_env: BTreeMap<String, String>,
+    pub(crate) container_env: BTreeMap<String, String>,
 }
 
 pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) -> Result<()> {
@@ -202,7 +204,7 @@ pub(crate) fn prepare_feature_layer_build_context(
             )
         })?;
         let env_path = feature_dir.join("devcontainer-features.env");
-        fs::write(&env_path, feature_env_file(&feature.option_env)).with_context(|| {
+        fs::write(&env_path, feature_env_file(input, feature)).with_context(|| {
             format!(
                 "Failed to write Feature option env file: {}",
                 env_path.display()
@@ -388,7 +390,11 @@ fn dockerfile_user(user: &str) -> Result<&str> {
     Ok(user)
 }
 
-fn feature_env_file(env: &BTreeMap<String, String>) -> String {
+fn feature_env_file(input: &FeatureLayerBuildInput, feature: &FeatureLayerBuildFeature) -> String {
+    let mut env = feature.container_env.clone();
+    env.extend(feature.option_env.clone());
+    env.extend(input.install_env.clone());
+
     env.iter()
         .map(|(key, value)| format!("{key}={}\n", shell_single_quote(value)))
         .collect()
@@ -1047,11 +1053,13 @@ mod tests {
         let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
             base_image: "alpine:3.20".to_owned(),
             final_user: "vscode".to_owned(),
+            install_env: BTreeMap::new(),
             context_dir,
             features: vec![FeatureLayerBuildFeature {
                 id: "ghcr.io/example/features/tool".to_owned(),
                 source_dir: source,
                 option_env: BTreeMap::from([("VERSION".to_owned(), "1.2".to_owned())]),
+                container_env: BTreeMap::new(),
             }],
         })
         .unwrap();

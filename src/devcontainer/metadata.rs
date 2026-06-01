@@ -313,6 +313,11 @@ fn feature_to_layer(id: &str, value: &Value) -> Result<LayerFeature> {
                 .map(|(key, value)| Ok((key.clone(), json_to_toml(value)?)))
                 .collect::<Result<BTreeMap<_, _>>>()?;
         }
+        Value::String(version) => {
+            feature
+                .options
+                .insert("version".to_owned(), toml::Value::String(version.clone()));
+        }
         Value::Bool(enabled) => {
             feature.enabled = *enabled;
         }
@@ -1337,6 +1342,24 @@ mod tests {
         assert_eq!(config.devcontainer.cap_add, vec!["SYS_PTRACE"]);
         assert_eq!(config.devcontainer.security_opt, vec!["seccomp=unconfined"]);
         assert!(config.devcontainer.lifecycle.is_some());
+    }
+
+    #[test]
+    fn converts_feature_string_value_to_version_option() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "features": {
+                "ghcr.io/devcontainers/features/go": "1.18"
+            }
+        }))
+        .unwrap();
+
+        let layer = metadata.to_config_layer().unwrap();
+
+        assert_eq!(
+            layer.features[0].options.get("version"),
+            Some(&TomlValue::String("1.18".to_owned()))
+        );
     }
 
     #[test]

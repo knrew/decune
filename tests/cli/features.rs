@@ -11,14 +11,27 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             ".devcontainer/devcontainer.json",
             r#"
             {
-              "image": "alpine:3.20",
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
               "features": {
                 "./features/env-tool": {
                   "value": "from-option"
                 }
               },
+              "remoteUser": "remoteuser",
               "postStartCommand": "test \"${FROM_FEATURE:-}\" = yes && test -f /usr/local/share/decune-feature-installed"
             }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN adduser -D -u 1001 remoteuser
+            USER root
             "#,
         )
         .unwrap();
@@ -47,6 +60,11 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             r#"
             set -eu
             test "${VALUE:-}" = "from-option"
+            test "${FROM_FEATURE:-}" = yes
+            test "${_CONTAINER_USER:-}" = root
+            test "${_REMOTE_USER:-}" = remoteuser
+            test "${_CONTAINER_USER_HOME:-}" = /root
+            test "${_REMOTE_USER_HOME:-}" = /home/remoteuser
             mkdir -p /usr/local/share
             echo installed > /usr/local/share/decune-feature-installed
             "#,
