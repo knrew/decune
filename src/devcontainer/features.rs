@@ -173,6 +173,8 @@ pub(crate) struct FeatureMetadataDocument {
 pub(crate) struct FeatureInstallInput {
     pub(crate) feature: crate::config::resolved::ResolvedFeature,
     pub(crate) metadata: FeatureMetadata,
+    pub(crate) source_key: String,
+    pub(crate) instance_key: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -196,7 +198,7 @@ struct FeatureSource {
     metadata: FeatureMetadata,
     layer: ConfigLayer,
     container_env: BTreeMap<String, String>,
-    lock_entry: Option<FeatureLockHashEntry>,
+    digest: String,
     lock_file_entry: Option<FeatureLockEntry>,
 }
 
@@ -204,6 +206,8 @@ struct FeatureSource {
 pub(crate) struct FeatureInstallPlanEntry {
     pub(crate) feature: crate::config::resolved::ResolvedFeature,
     pub(crate) metadata: FeatureMetadata,
+    pub(crate) source_key: String,
+    pub(crate) instance_key: String,
     pub(crate) option_env: BTreeMap<String, String>,
 }
 
@@ -805,7 +809,8 @@ pub(crate) fn prepare_feature_install_plan(
     features: &[ResolvedFeature],
     devcontainer_file: &Path,
     workspace_root: &Path,
-    cache_root: &Path,
+    feature_archive_cache_root: &Path,
+    extract_root: &Path,
     override_feature_install_order: &[String],
     update_features: bool,
 ) -> Result<Option<PreparedFeatureInstallPlan>> {
@@ -819,17 +824,16 @@ pub(crate) fn prepare_feature_install_plan(
             devcontainer_file.display()
         )
     })?;
-    let feature_cache_root = cache_root.join("features").join("archives");
-    let extract_root = cache_root.join("features").join("extracted");
     let lock_path = workspace_root.join(".decune").join("features.lock.toml");
     let lock = read_feature_lock_file(&lock_path)?;
     let mut resolver = FeatureResolver {
         devcontainer_dir,
         lock: &lock,
         update_features,
-        feature_cache_root,
-        extract_root,
+        feature_archive_cache_root: feature_archive_cache_root.to_path_buf(),
+        extract_root: extract_root.to_path_buf(),
         sources: BTreeMap::new(),
+        next_local_instance: 0,
     };
 
     let inputs = features
@@ -851,15 +855,12 @@ pub(crate) fn prepare_feature_install_plan(
     let mut lock_entries = Vec::new();
     let mut cumulative_container_env = BTreeMap::new();
     for entry in entries {
-        let source = resolver
-            .sources
-            .get(&entry.feature.canonical_id)
-            .ok_or_else(|| {
-                anyhow!(
-                    "Feature source was not prepared for {}",
-                    entry.feature.canonical_id
-                )
-            })?;
+        let source = resolver.sources.get(&entry.source_key).ok_or_else(|| {
+            anyhow!(
+                "Feature source was not prepared for {}",
+                entry.feature.canonical_id
+            )
+        })?;
         cumulative_container_env.extend(source.container_env.clone());
         prepared_entries.push(PreparedFeatureInstallEntry {
             feature: entry.feature,
@@ -868,13 +869,15 @@ pub(crate) fn prepare_feature_install_plan(
             container_env: cumulative_container_env.clone(),
         });
         metadata_layers.push(source.layer.clone());
-        if let Some(lock_entry) = &source.lock_entry {
-            lock_entries.push(lock_entry.clone());
-        }
+        lock_entries.push(FeatureLockHashEntry {
+            feature_id: entry.instance_key,
+            digest: source.digest.clone(),
+        });
     }
 
     lock_entries.sort_by(|left, right| left.feature_id.cmp(&right.feature_id));
-    lock_entries.dedup_by(|left, right| left.feature_id == right.feature_id);
+    lock_entries
+        .dedup_by(|left, right| left.feature_id == right.feature_id && left.digest == right.digest);
     let mut lock_file_entries = resolver
         .sources
         .values()
@@ -908,17 +911,16 @@ where
 {
     let mut nodes = BTreeMap::new();
     for input in inputs {
-        let key = input.feature.canonical_id.clone();
-        if nodes.insert(key.clone(), input).is_some() {
-            bail!("Duplicate Feature in install worklist: {key}");
-        }
+        nodes.entry(input.instance_key.clone()).or_insert(input);
     }
 
     let mut scan_queue = nodes.keys().cloned().collect::<VecDeque<_>>();
+    let mut dependency_edges = BTreeMap::<String, BTreeSet<String>>::new();
     while let Some(canonical_id) = scan_queue.pop_front() {
         let input = nodes
             .get(&canonical_id)
             .expect("queued Feature must exist in install graph");
+        let parent_canonical_id = input.feature.canonical_id.clone();
         let depends_on = input
             .metadata
             .depends_on
@@ -928,13 +930,20 @@ where
 
         for (dependency, options) in depends_on {
             let dependency_id = canonical_feature_dependency_id(&dependency);
-            if nodes.contains_key(&dependency_id) {
+
+            let options = feature_dependency_options(&parent_canonical_id, &dependency, &options)?;
+            let dependency_ref = dependency_feature_ref(&dependency);
+            if let Some(existing_instance_key) =
+                find_existing_feature_instance(&nodes, &dependency_id, &dependency_ref, &options)
+            {
+                dependency_edges
+                    .entry(canonical_id.clone())
+                    .or_default()
+                    .insert(existing_instance_key);
                 continue;
             }
-
-            let options = feature_dependency_options(&canonical_id, &dependency, &options)?;
             let request = FeatureDependencyRequest {
-                parent_canonical_id: &canonical_id,
+                parent_canonical_id: &parent_canonical_id,
                 dependency: &dependency,
                 canonical_id: dependency_id.clone(),
                 options,
@@ -953,31 +962,37 @@ where
                     dependency_id
                 );
             }
-            dependency_input.feature.options = request.options.clone();
-            if nodes
-                .insert(dependency_id.clone(), dependency_input)
-                .is_some()
-            {
-                bail!("Duplicate Feature in install worklist: {dependency_id}");
+            if dependency_input.feature.options != request.options {
+                dependency_input.feature.options = request.options.clone();
+                dependency_input.instance_key =
+                    feature_install_input_instance_key(&dependency_input);
             }
-            scan_queue.push_back(dependency_id);
+            let dependency_instance_key = dependency_input.instance_key.clone();
+            dependency_edges
+                .entry(canonical_id.clone())
+                .or_default()
+                .insert(dependency_instance_key.clone());
+            if nodes
+                .insert(dependency_instance_key.clone(), dependency_input)
+                .is_none()
+            {
+                scan_queue.push_back(dependency_instance_key);
+            }
         }
     }
 
     let mut dependencies = BTreeMap::new();
-    for (canonical_id, input) in &nodes {
-        let mut required = BTreeSet::new();
-        for dependency in input.metadata.depends_on.keys() {
-            let dependency_id = canonical_feature_dependency_id(dependency);
-            required.insert(dependency_id);
-        }
+    for (instance_key, input) in &nodes {
+        let mut required = dependency_edges.remove(instance_key).unwrap_or_default();
         for dependency in &input.metadata.installs_after {
             let dependency_id = canonical_feature_dependency_id(dependency);
-            if nodes.contains_key(&dependency_id) {
-                required.insert(dependency_id);
+            for (candidate_key, candidate) in &nodes {
+                if candidate.feature.canonical_id == dependency_id {
+                    required.insert(candidate_key.clone());
+                }
             }
         }
-        dependencies.insert(canonical_id.clone(), required);
+        dependencies.insert(instance_key.clone(), required);
     }
 
     let priorities = override_feature_install_priorities(override_feature_install_order);
@@ -1002,12 +1017,24 @@ where
 
         let max_priority = ready
             .iter()
-            .map(|canonical_id| feature_round_priority(canonical_id, &priorities))
+            .map(|instance_key| {
+                let canonical_id = &nodes
+                    .get(instance_key)
+                    .expect("ready Feature must exist in install graph")
+                    .feature
+                    .canonical_id;
+                feature_round_priority(canonical_id, &priorities)
+            })
             .max()
             .unwrap_or_default();
         let mut round = ready
             .into_iter()
-            .filter(|canonical_id| {
+            .filter(|instance_key| {
+                let canonical_id = &nodes
+                    .get(instance_key)
+                    .expect("ready Feature must exist in install graph")
+                    .feature
+                    .canonical_id;
                 feature_round_priority(canonical_id, &priorities) == max_priority
             })
             .collect::<Vec<_>>();
@@ -1023,6 +1050,8 @@ where
             ordered.push(FeatureInstallPlanEntry {
                 feature: input.feature.clone(),
                 metadata: input.metadata.clone(),
+                source_key: input.source_key.clone(),
+                instance_key: input.instance_key.clone(),
                 option_env,
             });
         }
@@ -1185,27 +1214,44 @@ struct FeatureResolver<'a> {
     devcontainer_dir: &'a Path,
     lock: &'a FeatureLockFile,
     update_features: bool,
-    feature_cache_root: PathBuf,
+    feature_archive_cache_root: PathBuf,
     extract_root: PathBuf,
     sources: BTreeMap<String, FeatureSource>,
+    next_local_instance: usize,
 }
 
 impl FeatureResolver<'_> {
     fn resolve_input(&mut self, feature: ResolvedFeature) -> Result<FeatureInstallInput> {
-        if let Some(source) = self.sources.get(&feature.canonical_id) {
+        let reference = parse_feature_ref_from_devcontainer_dir(&feature.id, self.devcontainer_dir)
+            .with_context(|| format!("Failed to parse Feature ref: {}", feature.id))?;
+        let source_key = feature_source_key(&reference);
+        let local_instance = matches!(reference, FeatureRef::Local(_)).then(|| {
+            let instance = self.next_local_instance;
+            self.next_local_instance += 1;
+            instance
+        });
+
+        if let Some(source) = self.sources.get(&source_key) {
+            let instance_key = feature_instance_key(&feature, source, local_instance);
             return Ok(FeatureInstallInput {
                 feature,
                 metadata: source.metadata.clone(),
+                source_key,
+                instance_key,
             });
         }
 
-        let reference = parse_feature_ref_from_devcontainer_dir(&feature.id, self.devcontainer_dir)
-            .with_context(|| format!("Failed to parse Feature ref: {}", feature.id))?;
         let source = self.resolve_source(&reference)?;
         let metadata = source.metadata.clone();
-        self.sources.insert(feature.canonical_id.clone(), source);
+        let instance_key = feature_instance_key(&feature, &source, local_instance);
+        self.sources.insert(source_key.clone(), source);
 
-        Ok(FeatureInstallInput { feature, metadata })
+        Ok(FeatureInstallInput {
+            feature,
+            metadata,
+            source_key,
+            instance_key,
+        })
     }
 
     fn resolve_source(&self, reference: &FeatureRef) -> Result<FeatureSource> {
@@ -1233,10 +1279,7 @@ impl FeatureResolver<'_> {
             metadata: document.metadata,
             layer: document.layer,
             container_env,
-            lock_entry: Some(FeatureLockHashEntry {
-                feature_id: reference.canonical_id.clone(),
-                digest,
-            }),
+            digest: digest.clone(),
             lock_file_entry: None,
         })
     }
@@ -1261,7 +1304,7 @@ impl FeatureResolver<'_> {
         };
         let artifact = pull_oci_feature_with_client(
             &locked_reference,
-            &self.feature_cache_root,
+            &self.feature_archive_cache_root,
             &self.extract_root,
             &HttpOciRegistryClient::from_docker_config()?,
         )?;
@@ -1273,10 +1316,7 @@ impl FeatureResolver<'_> {
             metadata: document.metadata,
             layer: document.layer,
             container_env,
-            lock_entry: Some(FeatureLockHashEntry {
-                feature_id: reference.canonical_id.clone(),
-                digest: artifact.digest.clone(),
-            }),
+            digest: artifact.digest.clone(),
             lock_file_entry: Some(FeatureLockEntry {
                 id: reference.canonical_id.clone(),
                 reference: reference.original.clone(),
@@ -1306,6 +1346,44 @@ fn feature_layer_container_env(layer: &ConfigLayer) -> BTreeMap<String, String> 
         .as_ref()
         .map(|devcontainer| devcontainer.container_env.clone())
         .unwrap_or_default()
+}
+
+fn feature_source_key(reference: &FeatureRef) -> String {
+    match reference {
+        FeatureRef::Oci(reference) => reference.original.clone(),
+        FeatureRef::Local(reference) => reference.canonical_id.clone(),
+    }
+}
+
+fn feature_instance_key(
+    feature: &ResolvedFeature,
+    source: &FeatureSource,
+    local_instance: Option<usize>,
+) -> String {
+    let options = feature_options_sort_key(&feature.options)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("\x1f");
+    match local_instance {
+        Some(instance) => format!(
+            "local\x1e{}\x1e{}\x1e{options}\x1e{instance}",
+            feature.canonical_id, source.digest
+        ),
+        None => format!(
+            "oci\x1e{}\x1e{}\x1e{options}",
+            feature.canonical_id, source.digest
+        ),
+    }
+}
+
+fn feature_install_input_instance_key(input: &FeatureInstallInput) -> String {
+    let options = feature_options_sort_key(&input.feature.options)
+        .into_iter()
+        .map(|(key, value)| format!("{key}={value}"))
+        .collect::<Vec<_>>()
+        .join("\x1f");
+    format!("test\x1e{}\x1e{options}", input.feature.canonical_id)
 }
 
 fn local_feature_content_digest(source_dir: &Path) -> Result<String> {
@@ -1634,6 +1712,23 @@ fn feature_dependency_option_value(
             )
         }
     }
+}
+
+fn find_existing_feature_instance(
+    nodes: &BTreeMap<String, FeatureInstallInput>,
+    dependency_id: &str,
+    dependency_ref: &str,
+    options: &BTreeMap<String, toml::Value>,
+) -> Option<String> {
+    nodes
+        .iter()
+        .find(|(_, input)| {
+            input.feature.canonical_id == dependency_id
+                && input.feature.id == dependency_ref
+                && feature_options_sort_key(&input.feature.options)
+                    == feature_options_sort_key(options)
+        })
+        .map(|(instance_key, _)| instance_key.clone())
 }
 
 fn override_feature_install_priorities(override_order: &[String]) -> BTreeMap<String, usize> {
@@ -2237,6 +2332,7 @@ mod tests {
             &devcontainer_dir.join("devcontainer.json"),
             &workspace_root,
             &cache_root,
+            &cache_root.join("extracted"),
             &[],
             false,
         )
@@ -2248,6 +2344,7 @@ mod tests {
             &devcontainer_dir.join("devcontainer.json"),
             &workspace_root,
             &cache_root,
+            &cache_root.join("extracted"),
             &[],
             false,
         )
@@ -2256,8 +2353,16 @@ mod tests {
 
         assert_eq!(first.lock_entries.len(), 1);
         assert_eq!(second.lock_entries.len(), 1);
-        assert_eq!(first.lock_entries[0].feature_id, "local:features/local");
-        assert_eq!(second.lock_entries[0].feature_id, "local:features/local");
+        assert!(
+            first.lock_entries[0]
+                .feature_id
+                .contains("local:features/local")
+        );
+        assert!(
+            second.lock_entries[0]
+                .feature_id
+                .contains("local:features/local")
+        );
         assert_ne!(first.lock_entries[0].digest, second.lock_entries[0].digest);
     }
 
@@ -2302,6 +2407,7 @@ mod tests {
             &devcontainer_dir.join("devcontainer.json"),
             &workspace_root,
             &cache_root,
+            &cache_root.join("extracted"),
             &[],
             false,
         )
@@ -2663,6 +2769,65 @@ mod tests {
         assert_eq!(
             plan[0].feature.options.get("version"),
             Some(&toml::Value::String("3".to_owned()))
+        );
+    }
+
+    #[test]
+    fn feature_install_order_treats_same_dependency_with_different_options_as_distinct_instances() {
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/base:1",
+                    FeatureMetadata::default(),
+                )
+                .with_options([("version", toml::Value::String("top-level".to_owned()))]),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        depends_on: BTreeMap::from([(
+                            "ghcr.io/example/features/base:1".to_owned(),
+                            serde_json::json!({
+                                "version": "dependency"
+                            }),
+                        )]),
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            |request| {
+                Ok(feature_install_input(
+                    request.dependency,
+                    FeatureMetadata::default(),
+                ))
+            },
+        )
+        .unwrap();
+
+        let base_versions = plan
+            .iter()
+            .filter(|entry| entry.feature.canonical_id == "ghcr.io/example/features/base")
+            .map(|entry| {
+                entry
+                    .feature
+                    .options
+                    .get("version")
+                    .and_then(toml::Value::as_str)
+                    .unwrap_or("<missing>")
+                    .to_owned()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(base_versions, vec!["dependency", "top-level"]);
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.canonical_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/base",
+                "ghcr.io/example/features/base",
+                "ghcr.io/example/features/tool",
+            ]
         );
     }
 
@@ -3070,6 +3235,8 @@ mod tests {
                 options: BTreeMap::new(),
             },
             metadata,
+            source_key: id.to_owned(),
+            instance_key: format!("test\x1e{}", reference.canonical_id()),
         }
     }
 
@@ -3099,6 +3266,7 @@ mod tests {
                 .into_iter()
                 .map(|(key, value)| (key.to_owned(), value))
                 .collect();
+            self.instance_key = feature_install_input_instance_key(&self);
             self
         }
     }
