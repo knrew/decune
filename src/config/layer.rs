@@ -23,6 +23,7 @@ use crate::config::{
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ConfigMergeInput {
     pub(crate) image_metadata: Vec<ConfigLayer>,
+    pub(crate) feature_metadata: Vec<ConfigLayer>,
     pub(crate) global: Option<ConfigLayer>,
     pub(crate) devcontainer: Option<ConfigLayer>,
     pub(crate) project: Option<ConfigLayer>,
@@ -241,6 +242,7 @@ pub(crate) struct LayerDevcontainerMetadata {
     pub(crate) privileged: Option<bool>,
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
+    pub(crate) entrypoints: Vec<String>,
     pub(crate) lifecycle: Option<LayerLifecycleDefinition>,
 }
 

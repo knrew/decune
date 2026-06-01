@@ -12,8 +12,8 @@ use crate::{
         ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry,
         MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
         MountVolumeOptionsHashInput, config_hash, layer::LayerDevcontainerMount,
-        load::load_config_file, merge::merge_feature_metadata_layers, resolve_config,
-        resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource, types::MountType,
+        load::load_config_file, resolve_config, resolved::ResolvedConfig,
+        resolved::ResolvedDevcontainerSource, types::MountType,
     },
     devcontainer::{
         features::{
@@ -30,9 +30,10 @@ use crate::{
     },
     docker::{
         build::{
-            DockerBuildInput, DockerBuildOptions, FeatureLayerBuildFeature, FeatureLayerBuildInput,
-            ResolvedBuildContext, build_hash_input, build_image,
-            prepare_feature_layer_build_context, resolve_build_context,
+            DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_WRAPPER,
+            FeatureLayerBuildFeature, FeatureLayerBuildInput, ResolvedBuildContext,
+            build_hash_input, build_image, prepare_feature_layer_build_context,
+            resolve_build_context,
         },
         client::DockerClient,
         container::{
@@ -154,6 +155,7 @@ pub(crate) struct UpPlan {
     pub(crate) feature_install: Option<PreparedFeatureInstallPlan>,
     pub(crate) feature_build_context_dir: Option<PathBuf>,
     pub(crate) resources: DockerResources,
+    pub(crate) config_layers: ConfigMergeInput,
     pub(crate) config: ResolvedConfig,
     pub(crate) workspace_folder: String,
     pub(crate) mounts: Vec<DockerMountSpec>,
@@ -502,13 +504,15 @@ fn build_up_plan_inner(
         load_config_file(workspace.paths().project_config_path())?,
         crate::config::path::ConfigPathOrigin::Project,
     );
-    let config = resolve_config(ConfigMergeInput {
+    let config_layers = ConfigMergeInput {
         image_metadata,
         global: Some(global_layer),
         devcontainer: Some(devcontainer_layer),
         project: Some(project_layer),
         cli: Some(cli_layer),
-    });
+        ..ConfigMergeInput::default()
+    };
+    let config = resolve_config(config_layers.clone());
     let (build_context, build_options) =
         dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
     let workspace_location = resolve_workspace_location(workspace, &config, |workspace_folder| {
@@ -561,6 +565,7 @@ fn build_up_plan_inner(
         feature_install: None,
         feature_build_context_dir: None,
         resources,
+        config_layers,
         config,
         workspace_folder: workspace_location.workspace_folder,
         mounts,
@@ -1253,8 +1258,8 @@ async fn prepare_feature_metadata_for_plan(
     else {
         return Ok(plan);
     };
-    plan.config =
-        merge_feature_metadata_layers(plan.config, feature_install.metadata_layers.clone());
+    plan.config_layers.feature_metadata = feature_install.metadata_layers.clone();
+    plan.config = resolve_config(plan.config_layers.clone());
     plan.feature_install = Some(feature_install);
     plan.feature_build_context_dir =
         Some(workspace.paths().cache_dir().join("feature-build-context"));
@@ -1318,6 +1323,7 @@ async fn build_feature_layer_image(
     let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
         base_image: plan.base_image.clone(),
         final_user,
+        entrypoints: plan.config.devcontainer.entrypoints.clone(),
         install_env,
         context_dir: feature_build_context_dir.clone(),
         features: feature_install
@@ -1425,10 +1431,25 @@ async fn create_and_start_container(
         .await?;
     }
 
+    let has_feature_entrypoints = !plan.config.devcontainer.entrypoints.is_empty();
     let (entrypoint, command) = if plan.config.devcontainer.override_command {
         let (entrypoint, command) = devcontainer_keepalive_command();
-        (Some(entrypoint), Some(command))
+        if has_feature_entrypoints {
+            let mut wrapped_command = vec![entrypoint.join(" ")];
+            wrapped_command.extend(command);
+            (
+                Some(vec![FEATURE_ENTRYPOINT_WRAPPER.to_owned()]),
+                Some(wrapped_command),
+            )
+        } else {
+            (Some(entrypoint), Some(command))
+        }
     } else {
+        if has_feature_entrypoints {
+            ui::warn(
+                "Feature entrypoint metadata is ignored when overrideCommand is false in decune v0.1",
+            );
+        }
         (None, None)
     };
     let spec = ContainerCreateSpec::from_resolved(ContainerCreateInput {
@@ -2152,7 +2173,7 @@ mod tests {
         ResolvedConfig, ResolvedDevcontainerSource, ResolvedPublishPort,
     };
     use crate::config::types::{GitHttpsMode, GithubCredentialsMode, MountType, PortProtocol};
-    use crate::config::{ConfigHashInput, ConfigLayer, config_hash};
+    use crate::config::{ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash};
     use crate::docker::client::DockerClient;
     use crate::docker::container::{remove_container, stop_container};
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
@@ -5076,6 +5097,7 @@ user = "root"
                 labels: BTreeMap::new(),
                 config_hash: "stable-hash".to_owned(),
             },
+            config_layers: ConfigMergeInput::default(),
             config,
             workspace_folder: "/workspaces/project".to_owned(),
             mounts: Vec::new(),

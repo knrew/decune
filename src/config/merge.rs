@@ -22,6 +22,10 @@ pub(crate) fn resolve_config(input: ConfigMergeInput) -> ResolvedConfig {
         accumulator.apply_layer(layer, PortSourcePriority::ImageMetadata);
     }
 
+    for layer in input.feature_metadata {
+        accumulator.apply_layer(layer, PortSourcePriority::ImageMetadata);
+    }
+
     for (layer, source_priority) in [
         (input.global, PortSourcePriority::Global),
         (input.devcontainer, PortSourcePriority::Devcontainer),
@@ -36,18 +40,79 @@ pub(crate) fn resolve_config(input: ConfigMergeInput) -> ResolvedConfig {
     accumulator.into_resolved()
 }
 
+#[cfg(test)]
 pub(crate) fn merge_feature_metadata_layers(
     mut config: ResolvedConfig,
     layers: Vec<ConfigLayer>,
 ) -> ResolvedConfig {
     for layer in layers {
         if let Some(devcontainer) = layer.devcontainer {
-            merge_devcontainer_metadata_into_resolved(&mut config.devcontainer, devcontainer);
+            merge_feature_devcontainer_metadata_into_resolved(
+                &mut config.devcontainer,
+                devcontainer,
+            );
         }
         config.hooks.append(layer.hooks);
     }
 
     config
+}
+
+#[cfg(test)]
+fn merge_feature_devcontainer_metadata_into_resolved(
+    target: &mut ResolvedDevcontainer,
+    devcontainer: LayerDevcontainerMetadata,
+) {
+    target.mounts.splice(0..0, devcontainer.mounts);
+    for (key, value) in devcontainer.container_env {
+        target.container_env.entry(key).or_insert(value);
+    }
+    for (key, value) in devcontainer.remote_env {
+        target.remote_env.entry(key).or_insert(value);
+    }
+    if target.remote_user.is_none() {
+        target.remote_user = devcontainer.remote_user;
+    }
+    if target.container_user.is_none() {
+        target.container_user = devcontainer.container_user;
+    }
+    for port in devcontainer.publish_ports {
+        if !target
+            .publish_ports
+            .iter()
+            .any(|existing| same_publish_port_identity(existing, &port))
+        {
+            target.publish_ports.insert(0, port);
+        }
+    }
+    for (key, value) in devcontainer.port_attributes {
+        target.port_attributes.entry(key).or_insert(value);
+    }
+    if target.other_ports_attributes.is_none() {
+        target.other_ports_attributes = devcontainer.other_ports_attributes;
+    }
+    target.run_args.splice(0..0, devcontainer.run_args);
+    if devcontainer.init == Some(true) {
+        target.init = true;
+    }
+    if devcontainer.privileged == Some(true) {
+        target.privileged = true;
+    }
+    target.cap_add.extend(devcontainer.cap_add);
+    target.security_opt.extend(devcontainer.security_opt);
+    target.entrypoints.splice(0..0, devcontainer.entrypoints);
+    if let Some(lifecycle) = devcontainer.lifecycle {
+        match target.lifecycle.take() {
+            Some(existing) => {
+                let mut merged = lifecycle.into_resolved();
+                if let Some(existing_layer) = existing.into_layer() {
+                    merged.merge_layer(existing_layer);
+                }
+                target.lifecycle = Some(merged);
+            }
+            None => target.lifecycle = Some(lifecycle.into_resolved()),
+        }
+    }
 }
 
 #[derive(Debug, Default)]
@@ -352,6 +417,9 @@ impl MergeAccumulator {
         self.devcontainer
             .security_opt
             .extend(devcontainer.security_opt);
+        self.devcontainer
+            .entrypoints
+            .extend(devcontainer.entrypoints);
         if let Some(lifecycle) = devcontainer.lifecycle {
             match &mut self.devcontainer.lifecycle {
                 Some(target) => target.merge_layer(lifecycle),
@@ -395,62 +463,6 @@ impl MergeAccumulator {
             entry.port.require_local = attributes
                 .and_then(|attributes| attributes.require_local_port)
                 .unwrap_or(false);
-        }
-    }
-}
-
-fn merge_devcontainer_metadata_into_resolved(
-    target: &mut ResolvedDevcontainer,
-    devcontainer: LayerDevcontainerMetadata,
-) {
-    if !devcontainer.override_feature_install_order.is_empty() {
-        target.override_feature_install_order = devcontainer.override_feature_install_order;
-    }
-    target.mounts.extend(devcontainer.mounts);
-    if let Some(workspace_mount) = devcontainer.workspace_mount {
-        target.workspace_mount = Some(workspace_mount);
-    }
-    if let Some(workspace_folder) = devcontainer.workspace_folder {
-        target.workspace_folder = Some(workspace_folder);
-    }
-    target.container_env.extend(devcontainer.container_env);
-    target.remote_env.extend(devcontainer.remote_env);
-    if let Some(remote_user) = devcontainer.remote_user {
-        target.remote_user = Some(remote_user);
-    }
-    if let Some(container_user) = devcontainer.container_user {
-        target.container_user = Some(container_user);
-    }
-    if let Some(update_remote_user_uid) = devcontainer.update_remote_user_uid {
-        target.update_remote_user_uid = update_remote_user_uid;
-    }
-    if let Some(override_command) = devcontainer.override_command {
-        target.override_command = override_command;
-    }
-    if let Some(user_env_probe) = devcontainer.user_env_probe {
-        target.user_env_probe = Some(user_env_probe);
-    }
-    for port in devcontainer.publish_ports {
-        replace_by_identity(&mut target.publish_ports, port, same_publish_port_identity);
-    }
-    target.port_attributes.extend(devcontainer.port_attributes);
-    merge_optional_port_attributes(
-        &mut target.other_ports_attributes,
-        devcontainer.other_ports_attributes,
-    );
-    target.run_args.extend(devcontainer.run_args);
-    if let Some(init) = devcontainer.init {
-        target.init = init;
-    }
-    if let Some(privileged) = devcontainer.privileged {
-        target.privileged = privileged;
-    }
-    target.cap_add.extend(devcontainer.cap_add);
-    target.security_opt.extend(devcontainer.security_opt);
-    if let Some(lifecycle) = devcontainer.lifecycle {
-        match &mut target.lifecycle {
-            Some(target) => target.merge_layer(lifecycle),
-            None => target.lifecycle = Some(lifecycle.into_resolved()),
         }
     }
 }
@@ -548,6 +560,8 @@ fn merge_optional_port_attributes(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::*;
     use crate::config::{
         layer::{LayerDevcontainerMetadata, LayerHook, LayerPublishPort, canonical_feature_id},
@@ -616,6 +630,7 @@ version = 1
 command = "image.sh"
 "#,
             )],
+            feature_metadata: Vec::new(),
             global: Some(raw_layer(
                 r#"
 version = 1
@@ -761,6 +776,87 @@ command = "cli.sh"
         assert_ne!(
             crate::config::config_hash(&crate::config::ConfigHashInput::new(&baseline)),
             crate::config::config_hash(&crate::config::ConfigHashInput::new(&merged))
+        );
+    }
+
+    #[test]
+    fn feature_metadata_layer_does_not_override_user_metadata_values() {
+        let baseline = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    container_env: [("SHARED".to_owned(), "from-user".to_owned())].into(),
+                    remote_user: Some("user-from-devcontainer".to_owned()),
+                    lifecycle: crate::devcontainer::lifecycle::parse_lifecycle_layer_definition(
+                        &BTreeMap::from([(
+                            crate::devcontainer::metadata::LifecycleProperty::PostStartCommand,
+                            serde_json::json!("user-post-start"),
+                        )]),
+                    )
+                    .unwrap(),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+        let merged = merge_feature_metadata_layers(
+            baseline,
+            vec![ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    container_env: [
+                        ("SHARED".to_owned(), "from-feature".to_owned()),
+                        ("FEATURE_ONLY".to_owned(), "1".to_owned()),
+                    ]
+                    .into(),
+                    remote_user: Some("feature-user".to_owned()),
+                    lifecycle: crate::devcontainer::lifecycle::parse_lifecycle_layer_definition(
+                        &BTreeMap::from([(
+                            crate::devcontainer::metadata::LifecycleProperty::PostStartCommand,
+                            serde_json::json!("feature-post-start"),
+                        )]),
+                    )
+                    .unwrap(),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }],
+        );
+
+        assert_eq!(
+            merged
+                .devcontainer
+                .container_env
+                .get("SHARED")
+                .map(String::as_str),
+            Some("from-user")
+        );
+        assert_eq!(
+            merged
+                .devcontainer
+                .container_env
+                .get("FEATURE_ONLY")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_eq!(
+            merged.devcontainer.remote_user.as_deref(),
+            Some("user-from-devcontainer")
+        );
+        assert_eq!(
+            merged
+                .devcontainer
+                .lifecycle
+                .as_ref()
+                .unwrap()
+                .commands(crate::devcontainer::lifecycle::LifecycleStage::PostStart),
+            &[
+                crate::devcontainer::lifecycle::LifecycleCommand::Shell(
+                    "feature-post-start".to_owned()
+                ),
+                crate::devcontainer::lifecycle::LifecycleCommand::Shell(
+                    "user-post-start".to_owned()
+                ),
+            ]
         );
     }
 

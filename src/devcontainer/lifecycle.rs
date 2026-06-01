@@ -38,13 +38,19 @@ pub(crate) enum LifecycleCommand {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LifecycleDefinition {
-    commands: BTreeMap<LifecycleStage, LifecycleCommand>,
+    commands: BTreeMap<LifecycleStage, Vec<LifecycleCommand>>,
     wait_for: WaitFor,
 }
 
 impl LifecycleDefinition {
     pub(crate) fn command(&self, stage: LifecycleStage) -> Option<&LifecycleCommand> {
-        self.commands.get(&stage)
+        self.commands
+            .get(&stage)
+            .and_then(|commands| commands.first())
+    }
+
+    pub(crate) fn commands(&self, stage: LifecycleStage) -> &[LifecycleCommand] {
+        self.commands.get(&stage).map(Vec::as_slice).unwrap_or(&[])
     }
 
     pub(crate) fn wait_for(&self) -> WaitFor {
@@ -52,16 +58,30 @@ impl LifecycleDefinition {
     }
 
     pub(crate) fn merge_layer(&mut self, layer: LayerLifecycleDefinition) {
-        self.commands.extend(layer.commands);
+        for (stage, commands) in layer.commands {
+            self.commands.entry(stage).or_default().extend(commands);
+        }
         if let Some(wait_for) = layer.wait_for {
             self.wait_for = wait_for;
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_layer(self) -> Option<LayerLifecycleDefinition> {
+        if self.commands.is_empty() {
+            return None;
+        }
+
+        Some(LayerLifecycleDefinition {
+            commands: self.commands,
+            wait_for: Some(self.wait_for),
+        })
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LayerLifecycleDefinition {
-    commands: BTreeMap<LifecycleStage, LifecycleCommand>,
+    commands: BTreeMap<LifecycleStage, Vec<LifecycleCommand>>,
     wait_for: Option<WaitFor>,
 }
 
@@ -449,11 +469,15 @@ async fn run_lifecycle_stage(
     let Some(lifecycle) = &context.config.devcontainer.lifecycle else {
         return Ok(());
     };
-    let Some(command) = lifecycle.command(stage) else {
+    if lifecycle.commands(stage).is_empty() {
         return Ok(());
-    };
+    }
 
-    run_container_lifecycle_command(context, stage, command).await
+    for command in lifecycle.commands(stage) {
+        run_container_lifecycle_command(context, stage, command).await?;
+    }
+
+    Ok(())
 }
 
 fn run_host_lifecycle_command(
@@ -464,11 +488,15 @@ fn run_host_lifecycle_command(
     let Some(lifecycle) = &config.devcontainer.lifecycle else {
         return Ok(());
     };
-    let Some(command) = lifecycle.command(stage) else {
+    if lifecycle.commands(stage).is_empty() {
         return Ok(());
-    };
+    }
 
-    run_host_lifecycle_command_value(workspace_root, stage, command)
+    for command in lifecycle.commands(stage) {
+        run_host_lifecycle_command_value(workspace_root, stage, command)?;
+    }
+
+    Ok(())
 }
 
 fn run_hook_stage_without_container(
@@ -878,7 +906,7 @@ pub(crate) fn parse_lifecycle_layer_definition(
         }
 
         let stage = LifecycleStage::try_from(*property)?;
-        commands.insert(stage, parse_lifecycle_command(stage, value)?);
+        commands.insert(stage, vec![parse_lifecycle_command(stage, value)?]);
     }
 
     let wait_for = values
@@ -1136,6 +1164,39 @@ mod tests {
                 "-lc".to_owned(),
                 "echo ready".to_owned()
             ]))
+        );
+    }
+
+    #[test]
+    fn lifecycle_merge_collects_same_stage_commands_in_order() {
+        let mut lifecycle = parse_lifecycle_definition(&BTreeMap::from([(
+            LifecycleProperty::PostStartCommand,
+            json!("feature-one"),
+        )]))
+        .unwrap();
+        let second = parse_lifecycle_layer_definition(&BTreeMap::from([(
+            LifecycleProperty::PostStartCommand,
+            json!("feature-two"),
+        )]))
+        .unwrap()
+        .unwrap();
+        let user = parse_lifecycle_layer_definition(&BTreeMap::from([(
+            LifecycleProperty::PostStartCommand,
+            json!("user-command"),
+        )]))
+        .unwrap()
+        .unwrap();
+
+        lifecycle.merge_layer(second);
+        lifecycle.merge_layer(user);
+
+        assert_eq!(
+            lifecycle.commands(LifecycleStage::PostStart),
+            &[
+                LifecycleCommand::Shell("feature-one".to_owned()),
+                LifecycleCommand::Shell("feature-two".to_owned()),
+                LifecycleCommand::Shell("user-command".to_owned()),
+            ]
         );
     }
 
