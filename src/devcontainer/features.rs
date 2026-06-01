@@ -2245,7 +2245,9 @@ fn docker_config_helper_auth(
     let Some(binary) = docker_credential_helper_binary(helper, helper_paths) else {
         return Ok(None);
     };
-    let output = run_docker_credential_helper_get(&binary, registry)?;
+    let Some(output) = run_docker_credential_helper_get(&binary, registry)? else {
+        return Ok(None);
+    };
     let Some(secret) = output.secret else {
         return Ok(None);
     };
@@ -2271,7 +2273,7 @@ fn docker_credential_helper_binary(helper: &str, helper_paths: &[PathBuf]) -> Op
 fn run_docker_credential_helper_get(
     binary: &Path,
     registry: &str,
-) -> Result<DockerCredentialHelperGetResponse> {
+) -> Result<Option<DockerCredentialHelperGetResponse>> {
     let mut child = HostCommand::new(binary)
         .arg("get")
         .stdin(Stdio::piped())
@@ -2302,18 +2304,40 @@ fn run_docker_credential_helper_get(
         )
     })?;
     if !output.status.success() {
+        let message = docker_credential_helper_error_message(&output);
+        if docker_credential_helper_credentials_not_found(&message) {
+            return Ok(None);
+        }
         bail!(
             "Docker credential helper failed for {registry}: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
+            message
         );
     }
 
-    serde_json::from_slice(&output.stdout).with_context(|| {
-        format!(
-            "Failed to parse Docker credential helper output: {}",
-            binary.display()
-        )
-    })
+    serde_json::from_slice(&output.stdout)
+        .map(Some)
+        .with_context(|| {
+            format!(
+                "Failed to parse Docker credential helper output: {}",
+                binary.display()
+            )
+        })
+}
+
+fn docker_credential_helper_error_message(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+fn docker_credential_helper_credentials_not_found(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("credentials not found")
 }
 
 #[derive(Debug, Default)]
@@ -3353,6 +3377,89 @@ printf '{"Username":"helper-user","Secret":"helper-token"}'
                 password: "helper-token".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn docker_config_auth_falls_back_to_inline_auth_when_helper_has_no_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-fake");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf 'credentials not found in native keychain'
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credHelpers": {
+                    "ghcr.io": "fake"
+                },
+                "auths": {
+                    "ghcr.io": {
+                        "auth": "aW5saW5lOnRva2Vu"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(
+            store.get("ghcr.io").unwrap(),
+            Some(RegistryAuth::Basic {
+                username: "inline".to_owned(),
+                password: "token".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn docker_config_auth_treats_missing_helper_credentials_as_no_auth() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-fake");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf 'credentials not found in native keychain'
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credsStore": "fake"
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(store.get("ghcr.io").unwrap(), None);
     }
 
     #[test]
