@@ -181,34 +181,32 @@ impl OciRegistryClient for HttpOciRegistryClient {
             .headers()
             .get("Docker-Content-Digest")
             .and_then(|value| value.to_str().ok())
-            .map(str::to_owned)
-            .or_else(|| reference.digest.clone())
-            .ok_or_else(|| {
-                anyhow!(
-                    "OCI manifest response for feature {} did not include Docker-Content-Digest",
+            .map(str::to_owned);
+        let body = response
+            .bytes()
+            .with_context(|| {
+                format!(
+                    "Failed to read OCI manifest response for feature {}",
                     reference.original
                 )
-            })?;
-        let manifest: RegistryManifest = response.json().with_context(|| {
-            format!(
-                "Failed to parse OCI manifest for feature {} ({digest})",
-                reference.original
-            )
-        })?;
-        let layers = manifest
-            .layers
-            .into_iter()
-            .map(|layer| OciLayerDescriptor {
-                digest: layer.digest,
-                media_type: layer.media_type,
-                size: layer.size.unwrap_or_default(),
-            })
-            .collect();
+            })?
+            .to_vec();
 
-        Ok(OciManifestResponse { digest, layers })
+        parse_registry_manifest_response_body(
+            &reference.original,
+            reference.digest.as_deref(),
+            digest.as_deref(),
+            &body,
+        )
     }
 
     fn fetch_blob(&self, reference: &OciFeatureRef, digest: &str) -> Result<Vec<u8>> {
+        validate_oci_digest(digest).with_context(|| {
+            format!(
+                "Invalid OCI blob digest for feature {}: {digest}",
+                reference.original
+            )
+        })?;
         let url = registry_url(reference, &format!("blobs/{digest}"));
         let response = self
             .send_registry_request(reference, self.client.get(&url))
@@ -521,6 +519,12 @@ pub(crate) fn pull_oci_feature_with_client(
     })?;
 
     if let Some(digest) = &reference.digest {
+        validate_oci_digest(digest).with_context(|| {
+            format!(
+                "Invalid OCI manifest digest for feature {}: {digest}",
+                reference.original
+            )
+        })?;
         let archive_path = feature_cache_archive_path(cache_root, digest);
         if archive_path.exists() {
             return extract_cached_feature(reference, digest, archive_path, extract_root, true);
@@ -531,6 +535,12 @@ pub(crate) fn pull_oci_feature_with_client(
         format!(
             "Failed to resolve OCI manifest for feature {}",
             reference.original
+        )
+    })?;
+    validate_oci_digest(&manifest.digest).with_context(|| {
+        format!(
+            "Invalid OCI manifest digest for feature {}: {}",
+            reference.original, manifest.digest
         )
     })?;
     let archive_path = feature_cache_archive_path(cache_root, &manifest.digest);
@@ -548,6 +558,12 @@ pub(crate) fn pull_oci_feature_with_client(
         format!(
             "OCI manifest for feature {} ({}) does not include a feature archive layer",
             reference.original, manifest.digest
+        )
+    })?;
+    validate_oci_digest(&layer.digest).with_context(|| {
+        format!(
+            "Invalid OCI feature layer digest for {}: {}",
+            reference.original, layer.digest
         )
     })?;
     let blob = registry
@@ -672,6 +688,13 @@ fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
     }
 
     let canonical_id = format!("{registry}/{repository}/{feature_id}");
+    let digest = digest
+        .map(|digest| {
+            validate_oci_digest(digest)
+                .map(|()| digest.to_owned())
+                .map_err(|error| invalid_feature_ref(value, &format!("invalid digest: {error}")))
+        })
+        .transpose()?;
 
     Ok(OciFeatureRef {
         original: value.to_owned(),
@@ -679,7 +702,7 @@ fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
         repository: repository.to_owned(),
         feature_id: feature_id.to_owned(),
         tag: tag.map(str::to_owned),
-        digest: digest.map(str::to_owned),
+        digest,
         canonical_id,
     })
 }
@@ -755,7 +778,7 @@ fn extract_cached_feature(
 }
 
 fn feature_cache_archive_path(cache_root: &Path, digest: &str) -> PathBuf {
-    cache_root.join(format!("{digest}.tgz"))
+    cache_root.join(format!("{}.tgz", cache_safe_digest(digest)))
 }
 
 fn select_feature_archive_layer(manifest: &OciManifestResponse) -> Option<&OciLayerDescriptor> {
@@ -796,9 +819,10 @@ fn write_cache_archive(path: &Path, content: &[u8]) -> Result<()> {
 }
 
 fn verify_digest(content: &[u8], digest: &str) -> Result<()> {
-    let Some(expected) = digest.strip_prefix("sha256:") else {
-        bail!("Unsupported OCI digest algorithm: {digest}");
-    };
+    validate_oci_digest(digest)?;
+    let expected = digest
+        .strip_prefix("sha256:")
+        .expect("sha256 digest was validated");
     let actual = hex_lower(&Sha256::digest(content));
     if actual != expected {
         bail!("Expected {digest}, got sha256:{actual}");
@@ -877,6 +901,90 @@ fn registry_accept_header() -> HeaderValue {
     )
 }
 
+fn parse_registry_manifest_response_body(
+    reference: &str,
+    requested_digest: Option<&str>,
+    header_digest: Option<&str>,
+    body: &[u8],
+) -> Result<OciManifestResponse> {
+    let requested_digest = requested_digest
+        .map(|digest| {
+            validate_oci_digest(digest)
+                .map(|()| digest)
+                .with_context(|| format!("Invalid requested OCI manifest digest: {digest}"))
+        })
+        .transpose()?;
+    let header_digest = header_digest
+        .map(|digest| {
+            validate_oci_digest(digest)
+                .map(|()| digest)
+                .with_context(|| format!("Invalid Docker-Content-Digest header: {digest}"))
+        })
+        .transpose()?;
+    let actual_digest = format!("sha256:{}", hex_lower(&Sha256::digest(body)));
+
+    if let Some(header_digest) = header_digest
+        && header_digest != actual_digest
+    {
+        bail!(
+            "OCI manifest digest mismatch for {reference}: Docker-Content-Digest is {header_digest}, body is {actual_digest}"
+        );
+    }
+    if let Some(requested_digest) = requested_digest
+        && requested_digest != actual_digest
+    {
+        bail!(
+            "OCI manifest digest mismatch for {reference}: expected {requested_digest}, got {actual_digest}"
+        );
+    }
+
+    let digest = header_digest
+        .or(requested_digest)
+        .ok_or_else(|| {
+            anyhow!("OCI manifest response for feature {reference} did not include Docker-Content-Digest")
+        })?
+        .to_owned();
+    let manifest: RegistryManifest = serde_json::from_slice(body).with_context(|| {
+        format!("Failed to parse OCI manifest for feature {reference} ({digest})")
+    })?;
+    let layers = manifest
+        .layers
+        .into_iter()
+        .map(|layer| {
+            validate_oci_digest(&layer.digest).with_context(|| {
+                format!(
+                    "Invalid OCI manifest layer digest for feature {reference}: {}",
+                    layer.digest
+                )
+            })?;
+            Ok(OciLayerDescriptor {
+                digest: layer.digest,
+                media_type: layer.media_type,
+                size: layer.size.unwrap_or_default(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    Ok(OciManifestResponse { digest, layers })
+}
+
+fn validate_oci_digest(digest: &str) -> Result<()> {
+    let Some(expected) = digest.strip_prefix("sha256:") else {
+        bail!("Unsupported OCI digest algorithm: {digest}");
+    };
+    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        bail!("Invalid OCI sha256 digest: {digest}");
+    }
+    if !expected
+        .bytes()
+        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
+    {
+        bail!("OCI sha256 digest must use lowercase hex: {digest}");
+    }
+
+    Ok(())
+}
+
 fn normalize_registry_auth_key(registry: &str) -> String {
     registry
         .strip_prefix("https://")
@@ -932,7 +1040,16 @@ fn split_auth_parameters(value: &str) -> Vec<&str> {
 }
 
 fn cache_safe_digest(digest: &str) -> String {
-    digest.replace([':', '/'], "_")
+    digest
+        .chars()
+        .map(|value| {
+            if value.is_ascii_alphanumeric() {
+                value
+            } else {
+                '_'
+            }
+        })
+        .collect()
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
@@ -1064,6 +1181,9 @@ mod tests {
 
     use super::*;
 
+    const MANIFEST_DIGEST_HEX: &str =
+        "1111111111111111111111111111111111111111111111111111111111111111";
+
     #[test]
     fn parses_tagged_oci_feature_ref() {
         let reference = parse_feature_ref("ghcr.io/devcontainers/features/go:1").unwrap();
@@ -1084,18 +1204,21 @@ mod tests {
 
     #[test]
     fn parses_digest_oci_feature_ref_with_registry_port() {
-        let reference =
-            parse_feature_ref("localhost:5000/devcontainers/features/tool@sha256:abcd").unwrap();
+        let digest = sha256_digest(MANIFEST_DIGEST_HEX);
+        let reference = parse_feature_ref(&format!(
+            "localhost:5000/devcontainers/features/tool@{digest}"
+        ))
+        .unwrap();
 
         assert_eq!(
             reference,
             FeatureRef::Oci(OciFeatureRef {
-                original: "localhost:5000/devcontainers/features/tool@sha256:abcd".to_owned(),
+                original: format!("localhost:5000/devcontainers/features/tool@{digest}"),
                 registry: "localhost:5000".to_owned(),
                 repository: "devcontainers/features".to_owned(),
                 feature_id: "tool".to_owned(),
                 tag: None,
-                digest: Some("sha256:abcd".to_owned()),
+                digest: Some(digest),
                 canonical_id: "localhost:5000/devcontainers/features/tool".to_owned(),
             })
         );
@@ -1113,6 +1236,20 @@ mod tests {
             error.to_string().contains("ghcr.io/example/features/tool:"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn oci_feature_ref_rejects_invalid_digest_values() {
+        for reference in [
+            "ghcr.io/example/features/tool@../../x",
+            "ghcr.io/example/features/tool@sha256:abcd",
+            "ghcr.io/example/features/tool@sha512:1111111111111111111111111111111111111111111111111111111111111111",
+        ] {
+            let error = parse_feature_ref(reference).unwrap_err();
+
+            assert!(error.to_string().contains(reference), "{error:#}");
+            assert!(error.to_string().contains("digest"), "{error:#}");
+        }
     }
 
     #[test]
@@ -1199,7 +1336,8 @@ mod tests {
         let temp = tempfile::tempdir().unwrap();
         let cache_root = temp.path().join("cache");
         fs::create_dir_all(&cache_root).unwrap();
-        let archive = cache_root.join("sha256:manifest.tgz");
+        let digest = sha256_digest(MANIFEST_DIGEST_HEX);
+        let archive = feature_cache_archive_path(&cache_root, &digest);
         write_feature_archive(
             &archive,
             &[
@@ -1208,7 +1346,7 @@ mod tests {
             ],
         );
         let reference =
-            parse_oci_feature_ref("ghcr.io/example/features/tool@sha256:manifest").unwrap();
+            parse_oci_feature_ref(&format!("ghcr.io/example/features/tool@{digest}")).unwrap();
         let registry = PanicRegistryClient;
 
         let artifact = pull_oci_feature_with_client(
@@ -1220,9 +1358,62 @@ mod tests {
         .unwrap();
 
         assert!(artifact.cache_hit);
-        assert_eq!(artifact.digest, "sha256:manifest");
+        assert_eq!(artifact.digest, digest);
+        assert_eq!(
+            artifact
+                .archive_path
+                .file_name()
+                .and_then(|name| name.to_str()),
+            Some(format!("sha256_{MANIFEST_DIGEST_HEX}.tgz").as_str())
+        );
         assert!(artifact.install_script_path.exists());
         assert!(artifact.metadata_path.exists());
+    }
+
+    #[test]
+    fn feature_cache_archive_path_uses_safe_digest_filename() {
+        let cache_root = Path::new("/tmp/cache");
+        let digest = sha256_digest(MANIFEST_DIGEST_HEX);
+
+        assert_eq!(
+            feature_cache_archive_path(cache_root, &digest),
+            cache_root.join(format!("sha256_{MANIFEST_DIGEST_HEX}.tgz"))
+        );
+    }
+
+    #[test]
+    fn manifest_response_rejects_body_digest_mismatch_for_digest_reference() {
+        let requested_digest = sha256_digest(MANIFEST_DIGEST_HEX);
+        let body = br#"{"layers":[]}"#;
+
+        let error = parse_registry_manifest_response_body(
+            "ghcr.io/example/features/tool",
+            Some(&requested_digest),
+            Some(&requested_digest),
+            body,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("digest mismatch"), "{error:#}");
+        assert!(error.to_string().contains(&requested_digest), "{error:#}");
+    }
+
+    #[test]
+    fn manifest_response_rejects_header_digest_mismatch() {
+        let body = br#"{"layers":[]}"#;
+        let actual_digest = sha256_digest(&hex_lower(&Sha256::digest(body)));
+        let header_digest = sha256_digest(MANIFEST_DIGEST_HEX);
+
+        let error = parse_registry_manifest_response_body(
+            "ghcr.io/example/features/tool:1",
+            None,
+            Some(&header_digest),
+            body,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("digest mismatch"), "{error:#}");
+        assert!(error.to_string().contains(&actual_digest), "{error:#}");
     }
 
     #[test]
@@ -1242,7 +1433,7 @@ mod tests {
             manifest_calls: Cell::new(0),
             blob_calls: Cell::new(0),
             manifest: OciManifestResponse {
-                digest: "sha256:manifest".to_owned(),
+                digest: sha256_digest(MANIFEST_DIGEST_HEX),
                 layers: vec![OciLayerDescriptor {
                     digest: layer_digest.clone(),
                     media_type: "application/vnd.devcontainers.layer.v1+tar".to_owned(),
@@ -1262,7 +1453,7 @@ mod tests {
         .unwrap();
 
         assert!(!artifact.cache_hit);
-        assert_eq!(artifact.digest, "sha256:manifest");
+        assert_eq!(artifact.digest, sha256_digest(MANIFEST_DIGEST_HEX));
         assert_eq!(registry.manifest_calls.get(), 1);
         assert_eq!(registry.blob_calls.get(), 1);
         assert!(artifact.archive_path.exists());
@@ -1359,6 +1550,10 @@ mod tests {
         let encoder = builder.into_inner().unwrap();
         let mut file = encoder.finish().unwrap();
         file.flush().unwrap();
+    }
+
+    fn sha256_digest(hex: &str) -> String {
+        format!("sha256:{hex}")
     }
 
     fn write_malicious_feature_archive(path: &Path, entry_path: &str, content: &[u8]) {
