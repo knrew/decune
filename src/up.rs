@@ -9,12 +9,17 @@ use bollard::models::{ContainerSummary, MountBindOptions, MountVolumeOptions};
 
 use crate::{
     config::{
-        ConfigHashInput, ConfigLayer, ConfigMergeInput, MountBindOptionsHashInput, MountHashInput,
-        MountVolumeDriverConfigHashInput, MountVolumeOptionsHashInput, config_hash,
-        layer::LayerDevcontainerMount, load::load_config_file, resolve_config,
-        resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource, types::MountType,
+        ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry,
+        MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
+        MountVolumeOptionsHashInput, config_hash, layer::LayerDevcontainerMount,
+        load::load_config_file, resolve_config, resolved::ResolvedConfig,
+        resolved::ResolvedDevcontainerSource, types::MountType,
     },
     devcontainer::{
+        features::{
+            FeatureRef, parse_feature_ref_from_devcontainer_dir, read_feature_lock_file,
+            resolve_locked_feature_ref,
+        },
         json::DevcontainerJson,
         lifecycle::{
             LifecycleRunContext, LifecycleRunPath, PreparedLifecycleRunContext,
@@ -478,6 +483,8 @@ fn build_up_plan_inner(
     if let Some(context) = &build_context {
         hash_input.build = Some(build_hash_input(context)?);
     }
+    hash_input.feature_locks =
+        feature_lock_hash_inputs(workspace, devcontainer_json.path(), &config)?;
     if mount_resolution == MountResolution::Resolve {
         hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     }
@@ -508,6 +515,44 @@ fn build_up_plan_inner(
         forward_ports,
         ignored_detached_forwarding,
     })
+}
+
+fn feature_lock_hash_inputs(
+    workspace: &Workspace,
+    devcontainer_file: &Path,
+    config: &ResolvedConfig,
+) -> Result<Vec<FeatureLockHashEntry>> {
+    if config.features.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let devcontainer_dir = devcontainer_file.parent().with_context(|| {
+        format!(
+            "Failed to resolve devcontainer directory for {}",
+            devcontainer_file.display()
+        )
+    })?;
+    let lock_path = workspace.root().join(".decune").join("features.lock.toml");
+    let lock = read_feature_lock_file(&lock_path)?;
+    let mut entries = Vec::new();
+
+    for feature in &config.features {
+        let reference = parse_feature_ref_from_devcontainer_dir(&feature.id, devcontainer_dir)
+            .with_context(|| format!("Failed to parse Feature ref: {}", feature.id))?;
+        let _resolved = resolve_locked_feature_ref(&reference, &lock, false);
+        let canonical_id = reference.canonical_id().to_owned();
+
+        if matches!(reference, FeatureRef::Oci(_))
+            && let Some(digest) = lock.digest_for(&canonical_id)
+        {
+            entries.push(FeatureLockHashEntry {
+                feature_id: canonical_id,
+                digest: digest.to_owned(),
+            });
+        }
+    }
+
+    Ok(entries)
 }
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
@@ -1033,6 +1078,9 @@ async fn finalize_up_plan_mounts(
     if let Some(context) = &plan.build_context {
         hash_input.build = Some(build_hash_input(context)?);
     }
+    let devcontainer_file = Path::new(&plan.resources.labels["devcontainer.config_file"]);
+    hash_input.feature_locks =
+        feature_lock_hash_inputs(workspace, devcontainer_file, &plan.config)?;
     hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
@@ -2579,6 +2627,60 @@ mod tests {
                 .display()
                 .to_string()
         );
+    }
+
+    #[test]
+    fn build_up_plan_includes_feature_lock_digest_in_config_hash() {
+        let workspace = test_workspace("feature-lock-hash");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "ghcr.io/example/features/tool:1": {}
+              }
+            }
+            "#,
+        );
+        let baseline = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/features.lock.toml"),
+            r#"
+version = 1
+
+[[features]]
+id = "ghcr.io/example/features/tool"
+ref = "ghcr.io/example/features/tool:1"
+digest = "sha256:locked"
+"#,
+        )
+        .unwrap();
+
+        let locked = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_ne!(baseline.resources.config_hash, locked.resources.config_hash);
+    }
+
+    #[test]
+    fn build_up_plan_rejects_invalid_feature_ref_with_ref_in_error() {
+        let workspace = test_workspace("invalid-feature-ref");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "ghcr.io/features": {}
+              }
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains("ghcr.io/features"), "{error:#}");
     }
 
     #[test]
