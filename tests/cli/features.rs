@@ -474,9 +474,19 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
             let inspect = inspect_single_workspace_container(&workspace_root)
                 .await
                 .unwrap();
+            let container_labels = inspect
+                .config
+                .as_ref()
+                .and_then(|config| config.labels.as_ref())
+                .expect("container labels should exist");
+            let container_config_hash = container_labels
+                .get("decune.config_hash")
+                .expect("container should include decune config hash label")
+                .clone();
             let image = inspect
                 .config
-                .and_then(|config| config.image)
+                .as_ref()
+                .and_then(|config| config.image.clone())
                 .expect("container image should exist");
             let docker = Docker::connect_with_defaults().unwrap();
             let image = docker.inspect_image(&image).await.unwrap();
@@ -486,6 +496,13 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
                     .as_ref()
                     .is_some_and(|labels| labels.contains_key("devcontainer.metadata")),
                 "final Feature image must not store decune-applied Feature metadata in devcontainer.metadata"
+            );
+            assert_eq!(
+                labels
+                    .as_ref()
+                    .and_then(|labels| labels.get("decune.config_hash")),
+                Some(&container_config_hash),
+                "final Feature image label must match the container config hash"
             );
         });
 

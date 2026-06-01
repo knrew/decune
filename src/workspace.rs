@@ -66,6 +66,7 @@ pub(crate) struct WorkspacePaths {
     state_dir: PathBuf,
     runtime_dir: PathBuf,
     cache_dir: PathBuf,
+    feature_archive_cache_dir: PathBuf,
     global_config_path: PathBuf,
     project_config_path: PathBuf,
 }
@@ -80,6 +81,7 @@ impl WorkspacePaths {
             state_dir: roots.state_root()?.join("decune").join(workspace_id),
             runtime_dir: roots.runtime_dir(workspace_id),
             cache_dir: roots.cache_root()?.join("decune").join(workspace_id),
+            feature_archive_cache_dir: roots.cache_root()?.join("decune").join("features"),
             global_config_path: roots.config_root()?.join("decune").join("config.toml"),
             project_config_path: workspace_root.join(".decune").join("config.toml"),
         })
@@ -96,6 +98,10 @@ impl WorkspacePaths {
     #[allow(dead_code)]
     pub(crate) fn cache_dir(&self) -> &Path {
         &self.cache_dir
+    }
+
+    pub(crate) fn feature_archive_cache_dir(&self) -> &Path {
+        &self.feature_archive_cache_dir
     }
 
     pub(crate) fn global_config_path(&self) -> &Path {
@@ -426,6 +432,10 @@ mod tests {
             Path::new("/xdg/cache/decune/abc123def456")
         );
         assert_eq!(
+            paths.feature_archive_cache_dir(),
+            Path::new("/xdg/cache/decune/features")
+        );
+        assert_eq!(
             paths.global_config_path(),
             Path::new("/xdg/config/decune/config.toml")
         );
@@ -460,6 +470,10 @@ mod tests {
         assert_eq!(
             paths.cache_dir(),
             Path::new("/home/user/.cache/decune/abc123def456")
+        );
+        assert_eq!(
+            paths.feature_archive_cache_dir(),
+            Path::new("/home/user/.cache/decune/features")
         );
         assert_eq!(
             paths.global_config_path(),

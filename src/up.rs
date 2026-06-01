@@ -1092,6 +1092,7 @@ async fn finalize_up_plan_mounts(
     update_features: bool,
 ) -> Result<(UpPlan, bool)> {
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
+    let mut lookup_base_image = None;
     let mut image_prepared = false;
     plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
     if lookup_image.is_none() {
@@ -1100,6 +1101,7 @@ async fn finalize_up_plan_mounts(
                 return Ok((plan, false));
             };
             prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
+            lookup_base_image = Some(plan.base_image.clone());
             build_feature_layer_image(client, &plan, no_cache).await?;
             lookup_image = Some(plan.image.clone());
             image_prepared = true;
@@ -1184,16 +1186,30 @@ async fn finalize_up_plan_mounts(
     );
     let image = final_image_source(&plan.config, &resources)?;
     let base_image = base_image_source(&plan.config, &resources)?;
-    if image_prepared && image != lookup_image {
-        tag_image(client, &lookup_image, &image).await?;
-        remove_image(client, &lookup_image, false).await?;
-    }
 
     plan.image = image;
     plan.base_image = base_image;
     plan.resources = resources;
     plan.workspace_folder = workspace_location.workspace_folder;
     plan.mounts = mounts;
+
+    if image_prepared && plan.feature_install.is_some() {
+        if let Some((pull, no_cache)) = build_for_lookup {
+            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
+            build_feature_layer_image(client, &plan, no_cache).await?;
+        }
+        if plan.image != lookup_image {
+            remove_image(client, &lookup_image, false).await?;
+        }
+        if let Some(lookup_base_image) = lookup_base_image
+            && lookup_base_image != plan.base_image
+        {
+            remove_image(client, &lookup_base_image, false).await?;
+        }
+    } else if image_prepared && plan.image != lookup_image {
+        tag_image(client, &lookup_image, &plan.image).await?;
+        remove_image(client, &lookup_image, false).await?;
+    }
 
     Ok((plan, image_prepared))
 }
@@ -1215,13 +1231,19 @@ async fn prepare_feature_metadata_for_plan(
         .clone();
     let devcontainer_file = PathBuf::from(&plan.resources.labels["devcontainer.config_file"]);
     let workspace_root = workspace.root().to_path_buf();
-    let cache_dir = workspace.paths().cache_dir().to_path_buf();
+    let feature_archive_cache_dir = workspace.paths().feature_archive_cache_dir().to_path_buf();
+    let feature_extract_dir = workspace
+        .paths()
+        .cache_dir()
+        .join("features")
+        .join("extracted");
     let Some(feature_install) = tokio::task::spawn_blocking(move || {
         prepare_feature_install_plan(
             &features,
             &devcontainer_file,
             &workspace_root,
-            &cache_dir,
+            &feature_archive_cache_dir,
+            &feature_extract_dir,
             &override_feature_install_order,
             update_features,
         )
