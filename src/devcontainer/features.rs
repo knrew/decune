@@ -174,6 +174,7 @@ pub(crate) struct FeatureMetadataDocument {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct FeatureInstallInput {
     pub(crate) feature: crate::config::resolved::ResolvedFeature,
+    pub(crate) reference: FeatureRef,
     pub(crate) metadata: FeatureMetadata,
     pub(crate) source_key: String,
     pub(crate) instance_key: String,
@@ -217,6 +218,7 @@ pub(crate) struct FeatureInstallPlanEntry {
 pub(crate) struct FeatureDependencyRequest<'a> {
     pub(crate) parent_canonical_id: &'a str,
     pub(crate) dependency: &'a str,
+    pub(crate) reference: String,
     pub(crate) canonical_id: String,
     pub(crate) options: BTreeMap<String, toml::Value>,
 }
@@ -828,6 +830,7 @@ pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetad
         .with_context(|| format!("Failed to read Feature metadata: {}", path.display()))?;
     let raw: JsonValue = serde_json::from_str(&content)
         .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))?;
+    validate_feature_metadata_document(&raw)?;
     let metadata = serde_json::from_value(raw.clone())
         .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))?;
     let layer = parse_metadata_layer(raw.clone())
@@ -840,6 +843,20 @@ pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetad
         })?;
 
     Ok(FeatureMetadataDocument { metadata, layer })
+}
+
+fn validate_feature_metadata_document(raw: &JsonValue) -> Result<()> {
+    let Some(object) = raw.as_object() else {
+        return Ok(());
+    };
+
+    for property in ["initializeCommand", "waitFor"] {
+        if object.contains_key(property) {
+            bail!("Feature metadata must not specify {property}");
+        }
+    }
+
+    Ok(())
 }
 
 pub(crate) fn prepare_feature_install_plan(
@@ -880,7 +897,7 @@ pub(crate) fn prepare_feature_install_plan(
     let entries =
         resolve_feature_install_order(inputs, override_feature_install_order, |request| {
             let feature = ResolvedFeature {
-                id: dependency_feature_ref(request.dependency),
+                id: request.reference.clone(),
                 canonical_id: request.canonical_id.clone(),
                 options: request.options.clone(),
             };
@@ -965,6 +982,7 @@ where
             .get(&canonical_id)
             .expect("queued Feature must exist in install graph");
         let parent_canonical_id = input.feature.canonical_id.clone();
+        let parent_reference = input.reference.clone();
         let depends_on = input
             .metadata
             .depends_on
@@ -973,13 +991,14 @@ where
             .collect::<Vec<_>>();
 
         for (dependency, options) in depends_on {
-            let dependency_id = canonical_feature_dependency_id(&dependency);
-
+            let dependency_target = dependency_feature_target(&parent_reference, &dependency)?;
             let options = feature_dependency_options(&parent_canonical_id, &dependency, &options)?;
-            let dependency_ref = dependency_feature_ref(&dependency);
-            if let Some(existing_instance_key) =
-                find_existing_feature_instance(&nodes, &dependency_id, &dependency_ref, &options)
-            {
+            if let Some(existing_instance_key) = find_existing_feature_instance(
+                &nodes,
+                &dependency_target.canonical_id,
+                &dependency_target.reference,
+                &options,
+            ) {
                 dependency_edges
                     .entry(canonical_id.clone())
                     .or_default()
@@ -989,7 +1008,8 @@ where
             let request = FeatureDependencyRequest {
                 parent_canonical_id: &parent_canonical_id,
                 dependency: &dependency,
-                canonical_id: dependency_id.clone(),
+                reference: dependency_target.reference,
+                canonical_id: dependency_target.canonical_id.clone(),
                 options,
             };
             let mut dependency_input = resolve_dependency(&request).with_context(|| {
@@ -998,12 +1018,12 @@ where
                     request.dependency, request.parent_canonical_id
                 )
             })?;
-            if dependency_input.feature.canonical_id != dependency_id {
+            if dependency_input.feature.canonical_id != request.canonical_id {
                 bail!(
                     "Feature dependency resolver returned {} for {}, expected {}",
                     dependency_input.feature.canonical_id,
                     request.dependency,
-                    dependency_id
+                    request.canonical_id
                 );
             }
             if dependency_input.feature.options != request.options {
@@ -1185,6 +1205,10 @@ fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
 }
 
 impl OciFeatureRef {
+    fn canonical_repository(&self) -> String {
+        format!("{}/{}", self.registry, self.repository)
+    }
+
     fn repository_path(&self) -> String {
         format!("{}/{}", self.repository, self.feature_id)
     }
@@ -1279,6 +1303,7 @@ impl FeatureResolver<'_> {
             let instance_key = feature_instance_key(&feature, source, local_instance);
             return Ok(FeatureInstallInput {
                 feature,
+                reference,
                 metadata: source.metadata.clone(),
                 source_key,
                 instance_key,
@@ -1292,6 +1317,7 @@ impl FeatureResolver<'_> {
 
         Ok(FeatureInstallInput {
             feature,
+            reference,
             metadata,
             source_key,
             instance_key,
@@ -1517,12 +1543,42 @@ fn local_feature_entry_kind(metadata: &fs::Metadata) -> &'static [u8] {
     }
 }
 
-fn dependency_feature_ref(dependency: &str) -> String {
-    if dependency.starts_with("./") || parse_feature_ref(dependency).is_ok() {
-        dependency.to_owned()
-    } else {
-        format!("{dependency}:latest")
+struct FeatureDependencyTarget {
+    reference: String,
+    canonical_id: String,
+}
+
+fn dependency_feature_target(
+    parent: &FeatureRef,
+    dependency: &str,
+) -> Result<FeatureDependencyTarget> {
+    if dependency.starts_with("./") {
+        return Ok(FeatureDependencyTarget {
+            reference: dependency.to_owned(),
+            canonical_id: canonical_feature_dependency_id(dependency),
+        });
     }
+
+    if let Ok(reference) = parse_feature_ref(dependency) {
+        return Ok(FeatureDependencyTarget {
+            reference: dependency.to_owned(),
+            canonical_id: reference.canonical_id().to_owned(),
+        });
+    }
+
+    let FeatureRef::Oci(parent) = parent else {
+        bail!(
+            "Local Feature dependency {dependency} must use a relative ./ path or full OCI Feature ref"
+        );
+    };
+    let reference = format!("{}/{dependency}", parent.canonical_repository());
+    let parsed = parse_feature_ref(&reference)
+        .with_context(|| format!("Failed to resolve Feature dependency ref: {dependency}"))?;
+
+    Ok(FeatureDependencyTarget {
+        reference,
+        canonical_id: parsed.canonical_id().to_owned(),
+    })
 }
 
 fn feature_cache_archive_path(cache_root: &Path, digest: &str) -> PathBuf {
@@ -2596,6 +2652,25 @@ mod tests {
     }
 
     #[test]
+    fn feature_metadata_rejects_initialize_command_and_wait_for() {
+        let temp = tempfile::tempdir().unwrap();
+        let metadata_path = temp.path().join("devcontainer-feature.json");
+
+        for (property, content) in [
+            (
+                "initializeCommand",
+                r#"{"id":"tool","initializeCommand":"echo host"}"#,
+            ),
+            ("waitFor", r#"{"id":"tool","waitFor":"postCreateCommand"}"#),
+        ] {
+            fs::write(&metadata_path, content).unwrap();
+            let error = read_feature_metadata_document(&metadata_path).unwrap_err();
+
+            assert!(error.to_string().contains(property), "{error:#}");
+        }
+    }
+
+    #[test]
     fn lock_file_round_trip_is_deterministic() {
         let temp = tempfile::tempdir().unwrap();
         let path = temp.path().join(".decune/features.lock.toml");
@@ -2987,6 +3062,48 @@ mod tests {
         assert_eq!(
             plan[0].feature.options.get("version"),
             Some(&toml::Value::String("3".to_owned()))
+        );
+    }
+
+    #[test]
+    fn feature_install_order_resolves_oci_sibling_short_depends_on() {
+        let plan = resolve_feature_install_order(
+            vec![feature_install_input(
+                "ghcr.io/example/features/tool:1",
+                FeatureMetadata {
+                    depends_on: BTreeMap::from([(
+                        "base:1".to_owned(),
+                        serde_json::json!({
+                            "version": "1.2"
+                        }),
+                    )]),
+                    ..FeatureMetadata::default()
+                },
+            )],
+            &[],
+            |request| {
+                assert_eq!(request.dependency, "base:1");
+                assert_eq!(request.canonical_id, "ghcr.io/example/features/base");
+                Ok(feature_install_input(
+                    &request.reference,
+                    FeatureMetadata::default(),
+                ))
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/base:1",
+                "ghcr.io/example/features/tool:1",
+            ]
+        );
+        assert_eq!(
+            plan[0].feature.options.get("version"),
+            Some(&toml::Value::String("1.2".to_owned()))
         );
     }
 
@@ -3644,15 +3761,17 @@ printf '{"Username":"store-user","Secret":"store-token"}'
 
     fn feature_install_input(id: &str, metadata: FeatureMetadata) -> FeatureInstallInput {
         let reference = parse_feature_ref(id).unwrap();
+        let canonical_id = reference.canonical_id().to_owned();
         FeatureInstallInput {
             feature: crate::config::resolved::ResolvedFeature {
                 id: id.to_owned(),
-                canonical_id: reference.canonical_id().to_owned(),
+                canonical_id: canonical_id.clone(),
                 options: BTreeMap::new(),
             },
+            reference,
             metadata,
             source_key: id.to_owned(),
-            instance_key: format!("test\x1e{}", reference.canonical_id()),
+            instance_key: format!("test\x1e{canonical_id}"),
         }
     }
 

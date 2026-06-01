@@ -50,7 +50,8 @@ use crate::{
             PullPolicy, ensure_image,
             image_devcontainer_metadata_layers_if_present_with_forward_ports,
             image_devcontainer_metadata_layers_with_forward_ports,
-            image_has_devcontainer_metadata_label_if_present, remove_image, tag_image,
+            image_has_devcontainer_metadata_label_if_present, image_startup_command, remove_image,
+            tag_image,
         },
         mounts::{
             DockerMountSpec, config_mount_specs, devcontainer_mount_spec, normalize_container_path,
@@ -1320,8 +1321,15 @@ async fn build_feature_layer_image(
         .await?
         .unwrap_or_else(|| "root".to_owned());
     let install_env = feature_install_env(plan, &final_user);
+    let devcontainer_id = plan
+        .resources
+        .labels
+        .get("decune.workspace_id")
+        .cloned()
+        .context("Feature layer build requires a workspace id label")?;
     let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
         base_image: plan.base_image.clone(),
+        devcontainer_id,
         final_user,
         entrypoints: plan.config.devcontainer.entrypoints.clone(),
         install_env,
@@ -1432,24 +1440,23 @@ async fn create_and_start_container(
     }
 
     let has_feature_entrypoints = !plan.config.devcontainer.entrypoints.is_empty();
-    let (entrypoint, command) = if plan.config.devcontainer.override_command {
-        let (entrypoint, command) = devcontainer_keepalive_command();
-        if has_feature_entrypoints {
+    let (entrypoint, command) = if has_feature_entrypoints {
+        let command = if plan.config.devcontainer.override_command {
+            let (entrypoint, command) = devcontainer_keepalive_command();
             let mut wrapped_command = vec![entrypoint.join(" ")];
             wrapped_command.extend(command);
-            (
-                Some(vec![FEATURE_ENTRYPOINT_WRAPPER.to_owned()]),
-                Some(wrapped_command),
-            )
+            Some(wrapped_command)
         } else {
-            (Some(entrypoint), Some(command))
-        }
+            let startup = image_startup_command(client, &plan.image).await?;
+            let mut wrapped_command = startup.entrypoint;
+            wrapped_command.extend(startup.command);
+            (!wrapped_command.is_empty()).then_some(wrapped_command)
+        };
+        (Some(vec![FEATURE_ENTRYPOINT_WRAPPER.to_owned()]), command)
+    } else if plan.config.devcontainer.override_command {
+        let (entrypoint, command) = devcontainer_keepalive_command();
+        (Some(entrypoint), Some(command))
     } else {
-        if has_feature_entrypoints {
-            ui::warn(
-                "Feature entrypoint metadata is ignored when overrideCommand is false in decune v0.1",
-            );
-        }
         (None, None)
     };
     let spec = ContainerCreateSpec::from_resolved(ContainerCreateInput {
