@@ -525,3 +525,207 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
         std::panic::resume_unwind(payload);
     }
 }
+
+#[test]
+fn up_detach_runs_feature_lifecycle_before_user_lifecycle() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .create_dir(".devcontainer/features/alpha")
+        .unwrap();
+    workspace.create_dir(".devcontainer/features/beta").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "./features/alpha": {},
+                "./features/beta": {}
+              },
+              "postStartCommand": "printf 'user\n' >> /tmp/decune-lifecycle-order && test \"$(cat /tmp/decune-lifecycle-order)\" = \"alpha\nbeta\nuser\""
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/alpha/devcontainer-feature.json",
+            r#"
+            {
+              "id": "alpha",
+              "postStartCommand": "printf 'alpha\n' >> /tmp/decune-lifecycle-order"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(".devcontainer/features/alpha/install.sh", "set -eu\n")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/beta/devcontainer-feature.json",
+            r#"
+            {
+              "id": "beta",
+              "postStartCommand": "printf 'beta\n' >> /tmp/decune-lifecycle-order"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(".devcontainer/features/beta/install.sh", "set -eu\n")
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_runs_feature_entrypoint_before_lifecycle() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .create_dir(".devcontainer/features/entrypoint-tool")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "./features/entrypoint-tool": {}
+              },
+              "postStartCommand": "test -f /tmp/decune-feature-entrypoint"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/entrypoint-tool/devcontainer-feature.json",
+            r#"
+            {
+              "id": "entrypoint-tool",
+              "entrypoint": "touch /tmp/decune-feature-entrypoint"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/entrypoint-tool/install.sh",
+            "set -eu\n",
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+#[ignore = "requires public OCI registry access"]
+fn up_detach_starts_container_with_public_devcontainer_feature() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "ghcr.io/devcontainers/features/common-utils:2": {
+                  "installZsh": false,
+                  "upgradePackages": false
+                }
+              },
+              "postStartCommand": "test -d /usr/local/share/devcontainer-features"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}

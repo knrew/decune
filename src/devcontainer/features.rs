@@ -3,10 +3,12 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
+    env,
     fs::{self, OpenOptions},
-    io::{ErrorKind, Read, Seek, SeekFrom},
+    io::{ErrorKind, Read, Seek, SeekFrom, Write},
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
+    process::{Command as HostCommand, Stdio},
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -327,7 +329,7 @@ impl HttpOciRegistryClient {
         reference: &OciFeatureRef,
         request: RequestBuilder,
     ) -> Result<Response> {
-        let request = self.apply_registry_auth(reference, request);
+        let request = self.apply_registry_auth(reference, request)?;
         let response = request.send().with_context(|| {
             format!(
                 "Failed to send OCI registry request for feature {}",
@@ -393,7 +395,7 @@ impl HttpOciRegistryClient {
         {
             request = request.query(&[("scope", &scope)]);
         }
-        request = self.apply_registry_auth(reference, request);
+        request = self.apply_registry_auth(reference, request)?;
         let response = request.send().with_context(|| {
             format!(
                 "Failed to request OCI registry token for feature {}",
@@ -428,14 +430,14 @@ impl HttpOciRegistryClient {
         &self,
         reference: &OciFeatureRef,
         request: RequestBuilder,
-    ) -> RequestBuilder {
-        match self.auth.get(&reference.registry) {
+    ) -> Result<RequestBuilder> {
+        Ok(match self.auth.get(&reference.registry)? {
             Some(RegistryAuth::Basic { username, password }) => {
                 request.basic_auth(username, Some(password))
             }
-            Some(RegistryAuth::Bearer(token)) => self.apply_bearer_auth(reference, request, token),
+            Some(RegistryAuth::Bearer(token)) => self.apply_bearer_auth(reference, request, &token),
             None => request,
-        }
+        })
     }
 
     fn apply_bearer_auth(
@@ -459,21 +461,29 @@ pub(crate) struct DockerConfigAuth;
 
 impl DockerConfigAuth {
     pub(crate) fn from_config_file(path: &Path, registry: &str) -> Result<Option<RegistryAuth>> {
-        DockerConfigAuthStore::from_config_file(path).map(|store| store.get(registry).cloned())
+        DockerConfigAuthStore::from_config_file(path)?.get(registry)
     }
 }
 
 #[derive(Debug, Clone, Default)]
 struct DockerConfigAuthStore {
     entries: BTreeMap<String, RegistryAuth>,
+    cred_helpers: BTreeMap<String, String>,
+    creds_store: Option<String>,
+    helper_paths: Vec<PathBuf>,
 }
 
 impl DockerConfigAuthStore {
     fn from_default_config() -> Result<Self> {
-        let Some(home) = std::env::var_os("HOME").map(PathBuf::from) else {
-            return Ok(Self::default());
+        let path = match env::var_os("DOCKER_CONFIG").map(PathBuf::from) {
+            Some(config_dir) => config_dir.join("config.json"),
+            None => {
+                let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+                    return Ok(Self::default());
+                };
+                home.join(".docker").join("config.json")
+            }
         };
-        let path = home.join(".docker").join("config.json");
         if !path.exists() {
             return Ok(Self::default());
         }
@@ -482,29 +492,56 @@ impl DockerConfigAuthStore {
     }
 
     fn from_config_file(path: &Path) -> Result<Self> {
+        let helper_paths = env::var_os("PATH")
+            .map(|paths| env::split_paths(&paths).collect::<Vec<_>>())
+            .unwrap_or_default();
+        Self::from_config_file_with_helper_paths(path, &helper_paths)
+    }
+
+    fn from_config_file_with_helper_paths(path: &Path, helper_paths: &[PathBuf]) -> Result<Self> {
         let content = fs::read_to_string(path)
             .with_context(|| format!("Failed to read Docker config: {}", path.display()))?;
         let config: DockerConfigFile = serde_json::from_str(&content)
             .with_context(|| format!("Failed to parse Docker config: {}", path.display()))?;
         let mut entries = BTreeMap::new();
-        for (registry, entry) in config.auths {
+        for (registry, entry) in &config.auths {
             if let Some(auth) = entry.to_registry_auth().with_context(|| {
                 format!(
                     "Failed to parse Docker registry auth for {registry} in {}",
                     path.display()
                 )
             })? {
-                entries.insert(normalize_registry_auth_key(&registry), auth);
+                entries.insert(normalize_registry_auth_key(registry), auth);
             }
         }
 
-        Ok(Self { entries })
+        Ok(Self {
+            entries,
+            cred_helpers: config
+                .cred_helpers
+                .into_iter()
+                .map(|(registry, helper)| (normalize_registry_auth_key(&registry), helper))
+                .collect(),
+            creds_store: config.creds_store,
+            helper_paths: helper_paths.to_vec(),
+        })
     }
 
-    fn get(&self, registry: &str) -> Option<&RegistryAuth> {
-        self.entries
-            .get(&normalize_registry_auth_key(registry))
-            .or_else(|| self.entries.get(registry))
+    fn get(&self, registry: &str) -> Result<Option<RegistryAuth>> {
+        let registry = normalize_registry_auth_key(registry);
+        if let Some(auth) = docker_config_helper_auth(
+            &self.cred_helpers,
+            self.creds_store.as_deref(),
+            &registry,
+            &self.helper_paths,
+        )
+        .with_context(|| {
+            format!("Failed to read Docker registry credential helper auth for {registry}")
+        })? {
+            return Ok(Some(auth));
+        }
+
+        Ok(self.entries.get(&registry).cloned())
     }
 }
 
@@ -883,8 +920,15 @@ pub(crate) fn prepare_feature_install_plan(
         .values()
         .filter_map(|source| source.lock_file_entry.clone())
         .collect::<Vec<_>>();
-    lock_file_entries.sort_by(|left, right| left.id.cmp(&right.id));
-    lock_file_entries.dedup_by(|left, right| left.id == right.id);
+    lock_file_entries.sort_by(|left, right| {
+        left.id
+            .cmp(&right.id)
+            .then_with(|| left.reference.cmp(&right.reference))
+            .then_with(|| left.digest.cmp(&right.digest))
+    });
+    lock_file_entries.dedup_by(|left, right| {
+        left.id == right.id && left.reference == right.reference && left.digest == right.digest
+    });
     if !lock_file_entries.is_empty() {
         write_feature_lock_file(
             &lock_path,
@@ -2134,6 +2178,10 @@ struct RegistryDescriptor {
 struct DockerConfigFile {
     #[serde(default)]
     auths: BTreeMap<String, DockerAuthEntry>,
+    #[serde(default, rename = "credHelpers")]
+    cred_helpers: BTreeMap<String, String>,
+    #[serde(default, rename = "credsStore")]
+    creds_store: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -2142,6 +2190,13 @@ struct DockerAuthEntry {
     username: Option<String>,
     password: Option<String>,
     identitytoken: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct DockerCredentialHelperGetResponse {
+    username: Option<String>,
+    secret: Option<String>,
 }
 
 impl DockerAuthEntry {
@@ -2172,6 +2227,117 @@ impl DockerAuthEntry {
 
         Ok(None)
     }
+}
+
+fn docker_config_helper_auth(
+    cred_helpers: &BTreeMap<String, String>,
+    creds_store: Option<&str>,
+    registry: &str,
+    helper_paths: &[PathBuf],
+) -> Result<Option<RegistryAuth>> {
+    let helper = cred_helpers
+        .get(registry)
+        .map(String::as_str)
+        .or(creds_store);
+    let Some(helper) = helper else {
+        return Ok(None);
+    };
+    let Some(binary) = docker_credential_helper_binary(helper, helper_paths) else {
+        return Ok(None);
+    };
+    let Some(output) = run_docker_credential_helper_get(&binary, registry)? else {
+        return Ok(None);
+    };
+    let Some(secret) = output.secret else {
+        return Ok(None);
+    };
+    let username = output.username.unwrap_or_default();
+    if username == "<token>" {
+        Ok(Some(RegistryAuth::Bearer(secret)))
+    } else {
+        Ok(Some(RegistryAuth::Basic {
+            username,
+            password: secret,
+        }))
+    }
+}
+
+fn docker_credential_helper_binary(helper: &str, helper_paths: &[PathBuf]) -> Option<PathBuf> {
+    let binary = format!("docker-credential-{helper}");
+    helper_paths
+        .iter()
+        .map(|path| path.join(&binary))
+        .find(|path| path.is_file())
+}
+
+fn run_docker_credential_helper_get(
+    binary: &Path,
+    registry: &str,
+) -> Result<Option<DockerCredentialHelperGetResponse>> {
+    let mut child = HostCommand::new(binary)
+        .arg("get")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .with_context(|| {
+            format!(
+                "Failed to spawn Docker credential helper: {}",
+                binary.display()
+            )
+        })?;
+    child
+        .stdin
+        .as_mut()
+        .context("Docker credential helper stdin was not available")?
+        .write_all(registry.as_bytes())
+        .with_context(|| {
+            format!(
+                "Failed to write registry to Docker credential helper: {}",
+                binary.display()
+            )
+        })?;
+    let output = child.wait_with_output().with_context(|| {
+        format!(
+            "Failed to wait for Docker credential helper: {}",
+            binary.display()
+        )
+    })?;
+    if !output.status.success() {
+        let message = docker_credential_helper_error_message(&output);
+        if docker_credential_helper_credentials_not_found(&message) {
+            return Ok(None);
+        }
+        bail!(
+            "Docker credential helper failed for {registry}: {}",
+            message
+        );
+    }
+
+    serde_json::from_slice(&output.stdout)
+        .map(Some)
+        .with_context(|| {
+            format!(
+                "Failed to parse Docker credential helper output: {}",
+                binary.display()
+            )
+        })
+}
+
+fn docker_credential_helper_error_message(output: &std::process::Output) -> String {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    [stdout.trim(), stderr.trim()]
+        .into_iter()
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>()
+        .join(": ")
+}
+
+fn docker_credential_helper_credentials_not_found(message: &str) -> bool {
+    message
+        .to_ascii_lowercase()
+        .contains("credentials not found")
 }
 
 #[derive(Debug, Default)]
@@ -2456,6 +2622,58 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(read_feature_lock_file(&path).unwrap(), lock.sorted());
+    }
+
+    #[test]
+    fn prepared_plan_lock_file_preserves_same_feature_id_with_distinct_digests() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let cache_root = temp.path().join("cache");
+        let extract_root = temp.path().join("extract");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&cache_root).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        let first_digest =
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let second_digest =
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        write_cached_feature_archive_for_manifest(&cache_root, first_digest, "tool-one");
+        write_cached_feature_archive_for_manifest(&cache_root, second_digest, "tool-two");
+
+        let plan = prepare_feature_install_plan(
+            &[
+                ResolvedFeature {
+                    id: format!("ghcr.io/example/features/tool@{first_digest}"),
+                    canonical_id: "ghcr.io/example/features/tool".to_owned(),
+                    options: BTreeMap::new(),
+                },
+                ResolvedFeature {
+                    id: format!("ghcr.io/example/features/tool@{second_digest}"),
+                    canonical_id: "ghcr.io/example/features/tool".to_owned(),
+                    options: BTreeMap::new(),
+                },
+            ],
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &extract_root,
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        let lock =
+            read_feature_lock_file(&workspace_root.join(".decune/features.lock.toml")).unwrap();
+
+        assert_eq!(plan.entries.len(), 2);
+        assert_eq!(
+            lock.features
+                .iter()
+                .map(|entry| entry.digest.as_str())
+                .collect::<Vec<_>>(),
+            vec![first_digest, second_digest]
+        );
     }
 
     #[test]
@@ -3115,6 +3333,176 @@ mod tests {
     }
 
     #[test]
+    fn docker_config_auth_uses_registry_credential_helper_before_inline_auth() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-fake");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf '{"Username":"helper-user","Secret":"helper-token"}'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credHelpers": {
+                    "ghcr.io": "fake"
+                },
+                "auths": {
+                    "ghcr.io": {
+                        "auth": "aW5saW5lOnRva2Vu"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(
+            store.get("ghcr.io").unwrap(),
+            Some(RegistryAuth::Basic {
+                username: "helper-user".to_owned(),
+                password: "helper-token".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn docker_config_auth_falls_back_to_inline_auth_when_helper_has_no_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-fake");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf 'credentials not found in native keychain'
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credHelpers": {
+                    "ghcr.io": "fake"
+                },
+                "auths": {
+                    "ghcr.io": {
+                        "auth": "aW5saW5lOnRva2Vu"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(
+            store.get("ghcr.io").unwrap(),
+            Some(RegistryAuth::Basic {
+                username: "inline".to_owned(),
+                password: "token".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn docker_config_auth_treats_missing_helper_credentials_as_no_auth() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-fake");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf 'credentials not found in native keychain'
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credsStore": "fake"
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(store.get("ghcr.io").unwrap(), None);
+    }
+
+    #[test]
+    fn docker_config_auth_uses_default_credential_store_when_registry_helper_is_absent() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-store");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf '{"Username":"store-user","Secret":"store-token"}'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credsStore": "store"
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(
+            store.get("ghcr.io").unwrap(),
+            Some(RegistryAuth::Basic {
+                username: "store-user".to_owned(),
+                password: "store-token".to_owned(),
+            })
+        );
+    }
+
+    #[test]
     #[ignore = "requires public OCI registry access"]
     fn pulls_public_devcontainer_feature_from_ghcr() {
         let temp = tempfile::tempdir().unwrap();
@@ -3182,6 +3570,34 @@ mod tests {
         let encoder = builder.into_inner().unwrap();
         let mut file = encoder.finish().unwrap();
         file.flush().unwrap();
+    }
+
+    fn write_cached_feature_archive_for_manifest(
+        cache_root: &Path,
+        manifest_digest: &str,
+        id: &str,
+    ) {
+        let temp = tempfile::tempdir().unwrap();
+        let archive = temp.path().join("feature.tgz");
+        let metadata = format!(r#"{{"id":"{id}"}}"#);
+        write_feature_archive(
+            &archive,
+            &[
+                ("install.sh", b"#!/bin/sh\n".as_slice()),
+                ("devcontainer-feature.json", metadata.as_bytes()),
+            ],
+        );
+        let blob = fs::read(&archive).unwrap();
+        let layer_digest = format!("sha256:{}", hex_lower(&Sha256::digest(&blob)));
+        write_cache_archive(
+            &feature_cache_archive_path(cache_root, manifest_digest),
+            &blob,
+            &FeatureCacheMetadata {
+                manifest_digest: manifest_digest.to_owned(),
+                layer_digest,
+            },
+        )
+        .unwrap();
     }
 
     fn sha256_digest(hex: &str) -> String {

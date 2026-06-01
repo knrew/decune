@@ -21,6 +21,11 @@ use crate::{
 };
 
 const TAR_BLOCK_SIZE: usize = 512;
+pub(crate) const FEATURE_ENTRYPOINT_WRAPPER: &str =
+    "/usr/local/share/decune/feature-entrypoint-wrapper.sh";
+const FEATURE_ENTRYPOINTS_FILE: &str = "decune-feature-entrypoints";
+const FEATURE_ENTRYPOINT_WRAPPER_FILE: &str = "decune-feature-entrypoint-wrapper.sh";
+const FEATURE_ENTRYPOINTS_TARGET: &str = "/usr/local/share/decune/feature-entrypoints";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DockerBuildInput {
@@ -51,6 +56,7 @@ pub(crate) struct ResolvedBuildContext {
 pub(crate) struct FeatureLayerBuildInput {
     pub(crate) base_image: String,
     pub(crate) final_user: String,
+    pub(crate) entrypoints: Vec<String>,
     pub(crate) install_env: BTreeMap<String, String>,
     pub(crate) context_dir: PathBuf,
     pub(crate) features: Vec<FeatureLayerBuildFeature>,
@@ -190,6 +196,24 @@ pub(crate) fn prepare_feature_layer_build_context(
         format!(
             "Failed to write Feature layer install script: {}",
             install_script_path.display()
+        )
+    })?;
+    let entrypoints_path = input.context_dir.join(FEATURE_ENTRYPOINTS_FILE);
+    fs::write(
+        &entrypoints_path,
+        feature_entrypoints_file(&input.entrypoints)?,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to write Feature entrypoints file: {}",
+            entrypoints_path.display()
+        )
+    })?;
+    let wrapper_path = input.context_dir.join(FEATURE_ENTRYPOINT_WRAPPER_FILE);
+    fs::write(&wrapper_path, feature_entrypoint_wrapper()).with_context(|| {
+        format!(
+            "Failed to write Feature entrypoint wrapper: {}",
+            wrapper_path.display()
         )
     })?;
 
@@ -354,7 +378,7 @@ fn resolve_path(base: &Path, value: &str) -> PathBuf {
 fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
     let final_user = dockerfile_user(&input.final_user)?;
     Ok(format!(
-        "FROM {}\nUSER root\nCOPY . /tmp/decune-features/\nRUN /bin/sh /tmp/decune-features/install-features.sh\nUSER {final_user}\n",
+        "FROM {}\nUSER root\nRUN mkdir -p /usr/local/share/decune\nCOPY {FEATURE_ENTRYPOINT_WRAPPER_FILE} {FEATURE_ENTRYPOINT_WRAPPER}\nCOPY {FEATURE_ENTRYPOINTS_FILE} {FEATURE_ENTRYPOINTS_TARGET}\nRUN chmod +x {FEATURE_ENTRYPOINT_WRAPPER}\nCOPY . /tmp/decune-features/\nRUN /bin/sh /tmp/decune-features/install-features.sh\nUSER {final_user}\n",
         input.base_image
     ))
 }
@@ -397,6 +421,35 @@ fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String
     }
     script.push_str("rm -rf /tmp/decune-features\n");
     Ok(script)
+}
+
+fn feature_entrypoints_file(entrypoints: &[String]) -> Result<String> {
+    let mut output = String::new();
+    for entrypoint in entrypoints {
+        if entrypoint
+            .chars()
+            .any(|character| character == '\0' || character == '\n' || character == '\r')
+        {
+            bail!("Feature entrypoint contains unsupported control characters");
+        }
+        output.push_str(entrypoint);
+        output.push('\n');
+    }
+    Ok(output)
+}
+
+fn feature_entrypoint_wrapper() -> &'static str {
+    r#"#!/bin/sh
+set -eu
+if [ -f /usr/local/share/decune/feature-entrypoints ]; then
+    while IFS= read -r entrypoint; do
+        if [ -n "$entrypoint" ]; then
+            /bin/sh -c "$entrypoint"
+        fi
+    done </usr/local/share/decune/feature-entrypoints
+fi
+exec "$@"
+"#
 }
 
 fn dockerfile_user(user: &str) -> Result<&str> {
@@ -853,9 +906,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        DockerBuildInput, DockerBuildOptions, FeatureLayerBuildFeature, FeatureLayerBuildInput,
-        build_image_options, create_build_context_tar, prepare_feature_layer_build_context,
-        resolve_build_context, tar_contains_path,
+        DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_WRAPPER, FEATURE_ENTRYPOINTS_FILE,
+        FeatureLayerBuildFeature, FeatureLayerBuildInput, build_image_options,
+        create_build_context_tar, prepare_feature_layer_build_context, resolve_build_context,
+        tar_contains_path,
     };
 
     #[test]
@@ -1077,6 +1131,7 @@ mod tests {
         let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
             base_image: "alpine:3.20".to_owned(),
             final_user: "vscode".to_owned(),
+            entrypoints: vec!["touch /tmp/feature-entrypoint".to_owned()],
             install_env: BTreeMap::new(),
             context_dir,
             features: vec![FeatureLayerBuildFeature {
@@ -1092,6 +1147,8 @@ mod tests {
         let dockerfile = fs::read_to_string(context.dockerfile_path).unwrap();
         let install_script =
             fs::read_to_string(context.context_dir.join("install-features.sh")).unwrap();
+        let entrypoints =
+            fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINTS_FILE)).unwrap();
 
         assert!(tar_contains_path(
             &tar,
@@ -1103,10 +1160,12 @@ mod tests {
         ));
         assert!(dockerfile.contains("FROM alpine:3.20"));
         assert!(dockerfile.contains("/bin/sh /tmp/decune-features/install-features.sh"));
+        assert!(dockerfile.contains(FEATURE_ENTRYPOINT_WRAPPER));
         assert!(dockerfile.contains("USER vscode"));
         assert!(install_script.contains("./install.sh"));
         assert!(!install_script.contains("/bin/sh ./install.sh"));
         assert!(install_script.contains("rm -rf /tmp/decune-features"));
+        assert_eq!(entrypoints, "touch /tmp/feature-entrypoint\n");
         assert_eq!(
             fs::read_to_string(
                 context

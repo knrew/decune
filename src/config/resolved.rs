@@ -119,6 +119,7 @@ pub(crate) struct ResolvedDevcontainer {
     pub(crate) privileged: bool,
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
+    pub(crate) entrypoints: Vec<String>,
     pub(crate) lifecycle: Option<crate::devcontainer::lifecycle::LifecycleDefinition>,
 }
 
@@ -145,6 +146,7 @@ impl Default for ResolvedDevcontainer {
             privileged: false,
             cap_add: Vec::new(),
             security_opt: Vec::new(),
+            entrypoints: Vec::new(),
             lifecycle: None,
         }
     }

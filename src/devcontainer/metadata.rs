@@ -67,6 +67,7 @@ pub(crate) struct DevcontainerMetadata {
     privileged: Option<bool>,
     cap_add: Vec<String>,
     security_opt: Vec<String>,
+    entrypoints: Vec<String>,
     lifecycle: BTreeMap<LifecycleProperty, Value>,
     customizations: Option<Value>,
     unsupported_properties: BTreeMap<String, Value>,
@@ -283,6 +284,7 @@ impl DevcontainerMetadata {
             privileged: self.privileged,
             cap_add: self.cap_add.clone(),
             security_opt: self.security_opt.clone(),
+            entrypoints: self.entrypoints.clone(),
             lifecycle: parse_lifecycle_layer_definition(&self.lifecycle)?,
         })
     }
@@ -454,6 +456,7 @@ struct RawDevcontainerMetadata {
     cap_add: Vec<String>,
     #[serde(default, rename = "securityOpt")]
     security_opt: Vec<String>,
+    entrypoint: Option<String>,
     initialize_command: Option<Value>,
     on_create_command: Option<Value>,
     update_content_command: Option<Value>,
@@ -524,6 +527,7 @@ impl RawDevcontainerMetadata {
             privileged: self.privileged,
             cap_add: self.cap_add,
             security_opt: self.security_opt,
+            entrypoints: self.entrypoint.into_iter().collect(),
             lifecycle,
             customizations: self.customizations,
             unsupported_properties: self.unsupported_properties,
@@ -1288,6 +1292,7 @@ mod tests {
             "privileged": true,
             "capAdd": ["SYS_PTRACE"],
             "securityOpt": ["seccomp=unconfined"],
+            "entrypoint": "/usr/local/share/feature/start.sh",
             "postCreateCommand": "echo ready",
             "waitFor": "postCreateCommand"
         }))
@@ -1341,6 +1346,10 @@ mod tests {
         assert!(config.devcontainer.privileged);
         assert_eq!(config.devcontainer.cap_add, vec!["SYS_PTRACE"]);
         assert_eq!(config.devcontainer.security_opt, vec!["seccomp=unconfined"]);
+        assert_eq!(
+            config.devcontainer.entrypoints,
+            vec!["/usr/local/share/feature/start.sh"]
+        );
         assert!(config.devcontainer.lifecycle.is_some());
     }
 

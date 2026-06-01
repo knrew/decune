@@ -426,6 +426,11 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
                 writer.string(option);
             });
         });
+        writer.field("entrypoints", |writer| {
+            writer.seq(devcontainer.entrypoints.iter(), |writer, entrypoint| {
+                writer.string(entrypoint);
+            });
+        });
         writer.field("lifecycle", |writer| match &devcontainer.lifecycle {
             Some(lifecycle) => write_lifecycle(writer, lifecycle),
             None => writer.none(),
@@ -528,9 +533,13 @@ fn write_lifecycle(writer: &mut CanonicalWriter, lifecycle: &LifecycleDefinition
             LifecycleStage::PostAttach,
         ] {
             writer.field(lifecycle_stage_name(stage), |writer| {
-                match lifecycle.command(stage) {
-                    Some(command) => write_lifecycle_command(writer, command),
-                    None => writer.none(),
+                let commands = lifecycle.commands(stage);
+                if commands.is_empty() {
+                    writer.none();
+                } else {
+                    writer.seq(commands.iter(), |writer, command| {
+                        write_lifecycle_command(writer, command);
+                    });
                 }
             });
         }
