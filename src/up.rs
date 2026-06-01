@@ -9,12 +9,17 @@ use bollard::models::{ContainerSummary, MountBindOptions, MountVolumeOptions};
 
 use crate::{
     config::{
-        ConfigHashInput, ConfigLayer, ConfigMergeInput, MountBindOptionsHashInput, MountHashInput,
-        MountVolumeDriverConfigHashInput, MountVolumeOptionsHashInput, config_hash,
-        layer::LayerDevcontainerMount, load::load_config_file, resolve_config,
-        resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource, types::MountType,
+        ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry,
+        MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
+        MountVolumeOptionsHashInput, config_hash, layer::LayerDevcontainerMount,
+        load::load_config_file, resolve_config, resolved::ResolvedConfig,
+        resolved::ResolvedDevcontainerSource, types::MountType,
     },
     devcontainer::{
+        features::{
+            FeatureRef, parse_feature_ref_from_devcontainer_dir, read_feature_lock_file,
+            resolve_locked_feature_ref,
+        },
         json::DevcontainerJson,
         lifecycle::{
             LifecycleRunContext, LifecycleRunPath, PreparedLifecycleRunContext,
@@ -90,6 +95,21 @@ enum ForwardingResolution {
     IgnoreDetached,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct UpPlanResolution {
+    forwarding: ForwardingResolution,
+    update_features: bool,
+}
+
+impl UpPlanResolution {
+    fn new(forwarding: ForwardingResolution, update_features: bool) -> Self {
+        Self {
+            forwarding,
+            update_features,
+        }
+    }
+}
+
 struct WorkspaceLocation {
     workspace_folder: String,
     workspace_mount: DockerMountSpec,
@@ -142,6 +162,7 @@ pub(crate) struct UpOptions {
     pub(crate) pull: bool,
     pub(crate) rebuild: bool,
     pub(crate) no_cache: bool,
+    pub(crate) update_features: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -355,7 +376,25 @@ pub(crate) fn build_up_plan(
         Vec::new(),
         false,
         MountResolution::Resolve,
-        ForwardingResolution::Resolve,
+        UpPlanResolution::new(ForwardingResolution::Resolve, false),
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn build_up_plan_with_update_features(
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    update_features: bool,
+) -> Result<UpPlan> {
+    build_up_plan_inner(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        Vec::new(),
+        false,
+        MountResolution::Resolve,
+        UpPlanResolution::new(ForwardingResolution::Resolve, update_features),
     )
 }
 
@@ -373,7 +412,7 @@ pub(crate) fn build_up_plan_with_image_metadata(
         image_metadata,
         false,
         MountResolution::Resolve,
-        ForwardingResolution::Resolve,
+        UpPlanResolution::new(ForwardingResolution::Resolve, false),
     )
 }
 
@@ -382,6 +421,7 @@ fn build_preliminary_up_plan_with_forwarding_resolution(
     explicit_config_path: Option<&Path>,
     cli_layer: ConfigLayer,
     forwarding_resolution: ForwardingResolution,
+    update_features: bool,
 ) -> Result<UpPlan> {
     build_up_plan_inner(
         workspace,
@@ -390,7 +430,7 @@ fn build_preliminary_up_plan_with_forwarding_resolution(
         Vec::new(),
         false,
         MountResolution::DeferConfigMounts,
-        forwarding_resolution,
+        UpPlanResolution::new(forwarding_resolution, update_features),
     )
 }
 
@@ -399,6 +439,7 @@ fn build_up_plan_with_forwarding_resolution(
     explicit_config_path: Option<&Path>,
     cli_layer: ConfigLayer,
     forwarding_resolution: ForwardingResolution,
+    update_features: bool,
 ) -> Result<UpPlan> {
     build_up_plan_inner(
         workspace,
@@ -407,7 +448,7 @@ fn build_up_plan_with_forwarding_resolution(
         Vec::new(),
         false,
         MountResolution::Resolve,
-        forwarding_resolution,
+        UpPlanResolution::new(forwarding_resolution, update_features),
     )
 }
 
@@ -418,6 +459,7 @@ fn build_up_plan_with_image_metadata_and_forwarding_resolution(
     image_metadata: Vec<ConfigLayer>,
     ignored_image_metadata_forwarding: bool,
     forwarding_resolution: ForwardingResolution,
+    update_features: bool,
 ) -> Result<UpPlan> {
     build_up_plan_inner(
         workspace,
@@ -426,7 +468,7 @@ fn build_up_plan_with_image_metadata_and_forwarding_resolution(
         image_metadata,
         ignored_image_metadata_forwarding,
         MountResolution::Resolve,
-        forwarding_resolution,
+        UpPlanResolution::new(forwarding_resolution, update_features),
     )
 }
 
@@ -437,11 +479,11 @@ fn build_up_plan_inner(
     image_metadata: Vec<ConfigLayer>,
     ignored_image_metadata_forwarding: bool,
     mount_resolution: MountResolution,
-    forwarding_resolution: ForwardingResolution,
+    resolution: UpPlanResolution,
 ) -> Result<UpPlan> {
     let devcontainer_json = DevcontainerJson::load(workspace.root(), explicit_config_path)?;
     let metadata = parse_metadata(devcontainer_json.value().clone())?;
-    let devcontainer_layer = match forwarding_resolution {
+    let devcontainer_layer = match resolution.forwarding {
         ForwardingResolution::Resolve => metadata.to_config_layer()?,
         ForwardingResolution::IgnoreDetached => metadata.to_config_layer_without_forward_ports()?,
     };
@@ -478,6 +520,12 @@ fn build_up_plan_inner(
     if let Some(context) = &build_context {
         hash_input.build = Some(build_hash_input(context)?);
     }
+    hash_input.feature_locks = feature_lock_hash_inputs(
+        workspace,
+        devcontainer_json.path(),
+        &config,
+        resolution.update_features,
+    )?;
     if mount_resolution == MountResolution::Resolve {
         hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     }
@@ -488,11 +536,11 @@ fn build_up_plan_inner(
         devcontainer_json.path().display().to_string(),
     );
     let image = image_source(&config, &resources)?;
-    let forward_ports = match forwarding_resolution {
+    let forward_ports = match resolution.forwarding {
         ForwardingResolution::Resolve => resolve_forward_ports(&config.ports.entries)?,
         ForwardingResolution::IgnoreDetached => Vec::new(),
     };
-    let ignored_detached_forwarding = forwarding_resolution == ForwardingResolution::IgnoreDetached
+    let ignored_detached_forwarding = resolution.forwarding == ForwardingResolution::IgnoreDetached
         && (ignored_image_metadata_forwarding
             || !metadata.forward_ports().is_empty()
             || !config.ports.entries.is_empty());
@@ -508,6 +556,56 @@ fn build_up_plan_inner(
         forward_ports,
         ignored_detached_forwarding,
     })
+}
+
+fn feature_lock_hash_inputs(
+    workspace: &Workspace,
+    devcontainer_file: &Path,
+    config: &ResolvedConfig,
+    update_features: bool,
+) -> Result<Vec<FeatureLockHashEntry>> {
+    if config.features.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let devcontainer_dir = devcontainer_file.parent().with_context(|| {
+        format!(
+            "Failed to resolve devcontainer directory for {}",
+            devcontainer_file.display()
+        )
+    })?;
+    let references = config
+        .features
+        .iter()
+        .map(|feature| {
+            parse_feature_ref_from_devcontainer_dir(&feature.id, devcontainer_dir)
+                .with_context(|| format!("Failed to parse Feature ref: {}", feature.id))
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    if update_features {
+        return Ok(Vec::new());
+    }
+
+    let lock_path = workspace.root().join(".decune").join("features.lock.toml");
+    let lock = read_feature_lock_file(&lock_path)?;
+    let mut entries = Vec::new();
+
+    for reference in references {
+        let _resolved = resolve_locked_feature_ref(&reference, &lock, false);
+        let canonical_id = reference.canonical_id().to_owned();
+
+        if matches!(reference, FeatureRef::Oci(_))
+            && let Some(digest) = lock.digest_for(&canonical_id)
+        {
+            entries.push(FeatureLockHashEntry {
+                feature_id: canonical_id,
+                digest: digest.to_owned(),
+            });
+        }
+    }
+
+    Ok(entries)
 }
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
@@ -565,7 +663,9 @@ async fn ensure_container_started(
         options.config_path.as_deref(),
         options.cli_layer.clone(),
         forwarding_resolution,
+        options.update_features,
     )?;
+    let plan_resolution = UpPlanResolution::new(forwarding_resolution, options.update_features);
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
 
     let client = DockerClient::connect_from_env()?;
@@ -579,7 +679,7 @@ async fn ensure_container_started(
             options.cli_layer.clone(),
             containers.first().and_then(existing_container_image_id),
             &preliminary_plan,
-            forwarding_resolution,
+            plan_resolution,
         )
         .await?;
         let (existing_plan, _) = finalize_up_plan_mounts(
@@ -588,6 +688,7 @@ async fn ensure_container_started(
             existing_plan,
             containers.first().and_then(existing_container_image_id),
             None,
+            options.update_features,
         )
         .await?;
         let (existing_plan, credentials) =
@@ -643,7 +744,7 @@ async fn ensure_container_started(
         options.cli_layer,
         preliminary_plan,
         options.pull,
-        forwarding_resolution,
+        plan_resolution,
     )
     .await?;
     let (plan, mount_image_prepared) = finalize_up_plan_mounts(
@@ -652,6 +753,7 @@ async fn ensure_container_started(
         plan,
         None,
         Some((options.pull, options.no_cache)),
+        options.update_features,
     )
     .await?;
     let (plan, credentials) = add_credential_runtime_mounts(plan, workspace.paths().runtime_dir())?;
@@ -831,7 +933,7 @@ async fn build_existing_container_decision_plan(
     cli_layer: ConfigLayer,
     existing_container_image_id: Option<&str>,
     preliminary_plan: &UpPlan,
-    forwarding_resolution: ForwardingResolution,
+    resolution: UpPlanResolution,
 ) -> Result<UpPlan> {
     if preliminary_plan.build_context.is_some() {
         let image = existing_container_image_id.unwrap_or(&preliminary_plan.image);
@@ -840,11 +942,12 @@ async fn build_existing_container_decision_plan(
             workspace,
             explicit_config_path,
             cli_layer,
-            forwarding_resolution,
+            resolution.forwarding,
+            resolution.update_features,
         );
     }
 
-    let include_forward_ports = forwarding_resolution == ForwardingResolution::Resolve;
+    let include_forward_ports = resolution.forwarding == ForwardingResolution::Resolve;
     let image_metadata = match image_devcontainer_metadata_layers_if_present_with_forward_ports(
         client,
         &preliminary_plan.image,
@@ -859,7 +962,8 @@ async fn build_existing_container_decision_plan(
                     workspace,
                     explicit_config_path,
                     cli_layer,
-                    forwarding_resolution,
+                    resolution.forwarding,
+                    resolution.update_features,
                 );
             };
             let Some(image_metadata) =
@@ -874,7 +978,8 @@ async fn build_existing_container_decision_plan(
                     workspace,
                     explicit_config_path,
                     cli_layer,
-                    forwarding_resolution,
+                    resolution.forwarding,
+                    resolution.update_features,
                 );
             };
             image_metadata
@@ -886,7 +991,8 @@ async fn build_existing_container_decision_plan(
             workspace,
             explicit_config_path,
             cli_layer,
-            forwarding_resolution,
+            resolution.forwarding,
+            resolution.update_features,
         );
     }
 
@@ -896,7 +1002,8 @@ async fn build_existing_container_decision_plan(
         cli_layer,
         image_metadata.layers,
         !include_forward_ports && image_metadata.has_forward_ports,
-        forwarding_resolution,
+        resolution.forwarding,
+        resolution.update_features,
     )
 }
 
@@ -907,7 +1014,7 @@ async fn prepare_image_based_metadata(
     cli_layer: ConfigLayer,
     preliminary_plan: UpPlan,
     pull: bool,
-    forwarding_resolution: ForwardingResolution,
+    resolution: UpPlanResolution,
 ) -> Result<(UpPlan, bool)> {
     if preliminary_plan.build_context.is_some() {
         return Ok((
@@ -915,7 +1022,8 @@ async fn prepare_image_based_metadata(
                 workspace,
                 explicit_config_path,
                 cli_layer,
-                forwarding_resolution,
+                resolution.forwarding,
+                resolution.update_features,
             )?,
             false,
         ));
@@ -931,7 +1039,7 @@ async fn prepare_image_based_metadata(
         },
     )
     .await?;
-    let include_forward_ports = forwarding_resolution == ForwardingResolution::Resolve;
+    let include_forward_ports = resolution.forwarding == ForwardingResolution::Resolve;
     let image_metadata = image_devcontainer_metadata_layers_with_forward_ports(
         client,
         &preliminary_plan.image,
@@ -944,7 +1052,8 @@ async fn prepare_image_based_metadata(
                 workspace,
                 explicit_config_path,
                 cli_layer,
-                forwarding_resolution,
+                resolution.forwarding,
+                resolution.update_features,
             )?,
             true,
         ));
@@ -956,7 +1065,8 @@ async fn prepare_image_based_metadata(
         cli_layer,
         image_metadata.layers,
         !include_forward_ports && image_metadata.has_forward_ports,
-        forwarding_resolution,
+        resolution.forwarding,
+        resolution.update_features,
     )?;
 
     Ok((plan, true))
@@ -968,6 +1078,7 @@ async fn finalize_up_plan_mounts(
     mut plan: UpPlan,
     remote_user_image: Option<&str>,
     build_for_lookup: Option<(bool, bool)>,
+    update_features: bool,
 ) -> Result<(UpPlan, bool)> {
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
     let mut image_prepared = false;
@@ -1033,6 +1144,9 @@ async fn finalize_up_plan_mounts(
     if let Some(context) = &plan.build_context {
         hash_input.build = Some(build_hash_input(context)?);
     }
+    let devcontainer_file = Path::new(&plan.resources.labels["devcontainer.config_file"]);
+    hash_input.feature_locks =
+        feature_lock_hash_inputs(workspace, devcontainer_file, &plan.config, update_features)?;
     hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
@@ -1843,9 +1957,10 @@ mod tests {
         ForwardingResolution, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
         add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
         build_up_plan, build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
-        container_summary, create_and_start_container, decide_existing_container,
-        default_workspace_folder, first_successful_shell_candidate, list_workspace_containers,
-        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
+        build_up_plan_with_update_features, container_summary, create_and_start_container,
+        decide_existing_container, default_workspace_folder, first_successful_shell_candidate,
+        list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
+        shell_command_candidates,
     };
 
     #[test]
@@ -2582,6 +2697,101 @@ mod tests {
     }
 
     #[test]
+    fn build_up_plan_includes_feature_lock_digest_in_config_hash() {
+        let workspace = test_workspace("feature-lock-hash");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "ghcr.io/example/features/tool:1": {}
+              }
+            }
+            "#,
+        );
+        let baseline = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/features.lock.toml"),
+            r#"
+version = 1
+
+[[features]]
+id = "ghcr.io/example/features/tool"
+ref = "ghcr.io/example/features/tool:1"
+digest = "sha256:locked"
+"#,
+        )
+        .unwrap();
+
+        let locked = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_ne!(baseline.resources.config_hash, locked.resources.config_hash);
+    }
+
+    #[test]
+    fn build_up_plan_ignores_feature_lock_digest_when_features_are_updated() {
+        let workspace = test_workspace("feature-lock-update-hash");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "ghcr.io/example/features/tool:1": {}
+              }
+            }
+            "#,
+        );
+        let baseline = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/features.lock.toml"),
+            r#"
+version = 1
+
+[[features]]
+id = "ghcr.io/example/features/tool"
+ref = "ghcr.io/example/features/tool:1"
+digest = "sha256:locked"
+"#,
+        )
+        .unwrap();
+
+        let locked = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        let updated =
+            build_up_plan_with_update_features(&workspace, None, ConfigLayer::default(), true)
+                .unwrap();
+
+        assert_ne!(baseline.resources.config_hash, locked.resources.config_hash);
+        assert_eq!(
+            baseline.resources.config_hash,
+            updated.resources.config_hash
+        );
+    }
+
+    #[test]
+    fn build_up_plan_rejects_invalid_feature_ref_with_ref_in_error() {
+        let workspace = test_workspace("invalid-feature-ref");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "ghcr.io/features": {}
+              }
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains("ghcr.io/features"), "{error:#}");
+    }
+
+    #[test]
     fn build_up_plan_separates_forward_ports_from_app_port_publish() {
         let workspace = test_workspace("port-plan");
         write_devcontainer(
@@ -2667,6 +2877,7 @@ mod tests {
             None,
             ConfigLayer::default(),
             ForwardingResolution::IgnoreDetached,
+            false,
         )
         .unwrap();
 
@@ -2723,6 +2934,7 @@ require_local = true
             None,
             ConfigLayer::default(),
             ForwardingResolution::IgnoreDetached,
+            false,
         )
         .unwrap();
 
@@ -2749,6 +2961,7 @@ require_local = true
             None,
             ConfigLayer::default(),
             ForwardingResolution::IgnoreDetached,
+            false,
         )
         .unwrap();
 
@@ -3265,6 +3478,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert_eq!(first.container_name, container_name);
@@ -3283,6 +3497,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert_eq!(second.container_name, container_name);
@@ -3339,6 +3554,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert!(!recreated.reused);
@@ -3407,6 +3623,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert!(!first.reused);
@@ -3420,6 +3637,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert_eq!(second.container_name, container_name);
@@ -3475,6 +3693,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert_eq!(first.container_name, container_name);
@@ -3489,6 +3708,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert_eq!(second.container_name, container_name);
@@ -3537,6 +3757,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await
                 .unwrap_err();
@@ -3607,6 +3828,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await
                 .unwrap_err();
@@ -3674,6 +3896,7 @@ type = "bind"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
 
@@ -3763,6 +3986,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert_eq!(exit_code, 0);
@@ -3833,6 +4057,7 @@ shell = "/usr/local/bin/decune-exit-0"
                         pull: false,
                         rebuild: false,
                         no_cache: false,
+                    update_features: false,
                     })
                     .await?;
                     assert_eq!(exit_code, 0);
@@ -3926,6 +4151,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 stop_container(&client, &container_name, 10).await?;
@@ -3937,6 +4163,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert_eq!(exit_code, 0);
@@ -3984,6 +4211,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert!(!first.reused);
@@ -3995,6 +4223,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: true,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert!(!second.reused);
@@ -4086,6 +4315,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert!(!first.reused);
@@ -4097,6 +4327,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: true,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
                 assert_eq!(exit_code, 0);
@@ -4155,6 +4386,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
 
@@ -4241,6 +4473,7 @@ shell = "/usr/local/bin/decune-shell-check"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
 
@@ -4342,6 +4575,7 @@ user = "root"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
 
@@ -4430,6 +4664,7 @@ user = "root"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await?;
 
@@ -4493,6 +4728,7 @@ user = "root"
                     pull: false,
                     rebuild: false,
                     no_cache: false,
+                    update_features: false,
                 })
                 .await
                 .unwrap_err();
