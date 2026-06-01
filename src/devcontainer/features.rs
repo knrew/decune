@@ -5,6 +5,7 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     fs::{self, OpenOptions},
     io::{ErrorKind, Read, Seek, SeekFrom},
+    os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
 };
 
@@ -1195,13 +1196,17 @@ impl FeatureResolver<'_> {
         ensure_feature_files(&source_dir)?;
         let document =
             read_feature_metadata_document(&source_dir.join("devcontainer-feature.json"))?;
+        let digest = local_feature_content_digest(&source_dir)?;
 
         Ok(FeatureSource {
             source_dir,
             metadata: document.metadata,
             layer: document.layer,
             raw: document.raw,
-            lock_entry: None,
+            lock_entry: Some(FeatureLockHashEntry {
+                feature_id: reference.canonical_id.clone(),
+                digest,
+            }),
             lock_file_entry: None,
         })
     }
@@ -1262,6 +1267,93 @@ fn ensure_feature_files(source_dir: &Path) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn local_feature_content_digest(source_dir: &Path) -> Result<String> {
+    let mut hasher = Sha256::new();
+    hash_local_feature_directory(source_dir, source_dir, &mut hasher)?;
+    let digest = hasher.finalize();
+
+    Ok(format!("sha256:{}", hex_lower(&digest)))
+}
+
+fn hash_local_feature_directory(root: &Path, directory: &Path, hasher: &mut Sha256) -> Result<()> {
+    let mut entries = fs::read_dir(directory)
+        .with_context(|| {
+            format!(
+                "Failed to read local Feature directory: {}",
+                directory.display()
+            )
+        })?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| {
+            format!(
+                "Failed to enumerate local Feature directory: {}",
+                directory.display()
+            )
+        })?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative_path = path.strip_prefix(root).with_context(|| {
+            format!(
+                "Failed to relativize local Feature path: {}",
+                path.display()
+            )
+        })?;
+        let metadata = fs::symlink_metadata(&path)
+            .with_context(|| format!("Failed to inspect local Feature path: {}", path.display()))?;
+        hash_local_feature_entry_header(
+            hasher,
+            relative_path,
+            local_feature_entry_kind(&metadata),
+            metadata.permissions().mode(),
+        );
+
+        if metadata.is_dir() {
+            hash_local_feature_directory(root, &path, hasher)?;
+        } else if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&path).with_context(|| {
+                format!("Failed to read local Feature symlink: {}", path.display())
+            })?;
+            hasher.update(target.as_os_str().as_encoded_bytes());
+            hasher.update([0]);
+        } else if metadata.is_file() {
+            let contents = fs::read(&path).with_context(|| {
+                format!("Failed to read local Feature file: {}", path.display())
+            })?;
+            hasher.update(contents.len().to_be_bytes());
+            hasher.update(contents);
+        }
+    }
+
+    Ok(())
+}
+
+fn hash_local_feature_entry_header(
+    hasher: &mut Sha256,
+    relative_path: &Path,
+    kind: &'static [u8],
+    mode: u32,
+) {
+    hasher.update(kind);
+    hasher.update([0]);
+    hasher.update(relative_path.as_os_str().as_encoded_bytes());
+    hasher.update([0]);
+    hasher.update((mode & 0o7777).to_be_bytes());
+}
+
+fn local_feature_entry_kind(metadata: &fs::Metadata) -> &'static [u8] {
+    if metadata.is_dir() {
+        b"dir"
+    } else if metadata.file_type().is_symlink() {
+        b"symlink"
+    } else if metadata.is_file() {
+        b"file"
+    } else {
+        b"other"
+    }
 }
 
 fn dependency_feature_ref(dependency: &str) -> String {
@@ -1984,6 +2076,61 @@ mod tests {
                 canonical_id: "local:features/local".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn local_feature_content_change_changes_prepared_lock_entry_digest() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_dir = devcontainer_dir.join("features/local");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{"id":"local"}"#,
+        )
+        .unwrap();
+        fs::write(
+            feature_dir.join("install.sh"),
+            "#!/bin/sh\ncat helper.txt\n",
+        )
+        .unwrap();
+        fs::write(feature_dir.join("helper.txt"), "first\n").unwrap();
+        let features = vec![ResolvedFeature {
+            id: "./features/local".to_owned(),
+            canonical_id: "local:features/local".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let first = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+        fs::write(feature_dir.join("helper.txt"), "second\n").unwrap();
+        let second = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(first.lock_entries.len(), 1);
+        assert_eq!(second.lock_entries.len(), 1);
+        assert_eq!(first.lock_entries[0].feature_id, "local:features/local");
+        assert_eq!(second.lock_entries[0].feature_id, "local:features/local");
+        assert_ne!(first.lock_entries[0].digest, second.lock_entries[0].digest);
     }
 
     #[test]
