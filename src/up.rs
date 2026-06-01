@@ -12,13 +12,13 @@ use crate::{
         ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry,
         MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
         MountVolumeOptionsHashInput, config_hash, layer::LayerDevcontainerMount,
-        load::load_config_file, resolve_config, resolved::ResolvedConfig,
-        resolved::ResolvedDevcontainerSource, types::MountType,
+        load::load_config_file, merge::merge_feature_metadata_layers, resolve_config,
+        resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource, types::MountType,
     },
     devcontainer::{
         features::{
-            FeatureRef, parse_feature_ref_from_devcontainer_dir, read_feature_lock_file,
-            resolve_locked_feature_ref,
+            FeatureRef, PreparedFeatureInstallPlan, parse_feature_ref_from_devcontainer_dir,
+            prepare_feature_install_plan, read_feature_lock_file, resolve_locked_feature_ref,
         },
         json::DevcontainerJson,
         lifecycle::{
@@ -30,8 +30,9 @@ use crate::{
     },
     docker::{
         build::{
-            DockerBuildInput, DockerBuildOptions, ResolvedBuildContext, build_hash_input,
-            build_image, resolve_build_context,
+            DockerBuildInput, DockerBuildOptions, FeatureLayerBuildFeature, FeatureLayerBuildInput,
+            ResolvedBuildContext, build_hash_input, build_image,
+            prepare_feature_layer_build_context, resolve_build_context,
         },
         client::DockerClient,
         container::{
@@ -55,7 +56,10 @@ use crate::{
         },
         ports::{ResolvedForwardPort, resolve_forward_ports},
         resource::DockerResources,
-        user::{RemoteUserResolveInput, resolve_remote_user, resolve_remote_user_from_image},
+        user::{
+            RemoteUserResolveInput, image_config_user, resolve_remote_user,
+            resolve_remote_user_from_image,
+        },
     },
     host::{
         credentials::{
@@ -144,8 +148,11 @@ pub(crate) enum ExistingContainerDecision {
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct UpPlan {
     pub(crate) image: String,
+    pub(crate) base_image: String,
     pub(crate) build_context: Option<ResolvedBuildContext>,
     pub(crate) build_options: DockerBuildOptions,
+    pub(crate) feature_install: Option<PreparedFeatureInstallPlan>,
+    pub(crate) feature_build_context_dir: Option<PathBuf>,
     pub(crate) resources: DockerResources,
     pub(crate) config: ResolvedConfig,
     pub(crate) workspace_folder: String,
@@ -535,7 +542,8 @@ fn build_up_plan_inner(
         hash,
         devcontainer_json.path().display().to_string(),
     );
-    let image = image_source(&config, &resources)?;
+    let base_image = base_image_source(&config, &resources)?;
+    let image = final_image_source(&config, &resources)?;
     let forward_ports = match resolution.forwarding {
         ForwardingResolution::Resolve => resolve_forward_ports(&config.ports.entries)?,
         ForwardingResolution::IgnoreDetached => Vec::new(),
@@ -547,8 +555,11 @@ fn build_up_plan_inner(
 
     Ok(UpPlan {
         image,
+        base_image,
         build_context,
         build_options,
+        feature_install: None,
+        feature_build_context_dir: None,
         resources,
         config,
         workspace_folder: workspace_location.workspace_folder,
@@ -950,7 +961,7 @@ async fn build_existing_container_decision_plan(
     let include_forward_ports = resolution.forwarding == ForwardingResolution::Resolve;
     let image_metadata = match image_devcontainer_metadata_layers_if_present_with_forward_ports(
         client,
-        &preliminary_plan.image,
+        &preliminary_plan.base_image,
         include_forward_ports,
     )
     .await?
@@ -1031,7 +1042,7 @@ async fn prepare_image_based_metadata(
 
     ensure_image(
         client,
-        &preliminary_plan.image,
+        &preliminary_plan.base_image,
         if pull {
             PullPolicy::Always
         } else {
@@ -1042,7 +1053,7 @@ async fn prepare_image_based_metadata(
     let include_forward_ports = resolution.forwarding == ForwardingResolution::Resolve;
     let image_metadata = image_devcontainer_metadata_layers_with_forward_ports(
         client,
-        &preliminary_plan.image,
+        &preliminary_plan.base_image,
         include_forward_ports,
     )
     .await?;
@@ -1082,8 +1093,17 @@ async fn finalize_up_plan_mounts(
 ) -> Result<(UpPlan, bool)> {
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
     let mut image_prepared = false;
+    plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
     if lookup_image.is_none() {
-        if let Some(context) = plan.build_context.clone() {
+        if plan.feature_install.is_some() {
+            let Some((pull, no_cache)) = build_for_lookup else {
+                return Ok((plan, false));
+            };
+            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
+            build_feature_layer_image(client, &plan, no_cache).await?;
+            lookup_image = Some(plan.image.clone());
+            image_prepared = true;
+        } else if let Some(context) = plan.build_context.clone() {
             let Some((pull, no_cache)) = build_for_lookup else {
                 return Ok((plan, false));
             };
@@ -1093,17 +1113,17 @@ async fn finalize_up_plan_mounts(
             build_image(
                 client,
                 DockerBuildInput {
-                    image_tag: plan.image.clone(),
+                    image_tag: plan.base_image.clone(),
                     labels: plan.resources.labels.clone().into_iter().collect(),
                     context,
                     options: build_options,
                 },
             )
             .await?;
-            lookup_image = Some(plan.image.clone());
+            lookup_image = Some(plan.base_image.clone());
             image_prepared = true;
         } else {
-            lookup_image = Some(plan.image.clone());
+            lookup_image = Some(plan.base_image.clone());
         }
     };
     let lookup_image = lookup_image.expect("lookup image must be set");
@@ -1145,8 +1165,12 @@ async fn finalize_up_plan_mounts(
         hash_input.build = Some(build_hash_input(context)?);
     }
     let devcontainer_file = Path::new(&plan.resources.labels["devcontainer.config_file"]);
-    hash_input.feature_locks =
-        feature_lock_hash_inputs(workspace, devcontainer_file, &plan.config, update_features)?;
+    hash_input.feature_locks = match &plan.feature_install {
+        Some(feature_install) => feature_install.lock_entries.clone(),
+        None => {
+            feature_lock_hash_inputs(workspace, devcontainer_file, &plan.config, update_features)?
+        }
+    };
     hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
@@ -1158,18 +1182,142 @@ async fn finalize_up_plan_mounts(
             .cloned()
             .unwrap_or_default(),
     );
-    let image = image_source(&plan.config, &resources)?;
+    let image = final_image_source(&plan.config, &resources)?;
+    let base_image = base_image_source(&plan.config, &resources)?;
     if image_prepared && image != lookup_image {
         tag_image(client, &lookup_image, &image).await?;
         remove_image(client, &lookup_image, false).await?;
     }
 
     plan.image = image;
+    plan.base_image = base_image;
     plan.resources = resources;
     plan.workspace_folder = workspace_location.workspace_folder;
     plan.mounts = mounts;
 
     Ok((plan, image_prepared))
+}
+
+async fn prepare_feature_metadata_for_plan(
+    workspace: &Workspace,
+    mut plan: UpPlan,
+    update_features: bool,
+) -> Result<UpPlan> {
+    if plan.feature_install.is_some() || plan.config.features.is_empty() {
+        return Ok(plan);
+    }
+
+    let features = plan.config.features.clone();
+    let override_feature_install_order = plan
+        .config
+        .devcontainer
+        .override_feature_install_order
+        .clone();
+    let devcontainer_file = PathBuf::from(&plan.resources.labels["devcontainer.config_file"]);
+    let workspace_root = workspace.root().to_path_buf();
+    let cache_dir = workspace.paths().cache_dir().to_path_buf();
+    let Some(feature_install) = tokio::task::spawn_blocking(move || {
+        prepare_feature_install_plan(
+            &features,
+            &devcontainer_file,
+            &workspace_root,
+            &cache_dir,
+            &override_feature_install_order,
+            update_features,
+        )
+    })
+    .await
+    .context("Feature install planning task failed")??
+    else {
+        return Ok(plan);
+    };
+    plan.config =
+        merge_feature_metadata_layers(plan.config, feature_install.metadata_layers.clone());
+    plan.feature_install = Some(feature_install);
+    plan.feature_build_context_dir =
+        Some(workspace.paths().cache_dir().join("feature-build-context"));
+
+    Ok(plan)
+}
+
+async fn prepare_base_image_for_plan(
+    client: &DockerClient,
+    plan: &UpPlan,
+    pull: bool,
+    no_cache: bool,
+) -> Result<()> {
+    if let Some(context) = plan.build_context.clone() {
+        let mut build_options = plan.build_options.clone();
+        build_options.pull = pull;
+        build_options.no_cache = no_cache;
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: plan.base_image.clone(),
+                labels: plan.resources.labels.clone().into_iter().collect(),
+                context,
+                options: build_options,
+            },
+        )
+        .await?;
+        warn_about_unsupported_dockerfile_image_metadata(client, &plan.base_image).await?;
+    } else {
+        ensure_image(
+            client,
+            &plan.base_image,
+            if pull {
+                PullPolicy::Always
+            } else {
+                PullPolicy::Missing
+            },
+        )
+        .await?;
+    }
+
+    Ok(())
+}
+
+async fn build_feature_layer_image(
+    client: &DockerClient,
+    plan: &UpPlan,
+    no_cache: bool,
+) -> Result<()> {
+    let Some(feature_install) = &plan.feature_install else {
+        return Ok(());
+    };
+    let feature_build_context_dir = plan
+        .feature_build_context_dir
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("Feature build context directory was not prepared"))?;
+    let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
+        base_image: plan.base_image.clone(),
+        final_user: image_config_user(client, &plan.base_image)
+            .await?
+            .unwrap_or_else(|| "root".to_owned()),
+        context_dir: feature_build_context_dir.clone(),
+        features: feature_install
+            .entries
+            .iter()
+            .map(|entry| FeatureLayerBuildFeature {
+                id: entry.feature.canonical_id.clone(),
+                source_dir: entry.source_dir.clone(),
+                option_env: entry.option_env.clone(),
+            })
+            .collect(),
+    })?;
+    build_image(
+        client,
+        DockerBuildInput {
+            image_tag: plan.image.clone(),
+            labels: plan.resources.labels.clone().into_iter().collect(),
+            context,
+            options: DockerBuildOptions {
+                no_cache,
+                ..DockerBuildOptions::default()
+            },
+        },
+    )
+    .await
 }
 
 async fn recreate_existing_containers(
@@ -1195,7 +1343,12 @@ async fn create_and_start_container(
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    if let Some(context) = plan.build_context.clone() {
+    if plan.feature_install.is_some() {
+        if !image_prepared {
+            prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
+            build_feature_layer_image(client, plan, no_cache).await?;
+        }
+    } else if let Some(context) = plan.build_context.clone() {
         if !image_prepared {
             let mut build_options = plan.build_options.clone();
             build_options.pull = pull;
@@ -1203,7 +1356,7 @@ async fn create_and_start_container(
             build_image(
                 client,
                 DockerBuildInput {
-                    image_tag: plan.image.clone(),
+                    image_tag: plan.base_image.clone(),
                     labels: plan.resources.labels.clone().into_iter().collect(),
                     context,
                     options: build_options,
@@ -1211,11 +1364,11 @@ async fn create_and_start_container(
             )
             .await?;
         }
-        warn_about_unsupported_dockerfile_image_metadata(client, &plan.image).await?;
+        warn_about_unsupported_dockerfile_image_metadata(client, &plan.base_image).await?;
     } else if !image_prepared {
         ensure_image(
             client,
-            &plan.image,
+            &plan.base_image,
             if pull {
                 PullPolicy::Always
             } else {
@@ -1596,9 +1749,24 @@ async fn start_new_container(client: &DockerClient, container_name: &str) -> Res
     }
 }
 
-fn image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {
+fn final_image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {
+    if !config.features.is_empty() {
+        return Ok(resources.image_tag.clone());
+    }
+
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
+        Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
+        None => bail!("Devcontainer image is required"),
+    }
+}
+
+fn base_image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {
+    match &config.devcontainer.source {
+        Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
+        Some(ResolvedDevcontainerSource::Dockerfile(_)) if !config.features.is_empty() => {
+            Ok(format!("{}-base", resources.image_tag))
+        }
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
         None => bail!("Devcontainer image is required"),
     }
@@ -1904,9 +2072,7 @@ fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
 }
 
 fn warn_about_deferred_features(config: &ResolvedConfig) {
-    if !config.features.is_empty() {
-        ui::warn("Dev Container Features are not applied yet in this milestone");
-    }
+    let _ = config;
 }
 
 async fn warn_about_unsupported_dockerfile_image_metadata(
@@ -4852,8 +5018,11 @@ user = "root"
     fn test_up_plan_with_config(config: ResolvedConfig) -> UpPlan {
         UpPlan {
             image: "alpine:3.20".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
             build_context: None,
             build_options: crate::docker::build::DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
             resources: DockerResources {
                 container_name: "decune-test".to_owned(),
                 image_tag: "decune/test:stable-hash".to_owned(),

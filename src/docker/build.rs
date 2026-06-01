@@ -47,6 +47,21 @@ pub(crate) struct ResolvedBuildContext {
     pub(crate) dockerignore_path: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FeatureLayerBuildInput {
+    pub(crate) base_image: String,
+    pub(crate) final_user: String,
+    pub(crate) context_dir: PathBuf,
+    pub(crate) features: Vec<FeatureLayerBuildFeature>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct FeatureLayerBuildFeature {
+    pub(crate) id: String,
+    pub(crate) source_dir: PathBuf,
+    pub(crate) option_env: BTreeMap<String, String>,
+}
+
 pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) -> Result<()> {
     ui::info(&format!("Building Docker image: {}", input.image_tag));
 
@@ -141,6 +156,66 @@ pub(crate) fn create_build_context_tar(context: &ResolvedBuildContext) -> Result
 
     output.extend([0; TAR_BLOCK_SIZE * 2]);
     Ok(output)
+}
+
+pub(crate) fn prepare_feature_layer_build_context(
+    input: &FeatureLayerBuildInput,
+) -> Result<ResolvedBuildContext> {
+    if input.context_dir.exists() {
+        fs::remove_dir_all(&input.context_dir).with_context(|| {
+            format!(
+                "Failed to remove existing Feature build context: {}",
+                input.context_dir.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&input.context_dir).with_context(|| {
+        format!(
+            "Failed to create Feature build context: {}",
+            input.context_dir.display()
+        )
+    })?;
+
+    let dockerfile_path = input.context_dir.join("Dockerfile");
+    fs::write(&dockerfile_path, feature_layer_dockerfile(input)?).with_context(|| {
+        format!(
+            "Failed to write Feature layer Dockerfile: {}",
+            dockerfile_path.display()
+        )
+    })?;
+    let install_script_path = input.context_dir.join("install-features.sh");
+    fs::write(&install_script_path, feature_layer_install_script(input)?).with_context(|| {
+        format!(
+            "Failed to write Feature layer install script: {}",
+            install_script_path.display()
+        )
+    })?;
+
+    for (index, feature) in input.features.iter().enumerate() {
+        let feature_dir = input
+            .context_dir
+            .join(feature_context_name(index, &feature.id));
+        copy_directory(&feature.source_dir, &feature_dir).with_context(|| {
+            format!(
+                "Failed to stage Feature files from {}",
+                feature.source_dir.display()
+            )
+        })?;
+        let env_path = feature_dir.join("devcontainer-features.env");
+        fs::write(&env_path, feature_env_file(&feature.option_env)).with_context(|| {
+            format!(
+                "Failed to write Feature option env file: {}",
+                env_path.display()
+            )
+        })?;
+    }
+
+    Ok(ResolvedBuildContext {
+        context_dir: input.context_dir.clone(),
+        dockerfile_path,
+        dockerfile_in_context: PathBuf::from("Dockerfile"),
+        dockerignore_path: None,
+    })
 }
 
 pub(crate) fn build_hash_input(context: &ResolvedBuildContext) -> Result<BuildHashInput> {
@@ -272,6 +347,131 @@ fn resolve_path(base: &Path, value: &str) -> PathBuf {
     } else {
         base.join(path)
     }
+}
+
+fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
+    let final_user = dockerfile_user(&input.final_user)?;
+    Ok(format!(
+        "FROM {}\nUSER root\nCOPY . /tmp/decune-features/\nRUN /bin/sh /tmp/decune-features/install-features.sh\nUSER {final_user}\n",
+        input.base_image
+    ))
+}
+
+fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String> {
+    let mut script = String::new();
+    script.push_str("set -eu\n");
+    for (index, feature) in input.features.iter().enumerate() {
+        let name = feature_context_name(index, &feature.id);
+        script.push_str(&format!(
+            "(\nset -a\n. /tmp/decune-features/{name}/devcontainer-features.env\nset +a\n"
+        ));
+        script.push_str(&format!(
+            "chmod +x /tmp/decune-features/{name}/install.sh\ncd /tmp/decune-features/{name}\n./install.sh\n)\n"
+        ));
+    }
+    script.push_str("rm -rf /tmp/decune-features\n");
+    Ok(script)
+}
+
+fn dockerfile_user(user: &str) -> Result<&str> {
+    let trimmed = user.trim();
+    if trimmed.is_empty() || trimmed != user {
+        bail!("Docker image user must not be empty or contain surrounding whitespace");
+    }
+    if user
+        .chars()
+        .any(|character| character.is_ascii_control() || character.is_whitespace())
+    {
+        bail!("Docker image user contains unsupported whitespace or control characters: {user}");
+    }
+
+    Ok(user)
+}
+
+fn feature_env_file(env: &BTreeMap<String, String>) -> String {
+    env.iter()
+        .map(|(key, value)| format!("{key}={}\n", shell_single_quote(value)))
+        .collect()
+}
+
+fn feature_context_name(index: usize, id: &str) -> String {
+    let mut name = String::new();
+    for character in id.chars() {
+        if character.is_ascii_alphanumeric() {
+            name.push(character.to_ascii_lowercase());
+        } else if !name.ends_with('-') {
+            name.push('-');
+        }
+    }
+    while name.ends_with('-') {
+        name.pop();
+    }
+    if name.is_empty() {
+        name.push_str("feature");
+    }
+
+    format!("{index:03}-{name}")
+}
+
+fn shell_single_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
+}
+
+fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination).with_context(|| {
+        format!(
+            "Failed to create staged Feature directory: {}",
+            destination.display()
+        )
+    })?;
+    let mut entries = fs::read_dir(source)
+        .with_context(|| format!("Failed to read Feature directory: {}", source.display()))?
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .with_context(|| {
+            format!(
+                "Failed to enumerate Feature directory: {}",
+                source.display()
+            )
+        })?;
+    entries.sort_by_key(|entry| entry.path());
+
+    for entry in entries {
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let metadata = fs::symlink_metadata(&source_path).with_context(|| {
+            format!("Failed to inspect Feature file: {}", source_path.display())
+        })?;
+        if metadata.is_dir() {
+            copy_directory(&source_path, &destination_path)?;
+        } else if metadata.file_type().is_symlink() {
+            let target = fs::read_link(&source_path).with_context(|| {
+                format!("Failed to read Feature symlink: {}", source_path.display())
+            })?;
+            std::os::unix::fs::symlink(&target, &destination_path).with_context(|| {
+                format!(
+                    "Failed to stage Feature symlink {} -> {}",
+                    destination_path.display(),
+                    target.display()
+                )
+            })?;
+        } else if metadata.is_file() {
+            fs::copy(&source_path, &destination_path).with_context(|| {
+                format!(
+                    "Failed to copy Feature file {} to {}",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+            fs::set_permissions(&destination_path, metadata.permissions()).with_context(|| {
+                format!(
+                    "Failed to preserve Feature file permissions: {}",
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn collect_context_entries(
@@ -613,13 +813,18 @@ fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, fs, path::Path};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        fs,
+        path::Path,
+    };
 
     use crate::config::layer::LayerDevcontainerBuild;
     use tempfile::TempDir;
 
     use super::{
-        DockerBuildInput, DockerBuildOptions, build_image_options, create_build_context_tar,
+        DockerBuildInput, DockerBuildOptions, FeatureLayerBuildFeature, FeatureLayerBuildInput,
+        build_image_options, create_build_context_tar, prepare_feature_layer_build_context,
         resolve_build_context, tar_contains_path,
     };
 
@@ -829,6 +1034,56 @@ mod tests {
         assert!(tar_contains_path(&tar, "Dockerfile"));
         assert!(tar_contains_path(&tar, ".dockerignore"));
         assert!(!tar_contains_path(&tar, "app.txt"));
+    }
+
+    #[test]
+    fn feature_layer_build_context_stages_features_env_and_cleanup_dockerfile() {
+        let temp = tempdir("feature-layer-build-context");
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(source.join("devcontainer-feature.json"), r#"{"id":"tool"}"#).unwrap();
+        let context_dir = temp.path().join("context");
+        let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
+            base_image: "alpine:3.20".to_owned(),
+            final_user: "vscode".to_owned(),
+            context_dir,
+            features: vec![FeatureLayerBuildFeature {
+                id: "ghcr.io/example/features/tool".to_owned(),
+                source_dir: source,
+                option_env: BTreeMap::from([("VERSION".to_owned(), "1.2".to_owned())]),
+            }],
+        })
+        .unwrap();
+
+        let tar = create_build_context_tar(&context).unwrap();
+        let dockerfile = fs::read_to_string(context.dockerfile_path).unwrap();
+        let install_script =
+            fs::read_to_string(context.context_dir.join("install-features.sh")).unwrap();
+
+        assert!(tar_contains_path(
+            &tar,
+            "000-ghcr-io-example-features-tool/install.sh"
+        ));
+        assert!(tar_contains_path(
+            &tar,
+            "000-ghcr-io-example-features-tool/devcontainer-features.env"
+        ));
+        assert!(dockerfile.contains("FROM alpine:3.20"));
+        assert!(dockerfile.contains("/bin/sh /tmp/decune-features/install-features.sh"));
+        assert!(dockerfile.contains("USER vscode"));
+        assert!(install_script.contains("./install.sh"));
+        assert!(!install_script.contains("/bin/sh ./install.sh"));
+        assert!(install_script.contains("rm -rf /tmp/decune-features"));
+        assert_eq!(
+            fs::read_to_string(
+                context
+                    .context_dir
+                    .join("000-ghcr-io-example-features-tool/devcontainer-features.env")
+            )
+            .unwrap(),
+            "VERSION='1.2'\n"
+        );
     }
 
     #[test]

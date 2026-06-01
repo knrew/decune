@@ -4,6 +4,7 @@ pub(crate) mod support;
 mod build;
 mod clean;
 mod dotfiles;
+mod features;
 mod git_credentials;
 mod github_cli;
 mod harness;
