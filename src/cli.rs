@@ -160,6 +160,7 @@ async fn run_up(args: UpArgs) -> Result<i32> {
         pull,
         rebuild,
         no_cache,
+        update_features: false,
     };
 
     if detach {
@@ -171,6 +172,18 @@ async fn run_up(args: UpArgs) -> Result<i32> {
 }
 
 async fn run_rebuild(args: RebuildArgs) -> Result<i32> {
+    let detach = args.detach;
+    let options = rebuild_up_options_from_args(args)?;
+
+    if detach {
+        run_detached_up(options).await?;
+        return Ok(0);
+    }
+
+    run_attached_up(options).await
+}
+
+fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
     let RebuildArgs {
         config,
         detach,
@@ -181,25 +194,17 @@ async fn run_rebuild(args: RebuildArgs) -> Result<i32> {
         workspace,
     } = args;
 
-    let _update_features = update_features;
-
     reject_detached_cli_ports(detach, &ports)?;
 
-    let options = UpOptions {
+    Ok(UpOptions {
         workspace,
         config_path: config,
         cli_layer: cli_config_layer(ports, false),
         pull,
         rebuild: true,
         no_cache,
-    };
-
-    if detach {
-        run_detached_up(options).await?;
-        return Ok(0);
-    }
-
-    run_attached_up(options).await
+        update_features,
+    })
 }
 
 async fn run_down(args: DownArgs) -> Result<i32> {
@@ -330,7 +335,7 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::Cli;
-    use super::{Commands, PortProtocol, reject_detached_cli_ports};
+    use super::{Commands, PortProtocol, rebuild_up_options_from_args, reject_detached_cli_ports};
 
     #[test]
     fn clap_definition_is_valid() {
@@ -450,6 +455,18 @@ mod tests {
         assert_eq!(args.ports.len(), 1);
         assert_eq!(args.ports[0].container, 80);
         assert_eq!(args.ports[0].host, Some(8080));
+    }
+
+    #[test]
+    fn rebuild_update_features_is_passed_to_up_options() {
+        let cli = Cli::parse_from(["decune", "rebuild", "--update-features"]);
+        let Commands::Rebuild(args) = cli.command else {
+            panic!("expected rebuild command");
+        };
+
+        let options = rebuild_up_options_from_args(args).unwrap();
+
+        assert!(options.update_features);
     }
 
     #[test]
