@@ -940,9 +940,7 @@ fn parse_registry_manifest_response_body(
 
     let digest = header_digest
         .or(requested_digest)
-        .ok_or_else(|| {
-            anyhow!("OCI manifest response for feature {reference} did not include Docker-Content-Digest")
-        })?
+        .unwrap_or(&actual_digest)
         .to_owned();
     let manifest: RegistryManifest = serde_json::from_slice(body).with_context(|| {
         format!("Failed to parse OCI manifest for feature {reference} ({digest})")
@@ -1414,6 +1412,23 @@ mod tests {
 
         assert!(error.to_string().contains("digest mismatch"), "{error:#}");
         assert!(error.to_string().contains(&actual_digest), "{error:#}");
+    }
+
+    #[test]
+    fn manifest_response_uses_body_digest_when_header_is_missing_for_tag_reference() {
+        let body = br#"{"layers":[{"mediaType":"application/vnd.devcontainers.layer.v1+tar","digest":"sha256:1111111111111111111111111111111111111111111111111111111111111111","size":12}]}"#;
+        let actual_digest = sha256_digest(&hex_lower(&Sha256::digest(body)));
+
+        let manifest = parse_registry_manifest_response_body(
+            "ghcr.io/example/features/tool:1",
+            None,
+            None,
+            body,
+        )
+        .unwrap();
+
+        assert_eq!(manifest.digest, actual_digest);
+        assert_eq!(manifest.layers.len(), 1);
     }
 
     #[test]
