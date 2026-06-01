@@ -68,10 +68,11 @@ pub(crate) fn stage_container_tool_variants_from_dirs(
 ) -> Result<Vec<PathBuf>> {
     let mut staged = Vec::new();
     for platform in ContainerToolPlatform::ALL {
+        let target = runtime_dir.join(staged_tool_name(tool, platform));
         let Some(source) = resolve_container_tool(tool, platform, &source_dirs)? else {
+            remove_stale_container_tool(&target, tool)?;
             continue;
         };
-        let target = runtime_dir.join(staged_tool_name(tool, platform));
         fs::copy(&source, &target).with_context(|| {
             format!(
                 "Failed to stage {} artifact: {} -> {}",
@@ -91,6 +92,20 @@ pub(crate) fn stage_container_tool_variants_from_dirs(
     }
 
     Ok(staged)
+}
+
+fn remove_stale_container_tool(path: &Path, tool: ContainerTool) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to remove stale {} artifact: {}",
+                tool.display_name(),
+                path.display()
+            )
+        }),
+    }
 }
 
 fn resolve_container_tool(
@@ -286,6 +301,40 @@ mod tests {
             ),
             "decune-forward-agent-linux-arm64"
         );
+    }
+
+    #[test]
+    fn removes_stale_container_tool_variant_when_source_is_missing() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let runtime = temp.path().join("runtime");
+        fs::create_dir_all(source.join("linux-amd64")).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(source.join("linux-amd64/decune-forward-agent"), b"agent").unwrap();
+        fs::write(
+            runtime.join("decune-forward-agent-linux-arm64"),
+            b"stale agent",
+        )
+        .unwrap();
+        fs::write(runtime.join("unrelated"), b"keep").unwrap();
+
+        let staged = stage_container_tool_variants_from_dirs(
+            ContainerTool::ForwardAgent,
+            &runtime,
+            vec![source],
+        )
+        .unwrap();
+
+        assert_eq!(
+            staged,
+            vec![runtime.join("decune-forward-agent-linux-amd64")]
+        );
+        assert_eq!(
+            fs::read(runtime.join("decune-forward-agent-linux-amd64")).unwrap(),
+            b"agent"
+        );
+        assert!(!runtime.join("decune-forward-agent-linux-arm64").exists());
+        assert_eq!(fs::read(runtime.join("unrelated")).unwrap(), b"keep");
     }
 
     #[test]

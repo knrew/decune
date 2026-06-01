@@ -18,10 +18,19 @@ if [ "$#" -eq 0 ]; then
     set -- linux-amd64 linux-arm64
 fi
 
-rm -rf "$out"
-mkdir -p "$out"
-: >"$out/SHA256SUMS"
-manifest="$out/manifest.json"
+out_parent=$(dirname -- "$out")
+mkdir -p "$out_parent"
+tmp_out=$(mktemp -d "$out_parent/.container-tools.tmp.XXXXXX")
+cleanup_tmp_out() {
+    if [ -n "${tmp_out:-}" ]; then
+        rm -rf "$tmp_out"
+    fi
+}
+trap cleanup_tmp_out EXIT HUP INT TERM
+
+mkdir -p "$tmp_out"
+: >"$tmp_out/SHA256SUMS"
+manifest="$tmp_out/manifest.json"
 
 printf '{\n  "version": 1,\n  "protocolVersion": 1,\n  "tools": [\n' >"$manifest"
 first=1
@@ -45,15 +54,15 @@ for platform in "$@"; do
             cargo build --release --target "$target" -p decune-container-tools --bins
             ;;
     esac
-    mkdir -p "$out/$platform"
+    mkdir -p "$tmp_out/$platform"
 
     for tool in git-credential-decune decune-forward-agent; do
         source="$cargo_target_dir/$target/release/$tool"
-        dest="$out/$platform/$tool"
+        dest="$tmp_out/$platform/$tool"
         cp "$source" "$dest"
         chmod 0755 "$dest"
         sha=$(sha256sum "$dest" | awk '{print $1}')
-        printf '%s  %s/%s\n' "$sha" "$platform" "$tool" >>"$out/SHA256SUMS"
+        printf '%s  %s/%s\n' "$sha" "$platform" "$tool" >>"$tmp_out/SHA256SUMS"
         if [ "$first" -eq 1 ]; then
             first=0
         else
@@ -65,3 +74,7 @@ for platform in "$@"; do
 done
 
 printf '\n  ]\n}\n' >>"$manifest"
+
+rm -rf "$out"
+mv "$tmp_out" "$out"
+tmp_out=

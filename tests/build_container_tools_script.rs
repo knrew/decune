@@ -51,6 +51,45 @@ fn runs_cargo_from_repo_root_when_invoked_elsewhere() {
     );
 }
 
+#[test]
+fn preserves_previous_output_when_build_fails() {
+    let harness = ScriptHarness::new().unwrap();
+    fs::create_dir_all(harness.out_dir().join("linux-amd64")).unwrap();
+    fs::write(
+        harness.out_dir().join("manifest.json"),
+        "previous manifest\n",
+    )
+    .unwrap();
+    fs::write(harness.out_dir().join("SHA256SUMS"), "previous sums\n").unwrap();
+    fs::write(
+        harness.out_dir().join("linux-amd64/git-credential-decune"),
+        "previous helper\n",
+    )
+    .unwrap();
+
+    let output = harness
+        .command()
+        .arg("linux-amd64")
+        .env("FAKE_CARGO_FAIL_TARGET", "x86_64-unknown-linux-musl")
+        .current_dir(repo_root())
+        .output()
+        .unwrap();
+
+    assert_failure(&output);
+    assert_eq!(
+        fs::read_to_string(harness.out_dir().join("manifest.json")).unwrap(),
+        "previous manifest\n"
+    );
+    assert_eq!(
+        fs::read_to_string(harness.out_dir().join("SHA256SUMS")).unwrap(),
+        "previous sums\n"
+    );
+    assert_eq!(
+        read_artifact(&harness, "linux-amd64/git-credential-decune"),
+        "previous helper\n"
+    );
+}
+
 struct ScriptHarness {
     temp: TempDir,
     out_dir: PathBuf,
@@ -143,6 +182,11 @@ if [ -z "$target" ]; then
     exit 66
 fi
 
+if [ "${FAKE_CARGO_FAIL_TARGET:-}" = "$target" ]; then
+    echo "configured build failure for $target" >&2
+    exit 67
+fi
+
 artifact_dir="$CARGO_TARGET_DIR/$target/release"
 mkdir -p "$artifact_dir"
 printf 'built:%s:git-credential-decune\n' "$target" >"$artifact_dir/git-credential-decune"
@@ -157,6 +201,16 @@ printf 'built:%s:decune-forward-agent\n' "$target" >"$artifact_dir/decune-forwar
 fn assert_success(output: &Output) {
     assert!(
         output.status.success(),
+        "status: {}\nstdout:\n{}\nstderr:\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn assert_failure(output: &Output) {
+    assert!(
+        !output.status.success(),
         "status: {}\nstdout:\n{}\nstderr:\n{}",
         output.status,
         String::from_utf8_lossy(&output.stdout),
