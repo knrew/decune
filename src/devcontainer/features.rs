@@ -1342,7 +1342,7 @@ fn local_feature_entry_kind(metadata: &fs::Metadata) -> &'static [u8] {
 }
 
 fn dependency_feature_ref(dependency: &str) -> String {
-    if parse_feature_ref(dependency).is_ok() {
+    if dependency.starts_with("./") || parse_feature_ref(dependency).is_ok() {
         dependency.to_owned()
     } else {
         format!("{dependency}:latest")
@@ -2116,6 +2116,68 @@ mod tests {
         assert_eq!(first.lock_entries[0].feature_id, "local:features/local");
         assert_eq!(second.lock_entries[0].feature_id, "local:features/local");
         assert_ne!(first.lock_entries[0].digest, second.lock_entries[0].digest);
+    }
+
+    #[test]
+    fn local_feature_depends_on_is_resolved_relative_to_devcontainer_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let tool_dir = devcontainer_dir.join("features/tool");
+        let base_dir = devcontainer_dir.join("features/base");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&tool_dir).unwrap();
+        fs::create_dir_all(&base_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            tool_dir.join("devcontainer-feature.json"),
+            r#"{
+                "id": "tool",
+                "dependsOn": {
+                    "./features/base": {
+                        "version": "1.2"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+        fs::write(tool_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(
+            base_dir.join("devcontainer-feature.json"),
+            r#"{"id":"base"}"#,
+        )
+        .unwrap();
+        fs::write(base_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        let features = vec![ResolvedFeature {
+            id: "./features/tool".to_owned(),
+            canonical_id: "./features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let plan = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            plan.entries
+                .iter()
+                .map(|entry| entry.feature.canonical_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["./features/base", "./features/tool"]
+        );
+        assert_eq!(
+            plan.entries[0].option_env.get("VERSION"),
+            Some(&"1.2".to_owned())
+        );
+        assert!(base_dir.exists());
+        assert!(!devcontainer_dir.join("features/base:latest").exists());
     }
 
     #[test]

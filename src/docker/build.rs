@@ -366,7 +366,7 @@ fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String
             "(\nset -a\n. /tmp/decune-features/{name}/devcontainer-features.env\nset +a\n"
         ));
         script.push_str(&format!(
-            "chmod +x /tmp/decune-features/{name}/install.sh\ncd /tmp/decune-features/{name}\n/bin/sh ./install.sh\n)\n"
+            "chmod +x /tmp/decune-features/{name}/install.sh\ncd /tmp/decune-features/{name}\n./install.sh\n)\n"
         ));
     }
     script.push_str("rm -rf /tmp/decune-features\n");
@@ -1072,7 +1072,8 @@ mod tests {
         assert!(dockerfile.contains("FROM alpine:3.20"));
         assert!(dockerfile.contains("/bin/sh /tmp/decune-features/install-features.sh"));
         assert!(dockerfile.contains("USER vscode"));
-        assert!(install_script.contains("/bin/sh ./install.sh"));
+        assert!(install_script.contains("./install.sh"));
+        assert!(!install_script.contains("/bin/sh ./install.sh"));
         assert!(install_script.contains("rm -rf /tmp/decune-features"));
         assert_eq!(
             fs::read_to_string(
