@@ -55,6 +55,7 @@ pub(crate) struct ResolvedBuildContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct FeatureLayerBuildInput {
     pub(crate) base_image: String,
+    pub(crate) devcontainer_id: String,
     pub(crate) final_user: String,
     pub(crate) entrypoints: Vec<String>,
     pub(crate) install_env: BTreeMap<String, String>,
@@ -201,7 +202,7 @@ pub(crate) fn prepare_feature_layer_build_context(
     let entrypoints_path = input.context_dir.join(FEATURE_ENTRYPOINTS_FILE);
     fs::write(
         &entrypoints_path,
-        feature_entrypoints_file(&input.entrypoints)?,
+        feature_entrypoints_file(&input.entrypoints, &input.devcontainer_id)?,
     )
     .with_context(|| {
         format!(
@@ -423,16 +424,17 @@ fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String
     Ok(script)
 }
 
-fn feature_entrypoints_file(entrypoints: &[String]) -> Result<String> {
+fn feature_entrypoints_file(entrypoints: &[String], devcontainer_id: &str) -> Result<String> {
     let mut output = String::new();
     for entrypoint in entrypoints {
+        let entrypoint = entrypoint.replace("${devcontainerId}", devcontainer_id);
         if entrypoint
             .chars()
             .any(|character| character == '\0' || character == '\n' || character == '\r')
         {
             bail!("Feature entrypoint contains unsupported control characters");
         }
-        output.push_str(entrypoint);
+        output.push_str(&entrypoint);
         output.push('\n');
     }
     Ok(output)
@@ -447,6 +449,10 @@ if [ -f /usr/local/share/decune/feature-entrypoints ]; then
             /bin/sh -c "$entrypoint"
         fi
     done </usr/local/share/decune/feature-entrypoints
+fi
+if [ "$#" -eq 0 ]; then
+    trap 'exit 0' TERM
+    while sleep 1 & wait $!; do :; done
 fi
 exec "$@"
 "#
@@ -1130,8 +1136,9 @@ mod tests {
         let context_dir = temp.path().join("context");
         let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
             base_image: "alpine:3.20".to_owned(),
+            devcontainer_id: "workspace-id".to_owned(),
             final_user: "vscode".to_owned(),
-            entrypoints: vec!["touch /tmp/feature-entrypoint".to_owned()],
+            entrypoints: vec!["touch /tmp/feature-${devcontainerId}".to_owned()],
             install_env: BTreeMap::new(),
             context_dir,
             features: vec![FeatureLayerBuildFeature {
@@ -1165,7 +1172,7 @@ mod tests {
         assert!(install_script.contains("./install.sh"));
         assert!(!install_script.contains("/bin/sh ./install.sh"));
         assert!(install_script.contains("rm -rf /tmp/decune-features"));
-        assert_eq!(entrypoints, "touch /tmp/feature-entrypoint\n");
+        assert_eq!(entrypoints, "touch /tmp/feature-workspace-id\n");
         assert_eq!(
             fs::read_to_string(
                 context

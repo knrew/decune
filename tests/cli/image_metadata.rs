@@ -272,6 +272,70 @@ fn up_detach_ignores_unsupported_image_metadata_forward_ports() {
 }
 
 #[test]
+fn up_detach_does_not_wrap_image_metadata_only_entrypoint_without_feature_layer() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let image_tag = format!(
+        "decune-test/image-metadata-entrypoint-{}:latest",
+        workspace_id(&workspace_root)
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            format!(
+                r#"
+                {{
+                  "image": "{image_tag}",
+                  "postStartCommand": "test -f /tmp/decune-image-command"
+                }}
+                "#
+            ),
+        )
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        remove_image_if_exists(&image_tag).await.unwrap();
+        create_image_with_devcontainer_metadata_label_and_cmd(
+            &image_tag,
+            r#"{"overrideCommand":false,"entrypoint":"touch /tmp/decune-image-metadata-entrypoint"}"#,
+            vec![
+                "/bin/sh",
+                "-c",
+                "touch /tmp/decune-image-command && trap 'exit 0' TERM; while sleep 1 & wait $!; do :; done",
+            ],
+        )
+        .await
+        .unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_runs_initialize_before_image_pull() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();

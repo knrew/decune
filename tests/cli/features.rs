@@ -678,6 +678,87 @@ fn up_detach_runs_feature_entrypoint_before_lifecycle() {
 }
 
 #[test]
+fn up_detach_runs_feature_entrypoint_when_override_command_is_false() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .create_dir(".devcontainer/features/entrypoint-tool")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "overrideCommand": false,
+              "features": {
+                "./features/entrypoint-tool": {}
+              },
+              "postStartCommand": "test -f /tmp/decune-feature-entrypoint && test -f /tmp/decune-image-command"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            CMD ["/bin/sh", "-c", "touch /tmp/decune-image-command && trap 'exit 0' TERM; while sleep 1 & wait $!; do :; done"]
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/entrypoint-tool/devcontainer-feature.json",
+            r#"
+            {
+              "id": "entrypoint-tool",
+              "entrypoint": "touch /tmp/decune-feature-entrypoint"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/entrypoint-tool/install.sh",
+            "set -eu\n",
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 #[ignore = "requires public OCI registry access"]
 fn up_detach_starts_container_with_public_devcontainer_feature() {
     let workspace = support::TempWorkspace::new().unwrap();

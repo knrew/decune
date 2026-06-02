@@ -26,6 +26,12 @@ pub(crate) struct ImageMetadataLayers {
     pub(crate) has_forward_ports: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ImageStartupCommand {
+    pub(crate) entrypoint: Vec<String>,
+    pub(crate) command: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PullPolicy {
     Missing,
@@ -117,6 +123,23 @@ pub(crate) async fn tag_image(client: &DockerClient, source: &str, target: &str)
         .tag_image(source, Some(options))
         .await
         .with_context(|| format!("Failed to tag Docker image {source} as {target}"))
+}
+
+pub(crate) async fn image_startup_command(
+    client: &DockerClient,
+    image: &str,
+) -> Result<ImageStartupCommand> {
+    let inspect = client
+        .raw()
+        .inspect_image(image)
+        .await
+        .with_context(|| format!("Failed to inspect Docker image startup command: {image}"))?;
+    let config = inspect.config.unwrap_or_default();
+
+    Ok(ImageStartupCommand {
+        entrypoint: config.entrypoint.unwrap_or_default(),
+        command: config.cmd.unwrap_or_default(),
+    })
 }
 
 pub(crate) fn image_tags_for_repository(
