@@ -1824,11 +1824,28 @@ fn find_existing_feature_instance(
         .iter()
         .find(|(_, input)| {
             input.feature.canonical_id == dependency_id
-                && input.feature.id == dependency_ref
+                && feature_reference_matches(input, dependency_ref)
                 && feature_options_sort_key(&input.feature.options)
                     == feature_options_sort_key(options)
         })
         .map(|(instance_key, _)| instance_key.clone())
+}
+
+fn feature_reference_matches(input: &FeatureInstallInput, dependency_ref: &str) -> bool {
+    if input.feature.id == dependency_ref {
+        return true;
+    }
+
+    let Ok(FeatureRef::Oci(dependency)) = parse_feature_ref(dependency_ref) else {
+        return false;
+    };
+    let FeatureRef::Oci(existing) = &input.reference else {
+        return false;
+    };
+
+    existing.canonical_id == dependency.canonical_id
+        && existing.tag == dependency.tag
+        && existing.digest == dependency.digest
 }
 
 fn override_feature_install_priorities(override_order: &[String]) -> BTreeMap<String, usize> {
@@ -3104,6 +3121,67 @@ mod tests {
         assert_eq!(
             plan[0].feature.options.get("version"),
             Some(&toml::Value::String("1.2".to_owned()))
+        );
+    }
+
+    #[test]
+    fn feature_install_order_reuses_latest_dependency_instance_with_implicit_or_explicit_tag() {
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/base:latest",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        depends_on: BTreeMap::from([("base".to_owned(), serde_json::json!({}))]),
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            missing_feature_dependency,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/base:latest",
+                "ghcr.io/example/features/tool:1",
+            ]
+        );
+
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input("ghcr.io/example/features/base", FeatureMetadata::default()),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        depends_on: BTreeMap::from([(
+                            "base:latest".to_owned(),
+                            serde_json::json!({}),
+                        )]),
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            missing_feature_dependency,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/base",
+                "ghcr.io/example/features/tool:1",
+            ]
         );
     }
 
