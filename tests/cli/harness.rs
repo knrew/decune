@@ -275,6 +275,14 @@ pub(crate) async fn create_image_with_devcontainer_metadata_label(
     image_tag: &str,
     metadata: &str,
 ) -> anyhow::Result<()> {
+    create_image_with_devcontainer_metadata_label_and_cmd(image_tag, metadata, vec!["true"]).await
+}
+
+pub(crate) async fn create_image_with_devcontainer_metadata_label_and_cmd(
+    image_tag: &str,
+    metadata: &str,
+    cmd: Vec<&str>,
+) -> anyhow::Result<()> {
     let docker = Docker::connect_with_defaults()?;
     ensure_alpine_image(&docker).await?;
 
@@ -336,6 +344,7 @@ pub(crate) async fn create_image_with_devcontainer_metadata_label(
         .build();
     let config = ContainerConfig {
         labels: Some(labels),
+        cmd: Some(cmd.into_iter().map(ToOwned::to_owned).collect()),
         ..Default::default()
     };
 

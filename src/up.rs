@@ -1439,7 +1439,8 @@ async fn create_and_start_container(
         .await?;
     }
 
-    let has_feature_entrypoints = !plan.config.devcontainer.entrypoints.is_empty();
+    let has_feature_entrypoints =
+        plan.feature_install.is_some() && !plan.config.devcontainer.entrypoints.is_empty();
     let (entrypoint, command) = if has_feature_entrypoints {
         let command = if plan.config.devcontainer.override_command {
             let (entrypoint, command) = devcontainer_keepalive_command();
