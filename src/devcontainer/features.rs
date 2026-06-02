@@ -147,6 +147,10 @@ pub(crate) struct OciLayerDescriptor {
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
 pub(crate) struct FeatureMetadata {
+    pub(crate) id: String,
+    pub(crate) version: String,
+    #[serde(default, rename = "legacyIds")]
+    pub(crate) legacy_ids: Vec<String>,
     #[serde(default, rename = "dependsOn")]
     pub(crate) depends_on: BTreeMap<String, serde_json::Value>,
     #[serde(default, rename = "installsAfter")]
@@ -156,6 +160,7 @@ pub(crate) struct FeatureMetadata {
 }
 
 #[derive(Debug, Clone, PartialEq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct FeatureOptionSchema {
     #[serde(default, rename = "type")]
     pub(crate) option_type: Option<String>,
@@ -163,6 +168,10 @@ pub(crate) struct FeatureOptionSchema {
     pub(crate) default: Option<serde_json::Value>,
     #[serde(default, rename = "enum")]
     pub(crate) enum_values: Vec<String>,
+    #[serde(default)]
+    pub(crate) proposals: Vec<String>,
+    #[serde(default)]
+    pub(crate) description: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -833,6 +842,7 @@ pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetad
     validate_feature_metadata_document(&raw)?;
     let metadata = serde_json::from_value(raw.clone())
         .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))?;
+    validate_feature_metadata_schema(&metadata)?;
     let layer = parse_metadata_layer(raw.clone())
         .and_then(|metadata| metadata.to_config_layer_without_forward_ports())
         .with_context(|| {
@@ -847,13 +857,101 @@ pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetad
 
 fn validate_feature_metadata_document(raw: &JsonValue) -> Result<()> {
     let Some(object) = raw.as_object() else {
-        return Ok(());
+        bail!("Feature metadata must be a JSON object");
     };
 
-    for property in ["initializeCommand", "waitFor"] {
-        if object.contains_key(property) {
-            bail!("Feature metadata must not specify {property}");
+    for required in ["id", "version"] {
+        if !object.contains_key(required) {
+            bail!("Feature metadata must specify {required}");
         }
+    }
+
+    for property in object.keys() {
+        if !feature_metadata_property_is_supported(property) {
+            bail!("Unsupported Feature metadata property: {property}");
+        }
+    }
+
+    if let Some(customizations) = object.get("customizations")
+        && !customizations.is_object()
+    {
+        bail!("Feature metadata customizations must be an object");
+    }
+    for property in [
+        "id",
+        "version",
+        "name",
+        "description",
+        "documentationURL",
+        "licenseURL",
+    ] {
+        if let Some(value) = object.get(property)
+            && !value.is_string()
+        {
+            bail!("Feature metadata {property} must be a string");
+        }
+    }
+    for property in ["keywords", "legacyIds"] {
+        if let Some(value) = object.get(property)
+            && !json_array_is_strings(value)
+        {
+            bail!("Feature metadata {property} must be an array of strings");
+        }
+    }
+    if let Some(deprecated) = object.get("deprecated")
+        && !deprecated.is_boolean()
+    {
+        bail!("Feature metadata deprecated must be a boolean");
+    }
+
+    Ok(())
+}
+
+fn json_array_is_strings(value: &JsonValue) -> bool {
+    value
+        .as_array()
+        .is_some_and(|values| values.iter().all(JsonValue::is_string))
+}
+
+fn feature_metadata_property_is_supported(property: &str) -> bool {
+    matches!(
+        property,
+        "id" | "version"
+            | "name"
+            | "description"
+            | "documentationURL"
+            | "licenseURL"
+            | "keywords"
+            | "legacyIds"
+            | "deprecated"
+            | "options"
+            | "dependsOn"
+            | "installsAfter"
+            | "containerEnv"
+            | "customizations"
+            | "entrypoint"
+            | "init"
+            | "privileged"
+            | "capAdd"
+            | "securityOpt"
+            | "mounts"
+            | "onCreateCommand"
+            | "updateContentCommand"
+            | "postCreateCommand"
+            | "postStartCommand"
+            | "postAttachCommand"
+    )
+}
+
+fn validate_feature_metadata_schema(metadata: &FeatureMetadata) -> Result<()> {
+    if metadata.id.trim().is_empty() {
+        bail!("Feature metadata id must not be empty");
+    }
+    if metadata.version.trim().is_empty() {
+        bail!("Feature metadata version must not be empty");
+    }
+    for (option, schema) in &metadata.options {
+        validate_feature_option_schema(&metadata.id, option, schema)?;
     }
 
     Ok(())
@@ -1049,9 +1147,10 @@ where
     for (instance_key, input) in &nodes {
         let mut required = dependency_edges.remove(instance_key).unwrap_or_default();
         for dependency in &input.metadata.installs_after {
-            let dependency_id = canonical_feature_dependency_id(dependency);
+            let dependency_target =
+                soft_order_feature_target(&input.reference, dependency, "installsAfter")?;
             for (candidate_key, candidate) in &nodes {
-                if candidate.feature.canonical_id == dependency_id {
+                if feature_matches_order_target(candidate, &dependency_target.canonical_id)? {
                     required.insert(candidate_key.clone());
                 }
             }
@@ -1059,7 +1158,7 @@ where
         dependencies.insert(instance_key.clone(), required);
     }
 
-    let priorities = override_feature_install_priorities(override_feature_install_order);
+    let priorities = override_feature_install_priorities(&nodes, override_feature_install_order)?;
     let mut worklist = nodes.keys().cloned().collect::<BTreeSet<_>>();
     let mut installed = BTreeSet::new();
     let mut ordered = Vec::new();
@@ -1085,8 +1184,7 @@ where
                 let canonical_id = &nodes
                     .get(instance_key)
                     .expect("ready Feature must exist in install graph")
-                    .feature
-                    .canonical_id;
+                    .instance_key;
                 feature_round_priority(canonical_id, &priorities)
             })
             .max()
@@ -1097,8 +1195,7 @@ where
                 let canonical_id = &nodes
                     .get(instance_key)
                     .expect("ready Feature must exist in install graph")
-                    .feature
-                    .canonical_id;
+                    .instance_key;
                 feature_round_priority(canonical_id, &priorities) == max_priority
             })
             .collect::<Vec<_>>();
@@ -1332,12 +1429,25 @@ impl FeatureResolver<'_> {
     }
 
     fn resolve_local_source(&self, reference: &LocalFeatureRef) -> Result<FeatureSource> {
+        let devcontainer_dir = self.devcontainer_dir.canonicalize().with_context(|| {
+            format!(
+                "Failed to resolve devcontainer directory: {}",
+                self.devcontainer_dir.display()
+            )
+        })?;
         let source_dir = reference.path.canonicalize().with_context(|| {
             format!(
                 "Failed to resolve local Feature directory: {}",
                 reference.path.display()
             )
         })?;
+        if !source_dir.starts_with(&devcontainer_dir) {
+            bail!(
+                "Local Feature path must stay inside devcontainer directory {}: {}",
+                devcontainer_dir.display(),
+                source_dir.display()
+            );
+        }
         ensure_feature_files(&source_dir)?;
         let document =
             read_feature_metadata_document(&source_dir.join("devcontainer-feature.json"))?;
@@ -1453,7 +1563,10 @@ fn feature_install_input_instance_key(input: &FeatureInstallInput) -> String {
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join("\x1f");
-    format!("test\x1e{}\x1e{options}", input.feature.canonical_id)
+    format!(
+        "test\x1e{}\x1e{}\x1e{options}",
+        input.feature.canonical_id, input.feature.id
+    )
 }
 
 fn local_feature_content_digest(source_dir: &Path) -> Result<String> {
@@ -1579,6 +1692,75 @@ fn dependency_feature_target(
         reference,
         canonical_id: parsed.canonical_id().to_owned(),
     })
+}
+
+fn soft_order_feature_target(
+    parent: &FeatureRef,
+    dependency: &str,
+    property: &str,
+) -> Result<FeatureDependencyTarget> {
+    ensure_feature_order_identifier_is_unpinned(dependency, property)?;
+    dependency_feature_target(parent, dependency)
+        .with_context(|| format!("Failed to resolve Feature {property} ref: {dependency}"))
+}
+
+fn ensure_feature_order_identifier_is_unpinned(value: &str, property: &str) -> Result<()> {
+    let (without_digest, digest) = split_digest(value)?;
+    if digest.is_some() {
+        bail!("Feature {property} value `{value}` must not include a digest");
+    }
+    let (_, tag) = split_tag(without_digest);
+    if tag.is_some() {
+        bail!("Feature {property} value `{value}` must not include a version tag");
+    }
+
+    Ok(())
+}
+
+fn feature_order_value_is_unqualified(value: &str) -> bool {
+    !value.starts_with("./") && parse_feature_ref(value).is_err()
+}
+
+fn feature_matches_order_value(
+    input: &FeatureInstallInput,
+    value: &str,
+    property: &str,
+) -> Result<bool> {
+    ensure_feature_order_identifier_is_unpinned(value, property)?;
+    if feature_order_value_is_unqualified(value) && matches!(input.reference, FeatureRef::Local(_))
+    {
+        return Ok(false);
+    }
+    let target = dependency_feature_target(&input.reference, value)
+        .with_context(|| format!("Failed to resolve Feature {property} ref: {value}"))?;
+
+    feature_matches_order_target(input, &target.canonical_id)
+}
+
+fn feature_matches_order_target(input: &FeatureInstallInput, canonical_id: &str) -> Result<bool> {
+    if input.feature.canonical_id == canonical_id {
+        return Ok(true);
+    }
+
+    for legacy_id in &input.metadata.legacy_ids {
+        ensure_feature_order_identifier_is_unpinned(legacy_id, "legacyIds")?;
+        if feature_order_value_is_unqualified(legacy_id)
+            && matches!(input.reference, FeatureRef::Local(_))
+        {
+            continue;
+        }
+        let target = dependency_feature_target(&input.reference, legacy_id).with_context(|| {
+            format!(
+                "Failed to resolve Feature legacyIds value for {}: {}",
+                input.feature.canonical_id, legacy_id
+            )
+        })?;
+        if target.canonical_id == canonical_id {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
 }
 
 fn feature_cache_archive_path(cache_root: &Path, digest: &str) -> PathBuf {
@@ -1848,17 +2030,26 @@ fn feature_reference_matches(input: &FeatureInstallInput, dependency_ref: &str) 
         && existing.digest == dependency.digest
 }
 
-fn override_feature_install_priorities(override_order: &[String]) -> BTreeMap<String, usize> {
+fn override_feature_install_priorities(
+    nodes: &BTreeMap<String, FeatureInstallInput>,
+    override_order: &[String],
+) -> Result<BTreeMap<String, usize>> {
     let count = override_order.len();
-    override_order
-        .iter()
-        .enumerate()
-        .map(|(index, feature)| (canonical_feature_dependency_id(feature), count - index))
-        .collect()
+    let mut priorities = BTreeMap::new();
+    for (index, feature) in override_order.iter().enumerate() {
+        ensure_feature_order_identifier_is_unpinned(feature, "overrideFeatureInstallOrder")?;
+        for (instance_key, input) in nodes {
+            if feature_matches_order_value(input, feature, "overrideFeatureInstallOrder")? {
+                priorities.insert(instance_key.clone(), count - index);
+            }
+        }
+    }
+
+    Ok(priorities)
 }
 
-fn feature_round_priority(canonical_id: &str, priorities: &BTreeMap<String, usize>) -> usize {
-    priorities.get(canonical_id).copied().unwrap_or_default()
+fn feature_round_priority(instance_key: &str, priorities: &BTreeMap<String, usize>) -> usize {
+    priorities.get(instance_key).copied().unwrap_or_default()
 }
 
 fn stable_feature_order(
@@ -1872,15 +2063,71 @@ fn stable_feature_order(
         return std::cmp::Ordering::Less;
     };
 
-    left.feature
-        .canonical_id
-        .cmp(&right.feature.canonical_id)
+    feature_resource_sort_name(left)
+        .cmp(&feature_resource_sort_name(right))
+        .then_with(|| feature_tag_sort_key(left).cmp(&feature_tag_sort_key(right)))
         .then_with(|| right.feature.options.len().cmp(&left.feature.options.len()))
         .then_with(|| {
             feature_options_sort_key(&left.feature.options)
                 .cmp(&feature_options_sort_key(&right.feature.options))
         })
+        .then_with(|| feature_canonical_sort_name(left).cmp(&feature_canonical_sort_name(right)))
         .then_with(|| left.feature.id.cmp(&right.feature.id))
+}
+
+fn feature_resource_sort_name(input: &FeatureInstallInput) -> String {
+    match &input.reference {
+        FeatureRef::Oci(reference) => reference.canonical_id.clone(),
+        FeatureRef::Local(_) => input.feature.canonical_id.clone(),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum FeatureTagSortKey {
+    Tagged(Vec<FeatureTagPart>),
+    Latest,
+    Digest,
+    Local,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum FeatureTagPart {
+    Number(u64),
+    Text(String),
+}
+
+fn feature_tag_sort_key(input: &FeatureInstallInput) -> FeatureTagSortKey {
+    match &input.reference {
+        FeatureRef::Local(_) => FeatureTagSortKey::Local,
+        FeatureRef::Oci(reference) if reference.digest.is_some() => FeatureTagSortKey::Digest,
+        FeatureRef::Oci(reference) if reference.tag.as_deref() == Some("latest") => {
+            FeatureTagSortKey::Latest
+        }
+        FeatureRef::Oci(reference) => FeatureTagSortKey::Tagged(feature_tag_parts(
+            reference.tag.as_deref().unwrap_or_default(),
+        )),
+    }
+}
+
+fn feature_tag_parts(tag: &str) -> Vec<FeatureTagPart> {
+    tag.split(['.', '-', '_'])
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            part.parse::<u64>()
+                .map(FeatureTagPart::Number)
+                .unwrap_or_else(|_| FeatureTagPart::Text(part.to_ascii_lowercase()))
+        })
+        .collect()
+}
+
+fn feature_canonical_sort_name(input: &FeatureInstallInput) -> String {
+    match &input.reference {
+        FeatureRef::Oci(reference) => reference
+            .digest
+            .clone()
+            .unwrap_or_else(|| input.instance_key.clone()),
+        FeatureRef::Local(_) => input.instance_key.clone(),
+    }
 }
 
 fn feature_options_sort_key(options: &BTreeMap<String, toml::Value>) -> Vec<(String, String)> {
@@ -1916,11 +2163,35 @@ fn validate_feature_option_schema(
     option: &str,
     schema: &FeatureOptionSchema,
 ) -> Result<()> {
-    match schema.option_type.as_deref() {
-        Some("string" | "boolean") | None => Ok(()),
-        Some(option_type) => {
-            bail!("Unsupported Feature option type for {feature_id}.{option}: {option_type}")
+    let Some(option_type) = schema.option_type.as_deref() else {
+        bail!("Feature option {feature_id}.{option} must specify type");
+    };
+
+    match option_type {
+        "string" => {
+            let default = schema.default.as_ref().ok_or_else(|| {
+                anyhow!("Feature option {feature_id}.{option} must specify default")
+            })?;
+            if !default.is_string() {
+                bail!("Feature option default {feature_id}.{option} must be a string");
+            }
+            Ok(())
         }
+        "boolean" => {
+            let default = schema.default.as_ref().ok_or_else(|| {
+                anyhow!("Feature option {feature_id}.{option} must specify default")
+            })?;
+            if !default.is_boolean() {
+                bail!("Feature option default {feature_id}.{option} must be a boolean");
+            }
+            if !schema.enum_values.is_empty() || !schema.proposals.is_empty() {
+                bail!(
+                    "Feature option {feature_id}.{option} boolean schema must not declare enum or proposals"
+                );
+            }
+            Ok(())
+        }
+        _ => bail!("Unsupported Feature option type for {feature_id}.{option}: {option_type}"),
     }
 }
 
@@ -1999,25 +2270,32 @@ fn validate_feature_option_enum(
 }
 
 fn feature_option_env_name(option: &str) -> String {
-    let sanitized = option
+    let mut sanitized = option
         .chars()
         .map(|ch| {
             if ch.is_ascii_alphanumeric() || ch == '_' {
-                ch.to_ascii_uppercase()
+                ch
             } else {
                 '_'
             }
         })
         .collect::<String>();
-    if sanitized
-        .chars()
-        .next()
-        .is_some_and(|ch| ch.is_ascii_alphabetic())
-    {
-        sanitized
-    } else {
-        format!("_{sanitized}")
+
+    let prefix_len = sanitized
+        .char_indices()
+        .find(|(_, ch)| !ch.is_ascii_digit() && *ch != '_')
+        .map(|(index, _)| index)
+        .unwrap_or(sanitized.len());
+    if prefix_len > 0 {
+        sanitized.replace_range(..prefix_len, "_");
+    } else if sanitized.is_empty() {
+        sanitized.push('_');
     }
+
+    sanitized
+        .chars()
+        .map(|ch| ch.to_ascii_uppercase())
+        .collect()
 }
 
 fn registry_url(reference: &OciFeatureRef, suffix: &str) -> String {
@@ -2551,7 +2829,7 @@ mod tests {
         fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
         fs::write(
             feature_dir.join("devcontainer-feature.json"),
-            r#"{"id":"local"}"#,
+            r#"{"id":"local","version":"1.0.0"}"#,
         )
         .unwrap();
         fs::write(
@@ -2620,6 +2898,7 @@ mod tests {
             tool_dir.join("devcontainer-feature.json"),
             r#"{
                 "id": "tool",
+                "version": "1.0.0",
                 "dependsOn": {
                     "./features/base": {
                         "version": "1.2"
@@ -2631,7 +2910,7 @@ mod tests {
         fs::write(tool_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
         fs::write(
             base_dir.join("devcontainer-feature.json"),
-            r#"{"id":"base"}"#,
+            r#"{"id":"base","version":"1.0.0"}"#,
         )
         .unwrap();
         fs::write(base_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
@@ -2669,6 +2948,42 @@ mod tests {
     }
 
     #[test]
+    fn local_feature_path_must_stay_inside_devcontainer_dir() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_dir = workspace_root.join("outside-feature");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{"id":"outside-feature","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        let features = vec![ResolvedFeature {
+            id: "./../outside-feature".to_owned(),
+            canonical_id: "local:../outside-feature".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let error = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &cache_root.join("extracted"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(".devcontainer"), "{error:#}");
+    }
+
+    #[test]
     fn feature_metadata_rejects_initialize_command_and_wait_for() {
         let temp = tempfile::tempdir().unwrap();
         let metadata_path = temp.path().join("devcontainer-feature.json");
@@ -2676,14 +2991,71 @@ mod tests {
         for (property, content) in [
             (
                 "initializeCommand",
-                r#"{"id":"tool","initializeCommand":"echo host"}"#,
+                r#"{"id":"tool","version":"1.0.0","initializeCommand":"echo host"}"#,
             ),
-            ("waitFor", r#"{"id":"tool","waitFor":"postCreateCommand"}"#),
+            (
+                "waitFor",
+                r#"{"id":"tool","version":"1.0.0","waitFor":"postCreateCommand"}"#,
+            ),
         ] {
             fs::write(&metadata_path, content).unwrap();
             let error = read_feature_metadata_document(&metadata_path).unwrap_err();
 
             assert!(error.to_string().contains(property), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn feature_metadata_rejects_properties_outside_feature_schema() {
+        let temp = tempfile::tempdir().unwrap();
+        let metadata_path = temp.path().join("devcontainer-feature.json");
+
+        for (property, content) in [
+            (
+                "remoteUser",
+                r#"{"id":"tool","version":"1.0.0","remoteUser":"vscode"}"#,
+            ),
+            (
+                "workspaceFolder",
+                r#"{"id":"tool","version":"1.0.0","workspaceFolder":"/workspace"}"#,
+            ),
+            (
+                "runArgs",
+                r#"{"id":"tool","version":"1.0.0","runArgs":["--init"]}"#,
+            ),
+            (
+                "image",
+                r#"{"id":"tool","version":"1.0.0","image":"alpine:3.20"}"#,
+            ),
+            (
+                "x-extra",
+                r#"{"id":"tool","version":"1.0.0","x-extra":true}"#,
+            ),
+        ] {
+            fs::write(&metadata_path, content).unwrap();
+            let error = read_feature_metadata_document(&metadata_path).unwrap_err();
+
+            assert!(error.to_string().contains(property), "{error:#}");
+        }
+    }
+
+    #[test]
+    fn feature_metadata_requires_id_version_and_option_defaults() {
+        let temp = tempfile::tempdir().unwrap();
+        let metadata_path = temp.path().join("devcontainer-feature.json");
+
+        for (expected, content) in [
+            ("id", r#"{"version":"1.0.0"}"#),
+            ("version", r#"{"id":"tool"}"#),
+            (
+                "default",
+                r#"{"id":"tool","version":"1.0.0","options":{"version":{"type":"string"}}}"#,
+            ),
+        ] {
+            fs::write(&metadata_path, content).unwrap();
+            let error = read_feature_metadata_document(&metadata_path).unwrap_err();
+
+            assert!(error.to_string().contains(expected), "{error:#}");
         }
     }
 
@@ -2832,7 +3204,10 @@ mod tests {
             &source_archive,
             &[
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
-                ("devcontainer-feature.json", br#"{"id":"tool"}"#.as_slice()),
+                (
+                    "devcontainer-feature.json",
+                    br#"{"id":"tool","version":"1.0.0"}"#.as_slice(),
+                ),
             ],
         );
         let blob = fs::read(&source_archive).unwrap();
@@ -2882,7 +3257,10 @@ mod tests {
             &archive,
             &[
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
-                ("devcontainer-feature.json", br#"{"id":"stale"}"#.as_slice()),
+                (
+                    "devcontainer-feature.json",
+                    br#"{"id":"stale","version":"1.0.0"}"#.as_slice(),
+                ),
             ],
         );
         let fresh_archive = temp.path().join("fresh.tgz");
@@ -2890,7 +3268,10 @@ mod tests {
             &fresh_archive,
             &[
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
-                ("devcontainer-feature.json", br#"{"id":"fresh"}"#.as_slice()),
+                (
+                    "devcontainer-feature.json",
+                    br#"{"id":"fresh","version":"1.0.0"}"#.as_slice(),
+                ),
             ],
         );
         let blob = fs::read(&fresh_archive).unwrap();
@@ -2941,7 +3322,10 @@ mod tests {
             &source_archive,
             &[
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
-                ("devcontainer-feature.json", br#"{"id":"tool"}"#.as_slice()),
+                (
+                    "devcontainer-feature.json",
+                    br#"{"id":"tool","version":"1.0.0"}"#.as_slice(),
+                ),
             ],
         );
         let blob = fs::read(&source_archive).unwrap();
@@ -3125,6 +3509,73 @@ mod tests {
     }
 
     #[test]
+    fn feature_install_order_resolves_oci_sibling_short_installs_after() {
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/lint:1",
+                    FeatureMetadata {
+                        installs_after: vec!["tool".to_owned()],
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            missing_feature_dependency,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/tool:1",
+                "ghcr.io/example/features/lint:1",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_matches_legacy_ids_for_installs_after() {
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/new-tool:1",
+                    FeatureMetadata {
+                        legacy_ids: vec!["old-tool".to_owned()],
+                        ..FeatureMetadata::default()
+                    },
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/lint:1",
+                    FeatureMetadata {
+                        installs_after: vec!["old-tool".to_owned()],
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            missing_feature_dependency,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/new-tool:1",
+                "ghcr.io/example/features/lint:1",
+            ]
+        );
+    }
+
+    #[test]
     fn feature_install_order_reuses_latest_dependency_instance_with_implicit_or_explicit_tag() {
         let plan = resolve_feature_install_order(
             vec![
@@ -3279,6 +3730,122 @@ mod tests {
     }
 
     #[test]
+    fn override_feature_install_order_resolves_oci_sibling_short_ids() {
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/alpha:1",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/beta:1",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/gamma:1",
+                    FeatureMetadata::default(),
+                ),
+            ],
+            &["gamma".to_owned()],
+            missing_feature_dependency,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/gamma:1",
+                "ghcr.io/example/features/alpha:1",
+                "ghcr.io/example/features/beta:1",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_rejects_versioned_soft_order_ids() {
+        let installs_after_error = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/base:1",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        installs_after: vec!["base:1".to_owned()],
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            missing_feature_dependency,
+        )
+        .unwrap_err();
+        assert!(
+            installs_after_error.to_string().contains("installsAfter"),
+            "{installs_after_error:#}"
+        );
+
+        let override_error = resolve_feature_install_order(
+            vec![feature_install_input(
+                "ghcr.io/example/features/tool:1",
+                FeatureMetadata::default(),
+            )],
+            &["tool:1".to_owned()],
+            missing_feature_dependency,
+        )
+        .unwrap_err();
+        assert!(
+            override_error
+                .to_string()
+                .contains("overrideFeatureInstallOrder"),
+            "{override_error:#}"
+        );
+    }
+
+    #[test]
+    fn feature_install_order_stable_sort_orders_numeric_tags_before_latest() {
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/tool:latest",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:10",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:2",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    &format!("ghcr.io/example/features/tool@{digest}"),
+                    FeatureMetadata::default(),
+                ),
+            ],
+            &[],
+            missing_feature_dependency,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/tool:2".to_owned(),
+                "ghcr.io/example/features/tool:10".to_owned(),
+                "ghcr.io/example/features/tool:latest".to_owned(),
+                format!("ghcr.io/example/features/tool@{digest}"),
+            ]
+        );
+    }
+
+    #[test]
     fn feature_install_order_cycle_error_includes_feature_names() {
         let error = resolve_feature_install_order(
             vec![
@@ -3322,6 +3889,7 @@ mod tests {
                             option_type: Some("string".to_owned()),
                             default: Some(serde_json::json!("latest")),
                             enum_values: vec!["latest".to_owned(), "1.2".to_owned()],
+                            ..FeatureOptionSchema::default()
                         },
                     ),
                     (
@@ -3330,6 +3898,7 @@ mod tests {
                             option_type: Some("boolean".to_owned()),
                             default: Some(serde_json::json!(true)),
                             enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
                         },
                     ),
                 ]),
@@ -3361,6 +3930,7 @@ mod tests {
                             option_type: Some("boolean".to_owned()),
                             default: Some(serde_json::json!(true)),
                             enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
                         },
                     ),
                     (
@@ -3369,6 +3939,7 @@ mod tests {
                             option_type: Some("string".to_owned()),
                             default: Some(serde_json::json!("latest")),
                             enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
                         },
                     ),
                 ]),
@@ -3383,6 +3954,61 @@ mod tests {
     }
 
     #[test]
+    fn feature_option_env_uses_feature_spec_name_conversion() {
+        let feature = feature_install_input(
+            "ghcr.io/example/features/tool:1",
+            FeatureMetadata {
+                options: BTreeMap::from([
+                    (
+                        "1password".to_owned(),
+                        FeatureOptionSchema {
+                            option_type: Some("string".to_owned()),
+                            default: Some(serde_json::json!("secret")),
+                            enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
+                        },
+                    ),
+                    (
+                        "_debug".to_owned(),
+                        FeatureOptionSchema {
+                            option_type: Some("boolean".to_owned()),
+                            default: Some(serde_json::json!(true)),
+                            enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
+                        },
+                    ),
+                    (
+                        "foo-bar".to_owned(),
+                        FeatureOptionSchema {
+                            option_type: Some("string".to_owned()),
+                            default: Some(serde_json::json!("dash")),
+                            enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
+                        },
+                    ),
+                    (
+                        "has space".to_owned(),
+                        FeatureOptionSchema {
+                            option_type: Some("string".to_owned()),
+                            default: Some(serde_json::json!("space")),
+                            enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
+                        },
+                    ),
+                ]),
+                ..FeatureMetadata::default()
+            },
+        );
+
+        let env = feature_option_env(&feature.feature, &feature.metadata).unwrap();
+
+        assert_eq!(env.get("_PASSWORD").map(String::as_str), Some("secret"));
+        assert_eq!(env.get("_DEBUG").map(String::as_str), Some("true"));
+        assert_eq!(env.get("FOO_BAR").map(String::as_str), Some("dash"));
+        assert_eq!(env.get("HAS_SPACE").map(String::as_str), Some("space"));
+    }
+
+    #[test]
     fn feature_option_env_rejects_unsupported_schema_type() {
         let feature = feature_install_input(
             "ghcr.io/example/features/tool:1",
@@ -3393,6 +4019,7 @@ mod tests {
                         option_type: Some("array".to_owned()),
                         default: None,
                         enum_values: Vec::new(),
+                        ..FeatureOptionSchema::default()
                     },
                 )]),
                 ..FeatureMetadata::default()
@@ -3469,7 +4096,10 @@ mod tests {
             &archive,
             &[
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
-                ("devcontainer-feature.json", br#"{"id":"tool"}"#.as_slice()),
+                (
+                    "devcontainer-feature.json",
+                    br#"{"id":"tool","version":"1.0.0"}"#.as_slice(),
+                ),
             ],
         );
         let blob = fs::read(&archive).unwrap();
@@ -3774,7 +4404,7 @@ printf '{"Username":"store-user","Secret":"store-token"}'
     ) {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("feature.tgz");
-        let metadata = format!(r#"{{"id":"{id}"}}"#);
+        let metadata = format!(r#"{{"id":"{id}","version":"1.0.0"}}"#);
         write_feature_archive(
             &archive,
             &[
@@ -3849,7 +4479,7 @@ printf '{"Username":"store-user","Secret":"store-token"}'
             reference,
             metadata,
             source_key: id.to_owned(),
-            instance_key: format!("test\x1e{canonical_id}"),
+            instance_key: format!("test\x1e{canonical_id}\x1e{id}"),
         }
     }
 
