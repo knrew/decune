@@ -7,6 +7,7 @@ use crate::config::{
     layer::{
         LayerAutoPorts, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile, LayerFeature,
         LayerForwardPort, LayerMount, LayerPort, LayerPortAttributes, LayerPublishPort,
+        feature_merge_identity,
     },
     resolved::{
         ResolvedAutoPorts, ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile,
@@ -202,28 +203,30 @@ impl MergeAccumulator {
     }
 
     fn merge_feature(&mut self, feature: LayerFeature) {
-        if let Some(position) = self
-            .features
-            .iter()
-            .position(|entry| entry.canonical_id == feature.canonical_id)
-        {
-            if feature.enabled {
+        if feature.enabled {
+            let merge_identity = feature_merge_identity(&feature.id);
+            if let Some(position) = self
+                .features
+                .iter()
+                .position(|entry| feature_merge_identity(&entry.id) == merge_identity)
+            {
                 let existing = &mut self.features[position];
                 existing.id = feature.id;
                 existing.options.extend(feature.options);
-            } else {
-                self.features.remove(position);
+                return;
             }
-            return;
-        }
 
-        if feature.enabled {
             self.features.push(ResolvedFeature {
                 id: feature.id,
                 canonical_id: feature.canonical_id,
                 options: feature.options,
             });
+            return;
         }
+
+        remove_by_identity(&mut self.features, |existing| {
+            existing.canonical_id == feature.canonical_id
+        });
     }
 
     fn merge_dotfile(&mut self, dotfile: LayerDotfile) {
@@ -1022,13 +1025,13 @@ enabled = false
     }
 
     #[test]
-    fn feature_options_merge_by_canonical_id() {
+    fn feature_options_merge_by_concrete_feature_ref() {
         let config = resolve_config(ConfigMergeInput {
             global: Some(raw_layer(
                 r#"
 version = 1
 
-[features."ghcr.io/example/features/tool:1"]
+[features."ghcr.io/example/features/tool"]
 version = "1"
 channel = "stable"
 "#,
@@ -1037,7 +1040,7 @@ channel = "stable"
                 r#"
 version = 1
 
-[features."ghcr.io/example/features/tool@sha256:abcd"]
+[features."ghcr.io/example/features/tool:latest"]
 version = "2"
 "#,
             )),
@@ -1047,7 +1050,7 @@ version = "2"
         assert_eq!(config.features.len(), 1);
         assert_eq!(
             config.features[0].id,
-            "ghcr.io/example/features/tool@sha256:abcd"
+            "ghcr.io/example/features/tool:latest"
         );
         assert_eq!(
             config.features[0].options.get("version"),
@@ -1057,6 +1060,108 @@ version = "2"
             config.features[0].options.get("channel"),
             Some(&Value::String("stable".to_owned()))
         );
+    }
+
+    #[test]
+    fn feature_entries_with_distinct_tags_are_preserved_across_layers() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool:1"]
+version = "one"
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool:2"]
+version = "two"
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config
+                .features
+                .iter()
+                .map(|feature| feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/tool:1",
+                "ghcr.io/example/features/tool:2",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_entries_with_distinct_digests_are_preserved_across_layers() {
+        let first_digest =
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let second_digest =
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(&format!(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool@{first_digest}"]
+version = "one"
+"#
+            ))),
+            project: Some(raw_layer(&format!(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool@{second_digest}"]
+version = "two"
+"#
+            ))),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config
+                .features
+                .iter()
+                .map(|feature| feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                format!("ghcr.io/example/features/tool@{first_digest}"),
+                format!("ghcr.io/example/features/tool@{second_digest}"),
+            ]
+        );
+    }
+
+    #[test]
+    fn disabled_feature_removes_all_concrete_refs_by_canonical_id() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool:1"]
+version = "one"
+
+[features."ghcr.io/example/features/tool:2"]
+version = "two"
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool"]
+enabled = false
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.features.is_empty());
     }
 
     #[test]
