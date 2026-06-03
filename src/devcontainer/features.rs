@@ -30,6 +30,11 @@ use crate::{
 };
 
 pub(crate) const FEATURE_LOCK_VERSION: u32 = 1;
+const DOCKER_HUB_CANONICAL_HOST: &str = "docker.io";
+const DOCKER_HUB_REGISTRY_HOST: &str = "registry-1.docker.io";
+const DOCKER_HUB_INDEX_HOST: &str = "index.docker.io";
+const DOCKER_HUB_INDEX_AUTH_KEY: &str = "index.docker.io/v1";
+const DOCKER_HUB_CREDENTIAL_HELPER_SERVER: &str = "https://index.docker.io/v1/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FeatureRef {
@@ -540,10 +545,13 @@ impl DockerConfigAuthStore {
 
     fn get(&self, registry: &str) -> Result<Option<RegistryAuth>> {
         let registry = normalize_registry_auth_key(registry);
+        let lookup_keys = registry_auth_lookup_keys(&registry);
+        let helper_server = registry_auth_helper_server(&registry);
         if let Some(auth) = docker_config_helper_auth(
             &self.cred_helpers,
             self.creds_store.as_deref(),
-            &registry,
+            &lookup_keys,
+            &helper_server,
             &self.helper_paths,
         )
         .with_context(|| {
@@ -552,7 +560,13 @@ impl DockerConfigAuthStore {
             return Ok(Some(auth));
         }
 
-        Ok(self.entries.get(&registry).cloned())
+        for key in lookup_keys {
+            if let Some(auth) = self.entries.get(&key) {
+                return Ok(Some(auth.clone()));
+            }
+        }
+
+        Ok(None)
     }
 }
 
@@ -1889,31 +1903,12 @@ fn verify_digest(content: &[u8], digest: &str) -> Result<()> {
 }
 
 fn find_required_feature_file(root: &Path, name: &str) -> Result<PathBuf> {
-    find_file_by_name(root, name)?
-        .ok_or_else(|| anyhow!("Feature archive is missing required file: {name}"))
-}
-
-fn find_file_by_name(root: &Path, name: &str) -> Result<Option<PathBuf>> {
-    for entry in fs::read_dir(root)
-        .with_context(|| format!("Failed to read directory: {}", root.display()))?
-    {
-        let entry =
-            entry.with_context(|| format!("Failed to read directory entry: {}", root.display()))?;
-        let path = entry.path();
-        if path.file_name().and_then(|value| value.to_str()) == Some(name) {
-            return Ok(Some(path));
-        }
-        if entry
-            .file_type()
-            .with_context(|| format!("Failed to read file type: {}", path.display()))?
-            .is_dir()
-            && let Some(path) = find_file_by_name(&path, name)?
-        {
-            return Ok(Some(path));
-        }
+    let path = root.join(name);
+    if !path.is_file() {
+        bail!("Feature archive must contain {name} at its root");
     }
 
-    Ok(None)
+    Ok(path)
 }
 
 fn validate_archive_entry_path(path: &Path) -> Result<()> {
@@ -2175,6 +2170,11 @@ fn validate_feature_option_schema(
             if !default.is_string() {
                 bail!("Feature option default {feature_id}.{option} must be a string");
             }
+            if !schema.enum_values.is_empty() && !schema.proposals.is_empty() {
+                bail!(
+                    "Feature option {feature_id}.{option} must not declare both enum and proposals"
+                );
+            }
             Ok(())
         }
         "boolean" => {
@@ -2301,10 +2301,21 @@ fn feature_option_env_name(option: &str) -> String {
 fn registry_url(reference: &OciFeatureRef, suffix: &str) -> String {
     format!(
         "https://{}/v2/{}/{}",
-        reference.registry,
+        registry_endpoint_host(&reference.registry),
         reference.repository_path(),
         suffix
     )
+}
+
+fn registry_endpoint_host(registry: &str) -> &str {
+    if matches!(
+        registry,
+        DOCKER_HUB_CANONICAL_HOST | DOCKER_HUB_INDEX_HOST | DOCKER_HUB_REGISTRY_HOST
+    ) {
+        DOCKER_HUB_REGISTRY_HOST
+    } else {
+        registry
+    }
 }
 
 fn registry_accept_header() -> HeaderValue {
@@ -2402,6 +2413,44 @@ fn normalize_registry_auth_key(registry: &str) -> String {
         .unwrap_or(registry)
         .trim_end_matches('/')
         .to_owned()
+}
+
+fn registry_auth_lookup_keys(registry: &str) -> Vec<String> {
+    if !is_docker_hub_auth_key(registry) {
+        return vec![registry.to_owned()];
+    }
+
+    let mut keys = vec![registry.to_owned()];
+    for key in [
+        DOCKER_HUB_INDEX_AUTH_KEY,
+        DOCKER_HUB_CANONICAL_HOST,
+        DOCKER_HUB_REGISTRY_HOST,
+        DOCKER_HUB_INDEX_HOST,
+    ] {
+        if !keys.iter().any(|existing| existing.as_str() == key) {
+            keys.push(key.to_owned());
+        }
+    }
+
+    keys
+}
+
+fn registry_auth_helper_server(registry: &str) -> String {
+    if is_docker_hub_auth_key(registry) {
+        DOCKER_HUB_CREDENTIAL_HELPER_SERVER.to_owned()
+    } else {
+        registry.to_owned()
+    }
+}
+
+fn is_docker_hub_auth_key(registry: &str) -> bool {
+    matches!(
+        registry,
+        DOCKER_HUB_CANONICAL_HOST
+            | DOCKER_HUB_REGISTRY_HOST
+            | DOCKER_HUB_INDEX_HOST
+            | DOCKER_HUB_INDEX_AUTH_KEY
+    )
 }
 
 fn bearer_challenge(headers: &HeaderMap) -> Option<BearerChallenge> {
@@ -2583,12 +2632,13 @@ impl DockerAuthEntry {
 fn docker_config_helper_auth(
     cred_helpers: &BTreeMap<String, String>,
     creds_store: Option<&str>,
-    registry: &str,
+    registry_keys: &[String],
+    helper_server: &str,
     helper_paths: &[PathBuf],
 ) -> Result<Option<RegistryAuth>> {
-    let helper = cred_helpers
-        .get(registry)
-        .map(String::as_str)
+    let helper = registry_keys
+        .iter()
+        .find_map(|registry| cred_helpers.get(registry).map(String::as_str))
         .or(creds_store);
     let Some(helper) = helper else {
         return Ok(None);
@@ -2596,7 +2646,7 @@ fn docker_config_helper_auth(
     let Some(binary) = docker_credential_helper_binary(helper, helper_paths) else {
         return Ok(None);
     };
-    let Some(output) = run_docker_credential_helper_get(&binary, registry)? else {
+    let Some(output) = run_docker_credential_helper_get(&binary, helper_server)? else {
         return Ok(None);
     };
     let Some(secret) = output.secret else {
@@ -3190,6 +3240,54 @@ mod tests {
 
         assert!(error.to_string().contains("Unsafe feature archive path"));
         assert!(!temp.path().join("escape").exists());
+    }
+
+    #[test]
+    fn feature_archive_requires_feature_files_at_archive_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&cache_root).unwrap();
+        let digest = sha256_digest(MANIFEST_DIGEST_HEX);
+        let archive = feature_cache_archive_path(&cache_root, &digest);
+        let source_archive = temp.path().join("source.tgz");
+        write_feature_archive(
+            &source_archive,
+            &[
+                ("feature/install.sh", b"#!/bin/sh\n".as_slice()),
+                (
+                    "feature/devcontainer-feature.json",
+                    br#"{"id":"tool","version":"1.0.0"}"#.as_slice(),
+                ),
+            ],
+        );
+        let blob = fs::read(&source_archive).unwrap();
+        let layer_digest = format!("sha256:{}", hex_lower(&Sha256::digest(&blob)));
+        write_cache_archive(
+            &archive,
+            &blob,
+            &FeatureCacheMetadata {
+                manifest_digest: digest.clone(),
+                layer_digest,
+            },
+        )
+        .unwrap();
+        let reference =
+            parse_oci_feature_ref(&format!("ghcr.io/example/features/tool@{digest}")).unwrap();
+
+        let error = pull_oci_feature_with_client(
+            &reference,
+            &cache_root,
+            &temp.path().join("extract"),
+            &PanicRegistryClient,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Feature archive must contain install.sh at its root"),
+            "{error:#}"
+        );
     }
 
     #[test]
@@ -4037,6 +4135,35 @@ mod tests {
     }
 
     #[test]
+    fn feature_option_env_rejects_string_schema_with_enum_and_proposals() {
+        let feature = feature_install_input(
+            "ghcr.io/example/features/tool:1",
+            FeatureMetadata {
+                options: BTreeMap::from([(
+                    "version".to_owned(),
+                    FeatureOptionSchema {
+                        option_type: Some("string".to_owned()),
+                        default: Some(serde_json::json!("latest")),
+                        enum_values: vec!["latest".to_owned()],
+                        proposals: vec!["preview".to_owned()],
+                        ..FeatureOptionSchema::default()
+                    },
+                )]),
+                ..FeatureMetadata::default()
+            },
+        );
+
+        let error = feature_option_env(&feature.feature, &feature.metadata).unwrap_err();
+
+        assert!(
+            error.to_string().contains(
+                "Feature option ghcr.io/example/features/tool:1.version must not declare both enum and proposals"
+            ),
+            "{error:#}"
+        );
+    }
+
+    #[test]
     fn manifest_response_rejects_body_digest_mismatch_for_digest_reference() {
         let requested_digest = sha256_digest(MANIFEST_DIGEST_HEX);
         let body = br#"{"layers":[]}"#;
@@ -4137,6 +4264,16 @@ mod tests {
     }
 
     #[test]
+    fn docker_hub_registry_url_uses_registry_endpoint() {
+        let reference = parse_oci_feature_ref("docker.io/example/features/tool:1").unwrap();
+
+        assert_eq!(
+            registry_url(&reference, "manifests/1"),
+            "https://registry-1.docker.io/v2/example/features/tool/manifests/1"
+        );
+    }
+
+    #[test]
     fn docker_config_auth_decodes_registry_credentials() {
         let temp = tempfile::tempdir().unwrap();
         let config = temp.path().join("config.json");
@@ -4155,6 +4292,29 @@ mod tests {
                 password: "token".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn docker_config_auth_matches_docker_hub_index_auth_for_aliases() {
+        let temp = tempfile::tempdir().unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{"auths":{"https://index.docker.io/v1/":{"auth":"aHViOnRva2Vu"}}}"#,
+        )
+        .unwrap();
+        let store = DockerConfigAuthStore::from_config_file(&config).unwrap();
+
+        for registry in ["docker.io", "registry-1.docker.io", "index.docker.io"] {
+            assert_eq!(
+                store.get(registry).unwrap(),
+                Some(RegistryAuth::Basic {
+                    username: "hub".to_owned(),
+                    password: "token".to_owned(),
+                }),
+                "{registry}"
+            );
+        }
     }
 
     #[test]
@@ -4200,6 +4360,88 @@ printf '{"Username":"helper-user","Secret":"helper-token"}'
             Some(RegistryAuth::Basic {
                 username: "helper-user".to_owned(),
                 password: "helper-token".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn docker_config_auth_uses_docker_hub_index_address_for_default_credential_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-store");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = https://index.docker.io/v1/
+printf '{"Username":"hub-user","Secret":"hub-token"}'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credsStore": "store"
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(
+            store.get("docker.io").unwrap(),
+            Some(RegistryAuth::Basic {
+                username: "hub-user".to_owned(),
+                password: "hub-token".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn docker_config_auth_uses_trailing_slash_docker_hub_helper_server() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-hub");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = https://index.docker.io/v1/
+printf '{"Username":"hub-user","Secret":"hub-token"}'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credHelpers": {
+                    "docker.io": "hub"
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(
+            store.get("docker.io").unwrap(),
+            Some(RegistryAuth::Basic {
+                username: "hub-user".to_owned(),
+                password: "hub-token".to_owned(),
             })
         );
     }
