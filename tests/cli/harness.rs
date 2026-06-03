@@ -284,6 +284,94 @@ pub(crate) async fn create_image_without_devcontainer_metadata(
     Ok(())
 }
 
+pub(crate) async fn create_image_with_github_cli(image_tag: &str) -> anyhow::Result<()> {
+    let docker = Docker::connect_with_defaults()?;
+    ensure_alpine_image(&docker).await?;
+
+    let container_name = format!(
+        "decune-github-cli-source-{}",
+        &hex_lower(&Sha256::digest(image_tag.as_bytes()))[..12]
+    );
+    let remove_options = RemoveContainerOptionsBuilder::default()
+        .force(true)
+        .v(true)
+        .build();
+    let _ = docker
+        .remove_container(&container_name, Some(remove_options.clone()))
+        .await;
+
+    let create_options = CreateContainerOptionsBuilder::default()
+        .name(&container_name)
+        .build();
+    let script = r#"
+        set -eu
+        printf '%s\n' \
+          '#!/bin/sh' \
+          'set -eu' \
+          'if [ "$1" = auth ] && [ "$2" = login ]; then' \
+          '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+          '  mkdir -p "$GH_CONFIG_DIR"' \
+          '  cat > "$GH_CONFIG_DIR/token"' \
+          '  exit 0' \
+          'fi' \
+          'if [ "$1" = auth ] && [ "$2" = setup-git ]; then' \
+          '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+          '  exit 0' \
+          'fi' \
+          'echo "unexpected fake gh command: $*" >&2' \
+          'exit 91' \
+          >/usr/local/bin/gh
+        chmod +x /usr/local/bin/gh
+    "#;
+    let body = ContainerCreateBody {
+        image: Some("alpine:3.20".to_owned()),
+        entrypoint: Some(vec!["/bin/sh".to_owned()]),
+        cmd: Some(vec!["-c".to_owned(), script.to_owned()]),
+        ..Default::default()
+    };
+
+    docker.create_container(Some(create_options), body).await?;
+    docker
+        .start_container(
+            &container_name,
+            Some(StartContainerOptionsBuilder::default().build()),
+        )
+        .await?;
+
+    let mut wait_stream = docker.wait_container(
+        &container_name,
+        Some(WaitContainerOptionsBuilder::default().build()),
+    );
+    let wait = wait_stream
+        .try_next()
+        .await?
+        .ok_or_else(|| anyhow::anyhow!("GitHub CLI fixture container wait stream ended"))?;
+    anyhow::ensure!(
+        wait.status_code == 0,
+        "GitHub CLI fixture container exited with {}",
+        wait.status_code
+    );
+
+    let (repo, tag) = image_tag
+        .rsplit_once(':')
+        .ok_or_else(|| anyhow::anyhow!("test image tag must include a tag: {image_tag}"))?;
+    let commit_options = CommitContainerOptionsBuilder::default()
+        .container(&container_name)
+        .repo(repo)
+        .tag(tag)
+        .pause(false)
+        .build();
+
+    docker
+        .commit_container(commit_options, ContainerConfig::default())
+        .await?;
+    docker
+        .remove_container(&container_name, Some(remove_options))
+        .await?;
+
+    Ok(())
+}
+
 pub(crate) async fn create_image_with_devcontainer_metadata_label(
     image_tag: &str,
     metadata: &str,

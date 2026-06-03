@@ -273,7 +273,10 @@ fn has_devcontainer_metadata_label(labels: Option<&HashMap<String, String>>) -> 
     labels.is_some_and(|labels| labels.contains_key(DEVCONTAINER_METADATA_LABEL))
 }
 
-async fn local_image_presence(client: &DockerClient, image: &str) -> Result<LocalImagePresence> {
+pub(crate) async fn local_image_presence(
+    client: &DockerClient,
+    image: &str,
+) -> Result<LocalImagePresence> {
     match client.raw().inspect_image(image).await {
         Ok(_) => Ok(LocalImagePresence::Present),
         Err(error) if is_image_not_found(&error) => Ok(LocalImagePresence::Missing),

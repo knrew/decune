@@ -54,11 +54,11 @@ use crate::{
             resolve_exec_env, run_attached_exec_stdio,
         },
         image::{
-            PullPolicy, ensure_image,
+            LocalImagePresence, PullPolicy, ensure_image,
             image_devcontainer_metadata_layers_if_present_with_forward_ports,
             image_devcontainer_metadata_layers_with_forward_ports,
-            image_has_devcontainer_metadata_label_if_present, image_startup_command, remove_image,
-            tag_image,
+            image_has_devcontainer_metadata_label_if_present, image_startup_command,
+            local_image_presence, remove_image, tag_image,
         },
         mounts::{
             DockerMountSpec, config_mount_specs, devcontainer_mount_spec, normalize_container_path,
@@ -130,9 +130,15 @@ impl UpPlanResolution {
 struct ImageLookupPreparation<'a> {
     image: &'a mut String,
     command_image: String,
+    command_image_uses_existing_image: bool,
     base_image: &'a mut Option<String>,
     image_prepared: &'a mut bool,
     build_options: Option<(bool, bool)>,
+}
+
+struct CommandProbeImage {
+    image: String,
+    uses_existing_image: bool,
 }
 
 struct WorkspaceLocation {
@@ -723,6 +729,7 @@ async fn ensure_container_started(
             &workspace,
             existing_plan,
             containers.first().and_then(existing_container_image_id),
+            containers.first().and_then(existing_container_config_hash),
             Some((options.pull, options.no_cache)),
             options.update_features,
         )
@@ -787,6 +794,7 @@ async fn ensure_container_started(
         &client,
         &workspace,
         plan,
+        None,
         None,
         Some((options.pull, options.no_cache)),
         options.update_features,
@@ -1113,6 +1121,7 @@ async fn finalize_up_plan_mounts(
     workspace: &Workspace,
     mut plan: UpPlan,
     remote_user_image: Option<&str>,
+    existing_container_config_hash: Option<&str>,
     build_for_lookup: Option<(bool, bool)>,
     update_features: bool,
 ) -> Result<(UpPlan, bool)> {
@@ -1158,10 +1167,14 @@ async fn finalize_up_plan_mounts(
         }
     };
     let mut lookup_image = lookup_image.expect("lookup image must be set");
-    let command_probe_image = command_probe_image.unwrap_or_else(|| lookup_image.clone());
+    let command_probe_image = command_probe_image.unwrap_or(CommandProbeImage {
+        image: lookup_image.clone(),
+        uses_existing_image: false,
+    });
     let lookup = ImageLookupPreparation {
         image: &mut lookup_image,
-        command_image: command_probe_image,
+        command_image: command_probe_image.image,
+        command_image_uses_existing_image: command_probe_image.uses_existing_image,
         base_image: &mut lookup_base_image,
         image_prepared: &mut image_prepared,
         build_options: if using_existing_remote_user_image {
@@ -1170,12 +1183,55 @@ async fn finalize_up_plan_mounts(
             build_for_lookup
         },
     };
-    plan =
-        maybe_auto_add_github_cli_feature_to_plan(client, workspace, plan, lookup, update_features)
-            .await?;
+    plan = Box::pin(maybe_auto_add_github_cli_feature_to_plan(
+        client,
+        workspace,
+        plan,
+        lookup,
+        existing_container_config_hash,
+        update_features,
+    ))
+    .await?;
+    plan = Box::pin(finalize_mounts_and_resources_for_plan(
+        client,
+        workspace,
+        plan,
+        &lookup_image,
+        update_features,
+    ))
+    .await?;
+
+    if image_prepared && plan_requires_workspace_layer(&plan) {
+        if let Some((pull, no_cache)) = build_for_lookup {
+            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
+            build_feature_layer_image(client, &plan, no_cache).await?;
+        }
+        if plan.image != lookup_image {
+            remove_image(client, &lookup_image, false).await?;
+        }
+        if let Some(lookup_base_image) = lookup_base_image
+            && lookup_base_image != plan.base_image
+        {
+            remove_image(client, &lookup_base_image, false).await?;
+        }
+    } else if image_prepared && plan.image != lookup_image {
+        tag_image(client, &lookup_image, &plan.image).await?;
+        remove_image(client, &lookup_image, false).await?;
+    }
+
+    Ok((plan, image_prepared))
+}
+
+async fn finalize_mounts_and_resources_for_plan(
+    client: &DockerClient,
+    workspace: &Workspace,
+    mut plan: UpPlan,
+    lookup_image: &str,
+    update_features: bool,
+) -> Result<UpPlan> {
     let remote_user = resolve_remote_user_from_image(
         client,
-        &lookup_image,
+        lookup_image,
         RemoteUserResolveInput {
             explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
             image_metadata_remote_user: None,
@@ -1237,25 +1293,7 @@ async fn finalize_up_plan_mounts(
     plan.workspace_folder = workspace_location.workspace_folder;
     plan.mounts = mounts;
 
-    if image_prepared && plan_requires_workspace_layer(&plan) {
-        if let Some((pull, no_cache)) = build_for_lookup {
-            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
-            build_feature_layer_image(client, &plan, no_cache).await?;
-        }
-        if plan.image != lookup_image {
-            remove_image(client, &lookup_image, false).await?;
-        }
-        if let Some(lookup_base_image) = lookup_base_image
-            && lookup_base_image != plan.base_image
-        {
-            remove_image(client, &lookup_base_image, false).await?;
-        }
-    } else if image_prepared && plan.image != lookup_image {
-        tag_image(client, &lookup_image, &plan.image).await?;
-        remove_image(client, &lookup_image, false).await?;
-    }
-
-    Ok((plan, image_prepared))
+    Ok(plan)
 }
 
 async fn prepare_command_probe_image_for_plan(
@@ -1263,7 +1301,7 @@ async fn prepare_command_probe_image_for_plan(
     plan: &UpPlan,
     remote_user_image: Option<&str>,
     build_for_lookup: Option<(bool, bool)>,
-) -> Result<Option<String>> {
+) -> Result<Option<CommandProbeImage>> {
     if remote_user_image.is_none() {
         return Ok(None);
     }
@@ -1274,7 +1312,10 @@ async fn prepare_command_probe_image_for_plan(
         };
         prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
         build_feature_layer_image(client, plan, no_cache).await?;
-        return Ok(Some(plan.image.clone()));
+        return Ok(Some(CommandProbeImage {
+            image: plan.image.clone(),
+            uses_existing_image: false,
+        }));
     }
 
     if let Some(context) = plan.build_context.clone() {
@@ -1294,10 +1335,24 @@ async fn prepare_command_probe_image_for_plan(
             },
         )
         .await?;
-        return Ok(Some(plan.base_image.clone()));
+        return Ok(Some(CommandProbeImage {
+            image: plan.base_image.clone(),
+            uses_existing_image: false,
+        }));
     }
 
-    Ok(Some(plan.base_image.clone()))
+    match local_image_presence(client, &plan.base_image).await? {
+        LocalImagePresence::Present => Ok(Some(CommandProbeImage {
+            image: plan.base_image.clone(),
+            uses_existing_image: false,
+        })),
+        LocalImagePresence::Missing => Ok(Some(CommandProbeImage {
+            image: remote_user_image
+                .expect("remote user image must be set")
+                .to_owned(),
+            uses_existing_image: true,
+        })),
+    }
 }
 
 async fn prepare_feature_metadata_for_plan(
@@ -1360,6 +1415,7 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
     workspace: &Workspace,
     mut plan: UpPlan,
     lookup: ImageLookupPreparation<'_>,
+    existing_container_config_hash: Option<&str>,
     update_features: bool,
 ) -> Result<UpPlan> {
     if config_has_github_cli_feature(&plan.config) {
@@ -1378,6 +1434,18 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
         &plan.config.devcontainer.container_env,
     )
     .await?;
+    if image_has_gh && lookup.command_image_uses_existing_image {
+        return Box::pin(choose_github_cli_feature_plan_for_existing_image_probe(
+            client,
+            workspace,
+            plan,
+            &lookup,
+            existing_container_config_hash,
+            update_features,
+        ))
+        .await;
+    }
+
     if !should_auto_add_github_cli_feature(&plan.config, host_token_available, image_has_gh) {
         return Ok(plan);
     }
@@ -1392,6 +1460,52 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
         build_feature_layer_image(client, &plan, no_cache).await?;
         *lookup.image = plan.image.clone();
         *lookup.image_prepared = true;
+    }
+
+    Ok(plan)
+}
+
+async fn choose_github_cli_feature_plan_for_existing_image_probe(
+    client: &DockerClient,
+    workspace: &Workspace,
+    plan: UpPlan,
+    lookup: &ImageLookupPreparation<'_>,
+    existing_container_config_hash: Option<&str>,
+    update_features: bool,
+) -> Result<UpPlan> {
+    let Some(existing_container_config_hash) = existing_container_config_hash else {
+        return Ok(plan);
+    };
+
+    let finalized_plan = Box::pin(finalize_mounts_and_resources_for_plan(
+        client,
+        workspace,
+        plan.clone(),
+        lookup.image,
+        update_features,
+    ))
+    .await?;
+    if finalized_plan.resources.config_hash == existing_container_config_hash {
+        return Ok(plan);
+    }
+
+    if !should_auto_add_github_cli_feature(&plan.config, true, false) {
+        return Ok(plan);
+    }
+
+    let candidate = add_github_cli_feature_to_plan(plan.clone())?;
+    let candidate =
+        prepare_feature_metadata_for_plan(workspace, candidate, update_features).await?;
+    let finalized_candidate = Box::pin(finalize_mounts_and_resources_for_plan(
+        client,
+        workspace,
+        candidate.clone(),
+        lookup.image,
+        update_features,
+    ))
+    .await?;
+    if finalized_candidate.resources.config_hash == existing_container_config_hash {
+        return Ok(candidate);
     }
 
     Ok(plan)
@@ -2391,6 +2505,13 @@ fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
         .image_id
         .as_deref()
         .filter(|image_id| !image_id.trim().is_empty())
+}
+
+fn existing_container_config_hash(container: &UpContainerSummary) -> Option<&str> {
+    container
+        .config_hash
+        .as_deref()
+        .filter(|config_hash| !config_hash.trim().is_empty())
 }
 
 fn warn_about_deferred_features(config: &ResolvedConfig) {
