@@ -1132,7 +1132,11 @@ mod tests {
         let source = temp.path().join("source");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
-        fs::write(source.join("devcontainer-feature.json"), r#"{"id":"tool"}"#).unwrap();
+        fs::write(
+            source.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0"}"#,
+        )
+        .unwrap();
         let context_dir = temp.path().join("context");
         let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
             base_image: "alpine:3.20".to_owned(),

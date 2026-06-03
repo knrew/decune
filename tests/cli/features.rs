@@ -41,6 +41,7 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             r#"
             {
               "id": "env-tool",
+              "version": "1.0.0",
               "options": {
                 "value": {
                   "type": "string",
@@ -119,13 +120,10 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
 }
 
 #[test]
-fn up_detach_passes_feature_metadata_remote_user_to_feature_install() {
+fn up_detach_rejects_feature_metadata_remote_user() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
-        .create_dir(".devcontainer/features/a-create-user")
-        .unwrap();
-    workspace
-        .create_dir(".devcontainer/features/b-check-user")
+        .create_dir(".devcontainer/features/user-tool")
         .unwrap();
     workspace
         .write_file(
@@ -134,44 +132,7 @@ fn up_detach_passes_feature_metadata_remote_user_to_feature_install() {
             {
               "image": "alpine:3.20",
               "features": {
-                "./features/a-create-user": {},
-                "./features/b-check-user": {}
-              },
-              "postStartCommand": "test \"$(id -un)\" = featureuser && test -f /usr/local/share/decune-feature-user-checked"
-            }
-            "#,
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/features/a-create-user/devcontainer-feature.json",
-            r#"
-            {
-              "id": "a-create-user",
-              "remoteUser": "featureuser"
-            }
-            "#,
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/features/a-create-user/install.sh",
-            r#"
-            set -eu
-            test "${_CONTAINER_USER:-}" = root
-            test "${_REMOTE_USER:-}" = featureuser
-            adduser -D -u 1001 featureuser
-            "#,
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/features/b-check-user/devcontainer-feature.json",
-            r#"
-            {
-              "id": "b-check-user",
-              "dependsOn": {
-                "./features/a-create-user": {}
+                "./features/user-tool": {}
               }
             }
             "#,
@@ -179,13 +140,21 @@ fn up_detach_passes_feature_metadata_remote_user_to_feature_install() {
         .unwrap();
     workspace
         .write_file(
-            ".devcontainer/features/b-check-user/install.sh",
+            ".devcontainer/features/user-tool/devcontainer-feature.json",
+            r#"
+            {
+              "id": "user-tool",
+              "version": "1.0.0",
+              "remoteUser": "featureuser"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/user-tool/install.sh",
             r#"
             set -eu
-            test "${_REMOTE_USER:-}" = featureuser
-            test "${_REMOTE_USER_HOME:-}" = /home/featureuser
-            mkdir -p /usr/local/share
-            echo checked > /usr/local/share/decune-feature-user-checked
             "#,
         )
         .unwrap();
@@ -205,9 +174,9 @@ fn up_detach_passes_feature_metadata_remote_user_to_feature_install() {
             .args(["up", "--detach"])
             .arg(&workspace_root)
             .assert()
-            .success()
+            .failure()
             .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("Started dev container"));
+            .stderr(predicate::str::contains("remoteUser"));
     });
 
     runtime.block_on(async {
@@ -258,7 +227,8 @@ fn up_detach_preserves_base_image_user_after_feature_layer() {
             ".devcontainer/features/root-tool/devcontainer-feature.json",
             r#"
             {
-              "id": "root-tool"
+              "id": "root-tool",
+              "version": "1.0.0"
             }
             "#,
         )
@@ -336,6 +306,7 @@ fn up_detach_isolates_feature_option_env_between_features() {
             r#"
             {
               "id": "alpha",
+              "version": "1.0.0",
               "options": {
                 "version": {
                   "type": "string",
@@ -362,7 +333,8 @@ fn up_detach_isolates_feature_option_env_between_features() {
             ".devcontainer/features/beta/devcontainer-feature.json",
             r#"
             {
-              "id": "beta"
+              "id": "beta",
+              "version": "1.0.0"
             }
             "#,
         )
@@ -435,6 +407,7 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
             r#"
             {
               "id": "lifecycle-tool",
+              "version": "1.0.0",
               "postStartCommand": "echo feature-post-start >> /tmp/decune-feature-lifecycle"
             }
             "#,
@@ -554,6 +527,7 @@ fn up_detach_runs_feature_lifecycle_before_user_lifecycle() {
             r#"
             {
               "id": "alpha",
+              "version": "1.0.0",
               "postStartCommand": "printf 'alpha\n' >> /tmp/decune-lifecycle-order"
             }
             "#,
@@ -568,6 +542,7 @@ fn up_detach_runs_feature_lifecycle_before_user_lifecycle() {
             r#"
             {
               "id": "beta",
+              "version": "1.0.0",
               "postStartCommand": "printf 'beta\n' >> /tmp/decune-lifecycle-order"
             }
             "#,
@@ -634,6 +609,7 @@ fn up_detach_runs_feature_entrypoint_before_lifecycle() {
             r#"
             {
               "id": "entrypoint-tool",
+              "version": "1.0.0",
               "entrypoint": "touch /tmp/decune-feature-entrypoint"
             }
             "#,
@@ -715,6 +691,7 @@ fn up_detach_runs_feature_entrypoint_when_override_command_is_false() {
             r#"
             {
               "id": "entrypoint-tool",
+              "version": "1.0.0",
               "entrypoint": "touch /tmp/decune-feature-entrypoint"
             }
             "#,
