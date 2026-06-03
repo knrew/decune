@@ -1324,7 +1324,7 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
     }
 
     ui::info("Adding GitHub CLI Feature for GitHub token forwarding");
-    plan = add_github_cli_feature_to_plan(plan);
+    plan = add_github_cli_feature_to_plan(plan)?;
     plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
 
     if let Some((pull, no_cache)) = lookup.build_options {
@@ -1358,9 +1358,9 @@ fn config_has_github_cli_feature(config: &ResolvedConfig) -> bool {
         .any(|feature| feature.canonical_id == GITHUB_CLI_FEATURE_CANONICAL_ID)
 }
 
-fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> UpPlan {
+fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> Result<UpPlan> {
     if config_has_github_cli_feature(&plan.config) {
-        return plan;
+        return Ok(plan);
     }
 
     let mut cli_layer = plan.config_layers.cli.take().unwrap_or_default();
@@ -1370,8 +1370,10 @@ fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> UpPlan {
     plan.config_layers.cli = Some(cli_layer);
     plan.config = resolve_config(plan.config_layers.clone());
     plan.feature_install = None;
+    plan.image = final_image_source(&plan.config, &plan.resources)?;
+    plan.base_image = base_image_source(&plan.config, &plan.resources)?;
 
-    plan
+    Ok(plan)
 }
 
 async fn image_has_command(client: &DockerClient, image: &str, command: &str) -> Result<bool> {
@@ -2357,6 +2359,7 @@ mod tests {
         MountBindOptionsPropagationEnum, MountPoint, MountVolumeOptions,
     };
 
+    use crate::config::layer::{LayerDevcontainerMetadata, LayerDevcontainerSource};
     use crate::config::resolved::{
         ResolvedConfig, ResolvedDevcontainerSource, ResolvedPublishPort,
     };
@@ -3236,10 +3239,10 @@ digest = "sha256:locked"
 
     #[test]
     fn github_cli_auto_add_injects_feature_once() {
-        let plan = test_up_plan_with_config(ResolvedConfig::default());
+        let plan = test_up_plan_with_image_source("alpine:3.20");
 
-        let plan = add_github_cli_feature_to_plan(plan);
-        let plan = add_github_cli_feature_to_plan(plan);
+        let plan = add_github_cli_feature_to_plan(plan).unwrap();
+        let plan = add_github_cli_feature_to_plan(plan).unwrap();
 
         let github_cli_features = plan
             .config
@@ -3252,6 +3255,17 @@ digest = "sha256:locked"
             github_cli_features[0].id,
             "ghcr.io/devcontainers/features/github-cli:1"
         );
+    }
+
+    #[test]
+    fn github_cli_auto_add_retickets_image_sources_to_workspace_layer() {
+        let plan = test_up_plan_with_image_source("ubuntu:24.04");
+
+        let plan = add_github_cli_feature_to_plan(plan).unwrap();
+
+        assert_eq!(plan.base_image, "ubuntu:24.04");
+        assert_eq!(plan.image, plan.resources.image_tag);
+        assert_ne!(plan.image, plan.base_image);
     }
 
     #[test]
@@ -5333,6 +5347,22 @@ user = "root"
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         }
+    }
+
+    fn test_up_plan_with_image_source(image: &str) -> UpPlan {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.source = Some(ResolvedDevcontainerSource::Image(image.to_owned()));
+        let mut plan = test_up_plan_with_config(config);
+        plan.image = image.to_owned();
+        plan.base_image = image.to_owned();
+        plan.config_layers.devcontainer = Some(ConfigLayer {
+            devcontainer: Some(LayerDevcontainerMetadata {
+                source: Some(LayerDevcontainerSource::Image(image.to_owned())),
+                ..LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        });
+        plan
     }
 
     fn container_has_mount_target(
