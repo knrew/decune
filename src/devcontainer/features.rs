@@ -2024,10 +2024,7 @@ fn find_existing_feature_instance(
 }
 
 fn feature_reference_matches(input: &FeatureInstallInput, dependency_ref: &str) -> bool {
-    if input.feature.id == dependency_ref
-        || crate::config::layer::canonical_feature_id(&input.feature.id)
-            == crate::config::layer::canonical_feature_id(dependency_ref)
-    {
+    if input.feature.id == dependency_ref {
         return true;
     }
 
@@ -3806,6 +3803,103 @@ mod tests {
             vec![
                 "ghcr.io/example/features/base",
                 "ghcr.io/example/features/tool:1",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_treats_same_dependency_with_different_tags_as_distinct_instances() {
+        let mut resolved_dependency = false;
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/base:1",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        depends_on: BTreeMap::from([(
+                            "ghcr.io/example/features/base:2".to_owned(),
+                            serde_json::json!({}),
+                        )]),
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            |request| {
+                resolved_dependency = true;
+                assert_eq!(request.reference, "ghcr.io/example/features/base:2");
+                Ok(feature_install_input(
+                    &request.reference,
+                    FeatureMetadata::default(),
+                ))
+            },
+        )
+        .unwrap();
+
+        assert!(resolved_dependency);
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/base:1",
+                "ghcr.io/example/features/base:2",
+                "ghcr.io/example/features/tool:1",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_treats_same_dependency_with_different_digests_as_distinct_instances() {
+        let first_digest =
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let second_digest =
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        let mut resolved_dependency = false;
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    &format!("ghcr.io/example/features/base@{first_digest}"),
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        depends_on: BTreeMap::from([(
+                            format!("ghcr.io/example/features/base@{second_digest}"),
+                            serde_json::json!({}),
+                        )]),
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            |request| {
+                resolved_dependency = true;
+                assert_eq!(
+                    request.reference,
+                    format!("ghcr.io/example/features/base@{second_digest}")
+                );
+                Ok(feature_install_input(
+                    &request.reference,
+                    FeatureMetadata::default(),
+                ))
+            },
+        )
+        .unwrap();
+
+        assert!(resolved_dependency);
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                format!("ghcr.io/example/features/base@{first_digest}"),
+                format!("ghcr.io/example/features/base@{second_digest}"),
+                "ghcr.io/example/features/tool:1".to_owned(),
             ]
         );
     }
