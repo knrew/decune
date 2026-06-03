@@ -34,7 +34,7 @@ const DOCKER_HUB_CANONICAL_HOST: &str = "docker.io";
 const DOCKER_HUB_REGISTRY_HOST: &str = "registry-1.docker.io";
 const DOCKER_HUB_INDEX_HOST: &str = "index.docker.io";
 const DOCKER_HUB_INDEX_AUTH_KEY: &str = "index.docker.io/v1";
-const DOCKER_HUB_CREDENTIAL_HELPER_SERVER: &str = "https://index.docker.io/v1";
+const DOCKER_HUB_CREDENTIAL_HELPER_SERVER: &str = "https://index.docker.io/v1/";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FeatureRef {
@@ -4376,7 +4376,7 @@ printf '{"Username":"helper-user","Secret":"helper-token"}'
 set -eu
 test "$1" = get
 server="$(cat)"
-test "$server" = https://index.docker.io/v1
+test "$server" = https://index.docker.io/v1/
 printf '{"Username":"hub-user","Secret":"hub-token"}'
 "#,
         )
@@ -4387,6 +4387,48 @@ printf '{"Username":"hub-user","Secret":"hub-token"}'
             &config,
             r#"{
                 "credsStore": "store"
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(
+            store.get("docker.io").unwrap(),
+            Some(RegistryAuth::Basic {
+                username: "hub-user".to_owned(),
+                password: "hub-token".to_owned(),
+            })
+        );
+    }
+
+    #[test]
+    fn docker_config_auth_uses_trailing_slash_docker_hub_helper_server() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-hub");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = https://index.docker.io/v1/
+printf '{"Username":"hub-user","Secret":"hub-token"}'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credHelpers": {
+                    "docker.io": "hub"
+                }
             }"#,
         )
         .unwrap();
