@@ -30,6 +30,7 @@ use crate::{
 };
 
 pub(crate) const FEATURE_LOCK_VERSION: u32 = 1;
+const DEVCONTAINER_FEATURE_LAYER_MEDIA_TYPE: &str = "application/vnd.devcontainers.layer.v1+tar";
 const DOCKER_HUB_CANONICAL_HOST: &str = "docker.io";
 const DOCKER_HUB_REGISTRY_HOST: &str = "registry-1.docker.io";
 const DOCKER_HUB_INDEX_HOST: &str = "index.docker.io";
@@ -644,6 +645,15 @@ pub(crate) fn write_feature_lock_file(path: &Path, lock: &FeatureLockFile) -> Re
     Ok(())
 }
 
+pub(crate) fn remove_feature_lock_file(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error)
+            .with_context(|| format!("Failed to remove feature lock file: {}", path.display())),
+    }
+}
+
 pub(crate) fn resolve_locked_feature_ref(
     feature: &FeatureRef,
     lock: &FeatureLockFile,
@@ -986,7 +996,9 @@ pub(crate) fn prepare_feature_install_plan(
     override_feature_install_order: &[String],
     update_features: bool,
 ) -> Result<Option<PreparedFeatureInstallPlan>> {
+    let lock_path = workspace_root.join(".decune").join("features.lock.toml");
     if features.is_empty() {
+        remove_feature_lock_file(&lock_path)?;
         return Ok(None);
     }
 
@@ -996,7 +1008,6 @@ pub(crate) fn prepare_feature_install_plan(
             devcontainer_file.display()
         )
     })?;
-    let lock_path = workspace_root.join(".decune").join("features.lock.toml");
     let lock = read_feature_lock_file(&lock_path)?;
     let mut resolver = FeatureResolver {
         devcontainer_dir,
@@ -1064,7 +1075,9 @@ pub(crate) fn prepare_feature_install_plan(
     lock_file_entries.dedup_by(|left, right| {
         left.id == right.id && left.reference == right.reference && left.digest == right.digest
     });
-    if !lock_file_entries.is_empty() {
+    if lock_file_entries.is_empty() {
+        remove_feature_lock_file(&lock_path)?;
+    } else {
         write_feature_lock_file(
             &lock_path,
             &FeatureLockFile {
@@ -1810,8 +1823,7 @@ fn select_feature_archive_layer(manifest: &OciManifestResponse) -> Option<&OciLa
     manifest
         .layers
         .iter()
-        .find(|layer| layer.media_type.contains("tar"))
-        .or_else(|| manifest.layers.first())
+        .find(|layer| layer.media_type == DEVCONTAINER_FEATURE_LAYER_MEDIA_TYPE)
 }
 
 fn cached_feature_archive_is_valid(
@@ -3169,6 +3181,90 @@ mod tests {
     }
 
     #[test]
+    fn prepared_plan_removes_stale_lock_file_when_feature_graph_is_empty() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let lock_path = workspace_root.join(".decune/features.lock.toml");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        write_feature_lock_file(
+            &lock_path,
+            &FeatureLockFile {
+                version: FEATURE_LOCK_VERSION,
+                features: vec![FeatureLockEntry {
+                    id: "ghcr.io/example/features/tool".to_owned(),
+                    reference: "ghcr.io/example/features/tool:1".to_owned(),
+                    digest: "sha256:locked".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+
+        let plan = prepare_feature_install_plan(
+            &[],
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &temp.path().join("cache"),
+            &temp.path().join("extract"),
+            &[],
+            false,
+        )
+        .unwrap();
+
+        assert!(plan.is_none());
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
+    fn prepared_plan_removes_stale_lock_file_when_only_local_features_remain() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let local_feature_dir = devcontainer_dir.join("tool");
+        let lock_path = workspace_root.join(".decune/features.lock.toml");
+        fs::create_dir_all(&local_feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(local_feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(
+            local_feature_dir.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        write_feature_lock_file(
+            &lock_path,
+            &FeatureLockFile {
+                version: FEATURE_LOCK_VERSION,
+                features: vec![FeatureLockEntry {
+                    id: "ghcr.io/example/features/tool".to_owned(),
+                    reference: "ghcr.io/example/features/tool:1".to_owned(),
+                    digest: "sha256:locked".to_owned(),
+                }],
+            },
+        )
+        .unwrap();
+
+        let plan = prepare_feature_install_plan(
+            &[ResolvedFeature {
+                id: "./tool".to_owned(),
+                canonical_id: "local:tool".to_owned(),
+                options: BTreeMap::new(),
+            }],
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &temp.path().join("cache"),
+            &temp.path().join("extract"),
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(plan.entries.len(), 1);
+        assert!(!lock_path.exists());
+    }
+
+    #[test]
     fn prepared_plan_lock_file_preserves_same_feature_id_with_distinct_digests() {
         let temp = tempfile::tempdir().unwrap();
         let workspace_root = temp.path().join("workspace");
@@ -4380,6 +4476,50 @@ mod tests {
 
         assert_eq!(manifest.digest, actual_digest);
         assert_eq!(manifest.layers.len(), 1);
+    }
+
+    #[test]
+    fn feature_archive_layer_requires_devcontainer_layer_media_type() {
+        let manifest = OciManifestResponse {
+            digest: sha256_digest(MANIFEST_DIGEST_HEX),
+            layers: vec![OciLayerDescriptor {
+                digest: sha256_digest(
+                    "1111111111111111111111111111111111111111111111111111111111111111",
+                ),
+                media_type: "application/vnd.oci.image.layer.v1.tar+gzip".to_owned(),
+                size: 12,
+            }],
+        };
+
+        assert!(select_feature_archive_layer(&manifest).is_none());
+    }
+
+    #[test]
+    fn feature_archive_layer_ignores_non_feature_tar_layers() {
+        let image_layer_digest =
+            sha256_digest("1111111111111111111111111111111111111111111111111111111111111111");
+        let feature_layer_digest =
+            sha256_digest("2222222222222222222222222222222222222222222222222222222222222222");
+        let manifest = OciManifestResponse {
+            digest: sha256_digest(MANIFEST_DIGEST_HEX),
+            layers: vec![
+                OciLayerDescriptor {
+                    digest: image_layer_digest,
+                    media_type: "application/vnd.oci.image.layer.v1.tar+gzip".to_owned(),
+                    size: 12,
+                },
+                OciLayerDescriptor {
+                    digest: feature_layer_digest.clone(),
+                    media_type: "application/vnd.devcontainers.layer.v1+tar".to_owned(),
+                    size: 34,
+                },
+            ],
+        };
+
+        assert_eq!(
+            select_feature_archive_layer(&manifest).map(|layer| layer.digest.as_str()),
+            Some(feature_layer_digest.as_str())
+        );
     }
 
     #[test]
