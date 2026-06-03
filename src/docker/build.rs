@@ -16,7 +16,7 @@ use futures_util::StreamExt;
 
 use crate::{
     config::{canonical::sha256_hex, hash::BuildHashInput, layer::LayerDevcontainerBuild},
-    docker::client::DockerClient,
+    docker::{client::DockerClient, image::validate_image_name},
     ui,
 };
 
@@ -377,6 +377,7 @@ fn resolve_path(base: &Path, value: &str) -> PathBuf {
 }
 
 fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
+    validate_image_name(&input.base_image)?;
     let final_user = dockerfile_user(&input.final_user)?;
     Ok(format!(
         "FROM {}\nUSER root\nRUN mkdir -p /usr/local/share/decune\nCOPY {FEATURE_ENTRYPOINT_WRAPPER_FILE} {FEATURE_ENTRYPOINT_WRAPPER}\nCOPY {FEATURE_ENTRYPOINTS_FILE} {FEATURE_ENTRYPOINTS_TARGET}\nRUN chmod +x {FEATURE_ENTRYPOINT_WRAPPER}\nCOPY . /tmp/decune-features/\nRUN /bin/sh /tmp/decune-features/install-features.sh\nUSER {final_user}\n",
@@ -1185,6 +1186,43 @@ mod tests {
             )
             .unwrap(),
             "VERSION='1.2'\n"
+        );
+    }
+
+    #[test]
+    fn feature_layer_build_context_rejects_invalid_base_image() {
+        let temp = tempdir("feature-layer-build-context-invalid-base");
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(
+            source.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        let context_dir = temp.path().join("context");
+
+        let error = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
+            base_image: "alpine:3.20\nRUN false".to_owned(),
+            devcontainer_id: "workspace-id".to_owned(),
+            final_user: "root".to_owned(),
+            entrypoints: Vec::new(),
+            install_env: BTreeMap::new(),
+            context_dir,
+            features: vec![FeatureLayerBuildFeature {
+                id: "ghcr.io/example/features/tool".to_owned(),
+                source_dir: source,
+                option_env: BTreeMap::new(),
+                container_env: BTreeMap::new(),
+            }],
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Docker image name contains unsupported whitespace"),
+            "{error:#}"
         );
     }
 

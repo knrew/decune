@@ -329,9 +329,18 @@ async fn pull_image(client: &DockerClient, image: &str) -> Result<()> {
     Ok(())
 }
 
-fn validate_image_name(image: &str) -> Result<()> {
+pub(crate) fn validate_image_name(image: &str) -> Result<()> {
     if image.trim().is_empty() {
         bail!("Docker image name must not be empty");
+    }
+    if image.trim() != image {
+        bail!("Docker image name must not contain surrounding whitespace: {image:?}");
+    }
+    if image
+        .chars()
+        .any(|character| character.is_ascii_control() || character.is_whitespace())
+    {
+        bail!("Docker image name contains unsupported whitespace or control characters: {image:?}");
     }
 
     Ok(())
@@ -408,7 +417,7 @@ mod tests {
     use super::{
         ImagePullOutcome, LocalImagePresence, PullPolicy, create_image_options_for_pull,
         ensure_image, has_devcontainer_metadata_label, image_tags_for_repository,
-        parse_devcontainer_metadata_label, progress_line, should_pull_image,
+        parse_devcontainer_metadata_label, progress_line, should_pull_image, validate_image_name,
     };
 
     #[test]
@@ -433,6 +442,20 @@ mod tests {
             PullPolicy::Missing,
             LocalImagePresence::Missing
         ));
+    }
+
+    #[test]
+    fn image_name_validation_rejects_whitespace_and_control_characters() {
+        for image in ["", " ", " alpine:3.20", "alpine:3.20 ", "alpine\nRUN true"] {
+            let error = validate_image_name(image).unwrap_err();
+            assert!(
+                error.to_string().contains("Docker image name"),
+                "{image:?}: {error:#}"
+            );
+        }
+
+        validate_image_name("alpine:3.20").unwrap();
+        validate_image_name("ghcr.io/example/tool@sha256:abc123").unwrap();
     }
 
     #[test]
