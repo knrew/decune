@@ -37,6 +37,7 @@ const GIT_CREDENTIAL_HELPER_NAME: &str = "git-credential-decune";
 const HOST_GITCONFIG_NAME: &str = "host-gitconfig";
 const GITHUB_CLI_TOKEN_DIR_NAME: &str = "gh-token";
 const GITHUB_CLI_TOKEN_FILE_NAME: &str = "token";
+const GITHUB_CLI_FEATURE_CANONICAL_ID: &str = "ghcr.io/devcontainers/features/github-cli";
 const HOST_DAEMON_SOCKET_TARGET: &str = "/run/decune/host-daemon.sock";
 const GIT_CREDENTIAL_HELPER_TARGET: &str = "/run/decune/git-credential-decune";
 const HOST_GITCONFIG_TARGET: &str = "/run/decune/host-gitconfig";
@@ -724,8 +725,8 @@ pub(crate) async fn setup_github_cli_credentials(
         ui::warn(&format!(
             "GitHub CLI token forwarding is unavailable in container: {container}"
         ));
-        if config.credentials.github.install_feature_if_missing {
-            ui::warn("GitHub CLI Feature auto-install is not applied yet in this milestone");
+        if github_cli_feature_is_configured(config) {
+            ui::warn("GitHub CLI Feature is configured but gh is not available in the container");
         }
         return Ok(());
     }
@@ -1076,8 +1077,25 @@ fn github_cli_credentials_enabled(credentials: &ResolvedGithubCredentials) -> bo
     credentials.enabled && credentials.mode == GithubCredentialsMode::GhTokenFile
 }
 
+fn github_cli_feature_is_configured(config: &ResolvedConfig) -> bool {
+    config
+        .features
+        .iter()
+        .any(|feature| feature.canonical_id == GITHUB_CLI_FEATURE_CANONICAL_ID)
+}
+
 fn host_github_auth_token() -> Result<Option<String>> {
     host_github_auth_token_from(Path::new("gh"))
+}
+
+#[cfg(not(test))]
+pub(crate) fn host_github_auth_token_available() -> Result<bool> {
+    Ok(host_github_auth_token()?.is_some())
+}
+
+#[cfg(test)]
+pub(crate) fn host_github_auth_token_available() -> Result<bool> {
+    Ok(false)
 }
 
 fn host_github_auth_token_from(command: &Path) -> Result<Option<String>> {

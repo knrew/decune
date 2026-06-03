@@ -82,6 +82,9 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
             r#"
             version = 1
             shell = "/usr/local/bin/decune-wait-shell"
+
+            [credentials.github]
+            enabled = false
             "#,
         )
         .unwrap();
@@ -190,6 +193,9 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
             r#"
             version = 1
             shell = "/usr/local/bin/decune-wait-shell"
+
+            [credentials.github]
+            enabled = false
             "#,
         )
         .unwrap();
@@ -299,6 +305,9 @@ fn up_attached_auto_forwards_new_container_listen_port() {
             r#"
             version = 1
             shell = "/usr/local/bin/decune-wait-shell"
+
+            [credentials.github]
+            enabled = false
             "#,
         )
         .unwrap();

@@ -2,18 +2,25 @@ use std::{
     collections::BTreeMap,
     future::Future,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use anyhow::{Context, Result, bail};
 use bollard::models::{ContainerSummary, MountBindOptions, MountVolumeOptions};
+use bollard::query_parameters::WaitContainerOptionsBuilder;
+use futures_util::TryStreamExt;
 
 use crate::{
     config::{
         ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry,
         MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
-        MountVolumeOptionsHashInput, config_hash, layer::LayerDevcontainerMount,
-        load::load_config_file, resolve_config, resolved::ResolvedConfig,
-        resolved::ResolvedDevcontainerSource, types::MountType,
+        MountVolumeOptionsHashInput, config_hash,
+        layer::{LayerDevcontainerMount, LayerFeature},
+        load::load_config_file,
+        resolve_config,
+        resolved::ResolvedConfig,
+        resolved::ResolvedDevcontainerSource,
+        types::{GithubCredentialsMode, MountType},
     },
     devcontainer::{
         features::{
@@ -37,7 +44,7 @@ use crate::{
         },
         client::DockerClient,
         container::{
-            ContainerCreateInput, ContainerCreateSpec, create_container,
+            ContainerCreateInput, ContainerCreateSpec, ContainerHostConfig, create_container,
             devcontainer_keepalive_command, remove_container, start_container, stop_container,
             workspace_container_list_options,
         },
@@ -67,7 +74,8 @@ use crate::{
         credentials::{
             DECUNE_RUNTIME_TARGET, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET,
             GitCredentialRuntime, GithubCliRuntime, SSH_AGENT_SOCKET_TARGET, SshAgentRuntime,
-            prepare_git_credential_runtime, prepare_github_cli_runtime, prepare_ssh_agent_runtime,
+            host_github_auth_token_available, prepare_git_credential_runtime,
+            prepare_github_cli_runtime, prepare_ssh_agent_runtime,
         },
         daemon::HostDaemon,
         forward::{
@@ -82,6 +90,9 @@ use crate::{
 
 const CONFIG_HASH_LABEL: &str = "decune.config_hash";
 const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
+const GITHUB_CLI_FEATURE_REF: &str = "ghcr.io/devcontainers/features/github-cli:1";
+const GITHUB_CLI_FEATURE_CANONICAL_ID: &str = "ghcr.io/devcontainers/features/github-cli";
+static IMAGE_COMMAND_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS: &[&str] = &[
     DECUNE_RUNTIME_TARGET,
     SSH_AGENT_SOCKET_TARGET,
@@ -114,6 +125,13 @@ impl UpPlanResolution {
             update_features,
         }
     }
+}
+
+struct ImageLookupPreparation<'a> {
+    image: &'a mut String,
+    base_image: &'a mut Option<String>,
+    image_prepared: &'a mut bool,
+    build_options: Option<(bool, bool)>,
 }
 
 struct WorkspaceLocation {
@@ -1102,7 +1120,7 @@ async fn finalize_up_plan_mounts(
     let mut image_prepared = false;
     plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
     if lookup_image.is_none() {
-        if plan.feature_install.is_some() {
+        if plan_requires_workspace_layer(&plan) {
             let Some((pull, no_cache)) = build_for_lookup else {
                 return Ok((plan, false));
             };
@@ -1134,7 +1152,16 @@ async fn finalize_up_plan_mounts(
             lookup_image = Some(plan.base_image.clone());
         }
     };
-    let lookup_image = lookup_image.expect("lookup image must be set");
+    let mut lookup_image = lookup_image.expect("lookup image must be set");
+    let lookup = ImageLookupPreparation {
+        image: &mut lookup_image,
+        base_image: &mut lookup_base_image,
+        image_prepared: &mut image_prepared,
+        build_options: build_for_lookup,
+    };
+    plan =
+        maybe_auto_add_github_cli_feature_to_plan(client, workspace, plan, lookup, update_features)
+            .await?;
     let remote_user = resolve_remote_user_from_image(
         client,
         &lookup_image,
@@ -1199,7 +1226,7 @@ async fn finalize_up_plan_mounts(
     plan.workspace_folder = workspace_location.workspace_folder;
     plan.mounts = mounts;
 
-    if image_prepared && plan.feature_install.is_some() {
+    if image_prepared && plan_requires_workspace_layer(&plan) {
         if let Some((pull, no_cache)) = build_for_lookup {
             prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
             build_feature_layer_image(client, &plan, no_cache).await?;
@@ -1225,7 +1252,14 @@ async fn prepare_feature_metadata_for_plan(
     mut plan: UpPlan,
     update_features: bool,
 ) -> Result<UpPlan> {
-    if plan.feature_install.is_some() || plan.config.features.is_empty() {
+    if plan.feature_install.is_some() {
+        return Ok(plan);
+    }
+    if plan.config.features.is_empty() {
+        if !plan.config.devcontainer.entrypoints.is_empty() {
+            plan.feature_build_context_dir =
+                Some(workspace.paths().cache_dir().join("feature-build-context"));
+        }
         return Ok(plan);
     }
 
@@ -1266,6 +1300,137 @@ async fn prepare_feature_metadata_for_plan(
         Some(workspace.paths().cache_dir().join("feature-build-context"));
 
     Ok(plan)
+}
+
+async fn maybe_auto_add_github_cli_feature_to_plan(
+    client: &DockerClient,
+    workspace: &Workspace,
+    mut plan: UpPlan,
+    lookup: ImageLookupPreparation<'_>,
+    update_features: bool,
+) -> Result<UpPlan> {
+    if config_has_github_cli_feature(&plan.config) {
+        return Ok(plan);
+    }
+
+    let host_token_available = host_github_auth_token_available()?;
+    if !should_auto_add_github_cli_feature(&plan.config, host_token_available, false) {
+        return Ok(plan);
+    }
+
+    let image_has_gh = image_has_command(client, lookup.image, "gh").await?;
+    if !should_auto_add_github_cli_feature(&plan.config, host_token_available, image_has_gh) {
+        return Ok(plan);
+    }
+
+    ui::info("Adding GitHub CLI Feature for GitHub token forwarding");
+    plan = add_github_cli_feature_to_plan(plan);
+    plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
+
+    if let Some((pull, no_cache)) = lookup.build_options {
+        prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
+        *lookup.base_image = Some(plan.base_image.clone());
+        build_feature_layer_image(client, &plan, no_cache).await?;
+        *lookup.image = plan.image.clone();
+        *lookup.image_prepared = true;
+    }
+
+    Ok(plan)
+}
+
+fn should_auto_add_github_cli_feature(
+    config: &ResolvedConfig,
+    host_token_available: bool,
+    image_has_gh: bool,
+) -> bool {
+    config.credentials.github.enabled
+        && config.credentials.github.mode == GithubCredentialsMode::GhTokenFile
+        && config.credentials.github.install_feature_if_missing
+        && host_token_available
+        && !image_has_gh
+        && !config_has_github_cli_feature(config)
+}
+
+fn config_has_github_cli_feature(config: &ResolvedConfig) -> bool {
+    config
+        .features
+        .iter()
+        .any(|feature| feature.canonical_id == GITHUB_CLI_FEATURE_CANONICAL_ID)
+}
+
+fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> UpPlan {
+    if config_has_github_cli_feature(&plan.config) {
+        return plan;
+    }
+
+    let mut cli_layer = plan.config_layers.cli.take().unwrap_or_default();
+    cli_layer
+        .features
+        .push(LayerFeature::new(GITHUB_CLI_FEATURE_REF.to_owned()));
+    plan.config_layers.cli = Some(cli_layer);
+    plan.config = resolve_config(plan.config_layers.clone());
+    plan.feature_install = None;
+
+    plan
+}
+
+async fn image_has_command(client: &DockerClient, image: &str, command: &str) -> Result<bool> {
+    let probe_id = IMAGE_COMMAND_PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let name = format!("decune-command-probe-{}-{probe_id}", std::process::id());
+    let spec = ContainerCreateSpec {
+        image: image.to_owned(),
+        name: name.clone(),
+        entrypoint: Some(vec!["/bin/sh".to_owned()]),
+        command: Some(vec![
+            "-c".to_owned(),
+            format!("command -v {command} >/dev/null 2>&1"),
+        ]),
+        labels: BTreeMap::new(),
+        env: BTreeMap::new(),
+        working_dir: None,
+        user: None,
+        mounts: Vec::new(),
+        publish_ports: Vec::new(),
+        host_config: ContainerHostConfig::default(),
+    };
+    let container_id = create_container(client, &spec).await?;
+    let result = async {
+        start_container(client, &container_id).await?;
+        wait_for_container_exit_code(client, &container_id).await
+    }
+    .await;
+    let cleanup = remove_container(client, &container_id, true, true).await;
+
+    match (result, cleanup) {
+        (Ok(exit_code), Ok(())) => Ok(exit_code == 0),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(_), Err(cleanup_error)) => Err(cleanup_error)
+            .with_context(|| format!("Failed to remove command probe container: {name}")),
+        (Err(error), Err(cleanup_error)) => Err(error).context(format!(
+            "Failed to remove command probe container {name}: {cleanup_error:#}"
+        )),
+    }
+}
+
+async fn wait_for_container_exit_code(client: &DockerClient, container: &str) -> Result<i64> {
+    let options = WaitContainerOptionsBuilder::default()
+        .condition("not-running")
+        .build();
+    match client
+        .raw()
+        .wait_container(container, Some(options))
+        .try_next()
+        .await
+    {
+        Ok(Some(response)) => Ok(response.status_code),
+        Ok(None) => Err(anyhow::anyhow!(
+            "Docker container wait ended without a response: {container}"
+        )),
+        Err(bollard::errors::Error::DockerContainerWaitError { code, .. }) => Ok(code),
+        Err(error) => {
+            Err(error).with_context(|| format!("Failed to wait for Docker container: {container}"))
+        }
+    }
 }
 
 async fn prepare_base_image_for_plan(
@@ -1310,9 +1475,9 @@ async fn build_feature_layer_image(
     plan: &UpPlan,
     no_cache: bool,
 ) -> Result<()> {
-    let Some(feature_install) = &plan.feature_install else {
+    if !plan_requires_workspace_layer(plan) {
         return Ok(());
-    };
+    }
     let feature_build_context_dir = plan
         .feature_build_context_dir
         .as_ref()
@@ -1334,16 +1499,22 @@ async fn build_feature_layer_image(
         entrypoints: plan.config.devcontainer.entrypoints.clone(),
         install_env,
         context_dir: feature_build_context_dir.clone(),
-        features: feature_install
-            .entries
-            .iter()
-            .map(|entry| FeatureLayerBuildFeature {
-                id: entry.feature.canonical_id.clone(),
-                source_dir: entry.source_dir.clone(),
-                option_env: entry.option_env.clone(),
-                container_env: entry.container_env.clone(),
+        features: plan
+            .feature_install
+            .as_ref()
+            .map(|feature_install| {
+                feature_install
+                    .entries
+                    .iter()
+                    .map(|entry| FeatureLayerBuildFeature {
+                        id: entry.feature.canonical_id.clone(),
+                        source_dir: entry.source_dir.clone(),
+                        option_env: entry.option_env.clone(),
+                        container_env: entry.container_env.clone(),
+                    })
+                    .collect()
             })
-            .collect(),
+            .unwrap_or_default(),
     })?;
     build_image(
         client,
@@ -1358,6 +1529,14 @@ async fn build_feature_layer_image(
         },
     )
     .await
+}
+
+fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
+    plan.feature_install.is_some() || config_requires_workspace_layer(&plan.config)
+}
+
+fn config_requires_workspace_layer(config: &ResolvedConfig) -> bool {
+    !config.features.is_empty() || !config.devcontainer.entrypoints.is_empty()
 }
 
 fn feature_install_env(plan: &UpPlan, image_user: &str) -> BTreeMap<String, String> {
@@ -1404,7 +1583,7 @@ async fn create_and_start_container(
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    if plan.feature_install.is_some() {
+    if plan_requires_workspace_layer(plan) {
         if !image_prepared {
             prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
             build_feature_layer_image(client, plan, no_cache).await?;
@@ -1439,8 +1618,7 @@ async fn create_and_start_container(
         .await?;
     }
 
-    let has_feature_entrypoints =
-        plan.feature_install.is_some() && !plan.config.devcontainer.entrypoints.is_empty();
+    let has_feature_entrypoints = !plan.config.devcontainer.entrypoints.is_empty();
     let (entrypoint, command) = if has_feature_entrypoints {
         let command = if plan.config.devcontainer.override_command {
             let (entrypoint, command) = devcontainer_keepalive_command();
@@ -1826,7 +2004,7 @@ async fn start_new_container(client: &DockerClient, container_name: &str) -> Res
 }
 
 fn final_image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {
-    if !config.features.is_empty() {
+    if config_requires_workspace_layer(config) {
         return Ok(resources.image_tag.clone());
     }
 
@@ -1840,7 +2018,9 @@ fn final_image_source(config: &ResolvedConfig, resources: &DockerResources) -> R
 fn base_image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
-        Some(ResolvedDevcontainerSource::Dockerfile(_)) if !config.features.is_empty() => {
+        Some(ResolvedDevcontainerSource::Dockerfile(_))
+            if config_requires_workspace_layer(config) =>
+        {
             Ok(format!("{}-base", resources.image_tag))
         }
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
@@ -2198,11 +2378,12 @@ mod tests {
         CredentialRuntimeMountPolicy, DECUNE_RUNTIME_TARGET, ExistingContainerDecision,
         ForwardingResolution, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
         add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-        build_up_plan, build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
-        build_up_plan_with_update_features, container_summary, create_and_start_container,
-        decide_existing_container, default_workspace_folder, first_successful_shell_candidate,
-        list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
-        shell_command_candidates,
+        add_github_cli_feature_to_plan, build_up_plan, build_up_plan_with_forwarding_resolution,
+        build_up_plan_with_image_metadata, build_up_plan_with_update_features, container_summary,
+        create_and_start_container, decide_existing_container, default_workspace_folder,
+        first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
+        run_attached_up, run_detached_up, shell_command_candidates,
+        should_auto_add_github_cli_feature,
     };
 
     #[test]
@@ -3031,6 +3212,46 @@ digest = "sha256:locked"
         let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
 
         assert!(error.to_string().contains("ghcr.io/features"), "{error:#}");
+    }
+
+    #[test]
+    fn github_cli_auto_add_requires_token_and_missing_container_binary() {
+        let mut config = ResolvedConfig::default();
+
+        assert!(should_auto_add_github_cli_feature(&config, true, false));
+        assert!(!should_auto_add_github_cli_feature(&config, false, false));
+        assert!(!should_auto_add_github_cli_feature(&config, true, true));
+
+        config.credentials.github.install_feature_if_missing = false;
+        assert!(!should_auto_add_github_cli_feature(&config, true, false));
+
+        config.credentials.github.install_feature_if_missing = true;
+        config.credentials.github.enabled = false;
+        assert!(!should_auto_add_github_cli_feature(&config, true, false));
+
+        config.credentials.github.enabled = true;
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+        assert!(!should_auto_add_github_cli_feature(&config, true, false));
+    }
+
+    #[test]
+    fn github_cli_auto_add_injects_feature_once() {
+        let plan = test_up_plan_with_config(ResolvedConfig::default());
+
+        let plan = add_github_cli_feature_to_plan(plan);
+        let plan = add_github_cli_feature_to_plan(plan);
+
+        let github_cli_features = plan
+            .config
+            .features
+            .iter()
+            .filter(|feature| feature.canonical_id == "ghcr.io/devcontainers/features/github-cli")
+            .collect::<Vec<_>>();
+        assert_eq!(github_cli_features.len(), 1);
+        assert_eq!(
+            github_cli_features[0].id,
+            "ghcr.io/devcontainers/features/github-cli:1"
+        );
     }
 
     #[test]

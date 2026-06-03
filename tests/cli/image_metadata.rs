@@ -272,7 +272,7 @@ fn up_detach_ignores_unsupported_image_metadata_forward_ports() {
 }
 
 #[test]
-fn up_detach_does_not_wrap_image_metadata_only_entrypoint_without_feature_layer() {
+fn up_detach_runs_image_metadata_only_entrypoint_without_feature_layer() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_tag = format!(
@@ -291,7 +291,7 @@ fn up_detach_does_not_wrap_image_metadata_only_entrypoint_without_feature_layer(
                 r#"
                 {{
                   "image": "{image_tag}",
-                  "postStartCommand": "test -f /tmp/decune-image-command"
+                  "postStartCommand": "test -f /tmp/decune-image-metadata-entrypoint && test -f /tmp/decune-image-command"
                 }}
                 "#
             ),

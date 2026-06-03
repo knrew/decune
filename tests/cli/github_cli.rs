@@ -1,7 +1,7 @@
 use crate::harness::*;
 
 #[test]
-fn up_detach_warns_when_github_cli_is_missing_in_container_without_leaking_token() {
+fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_without_leaking_token() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     let path_roots = tempfile::tempdir().unwrap();
@@ -25,6 +25,9 @@ fn up_detach_warns_when_github_cli_is_missing_in_container_without_leaking_token
 
             [credentials.git]
             enabled = false
+
+            [credentials.github]
+            install_feature_if_missing = false
             "#,
         )
         .unwrap();
@@ -384,6 +387,9 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
 
             [credentials.git]
             enabled = false
+
+            [credentials.github]
+            install_feature_if_missing = false
             "#,
         )
         .unwrap();

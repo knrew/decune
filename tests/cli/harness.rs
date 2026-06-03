@@ -25,7 +25,18 @@ pub(crate) use std::{
 pub(crate) use crate::support;
 
 pub(crate) fn decune() -> Command {
-    Command::cargo_bin("decune").unwrap()
+    let gh_config_dir =
+        std::env::temp_dir().join(format!("decune-cli-test-empty-gh-{}", std::process::id()));
+    std::fs::create_dir_all(&gh_config_dir).unwrap();
+
+    let mut command = Command::cargo_bin("decune").unwrap();
+    command
+        .env("GH_CONFIG_DIR", gh_config_dir)
+        .env_remove("GH_TOKEN")
+        .env_remove("GITHUB_TOKEN")
+        .env_remove("GH_ENTERPRISE_TOKEN")
+        .env_remove("GITHUB_ENTERPRISE_TOKEN");
+    command
 }
 
 pub(crate) async fn workspace_containers(
