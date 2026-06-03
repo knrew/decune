@@ -936,6 +936,35 @@ version = "project"
     }
 
     #[test]
+    fn canonical_feature_id_normalizes_oci_feature_case() {
+        assert_eq!(
+            canonical_feature_id("GHCR.IO/Example/Features/Tool:1"),
+            "ghcr.io/example/features/tool"
+        );
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[features."GHCR.IO/Example/Features/Tool:1"]
+version = "global"
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[features."ghcr.io/example/features/tool:2"]
+enabled = false
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.features.is_empty());
+    }
+
+    #[test]
     fn feature_options_merge_by_canonical_id() {
         let config = resolve_config(ConfigMergeInput {
             global: Some(raw_layer(

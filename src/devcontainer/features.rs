@@ -106,7 +106,7 @@ impl FeatureLockFile {
         self.features
             .iter()
             .find(|entry| {
-                entry.id == reference.canonical_id
+                crate::config::layer::canonical_feature_id(&entry.id) == reference.canonical_id
                     && feature_lock_reference_matches(&entry.reference, reference)
             })
             .map(|entry| entry.digest.as_str())
@@ -1293,6 +1293,9 @@ fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
         ));
     }
 
+    let registry = registry.to_ascii_lowercase();
+    let repository = repository.to_ascii_lowercase();
+    let feature_id = feature_id.to_ascii_lowercase();
     let canonical_id = format!("{registry}/{repository}/{feature_id}");
     let digest = digest
         .map(|digest| {
@@ -1304,9 +1307,9 @@ fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
 
     Ok(OciFeatureRef {
         original: value.to_owned(),
-        registry: registry.to_owned(),
-        repository: repository.to_owned(),
-        feature_id: feature_id.to_owned(),
+        registry,
+        repository,
+        feature_id,
         tag: tag
             .or_else(|| digest.is_none().then_some("latest"))
             .map(str::to_owned),
@@ -1322,6 +1325,18 @@ impl OciFeatureRef {
 
     fn repository_path(&self) -> String {
         format!("{}/{}", self.repository, self.feature_id)
+    }
+
+    fn normalized_reference(&self) -> String {
+        if let Some(digest) = &self.digest {
+            format!("{}@{digest}", self.canonical_id)
+        } else {
+            format!(
+                "{}:{}",
+                self.canonical_id,
+                self.tag.as_deref().unwrap_or("latest")
+            )
+        }
     }
 }
 
@@ -1513,7 +1528,7 @@ impl FeatureResolver<'_> {
             digest: artifact.digest.clone(),
             lock_file_entry: Some(FeatureLockEntry {
                 id: reference.canonical_id.clone(),
-                reference: reference.original.clone(),
+                reference: reference.normalized_reference(),
                 digest: artifact.digest,
             }),
         })
@@ -1544,7 +1559,7 @@ fn feature_layer_container_env(layer: &ConfigLayer) -> BTreeMap<String, String> 
 
 fn feature_source_key(reference: &FeatureRef) -> String {
     match reference {
-        FeatureRef::Oci(reference) => reference.original.clone(),
+        FeatureRef::Oci(reference) => reference.normalized_reference(),
         FeatureRef::Local(reference) => reference.canonical_id.clone(),
     }
 }
@@ -2785,6 +2800,24 @@ mod tests {
     }
 
     #[test]
+    fn parses_oci_feature_ref_case_insensitively() {
+        let reference = parse_feature_ref("GHCR.IO/DevContainers/Features/GitHub-CLI:1").unwrap();
+
+        assert_eq!(
+            reference,
+            FeatureRef::Oci(OciFeatureRef {
+                original: "GHCR.IO/DevContainers/Features/GitHub-CLI:1".to_owned(),
+                registry: "ghcr.io".to_owned(),
+                repository: "devcontainers/features".to_owned(),
+                feature_id: "github-cli".to_owned(),
+                tag: Some("1".to_owned()),
+                digest: None,
+                canonical_id: "ghcr.io/devcontainers/features/github-cli".to_owned(),
+            })
+        );
+    }
+
+    #[test]
     fn parses_digest_oci_feature_ref_with_registry_port() {
         let digest = sha256_digest(MANIFEST_DIGEST_HEX);
         let reference = parse_feature_ref(&format!(
@@ -3674,6 +3707,46 @@ mod tests {
     }
 
     #[test]
+    fn feature_install_order_matches_mixed_case_feature_ids() {
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "GHCR.IO/Example/Features/Base:1",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        installs_after: vec!["BASE".to_owned()],
+                        ..FeatureMetadata::default()
+                    },
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/lint:1",
+                    FeatureMetadata {
+                        installs_after: vec!["GhCr.Io/Example/Features/Tool".to_owned()],
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &["LINT".to_owned()],
+            missing_feature_dependency,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.canonical_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/base",
+                "ghcr.io/example/features/tool",
+                "ghcr.io/example/features/lint",
+            ]
+        );
+    }
+
+    #[test]
     fn feature_install_order_reuses_latest_dependency_instance_with_implicit_or_explicit_tag() {
         let plan = resolve_feature_install_order(
             vec![
@@ -3730,6 +3803,103 @@ mod tests {
             vec![
                 "ghcr.io/example/features/base",
                 "ghcr.io/example/features/tool:1",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_treats_same_dependency_with_different_tags_as_distinct_instances() {
+        let mut resolved_dependency = false;
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    "ghcr.io/example/features/base:1",
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        depends_on: BTreeMap::from([(
+                            "ghcr.io/example/features/base:2".to_owned(),
+                            serde_json::json!({}),
+                        )]),
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            |request| {
+                resolved_dependency = true;
+                assert_eq!(request.reference, "ghcr.io/example/features/base:2");
+                Ok(feature_install_input(
+                    &request.reference,
+                    FeatureMetadata::default(),
+                ))
+            },
+        )
+        .unwrap();
+
+        assert!(resolved_dependency);
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/base:1",
+                "ghcr.io/example/features/base:2",
+                "ghcr.io/example/features/tool:1",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_treats_same_dependency_with_different_digests_as_distinct_instances() {
+        let first_digest =
+            "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let second_digest =
+            "sha256:2222222222222222222222222222222222222222222222222222222222222222";
+        let mut resolved_dependency = false;
+        let plan = resolve_feature_install_order(
+            vec![
+                feature_install_input(
+                    &format!("ghcr.io/example/features/base@{first_digest}"),
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/tool:1",
+                    FeatureMetadata {
+                        depends_on: BTreeMap::from([(
+                            format!("ghcr.io/example/features/base@{second_digest}"),
+                            serde_json::json!({}),
+                        )]),
+                        ..FeatureMetadata::default()
+                    },
+                ),
+            ],
+            &[],
+            |request| {
+                resolved_dependency = true;
+                assert_eq!(
+                    request.reference,
+                    format!("ghcr.io/example/features/base@{second_digest}")
+                );
+                Ok(feature_install_input(
+                    &request.reference,
+                    FeatureMetadata::default(),
+                ))
+            },
+        )
+        .unwrap();
+
+        assert!(resolved_dependency);
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.clone())
+                .collect::<Vec<_>>(),
+            vec![
+                format!("ghcr.io/example/features/base@{first_digest}"),
+                format!("ghcr.io/example/features/base@{second_digest}"),
+                "ghcr.io/example/features/tool:1".to_owned(),
             ]
         );
     }

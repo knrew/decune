@@ -484,10 +484,16 @@ pub(crate) fn canonical_feature_id(id: &str) -> String {
     let last_slash = without_digest.rfind('/');
     let last_colon = without_digest.rfind(':');
 
-    match (last_slash, last_colon) {
+    let canonical = match (last_slash, last_colon) {
         (_, Some(colon)) if last_slash.is_none_or(|slash| colon > slash) => {
-            without_digest[..colon].to_owned()
+            &without_digest[..colon]
         }
-        _ => without_digest.to_owned(),
+        _ => without_digest,
+    };
+
+    if id.starts_with("./") {
+        canonical.to_owned()
+    } else {
+        canonical.to_ascii_lowercase()
     }
 }
