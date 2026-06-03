@@ -98,8 +98,8 @@ fn merge_feature_devcontainer_metadata_into_resolved(
     if devcontainer.privileged == Some(true) {
         target.privileged = true;
     }
-    target.cap_add.extend(devcontainer.cap_add);
-    target.security_opt.extend(devcontainer.security_opt);
+    append_unique(&mut target.cap_add, devcontainer.cap_add);
+    append_unique(&mut target.security_opt, devcontainer.security_opt);
     target.entrypoints.splice(0..0, devcontainer.entrypoints);
     if let Some(lifecycle) = devcontainer.lifecycle {
         match target.lifecycle.take() {
@@ -407,16 +407,17 @@ impl MergeAccumulator {
         );
         self.devcontainer.run_args.extend(devcontainer.run_args);
 
-        if let Some(init) = devcontainer.init {
-            self.devcontainer.init = init;
+        if devcontainer.init == Some(true) {
+            self.devcontainer.init = true;
         }
-        if let Some(privileged) = devcontainer.privileged {
-            self.devcontainer.privileged = privileged;
+        if devcontainer.privileged == Some(true) {
+            self.devcontainer.privileged = true;
         }
-        self.devcontainer.cap_add.extend(devcontainer.cap_add);
-        self.devcontainer
-            .security_opt
-            .extend(devcontainer.security_opt);
+        append_unique(&mut self.devcontainer.cap_add, devcontainer.cap_add);
+        append_unique(
+            &mut self.devcontainer.security_opt,
+            devcontainer.security_opt,
+        );
         self.devcontainer
             .entrypoints
             .extend(devcontainer.entrypoints);
@@ -486,6 +487,14 @@ where
     F: Fn(&T) -> bool,
 {
     entries.retain(|existing| !same_identity(existing));
+}
+
+fn append_unique(target: &mut Vec<String>, values: Vec<String>) {
+    for value in values {
+        if !target.iter().any(|existing| existing == &value) {
+            target.push(value);
+        }
+    }
 }
 
 fn replace_dotfile_entry_by_target(
@@ -857,6 +866,54 @@ command = "cli.sh"
                     "user-post-start".to_owned()
                 ),
             ]
+        );
+    }
+
+    #[test]
+    fn devcontainer_security_metadata_uses_or_and_deduped_union_merge() {
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: vec![ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    init: Some(true),
+                    privileged: Some(true),
+                    cap_add: vec!["SYS_PTRACE".to_owned(), "SYS_ADMIN".to_owned()],
+                    security_opt: vec!["seccomp=unconfined".to_owned()],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }],
+            feature_metadata: vec![ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    init: Some(false),
+                    privileged: Some(false),
+                    cap_add: vec!["SYS_PTRACE".to_owned(), "NET_ADMIN".to_owned()],
+                    security_opt: vec!["seccomp=unconfined".to_owned(), "label=disable".to_owned()],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }],
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    init: Some(false),
+                    privileged: Some(false),
+                    cap_add: vec!["NET_ADMIN".to_owned()],
+                    security_opt: vec!["label=disable".to_owned()],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.devcontainer.init);
+        assert!(config.devcontainer.privileged);
+        assert_eq!(
+            config.devcontainer.cap_add,
+            vec!["SYS_PTRACE", "SYS_ADMIN", "NET_ADMIN"]
+        );
+        assert_eq!(
+            config.devcontainer.security_opt,
+            vec!["seccomp=unconfined", "label=disable"]
         );
     }
 

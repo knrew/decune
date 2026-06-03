@@ -25,7 +25,8 @@ use crate::{
     devcontainer::{
         features::{
             FeatureRef, PreparedFeatureInstallPlan, parse_feature_ref_from_devcontainer_dir,
-            prepare_feature_install_plan, read_feature_lock_file, resolve_locked_feature_ref,
+            prepare_feature_install_plan, read_feature_lock_file, remove_feature_lock_file,
+            resolve_locked_feature_ref,
         },
         json::DevcontainerJson,
         lifecycle::{
@@ -1185,6 +1186,9 @@ async fn finalize_up_plan_mounts(
         update_features,
     ))
     .await?;
+    if plan.config.features.is_empty() {
+        remove_feature_lock_file(&workspace.root().join(".decune").join("features.lock.toml"))?;
+    }
     plan = Box::pin(finalize_mounts_and_resources_for_plan(
         client,
         workspace,
