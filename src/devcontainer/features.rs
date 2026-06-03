@@ -547,17 +547,17 @@ impl DockerConfigAuthStore {
         let registry = normalize_registry_auth_key(registry);
         let lookup_keys = registry_auth_lookup_keys(&registry);
         let helper_server = registry_auth_helper_server(&registry);
-        if let Some(auth) = docker_config_helper_auth(
-            &self.cred_helpers,
-            self.creds_store.as_deref(),
-            &lookup_keys,
-            &helper_server,
-            &self.helper_paths,
-        )
-        .with_context(|| {
-            format!("Failed to read Docker registry credential helper auth for {registry}")
-        })? {
-            return Ok(Some(auth));
+        if let Some(helper) = self.credential_helper_for_registry(&lookup_keys) {
+            return docker_config_helper_auth(helper, &helper_server, &self.helper_paths)
+                .with_context(|| {
+                    format!("Failed to read Docker registry credential helper auth for {registry}")
+                });
+        }
+        if let Some(helper) = self.creds_store.as_deref() {
+            return docker_config_helper_auth(helper, &helper_server, &self.helper_paths)
+                .with_context(|| {
+                    format!("Failed to read Docker registry credential helper auth for {registry}")
+                });
         }
 
         for key in lookup_keys {
@@ -567,6 +567,12 @@ impl DockerConfigAuthStore {
         }
 
         Ok(None)
+    }
+
+    fn credential_helper_for_registry<'a>(&'a self, lookup_keys: &[String]) -> Option<&'a str> {
+        lookup_keys
+            .iter()
+            .find_map(|registry| self.cred_helpers.get(registry).map(String::as_str))
     }
 }
 
@@ -2645,21 +2651,12 @@ impl DockerAuthEntry {
 }
 
 fn docker_config_helper_auth(
-    cred_helpers: &BTreeMap<String, String>,
-    creds_store: Option<&str>,
-    registry_keys: &[String],
+    helper: &str,
     helper_server: &str,
     helper_paths: &[PathBuf],
 ) -> Result<Option<RegistryAuth>> {
-    let helper = registry_keys
-        .iter()
-        .find_map(|registry| cred_helpers.get(registry).map(String::as_str))
-        .or(creds_store);
-    let Some(helper) = helper else {
-        return Ok(None);
-    };
     let Some(binary) = docker_credential_helper_binary(helper, helper_paths) else {
-        return Ok(None);
+        bail!("Docker credential helper was not found: docker-credential-{helper}");
     };
     let Some(output) = run_docker_credential_helper_get(&binary, helper_server)? else {
         return Ok(None);
@@ -4617,7 +4614,7 @@ printf '{"Username":"hub-user","Secret":"hub-token"}'
     }
 
     #[test]
-    fn docker_config_auth_falls_back_to_inline_auth_when_helper_has_no_credentials() {
+    fn docker_config_auth_does_not_fallback_to_inline_auth_when_helper_has_no_credentials() {
         let temp = tempfile::tempdir().unwrap();
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
@@ -4655,12 +4652,130 @@ exit 1
             DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
                 .unwrap();
 
-        assert_eq!(
-            store.get("ghcr.io").unwrap(),
-            Some(RegistryAuth::Basic {
-                username: "inline".to_owned(),
-                password: "token".to_owned(),
-            })
+        assert_eq!(store.get("ghcr.io").unwrap(), None);
+    }
+
+    #[test]
+    fn docker_config_auth_uses_registry_helper_instead_of_default_store() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-fake");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf 'credentials not found in native keychain'
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let store_helper = helper_dir.join("docker-credential-store");
+        fs::write(
+            &store_helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf '{"Username":"store-user","Secret":"store-token"}'
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&store_helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credHelpers": {
+                    "ghcr.io": "fake"
+                },
+                "credsStore": "store"
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(store.get("ghcr.io").unwrap(), None);
+    }
+
+    #[test]
+    fn docker_config_auth_does_not_fallback_to_inline_auth_when_default_store_has_no_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let helper = helper_dir.join("docker-credential-fake");
+        fs::write(
+            &helper,
+            r#"#!/bin/sh
+set -eu
+test "$1" = get
+server="$(cat)"
+test "$server" = ghcr.io
+printf 'credentials not found in native keychain'
+exit 1
+"#,
+        )
+        .unwrap();
+        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credsStore": "fake",
+                "auths": {
+                    "ghcr.io": {
+                        "auth": "aW5saW5lOnRva2Vu"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+
+        assert_eq!(store.get("ghcr.io").unwrap(), None);
+    }
+
+    #[test]
+    fn docker_config_auth_errors_when_configured_registry_helper_is_missing() {
+        let temp = tempfile::tempdir().unwrap();
+        let helper_dir = temp.path().join("bin");
+        fs::create_dir_all(&helper_dir).unwrap();
+        let config = temp.path().join("config.json");
+        fs::write(
+            &config,
+            r#"{
+                "credHelpers": {
+                    "ghcr.io": "missing"
+                },
+                "auths": {
+                    "ghcr.io": {
+                        "auth": "aW5saW5lOnRva2Vu"
+                    }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let store =
+            DockerConfigAuthStore::from_config_file_with_helper_paths(&config, &[helper_dir])
+                .unwrap();
+        let error = store.get("ghcr.io").unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(
+            message.contains("Docker credential helper was not found"),
+            "{error:#}"
         );
     }
 
