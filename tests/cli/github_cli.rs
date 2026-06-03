@@ -465,6 +465,243 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
 }
 
 #[test]
+fn up_detach_reuses_auto_added_github_cli_feature_container() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let cache_home = tempfile::tempdir().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    write_fake_github_cli_feature_cache(
+        &workspace_root,
+        cache_home.path(),
+        "sha256:1111111111111111111111111111111111111111111111111111111111111111",
+        r#"
+        set -eu
+        printf '%s\n' \
+          '#!/bin/sh' \
+          'set -eu' \
+          'if [ "$1" = auth ] && [ "$2" = login ]; then' \
+          '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+          '  mkdir -p "$GH_CONFIG_DIR"' \
+          '  cat > "$GH_CONFIG_DIR/token"' \
+          '  exit 0' \
+          'fi' \
+          'if [ "$1" = auth ] && [ "$2" = setup-git ]; then' \
+          '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+          '  exit 0' \
+          'fi' \
+          'echo "unexpected fake gh command: $*" >&2' \
+          'exit 91' \
+          >/usr/local/bin/gh
+        chmod +x /usr/local/bin/gh
+        "#,
+    );
+    let gh_path = host_tools
+        .write_file(
+            "bin/gh",
+            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
+        )
+        .unwrap();
+    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        gh_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("PATH", &fake_path)
+            .env("XDG_CACHE_HOME", cache_home.path())
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("github-test-secret").not());
+
+        let first_id = runtime.block_on(async {
+            inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap()
+                .id
+                .unwrap()
+        });
+
+        decune()
+            .env("PATH", &fake_path)
+            .env("XDG_CACHE_HOME", cache_home.path())
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Reusing running dev container"))
+            .stderr(predicate::str::contains("github-test-secret").not());
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_detects_github_cli_from_container_env_path_before_auto_adding_feature() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let cache_home = tempfile::tempdir().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN mkdir -p /opt/gh/bin \
+              && printf '%s\n' \
+                '#!/bin/sh' \
+                'set -eu' \
+                'if [ "$1" = auth ] && [ "$2" = login ]; then' \
+                '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+                '  mkdir -p "$GH_CONFIG_DIR"' \
+                '  cat > "$GH_CONFIG_DIR/token"' \
+                '  exit 0' \
+                'fi' \
+                'if [ "$1" = auth ] && [ "$2" = setup-git ]; then' \
+                '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
+                '  exit 0' \
+                'fi' \
+                'echo "unexpected fake gh command: $*" >&2' \
+                'exit 91' \
+                >/opt/gh/bin/gh \
+              && chmod +x /opt/gh/bin/gh
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "containerEnv": {
+                "PATH": "/opt/gh/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    write_fake_github_cli_feature_cache(
+        &workspace_root,
+        cache_home.path(),
+        "sha256:2222222222222222222222222222222222222222222222222222222222222222",
+        "#!/bin/sh\nset -eu\necho 'github-cli Feature should not be installed' >&2\nexit 72\n",
+    );
+    let gh_path = host_tools
+        .write_file(
+            "bin/gh",
+            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
+        )
+        .unwrap();
+    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        gh_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("PATH", &fake_path)
+            .env("XDG_CACHE_HOME", cache_home.path())
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("github-test-secret").not());
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();

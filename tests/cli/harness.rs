@@ -13,14 +13,16 @@ use bollard::{
         StartContainerOptionsBuilder, TagImageOptionsBuilder, WaitContainerOptionsBuilder,
     },
 };
+use flate2::{Compression, write::GzEncoder};
 use futures_util::TryStreamExt;
 pub(crate) use predicates::prelude::*;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, path::Path};
+use std::{collections::HashMap, io::Write, path::Path};
 pub(crate) use std::{
     fs,
     os::unix::{fs::PermissionsExt, net::UnixListener},
 };
+use tar::{Builder, Header};
 
 pub(crate) use crate::support;
 
@@ -673,6 +675,66 @@ pub(crate) fn workspace_image_repository(root: &Path) -> String {
     )
 }
 
+pub(crate) fn write_fake_github_cli_feature_cache(
+    workspace_root: &Path,
+    cache_home: &Path,
+    manifest_digest: &str,
+    install_script: &str,
+) {
+    fs::create_dir_all(workspace_root.join(".decune")).unwrap();
+    fs::write(
+        workspace_root.join(".decune/features.lock.toml"),
+        format!(
+            r#"
+version = 1
+
+[[features]]
+id = "ghcr.io/devcontainers/features/github-cli"
+ref = "ghcr.io/devcontainers/features/github-cli:1"
+digest = "{manifest_digest}"
+"#
+        ),
+    )
+    .unwrap();
+
+    let cache_root = cache_home.join("decune/features");
+    fs::create_dir_all(&cache_root).unwrap();
+    let archive = cache_root.join(format!("{}.tgz", manifest_digest.replace(':', "_")));
+    let metadata = r#"{"id":"github-cli","version":"1.0.0"}"#;
+    write_feature_archive(
+        &archive,
+        &[
+            ("install.sh", install_script.as_bytes()),
+            ("devcontainer-feature.json", metadata.as_bytes()),
+        ],
+    );
+    let blob = fs::read(&archive).unwrap();
+    let layer_digest = format!("sha256:{}", hex_lower(&Sha256::digest(&blob)));
+    fs::write(
+        archive.with_extension("tgz.toml"),
+        format!("manifest_digest = \"{manifest_digest}\"\nlayer_digest = \"{layer_digest}\"\n"),
+    )
+    .unwrap();
+}
+
+fn write_feature_archive(path: &Path, entries: &[(&str, &[u8])]) {
+    let file = fs::File::create(path).unwrap();
+    let encoder = GzEncoder::new(file, Compression::default());
+    let mut builder = Builder::new(encoder);
+    for (path, content) in entries {
+        let mut header = Header::new_gnu();
+        header.set_size(content.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        builder
+            .append_data(&mut header, *path, &mut &content[..])
+            .unwrap();
+    }
+    let encoder = builder.into_inner().unwrap();
+    let mut file = encoder.finish().unwrap();
+    file.flush().unwrap();
+}
+
 fn docker_name_segment(value: &str) -> String {
     let mut output = String::new();
     let mut previous_was_separator = true;
@@ -703,6 +765,14 @@ fn push_hex_byte(output: &mut String, byte: u8) {
 
     output.push(HEX[(byte >> 4) as usize] as char);
     output.push(HEX[(byte & 0x0f) as usize] as char);
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        push_hex_byte(&mut output, *byte);
+    }
+    output
 }
 
 pub(crate) fn current_uid() -> u32 {

@@ -129,6 +129,7 @@ impl UpPlanResolution {
 
 struct ImageLookupPreparation<'a> {
     image: &'a mut String,
+    command_image: String,
     base_image: &'a mut Option<String>,
     image_prepared: &'a mut bool,
     build_options: Option<(bool, bool)>,
@@ -722,7 +723,7 @@ async fn ensure_container_started(
             &workspace,
             existing_plan,
             containers.first().and_then(existing_container_image_id),
-            None,
+            Some((options.pull, options.no_cache)),
             options.update_features,
         )
         .await?;
@@ -1115,10 +1116,14 @@ async fn finalize_up_plan_mounts(
     build_for_lookup: Option<(bool, bool)>,
     update_features: bool,
 ) -> Result<(UpPlan, bool)> {
+    let using_existing_remote_user_image = remote_user_image.is_some();
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
     let mut lookup_base_image = None;
     let mut image_prepared = false;
     plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
+    let command_probe_image =
+        prepare_command_probe_image_for_plan(client, &plan, remote_user_image, build_for_lookup)
+            .await?;
     if lookup_image.is_none() {
         if plan_requires_workspace_layer(&plan) {
             let Some((pull, no_cache)) = build_for_lookup else {
@@ -1153,11 +1158,17 @@ async fn finalize_up_plan_mounts(
         }
     };
     let mut lookup_image = lookup_image.expect("lookup image must be set");
+    let command_probe_image = command_probe_image.unwrap_or_else(|| lookup_image.clone());
     let lookup = ImageLookupPreparation {
         image: &mut lookup_image,
+        command_image: command_probe_image,
         base_image: &mut lookup_base_image,
         image_prepared: &mut image_prepared,
-        build_options: build_for_lookup,
+        build_options: if using_existing_remote_user_image {
+            None
+        } else {
+            build_for_lookup
+        },
     };
     plan =
         maybe_auto_add_github_cli_feature_to_plan(client, workspace, plan, lookup, update_features)
@@ -1247,6 +1258,48 @@ async fn finalize_up_plan_mounts(
     Ok((plan, image_prepared))
 }
 
+async fn prepare_command_probe_image_for_plan(
+    client: &DockerClient,
+    plan: &UpPlan,
+    remote_user_image: Option<&str>,
+    build_for_lookup: Option<(bool, bool)>,
+) -> Result<Option<String>> {
+    if remote_user_image.is_none() {
+        return Ok(None);
+    }
+
+    if plan_requires_workspace_layer(plan) {
+        let Some((pull, no_cache)) = build_for_lookup else {
+            return Ok(None);
+        };
+        prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
+        build_feature_layer_image(client, plan, no_cache).await?;
+        return Ok(Some(plan.image.clone()));
+    }
+
+    if let Some(context) = plan.build_context.clone() {
+        let Some((pull, no_cache)) = build_for_lookup else {
+            return Ok(None);
+        };
+        let mut build_options = plan.build_options.clone();
+        build_options.pull = pull;
+        build_options.no_cache = no_cache;
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: plan.base_image.clone(),
+                labels: plan.resources.labels.clone().into_iter().collect(),
+                context,
+                options: build_options,
+            },
+        )
+        .await?;
+        return Ok(Some(plan.base_image.clone()));
+    }
+
+    Ok(Some(plan.base_image.clone()))
+}
+
 async fn prepare_feature_metadata_for_plan(
     workspace: &Workspace,
     mut plan: UpPlan,
@@ -1318,7 +1371,13 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
         return Ok(plan);
     }
 
-    let image_has_gh = image_has_command(client, lookup.image, "gh").await?;
+    let image_has_gh = image_has_command(
+        client,
+        &lookup.command_image,
+        "gh",
+        &plan.config.devcontainer.container_env,
+    )
+    .await?;
     if !should_auto_add_github_cli_feature(&plan.config, host_token_available, image_has_gh) {
         return Ok(plan);
     }
@@ -1376,7 +1435,12 @@ fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> Result<UpPlan> {
     Ok(plan)
 }
 
-async fn image_has_command(client: &DockerClient, image: &str, command: &str) -> Result<bool> {
+async fn image_has_command(
+    client: &DockerClient,
+    image: &str,
+    command: &str,
+    env: &BTreeMap<String, String>,
+) -> Result<bool> {
     let probe_id = IMAGE_COMMAND_PROBE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let name = format!("decune-command-probe-{}-{probe_id}", std::process::id());
     let spec = ContainerCreateSpec {
@@ -1388,7 +1452,7 @@ async fn image_has_command(client: &DockerClient, image: &str, command: &str) ->
             format!("command -v {command} >/dev/null 2>&1"),
         ]),
         labels: BTreeMap::new(),
-        env: BTreeMap::new(),
+        env: env.clone(),
         working_dir: None,
         user: None,
         mounts: Vec::new(),
