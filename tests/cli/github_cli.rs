@@ -104,6 +104,126 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
 }
 
 #[test]
+fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_auto_add_unneeded() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            COPY build-state /tmp/build-state
+            RUN test "$(cat /tmp/build-state)" = ok
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.git]
+            enabled = false
+
+            [credentials.github]
+            install_feature_if_missing = false
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(".devcontainer/build-state", "ok\n")
+        .unwrap();
+    let gh_path = host_tools
+        .write_file(
+            "bin/gh",
+            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
+        )
+        .unwrap();
+    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        gh_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .env("PATH", &fake_path)
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"))
+            .stderr(predicate::str::contains("github-test-secret").not());
+
+        let first_id = runtime.block_on(async {
+            inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap()
+                .id
+                .unwrap()
+        });
+
+        workspace
+            .write_file(".devcontainer/build-state", "probe-build-should-not-run\n")
+            .unwrap();
+
+        decune()
+            .env("PATH", &fake_path)
+            .env_remove("SSH_AUTH_SOCK")
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Reusing running dev container"))
+            .stderr(predicate::str::contains("github-test-secret").not());
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();

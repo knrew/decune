@@ -129,11 +129,11 @@ impl UpPlanResolution {
 
 struct ImageLookupPreparation<'a> {
     image: &'a mut String,
-    command_image: String,
-    command_image_uses_existing_image: bool,
+    remote_user_image: Option<&'a str>,
     base_image: &'a mut Option<String>,
     image_prepared: &'a mut bool,
     build_options: Option<(bool, bool)>,
+    command_probe_build_options: Option<(bool, bool)>,
 }
 
 struct CommandProbeImage {
@@ -1130,9 +1130,6 @@ async fn finalize_up_plan_mounts(
     let mut lookup_base_image = None;
     let mut image_prepared = false;
     plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
-    let command_probe_image =
-        prepare_command_probe_image_for_plan(client, &plan, remote_user_image, build_for_lookup)
-            .await?;
     if lookup_image.is_none() {
         if plan_requires_workspace_layer(&plan) {
             let Some((pull, no_cache)) = build_for_lookup else {
@@ -1167,14 +1164,9 @@ async fn finalize_up_plan_mounts(
         }
     };
     let mut lookup_image = lookup_image.expect("lookup image must be set");
-    let command_probe_image = command_probe_image.unwrap_or(CommandProbeImage {
-        image: lookup_image.clone(),
-        uses_existing_image: false,
-    });
     let lookup = ImageLookupPreparation {
         image: &mut lookup_image,
-        command_image: command_probe_image.image,
-        command_image_uses_existing_image: command_probe_image.uses_existing_image,
+        remote_user_image,
         base_image: &mut lookup_base_image,
         image_prepared: &mut image_prepared,
         build_options: if using_existing_remote_user_image {
@@ -1182,6 +1174,7 @@ async fn finalize_up_plan_mounts(
         } else {
             build_for_lookup
         },
+        command_probe_build_options: build_for_lookup,
     };
     plan = Box::pin(maybe_auto_add_github_cli_feature_to_plan(
         client,
@@ -1427,14 +1420,25 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
         return Ok(plan);
     }
 
+    let command_probe_image = prepare_command_probe_image_for_plan(
+        client,
+        &plan,
+        lookup.remote_user_image,
+        lookup.command_probe_build_options,
+    )
+    .await?
+    .unwrap_or(CommandProbeImage {
+        image: (*lookup.image).clone(),
+        uses_existing_image: false,
+    });
     let image_has_gh = image_has_command(
         client,
-        &lookup.command_image,
+        &command_probe_image.image,
         "gh",
         &plan.config.devcontainer.container_env,
     )
     .await?;
-    if image_has_gh && lookup.command_image_uses_existing_image {
+    if image_has_gh && command_probe_image.uses_existing_image {
         return Box::pin(choose_github_cli_feature_plan_for_existing_image_probe(
             client,
             workspace,
