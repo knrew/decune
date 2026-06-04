@@ -1290,6 +1290,13 @@ pub(crate) fn feature_option_env(
 }
 
 fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
+    if value.starts_with("http://") || value.starts_with("https://") {
+        return Err(invalid_feature_ref(
+            value,
+            "direct HTTPS Feature tarballs are not supported in decune v0.1",
+        ));
+    }
+
     let (without_digest, digest) = split_digest(value)?;
     let (without_tag, tag) = split_tag(without_digest);
     let (registry, path) = without_tag
@@ -1310,6 +1317,13 @@ fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
             value,
             "expected <registry>/<repository>/<feature-id>:<tag> or @<digest>",
         ));
+    }
+
+    validate_oci_feature_registry(value, registry)?;
+    validate_oci_feature_path(value, repository, "repository")?;
+    validate_oci_feature_path_component(value, feature_id, "feature id")?;
+    if let Some(tag) = tag {
+        validate_oci_feature_tag(value, tag)?;
     }
 
     let registry = registry.to_ascii_lowercase();
@@ -1370,6 +1384,134 @@ fn parse_local_feature_ref(value: &str, devcontainer_dir: &Path) -> Result<Local
         path: devcontainer_dir.join(relative),
         canonical_id: format!("local:{relative}"),
     })
+}
+
+fn validate_oci_feature_registry(value: &str, registry: &str) -> Result<()> {
+    if registry.contains("://")
+        || registry.contains('/')
+        || registry.bytes().any(|byte| byte.is_ascii_whitespace())
+        || registry.chars().any(char::is_control)
+    {
+        return Err(invalid_feature_ref(
+            value,
+            "registry must be a host or host:port without a URL scheme",
+        ));
+    }
+
+    let (host, port) = match registry.rsplit_once(':') {
+        Some((host, port)) => (host, Some(port)),
+        None => (registry, None),
+    };
+    if host.is_empty() {
+        return Err(invalid_feature_ref(value, "registry host is empty"));
+    }
+    if let Some(port) = port
+        && (port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()))
+    {
+        return Err(invalid_feature_ref(
+            value,
+            "registry port must contain only digits",
+        ));
+    }
+    for component in host.split('.') {
+        if component.is_empty()
+            || component.starts_with('-')
+            || component.ends_with('-')
+            || !component
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            return Err(invalid_feature_ref(
+                value,
+                "registry host contains an invalid component",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_oci_feature_path(value: &str, path: &str, label: &str) -> Result<()> {
+    for component in path.split('/') {
+        validate_oci_feature_path_component(value, component, label)?;
+    }
+
+    Ok(())
+}
+
+fn validate_oci_feature_path_component(value: &str, component: &str, label: &str) -> Result<()> {
+    if component.is_empty() {
+        return Err(invalid_feature_ref(
+            value,
+            &format!("{label} contains an empty path component"),
+        ));
+    }
+
+    let mut chars = component.chars().peekable();
+    let Some(first) = chars.next() else {
+        return Err(invalid_feature_ref(value, &format!("{label} is empty")));
+    };
+    if !first.is_ascii_alphanumeric() {
+        return Err(invalid_feature_ref(
+            value,
+            &format!("{label} component must start with an alphanumeric character"),
+        ));
+    }
+
+    while let Some(ch) = chars.next() {
+        if ch.is_ascii_alphanumeric() {
+            continue;
+        }
+        if ch == '-' {
+            while chars.peek().is_some_and(|next| *next == '-') {
+                chars.next();
+            }
+        } else if ch == '_' {
+            if chars.peek().is_some_and(|next| *next == '_') {
+                chars.next();
+            }
+        } else if ch != '.' {
+            return Err(invalid_feature_ref(
+                value,
+                &format!("{label} contains an invalid character"),
+            ));
+        }
+
+        if !chars
+            .peek()
+            .is_some_and(|next| next.is_ascii_alphanumeric())
+        {
+            return Err(invalid_feature_ref(
+                value,
+                &format!("{label} separator must be followed by an alphanumeric character"),
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn validate_oci_feature_tag(value: &str, tag: &str) -> Result<()> {
+    let mut bytes = tag.bytes();
+    let Some(first) = bytes.next() else {
+        return Err(invalid_feature_ref(value, "tag is empty"));
+    };
+    if !first.is_ascii_alphanumeric() && first != b'_' {
+        return Err(invalid_feature_ref(
+            value,
+            "tag must start with an alphanumeric character or underscore",
+        ));
+    }
+    if tag.len() > 128
+        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
+    {
+        return Err(invalid_feature_ref(
+            value,
+            "tag contains invalid characters",
+        ));
+    }
+
+    Ok(())
 }
 
 fn split_digest(value: &str) -> Result<(&str, Option<&str>)> {
@@ -2909,6 +3051,23 @@ mod tests {
             error.to_string().contains("ghcr.io/example/features/tool:"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn oci_feature_ref_rejects_unsupported_https_tarballs_and_malformed_names() {
+        for reference in [
+            "https://github.com/owner/repo/releases/devcontainer-feature-tool.tgz",
+            "http://example.com/devcontainer-feature-tool.tgz",
+            "ghcr.io//features/tool",
+            "ghcr.io/example/features/tool with space:1",
+            "ghcr.io/example/features/tool:bad tag",
+            "ghcr.io/example/features/tool:bad\tnew",
+            "ghcr.io/example/feat\nures/tool:1",
+        ] {
+            let error = parse_feature_ref(reference).unwrap_err();
+
+            assert!(error.to_string().contains(reference), "{error:#}");
+        }
     }
 
     #[test]
