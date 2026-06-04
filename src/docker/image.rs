@@ -6,7 +6,7 @@ use bollard::{
     models::CreateImageInfo,
     query_parameters::{
         CreateImageOptions, CreateImageOptionsBuilder, ListImagesOptionsBuilder,
-        RemoveImageOptionsBuilder, TagImageOptionsBuilder,
+        RemoveImageOptions, RemoveImageOptionsBuilder, TagImageOptionsBuilder,
     },
 };
 use futures_util::TryStreamExt;
@@ -97,16 +97,20 @@ pub(crate) async fn workspace_image_tags(
 }
 
 pub(crate) async fn remove_image(client: &DockerClient, image: &str, force: bool) -> Result<()> {
-    let options = RemoveImageOptionsBuilder::default()
-        .force(force)
-        .noprune(false)
-        .build();
+    let options = remove_image_options(force);
 
     match client.raw().remove_image(image, Some(options), None).await {
         Ok(_) => Ok(()),
         Err(error) if is_image_not_found(&error) => Ok(()),
         Err(error) => Err(error).with_context(|| format!("Failed to remove Docker image: {image}")),
     }
+}
+
+fn remove_image_options(force: bool) -> RemoveImageOptions {
+    RemoveImageOptionsBuilder::default()
+        .force(force)
+        .noprune(true)
+        .build()
 }
 
 pub(crate) async fn tag_image(client: &DockerClient, source: &str, target: &str) -> Result<()> {
@@ -417,7 +421,8 @@ mod tests {
     use super::{
         ImagePullOutcome, LocalImagePresence, PullPolicy, create_image_options_for_pull,
         ensure_image, has_devcontainer_metadata_label, image_tags_for_repository,
-        parse_devcontainer_metadata_label, progress_line, should_pull_image, validate_image_name,
+        parse_devcontainer_metadata_label, progress_line, remove_image_options, should_pull_image,
+        validate_image_name,
     };
 
     #[test]
@@ -442,6 +447,15 @@ mod tests {
             PullPolicy::Missing,
             LocalImagePresence::Missing
         ));
+    }
+
+    #[test]
+    fn remove_image_options_do_not_prune_shared_parent_layers() {
+        let options = remove_image_options(true);
+
+        assert!(options.force);
+        assert!(options.noprune);
+        assert_eq!(options.platforms, None);
     }
 
     #[test]

@@ -279,18 +279,15 @@ where
     Fut: Future<Output = Result<ForwardAgentStatus>>,
 {
     let socket_path = runtime_dir.join(FORWARD_AGENT_SOCKET_NAME);
+    let mut last_transient_error = None;
     for _ in 0..FORWARD_AGENT_START_RETRIES {
         match UnixStream::connect(&socket_path).await {
             Ok(mut stream) => {
                 stream.shutdown().await.ok();
                 return Ok(socket_path);
             }
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-                ) =>
-            {
+            Err(error) if is_forward_agent_startup_connect_error(&error) => {
+                last_transient_error = Some(error);
                 if let Some(error) = forward_agent_start_error(runtime_dir, agent_status().await?)?
                 {
                     bail!("{error}");
@@ -308,9 +305,26 @@ where
         }
     }
 
+    if let Some(error) = last_transient_error {
+        bail!(
+            "Timed out waiting for port forwarding agent socket: {}: last connection error: {}",
+            socket_path.display(),
+            error
+        );
+    }
+
     bail!(
         "Timed out waiting for port forwarding agent socket: {}",
         socket_path.display()
+    )
+}
+
+fn is_forward_agent_startup_connect_error(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::NotFound
+            | io::ErrorKind::ConnectionRefused
+            | io::ErrorKind::PermissionDenied
     )
 }
 
@@ -1332,6 +1346,42 @@ mod tests {
 
             assert!(message.contains("Unsupported port forwarding agent container architecture"));
             assert!(!message.contains("Timed out waiting"));
+        });
+    }
+
+    #[test]
+    fn wait_for_forward_agent_retries_until_socket_permissions_are_ready() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let agent_socket = temp.path().join("forward-agent.sock");
+            let listener = UnixListener::bind(&agent_socket).unwrap();
+            fs::set_permissions(&agent_socket, fs::Permissions::from_mode(0o000)).unwrap();
+
+            let permission_task = tokio::spawn({
+                let agent_socket = agent_socket.clone();
+                async move {
+                    sleep(Duration::from_millis(75)).await;
+                    fs::set_permissions(&agent_socket, fs::Permissions::from_mode(0o666)).unwrap();
+                }
+            });
+            let accept_task = tokio::spawn(async move {
+                let _ = listener.accept().await.unwrap();
+            });
+
+            let socket_path = wait_for_forward_agent_with_status(temp.path(), || async {
+                Ok(ForwardAgentStatus::Running)
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(socket_path, agent_socket);
+            permission_task.await.unwrap();
+            accept_task.await.unwrap();
         });
     }
 
