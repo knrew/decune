@@ -229,7 +229,14 @@ pub(crate) fn prepare_feature_layer_build_context(
             )
         })?;
         let env_path = feature_dir.join("devcontainer-features.env");
-        fs::write(&env_path, feature_env_file(input, feature)).with_context(|| {
+        let env_content = feature_env_file(input, feature).map_err(|error| {
+            anyhow::anyhow!(
+                "Failed to prepare Feature option env file for {} at {}: {error}",
+                feature.id,
+                env_path.display()
+            )
+        })?;
+        fs::write(&env_path, env_content).with_context(|| {
             format!(
                 "Failed to write Feature option env file: {}",
                 env_path.display()
@@ -474,14 +481,35 @@ fn dockerfile_user(user: &str) -> Result<&str> {
     Ok(user)
 }
 
-fn feature_env_file(input: &FeatureLayerBuildInput, feature: &FeatureLayerBuildFeature) -> String {
+fn feature_env_file(
+    input: &FeatureLayerBuildInput,
+    feature: &FeatureLayerBuildFeature,
+) -> Result<String> {
     let mut env = feature.container_env.clone();
     env.extend(feature.option_env.clone());
     env.extend(input.install_env.clone());
 
-    env.iter()
-        .map(|(key, value)| format!("{key}={}\n", shell_single_quote(value)))
-        .collect()
+    let mut output = String::new();
+    for (key, value) in env {
+        validate_feature_env_key(&feature.id, &key)?;
+        output.push_str(&format!("{key}={}\n", shell_single_quote(&value)));
+    }
+
+    Ok(output)
+}
+
+fn validate_feature_env_key(feature_id: &str, key: &str) -> Result<()> {
+    let mut chars = key.chars();
+    let Some(first) = chars.next() else {
+        bail!("Feature environment variable name is not supported for {feature_id}: empty name");
+    };
+    if !(first.is_ascii_alphabetic() || first == '_')
+        || chars.any(|character| !(character.is_ascii_alphanumeric() || character == '_'))
+    {
+        bail!("Feature environment variable name is not supported for {feature_id}: {key}");
+    }
+
+    Ok(())
 }
 
 fn feature_context_name(index: usize, id: &str) -> String {
@@ -1186,6 +1214,48 @@ mod tests {
             )
             .unwrap(),
             "VERSION='1.2'\n"
+        );
+    }
+
+    #[test]
+    fn feature_layer_build_context_rejects_invalid_feature_env_key() {
+        let temp = tempdir("feature-layer-build-context-invalid-env");
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(
+            source.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        let context_dir = temp.path().join("context");
+
+        let error = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
+            base_image: "alpine:3.20".to_owned(),
+            devcontainer_id: "workspace-id".to_owned(),
+            final_user: "root".to_owned(),
+            entrypoints: Vec::new(),
+            install_env: BTreeMap::new(),
+            context_dir,
+            features: vec![FeatureLayerBuildFeature {
+                id: "ghcr.io/example/features/tool".to_owned(),
+                source_dir: source,
+                option_env: BTreeMap::new(),
+                container_env: BTreeMap::from([("BAD-NAME".to_owned(), "value".to_owned())]),
+            }],
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Feature environment variable name is not supported"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("BAD-NAME"), "{error:#}");
+        assert!(
+            error.to_string().contains("ghcr.io/example/features/tool"),
+            "{error:#}"
         );
     }
 

@@ -480,6 +480,10 @@ impl LayerHook {
 }
 
 pub(crate) fn canonical_feature_id(id: &str) -> String {
+    if id.starts_with("./") {
+        return id.to_owned();
+    }
+
     let without_digest = id.split_once('@').map_or(id, |(base, _)| base);
     let last_slash = without_digest.rfind('/');
     let last_colon = without_digest.rfind(':');
@@ -491,9 +495,25 @@ pub(crate) fn canonical_feature_id(id: &str) -> String {
         _ => without_digest,
     };
 
+    canonical.to_ascii_lowercase()
+}
+
+pub(crate) fn feature_merge_identity(id: &str) -> String {
+    let canonical_id = canonical_feature_id(id);
     if id.starts_with("./") {
-        canonical.to_owned()
-    } else {
-        canonical.to_ascii_lowercase()
+        return canonical_id;
     }
+
+    if let Some((_, digest)) = id.split_once('@') {
+        return format!("{canonical_id}@{digest}");
+    }
+
+    let last_slash = id.rfind('/');
+    let last_colon = id.rfind(':');
+    let tag = match (last_slash, last_colon) {
+        (_, Some(colon)) if last_slash.is_none_or(|slash| colon > slash) => &id[colon + 1..],
+        _ => "latest",
+    };
+
+    format!("{canonical_id}:{tag}")
 }

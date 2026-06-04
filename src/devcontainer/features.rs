@@ -1499,6 +1499,7 @@ impl FeatureResolver<'_> {
         ensure_feature_files(&source_dir)?;
         let document =
             read_feature_metadata_document(&source_dir.join("devcontainer-feature.json"))?;
+        validate_local_feature_directory_name(&source_dir, &document.metadata.id)?;
         let digest = local_feature_content_digest(&source_dir)?;
         let container_env = feature_layer_container_env(&document.layer);
 
@@ -1563,6 +1564,28 @@ fn ensure_feature_files(source_dir: &Path) -> Result<()> {
                 source_dir.display()
             );
         }
+    }
+
+    Ok(())
+}
+
+fn validate_local_feature_directory_name(source_dir: &Path, metadata_id: &str) -> Result<()> {
+    let directory_name = source_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| {
+            anyhow!(
+                "Failed to resolve local Feature directory name: {}",
+                source_dir.display()
+            )
+        })?;
+    if directory_name != metadata_id {
+        bail!(
+            "Local Feature directory name must match Feature metadata id: {} has directory name `{}` but metadata id `{}`",
+            source_dir.display(),
+            directory_name,
+            metadata_id
+        );
     }
 
     Ok(())
@@ -2492,18 +2515,26 @@ fn bearer_challenge(headers: &HeaderMap) -> Option<BearerChallenge> {
 }
 
 fn parse_bearer_challenge(value: &str) -> Option<BearerChallenge> {
-    let parameters = value.strip_prefix("Bearer ")?;
+    let value = value.trim_start();
+    let scheme_end = value.find(char::is_whitespace)?;
+    let scheme = &value[..scheme_end];
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return None;
+    }
+    let parameters = value[scheme_end..].trim_start();
     let mut challenge = BearerChallenge::default();
     for entry in split_auth_parameters(parameters) {
         let Some((key, value)) = entry.split_once('=') else {
             continue;
         };
         let value = value.trim().trim_matches('"').to_owned();
-        match key.trim() {
-            "realm" => challenge.realm = value,
-            "service" => challenge.service = Some(value),
-            "scope" => challenge.scope = Some(value),
-            _ => {}
+        let key = key.trim();
+        if key.eq_ignore_ascii_case("realm") {
+            challenge.realm = value;
+        } else if key.eq_ignore_ascii_case("service") {
+            challenge.service = Some(value);
+        } else if key.eq_ignore_ascii_case("scope") {
+            challenge.scope = Some(value);
         }
     }
     if challenge.realm.is_empty() {
@@ -2908,6 +2939,46 @@ mod tests {
                 canonical_id: "local:features/local".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn local_feature_metadata_id_must_match_directory_name() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_dir = devcontainer_dir.join("features/tool");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{"id":"different-tool","version":"1.0.0"}"#,
+        )
+        .unwrap();
+        fs::write(feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        let features = vec![ResolvedFeature {
+            id: "./features/tool".to_owned(),
+            canonical_id: "local:features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let error = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &cache_root.join("extracted"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("Local Feature directory name"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("tool"), "{error:#}");
+        assert!(error.to_string().contains("different-tool"), "{error:#}");
     }
 
     #[test]
@@ -4577,6 +4648,21 @@ mod tests {
         assert_eq!(
             registry_url(&reference, "manifests/1"),
             "https://registry-1.docker.io/v2/example/features/tool/manifests/1"
+        );
+    }
+
+    #[test]
+    fn bearer_challenge_parses_case_insensitive_scheme_and_parameters() {
+        let challenge = parse_bearer_challenge(
+            r#"bearer REALM="https://auth.example/token", SERVICE="registry.example", SCOPE="repository:example/features/tool:pull""#,
+        )
+        .unwrap();
+
+        assert_eq!(challenge.realm, "https://auth.example/token");
+        assert_eq!(challenge.service.as_deref(), Some("registry.example"));
+        assert_eq!(
+            challenge.scope.as_deref(),
+            Some("repository:example/features/tool:pull")
         );
     }
 
