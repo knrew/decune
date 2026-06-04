@@ -23,6 +23,7 @@ use crate::{
 const TAR_BLOCK_SIZE: usize = 512;
 pub(crate) const FEATURE_ENTRYPOINT_WRAPPER: &str =
     "/usr/local/share/decune/feature-entrypoint-wrapper.sh";
+pub(crate) const FEATURE_ENTRYPOINT_SENTINEL: &str = "/run/decune/feature-entrypoints-complete";
 const FEATURE_ENTRYPOINTS_FILE: &str = "decune-feature-entrypoints";
 const FEATURE_ENTRYPOINT_WRAPPER_FILE: &str = "decune-feature-entrypoint-wrapper.sh";
 const FEATURE_ENTRYPOINTS_TARGET: &str = "/usr/local/share/decune/feature-entrypoints";
@@ -451,6 +452,15 @@ fn feature_entrypoints_file(entrypoints: &[String], devcontainer_id: &str) -> Re
 fn feature_entrypoint_wrapper() -> &'static str {
     r#"#!/bin/sh
 set -eu
+feature_startup_id() {
+    stat_line=$(cat /proc/1/stat 2>/dev/null || true)
+    stat_tail=${stat_line#*) }
+    set -- $stat_tail
+    printf '%s' "${20:-unknown}"
+}
+sentinel=/run/decune/feature-entrypoints-complete
+sentinel_startup_id=$(feature_startup_id)
+rm -f "$sentinel"
 if [ -f /usr/local/share/decune/feature-entrypoints ]; then
     while IFS= read -r entrypoint; do
         if [ -n "$entrypoint" ]; then
@@ -458,6 +468,8 @@ if [ -f /usr/local/share/decune/feature-entrypoints ]; then
         fi
     done </usr/local/share/decune/feature-entrypoints
 fi
+mkdir -p /run/decune
+printf '%s\n' "$sentinel_startup_id" > "$sentinel"
 if [ "$#" -eq 0 ]; then
     trap 'exit 0' TERM
     while sleep 1 & wait $!; do :; done
@@ -941,7 +953,8 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_WRAPPER, FEATURE_ENTRYPOINTS_FILE,
+        DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_SENTINEL,
+        FEATURE_ENTRYPOINT_WRAPPER, FEATURE_ENTRYPOINT_WRAPPER_FILE, FEATURE_ENTRYPOINTS_FILE,
         FeatureLayerBuildFeature, FeatureLayerBuildInput, build_image_options,
         create_build_context_tar, prepare_feature_layer_build_context, resolve_build_context,
         tar_contains_path,
@@ -1189,6 +1202,8 @@ mod tests {
             fs::read_to_string(context.context_dir.join("install-features.sh")).unwrap();
         let entrypoints =
             fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINTS_FILE)).unwrap();
+        let wrapper =
+            fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINT_WRAPPER_FILE)).unwrap();
 
         assert!(tar_contains_path(
             &tar,
@@ -1202,6 +1217,8 @@ mod tests {
         assert!(dockerfile.contains("/bin/sh /tmp/decune-features/install-features.sh"));
         assert!(dockerfile.contains(FEATURE_ENTRYPOINT_WRAPPER));
         assert!(dockerfile.contains("USER vscode"));
+        assert!(wrapper.contains(FEATURE_ENTRYPOINT_SENTINEL));
+        assert!(wrapper.contains("sentinel_startup_id=$(feature_startup_id)"));
         assert!(install_script.contains("./install.sh"));
         assert!(!install_script.contains("/bin/sh ./install.sh"));
         assert!(install_script.contains("rm -rf /tmp/decune-features"));

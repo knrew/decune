@@ -9,7 +9,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use bollard::models::{ContainerSummary, MountBindOptions, MountVolumeOptions};
 use bollard::query_parameters::WaitContainerOptionsBuilder;
-use futures_util::TryStreamExt;
+use futures_util::{
+    FutureExt, TryStreamExt,
+    future::{Either, select},
+};
 
 use crate::{
     config::{
@@ -39,10 +42,10 @@ use crate::{
     },
     docker::{
         build::{
-            DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_WRAPPER,
-            FeatureLayerBuildFeature, FeatureLayerBuildInput, ResolvedBuildContext,
-            build_hash_input, build_image, prepare_feature_layer_build_context,
-            resolve_build_context,
+            DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_SENTINEL,
+            FEATURE_ENTRYPOINT_WRAPPER, FeatureLayerBuildFeature, FeatureLayerBuildInput,
+            ResolvedBuildContext, build_hash_input, build_image,
+            prepare_feature_layer_build_context, resolve_build_context,
         },
         client::DockerClient,
         container::{
@@ -52,8 +55,8 @@ use crate::{
         },
         dotfiles::dotfile_mount_specs,
         exec::{
-            ExecCommandSpec, exec_attach, exec_capture, exec_detached, inspect_exec,
-            resolve_exec_env, run_attached_exec_stdio,
+            ExecCommandSpec, exec_attach, exec_capture, exec_capture_output, exec_detached,
+            inspect_exec, resolve_exec_env, run_attached_exec_stdio,
         },
         image::{
             LocalImagePresence, PullPolicy, ensure_image,
@@ -95,6 +98,10 @@ const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
 const GITHUB_CLI_FEATURE_REF: &str = "ghcr.io/devcontainers/features/github-cli:1";
 const GITHUB_CLI_FEATURE_CANONICAL_ID: &str = "ghcr.io/devcontainers/features/github-cli";
 static IMAGE_COMMAND_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const KEEPALIVE_STARTUP_CHECK_DELAY: Duration = Duration::from_millis(200);
+const ORIGINAL_COMMAND_STARTUP_MONITOR_WINDOW: Duration = Duration::from_secs(2);
+const FEATURE_ENTRYPOINT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
+const FEATURE_ENTRYPOINT_SENTINEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS: &[&str] = &[
     DECUNE_RUNTIME_TARGET,
     SSH_AGENT_SOCKET_TARGET,
@@ -112,6 +119,13 @@ enum MountResolution {
 enum ForwardingResolution {
     Resolve,
     IgnoreDetached,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StartupVerification {
+    Keepalive,
+    OriginalCommand,
+    FeatureEntrypoints { monitor_delegated_command: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -763,7 +777,12 @@ async fn ensure_container_started(
             }
             ExistingContainerDecision::StartStopped { id, name } => {
                 warn_about_deferred_features(&existing_plan.config);
-                start_container_and_verify_running(&client, &name).await?;
+                start_container_and_verify_running(
+                    &client,
+                    &name,
+                    startup_verification_for_plan(&existing_plan),
+                )
+                .await?;
                 let outcome = UpOutcome {
                     container_id: id,
                     container_name: name,
@@ -865,7 +884,12 @@ async fn ensure_container_started(
             })
         }
         ExistingContainerDecision::StartStopped { id, name } => {
-            start_container_and_verify_running(&client, &name).await?;
+            start_container_and_verify_running(
+                &client,
+                &name,
+                startup_verification_for_plan(&plan),
+            )
+            .await?;
             let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
@@ -1871,7 +1895,12 @@ async fn create_and_start_container(
         mounts: plan.mounts.clone(),
     });
     let container_id = create_container(client, &spec).await?;
-    start_new_container(client, &plan.resources.container_name).await?;
+    start_new_container(
+        client,
+        &plan.resources.container_name,
+        startup_verification_for_plan(plan),
+    )
+    .await?;
 
     Ok(UpOutcome {
         container_id,
@@ -2211,8 +2240,26 @@ fn clamp_exit_code(exit_code: i64) -> i32 {
     }
 }
 
-async fn start_new_container(client: &DockerClient, container_name: &str) -> Result<()> {
-    match start_container_and_verify_running(client, container_name).await {
+fn startup_verification_for_plan(plan: &UpPlan) -> StartupVerification {
+    if !plan.config.devcontainer.entrypoints.is_empty() {
+        return StartupVerification::FeatureEntrypoints {
+            monitor_delegated_command: !plan.config.devcontainer.override_command,
+        };
+    }
+
+    if plan.config.devcontainer.override_command {
+        StartupVerification::Keepalive
+    } else {
+        StartupVerification::OriginalCommand
+    }
+}
+
+async fn start_new_container(
+    client: &DockerClient,
+    container_name: &str,
+    verification: StartupVerification,
+) -> Result<()> {
+    match start_container_and_verify_running(client, container_name, verification).await {
         Ok(()) => Ok(()),
         Err(start_error) => {
             let cleanup = remove_container(client, container_name, true, true).await;
@@ -2229,17 +2276,38 @@ async fn start_new_container(client: &DockerClient, container_name: &str) -> Res
 async fn start_container_and_verify_running(
     client: &DockerClient,
     container_name: &str,
+    verification: StartupVerification,
 ) -> Result<()> {
     start_container(client, container_name).await?;
-    ensure_container_running_after_start(client, container_name).await
+    ensure_container_running_after_start(client, container_name, verification).await
 }
 
 async fn ensure_container_running_after_start(
     client: &DockerClient,
     container_name: &str,
+    verification: StartupVerification,
 ) -> Result<()> {
-    tokio::time::sleep(Duration::from_millis(200)).await;
+    match verification {
+        StartupVerification::Keepalive => {
+            tokio::time::sleep(KEEPALIVE_STARTUP_CHECK_DELAY).await;
+            ensure_container_running_now(client, container_name).await
+        }
+        StartupVerification::OriginalCommand => {
+            ensure_original_command_kept_container_running(client, container_name).await
+        }
+        StartupVerification::FeatureEntrypoints {
+            monitor_delegated_command,
+        } => {
+            ensure_feature_entrypoints_completed(client, container_name).await?;
+            if monitor_delegated_command {
+                ensure_original_command_kept_container_running(client, container_name).await?;
+            }
+            Ok(())
+        }
+    }
+}
 
+async fn ensure_container_running_now(client: &DockerClient, container_name: &str) -> Result<()> {
     let inspect = client
         .raw()
         .inspect_container(container_name, None)
@@ -2260,6 +2328,128 @@ async fn ensure_container_running_after_start(
         .map(|code| format!(" with exit code {code}"))
         .unwrap_or_default();
     bail!("Container exited during startup: {container_name}{exit}");
+}
+
+async fn ensure_original_command_kept_container_running(
+    client: &DockerClient,
+    container_name: &str,
+) -> Result<()> {
+    if let Some(exit_code) = wait_for_container_exit_within(
+        client,
+        container_name,
+        ORIGINAL_COMMAND_STARTUP_MONITOR_WINDOW,
+    )
+    .await?
+    {
+        return Err(container_exited_during_startup_error(
+            container_name,
+            Some(exit_code),
+        ));
+    }
+
+    ensure_container_running_now(client, container_name).await
+}
+
+async fn ensure_feature_entrypoints_completed(
+    client: &DockerClient,
+    container_name: &str,
+) -> Result<()> {
+    match select(
+        wait_for_container_exit_code(client, container_name).boxed(),
+        wait_for_feature_entrypoint_sentinel(client, container_name).boxed(),
+    )
+    .await
+    {
+        Either::Left((exit_code, _)) => {
+            return Err(container_exited_during_startup_error(
+                container_name,
+                Some(exit_code?),
+            ));
+        }
+        Either::Right((ready, _)) => {
+            ready?;
+            ensure_container_running_now(client, container_name).await?;
+        }
+    }
+
+    Ok(())
+}
+
+async fn wait_for_feature_entrypoint_sentinel(
+    client: &DockerClient,
+    container_name: &str,
+) -> Result<()> {
+    let wait = async {
+        loop {
+            tokio::time::sleep(FEATURE_ENTRYPOINT_SENTINEL_POLL_INTERVAL).await;
+            if feature_entrypoint_sentinel_is_current(client, container_name).await? {
+                return Ok(());
+            }
+        }
+    };
+
+    match tokio::time::timeout(FEATURE_ENTRYPOINT_STARTUP_TIMEOUT, wait).await {
+        Ok(result) => result,
+        Err(_) => bail!("Timed out waiting for Feature entrypoints to complete: {container_name}"),
+    }
+}
+
+async fn feature_entrypoint_sentinel_is_current(
+    client: &DockerClient,
+    container_name: &str,
+) -> Result<bool> {
+    let script = format!(
+        r#"stat_line=$(cat /proc/1/stat 2>/dev/null || true)
+stat_tail=${{stat_line#*) }}
+set -- $stat_tail
+startup_id="${{20:-}}"
+test -n "$startup_id" && test -f {sentinel} && test "$(cat {sentinel})" = "$startup_id""#,
+        sentinel = FEATURE_ENTRYPOINT_SENTINEL
+    );
+    let output = match exec_capture_output(
+        client,
+        container_name,
+        &ExecCommandSpec {
+            command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
+            user: None,
+            working_dir: None,
+            env: BTreeMap::new(),
+            tty: false,
+        },
+    )
+    .await
+    {
+        Ok(output) => output,
+        Err(_) => return Ok(false),
+    };
+
+    Ok(output.exit_code == 0)
+}
+
+async fn wait_for_container_exit_within(
+    client: &DockerClient,
+    container_name: &str,
+    duration: Duration,
+) -> Result<Option<i64>> {
+    match tokio::time::timeout(
+        duration,
+        wait_for_container_exit_code(client, container_name),
+    )
+    .await
+    {
+        Ok(exit_code) => exit_code.map(Some),
+        Err(_) => Ok(None),
+    }
+}
+
+fn container_exited_during_startup_error(
+    container_name: &str,
+    exit_code: Option<i64>,
+) -> anyhow::Error {
+    let exit = exit_code
+        .map(|code| format!(" with exit code {code}"))
+        .unwrap_or_default();
+    anyhow::anyhow!("Container exited during startup: {container_name}{exit}")
 }
 
 fn final_image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {

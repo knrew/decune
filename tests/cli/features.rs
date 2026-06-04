@@ -890,6 +890,77 @@ fn up_detach_fails_when_feature_entrypoint_exits_non_zero() {
 }
 
 #[test]
+fn up_detach_fails_when_feature_entrypoint_exits_non_zero_after_delay() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .create_dir(".devcontainer/features/entrypoint-tool")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "features": {
+                "./features/entrypoint-tool": {}
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/entrypoint-tool/devcontainer-feature.json",
+            r#"
+            {
+              "id": "entrypoint-tool",
+              "version": "1.0.0",
+              "entrypoint": "sleep 1; echo decune-entrypoint-failed >&2; exit 23"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/entrypoint-tool/install.sh",
+            "set -eu\n",
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Container exited during startup"))
+            .stderr(predicate::str::contains("exit code 23"))
+            .stderr(predicate::str::contains("Started dev container").not());
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 #[ignore = "requires public OCI registry access"]
 fn up_detach_starts_container_with_public_devcontainer_feature() {
     let workspace = support::TempWorkspace::new().unwrap();
