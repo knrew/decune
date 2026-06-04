@@ -3,6 +3,7 @@ use std::{
     future::Future,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
 };
 
 use anyhow::{Context, Result, bail};
@@ -14,7 +15,7 @@ use crate::{
     config::{
         ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry,
         MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
-        MountVolumeOptionsHashInput, config_hash,
+        MountVolumeOptionsHashInput, StartupCommandHashInput, config_hash,
         layer::{LayerDevcontainerMount, LayerFeature},
         load::load_config_file,
         resolve_config,
@@ -762,7 +763,7 @@ async fn ensure_container_started(
             }
             ExistingContainerDecision::StartStopped { id, name } => {
                 warn_about_deferred_features(&existing_plan.config);
-                start_container(&client, &name).await?;
+                start_container_and_verify_running(&client, &name).await?;
                 let outcome = UpOutcome {
                     container_id: id,
                     container_name: name,
@@ -864,7 +865,7 @@ async fn ensure_container_started(
             })
         }
         ExistingContainerDecision::StartStopped { id, name } => {
-            start_container(&client, &name).await?;
+            start_container_and_verify_running(&client, &name).await?;
             let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
@@ -1271,6 +1272,7 @@ async fn finalize_mounts_and_resources_for_plan(
         }
     };
     hash_input.resolved_mounts = mount_hash_inputs(&mounts);
+    hash_input.startup_command = startup_command_hash_input(client, &plan, lookup_image).await?;
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
         workspace,
@@ -1291,6 +1293,39 @@ async fn finalize_mounts_and_resources_for_plan(
     plan.mounts = mounts;
 
     Ok(plan)
+}
+
+async fn startup_command_hash_input(
+    client: &DockerClient,
+    plan: &UpPlan,
+    lookup_image: &str,
+) -> Result<Option<StartupCommandHashInput>> {
+    if plan.config.devcontainer.override_command {
+        return Ok(None);
+    }
+
+    let image = startup_command_image(client, plan, lookup_image).await?;
+    let startup = image_startup_command(client, &image).await?;
+
+    Ok(Some(StartupCommandHashInput {
+        entrypoint: startup.entrypoint,
+        command: startup.command,
+    }))
+}
+
+async fn startup_command_image(
+    client: &DockerClient,
+    plan: &UpPlan,
+    lookup_image: &str,
+) -> Result<String> {
+    match &plan.config.devcontainer.source {
+        Some(ResolvedDevcontainerSource::Image(image))
+            if local_image_presence(client, image).await? == LocalImagePresence::Present =>
+        {
+            Ok(image.clone())
+        }
+        _ => Ok(lookup_image.to_owned()),
+    }
 }
 
 async fn prepare_command_probe_image_for_plan(
@@ -2177,7 +2212,7 @@ fn clamp_exit_code(exit_code: i64) -> i32 {
 }
 
 async fn start_new_container(client: &DockerClient, container_name: &str) -> Result<()> {
-    match start_container(client, container_name).await {
+    match start_container_and_verify_running(client, container_name).await {
         Ok(()) => Ok(()),
         Err(start_error) => {
             let cleanup = remove_container(client, container_name, true, true).await;
@@ -2189,6 +2224,42 @@ async fn start_new_container(client: &DockerClient, container_name: &str) -> Res
             }
         }
     }
+}
+
+async fn start_container_and_verify_running(
+    client: &DockerClient,
+    container_name: &str,
+) -> Result<()> {
+    start_container(client, container_name).await?;
+    ensure_container_running_after_start(client, container_name).await
+}
+
+async fn ensure_container_running_after_start(
+    client: &DockerClient,
+    container_name: &str,
+) -> Result<()> {
+    tokio::time::sleep(Duration::from_millis(200)).await;
+
+    let inspect = client
+        .raw()
+        .inspect_container(container_name, None)
+        .await
+        .with_context(|| {
+            format!("Failed to inspect Docker container after start: {container_name}")
+        })?;
+    let Some(state) = inspect.state else {
+        bail!("Container state is unavailable after start: {container_name}");
+    };
+
+    if state.running == Some(true) {
+        return Ok(());
+    }
+
+    let exit = state
+        .exit_code
+        .map(|code| format!(" with exit code {code}"))
+        .unwrap_or_default();
+    bail!("Container exited during startup: {container_name}{exit}");
 }
 
 fn final_image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {

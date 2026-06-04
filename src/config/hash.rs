@@ -25,6 +25,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) cli_flags: BTreeMap<String, Value>,
     pub(crate) build: Option<BuildHashInput>,
     pub(crate) resolved_mounts: Vec<MountHashInput>,
+    pub(crate) startup_command: Option<StartupCommandHashInput>,
 }
 
 impl<'a> ConfigHashInput<'a> {
@@ -35,6 +36,7 @@ impl<'a> ConfigHashInput<'a> {
             cli_flags: BTreeMap::new(),
             build: None,
             resolved_mounts: Vec::new(),
+            startup_command: None,
         }
     }
 }
@@ -79,6 +81,12 @@ pub(crate) struct FeatureLockHashEntry {
     pub(crate) digest: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StartupCommandHashInput {
+    pub(crate) entrypoint: Vec<String>,
+    pub(crate) command: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct BuildHashInput {
     pub(crate) dockerfile_path: Option<String>,
@@ -109,8 +117,27 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
     writer.field("resolved_mounts", |writer| {
         write_resolved_mounts(writer, &input.resolved_mounts);
     });
+    writer.field("startup_command", |writer| match &input.startup_command {
+        Some(startup_command) => write_startup_command(writer, startup_command),
+        None => writer.none(),
+    });
 
     sha256_hex(writer.finish().as_bytes())
+}
+
+fn write_startup_command(writer: &mut CanonicalWriter, startup_command: &StartupCommandHashInput) {
+    writer.object("StartupCommand", |writer| {
+        writer.field("entrypoint", |writer| {
+            writer.seq(startup_command.entrypoint.iter(), |writer, value| {
+                writer.string(value);
+            });
+        });
+        writer.field("command", |writer| {
+            writer.seq(startup_command.command.iter(), |writer, value| {
+                writer.string(value);
+            });
+        });
+    });
 }
 
 fn write_resolved_mounts(writer: &mut CanonicalWriter, mounts: &[MountHashInput]) {
@@ -1327,6 +1354,27 @@ enabled = false
         assert!(default_override.devcontainer.override_command);
         assert!(!disabled_override.devcontainer.override_command);
         assert_ne!(hash_for(&default_override), hash_for(&disabled_override));
+    }
+
+    #[test]
+    fn original_image_startup_command_change_changes_hash() {
+        let config = resolve_config(ConfigMergeInput::default());
+        let first = config_hash(&ConfigHashInput {
+            startup_command: Some(StartupCommandHashInput {
+                entrypoint: vec!["/docker-entrypoint.sh".to_owned()],
+                command: vec!["server".to_owned()],
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            startup_command: Some(StartupCommandHashInput {
+                entrypoint: vec!["/docker-entrypoint.sh".to_owned()],
+                command: vec!["worker".to_owned()],
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
     }
 
     #[test]
