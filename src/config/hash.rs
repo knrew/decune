@@ -27,6 +27,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) build: Option<BuildHashInput>,
     pub(crate) resolved_mounts: Vec<MountHashInput>,
     pub(crate) startup_command: Option<StartupCommandHashInput>,
+    pub(crate) uid_gid_sync: Option<UidGidSyncHashInput>,
 }
 
 impl<'a> ConfigHashInput<'a> {
@@ -39,6 +40,7 @@ impl<'a> ConfigHashInput<'a> {
             build: None,
             resolved_mounts: Vec::new(),
             startup_command: None,
+            uid_gid_sync: None,
         }
     }
 }
@@ -89,6 +91,21 @@ pub(crate) struct StartupCommandHashInput {
     pub(crate) command: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UidGidSyncHashInput {
+    pub(crate) state: UidGidSyncHashState,
+    pub(crate) host_uid: u32,
+    pub(crate) host_gid: u32,
+    pub(crate) target_kind: Option<String>,
+    pub(crate) target_user: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum UidGidSyncHashState {
+    Sync,
+    Noop(String),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct BuildHashInput {
     pub(crate) dockerfile_path: Option<String>,
@@ -128,8 +145,33 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
         Some(startup_command) => write_startup_command(writer, startup_command),
         None => writer.none(),
     });
+    writer.field("uid_gid_sync", |writer| match &input.uid_gid_sync {
+        Some(uid_gid_sync) => write_uid_gid_sync_input(writer, uid_gid_sync),
+        None => writer.none(),
+    });
 
     sha256_hex(writer.finish().as_bytes())
+}
+
+fn write_uid_gid_sync_input(writer: &mut CanonicalWriter, input: &UidGidSyncHashInput) {
+    writer.object("UidGidSync", |writer| {
+        writer.field("state", |writer| match &input.state {
+            UidGidSyncHashState::Sync => writer.string("sync"),
+            UidGidSyncHashState::Noop(reason) => writer.string(&format!("noop:{reason}")),
+        });
+        writer.field("host_uid", |writer| {
+            writer.string(&input.host_uid.to_string())
+        });
+        writer.field("host_gid", |writer| {
+            writer.string(&input.host_gid.to_string())
+        });
+        writer.field("target_kind", |writer| {
+            writer.option_string(input.target_kind.as_deref());
+        });
+        writer.field("target_user", |writer| {
+            writer.option_string(input.target_user.as_deref());
+        });
+    });
 }
 
 fn write_startup_command(writer: &mut CanonicalWriter, startup_command: &StartupCommandHashInput) {
@@ -1145,6 +1187,46 @@ shell = false
         });
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn uid_gid_sync_state_changes_hash() {
+        let config = resolved_config("version = 1\n");
+        let without_sync = config_hash(&ConfigHashInput::new(&config));
+        let with_sync = config_hash(&ConfigHashInput {
+            uid_gid_sync: Some(UidGidSyncHashInput {
+                state: UidGidSyncHashState::Sync,
+                host_uid: 1000,
+                host_gid: 1000,
+                target_kind: Some("remoteUser".to_owned()),
+                target_user: Some("vscode".to_owned()),
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+        let other_host = config_hash(&ConfigHashInput {
+            uid_gid_sync: Some(UidGidSyncHashInput {
+                state: UidGidSyncHashState::Sync,
+                host_uid: 1001,
+                host_gid: 1000,
+                target_kind: Some("remoteUser".to_owned()),
+                target_user: Some("vscode".to_owned()),
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+        let no_explicit_user = config_hash(&ConfigHashInput {
+            uid_gid_sync: Some(UidGidSyncHashInput {
+                state: UidGidSyncHashState::Noop("noExplicitUser".to_owned()),
+                host_uid: 1000,
+                host_gid: 1000,
+                target_kind: None,
+                target_user: None,
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(without_sync, with_sync);
+        assert_ne!(with_sync, other_host);
+        assert_ne!(with_sync, no_explicit_user);
     }
 
     #[test]

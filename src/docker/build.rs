@@ -27,6 +27,8 @@ pub(crate) const FEATURE_ENTRYPOINT_SENTINEL: &str = "/run/decune/feature-entryp
 const FEATURE_ENTRYPOINTS_FILE: &str = "decune-feature-entrypoints";
 const FEATURE_ENTRYPOINT_WRAPPER_FILE: &str = "decune-feature-entrypoint-wrapper.sh";
 const FEATURE_ENTRYPOINTS_TARGET: &str = "/usr/local/share/decune/feature-entrypoints";
+const UID_GID_SYNC_SCRIPT_FILE: &str = "sync-uid-gid.sh";
+const UID_GID_SYNC_SCRIPT_TARGET: &str = "/tmp/decune-sync-uid-gid.sh";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DockerBuildInput {
@@ -70,6 +72,18 @@ pub(crate) struct FeatureLayerBuildFeature {
     pub(crate) source_dir: PathBuf,
     pub(crate) option_env: BTreeMap<String, String>,
     pub(crate) container_env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct UidGidSyncLayerBuildInput {
+    pub(crate) base_image: String,
+    pub(crate) final_user: String,
+    pub(crate) target_user: String,
+    pub(crate) old_uid: u32,
+    pub(crate) old_gid: u32,
+    pub(crate) new_uid: u32,
+    pub(crate) new_gid: u32,
+    pub(crate) context_dir: PathBuf,
 }
 
 pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) -> Result<()> {
@@ -253,6 +267,47 @@ pub(crate) fn prepare_feature_layer_build_context(
     })
 }
 
+pub(crate) fn prepare_uid_gid_sync_layer_build_context(
+    input: &UidGidSyncLayerBuildInput,
+) -> Result<ResolvedBuildContext> {
+    if input.context_dir.exists() {
+        fs::remove_dir_all(&input.context_dir).with_context(|| {
+            format!(
+                "Failed to remove existing UID/GID sync build context: {}",
+                input.context_dir.display()
+            )
+        })?;
+    }
+    fs::create_dir_all(&input.context_dir).with_context(|| {
+        format!(
+            "Failed to create UID/GID sync build context: {}",
+            input.context_dir.display()
+        )
+    })?;
+
+    let dockerfile_path = input.context_dir.join("Dockerfile");
+    fs::write(&dockerfile_path, uid_gid_sync_layer_dockerfile(input)?).with_context(|| {
+        format!(
+            "Failed to write UID/GID sync Dockerfile: {}",
+            dockerfile_path.display()
+        )
+    })?;
+    let script_path = input.context_dir.join(UID_GID_SYNC_SCRIPT_FILE);
+    fs::write(&script_path, uid_gid_sync_script(input)?).with_context(|| {
+        format!(
+            "Failed to write UID/GID sync script: {}",
+            script_path.display()
+        )
+    })?;
+
+    Ok(ResolvedBuildContext {
+        context_dir: input.context_dir.clone(),
+        dockerfile_path,
+        dockerfile_in_context: PathBuf::from("Dockerfile"),
+        dockerignore_path: None,
+    })
+}
+
 pub(crate) fn build_hash_input(context: &ResolvedBuildContext) -> Result<BuildHashInput> {
     let dockerfile = fs::read(&context.dockerfile_path).with_context(|| {
         format!(
@@ -393,6 +448,82 @@ fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
     ))
 }
 
+fn uid_gid_sync_layer_dockerfile(input: &UidGidSyncLayerBuildInput) -> Result<String> {
+    validate_image_name(&input.base_image)?;
+    let final_user = dockerfile_user(&input.final_user)?;
+    Ok(format!(
+        "FROM {}\nUSER root\nCOPY {UID_GID_SYNC_SCRIPT_FILE} {UID_GID_SYNC_SCRIPT_TARGET}\nRUN /bin/sh {UID_GID_SYNC_SCRIPT_TARGET} && rm -f {UID_GID_SYNC_SCRIPT_TARGET}\nUSER {final_user}\n",
+        input.base_image
+    ))
+}
+
+fn uid_gid_sync_script(input: &UidGidSyncLayerBuildInput) -> Result<String> {
+    let target_user = shell_quote(&input.target_user);
+    Ok(format!(
+        r#"set -eu
+target_user={target_user}
+old_uid={old_uid}
+old_gid={old_gid}
+new_uid={new_uid}
+new_gid={new_gid}
+
+if [ "$old_uid" = "$new_uid" ] && [ "$old_gid" = "$new_gid" ]; then
+    exit 0
+fi
+
+conflict_user="$(awk -F: -v uid="$new_uid" -v user="$target_user" '$3 == uid && $1 != user {{ print $1; exit }}' /etc/passwd)"
+if [ -n "$conflict_user" ]; then
+    echo "UID/GID sync target UID conflicts with existing user: $conflict_user ($new_uid)" >&2
+    exit 1
+fi
+
+target_home="$(awk -F: -v user="$target_user" '$1 == user {{ print $6; exit }}' /etc/passwd)"
+tmp_passwd="$(mktemp)"
+status=0
+awk -F: -v OFS=: -v user="$target_user" -v uid="$new_uid" -v gid="$new_gid" '
+    $1 == user {{ $3 = uid; $4 = gid; found = 1 }}
+    {{ print }}
+    END {{ if (!found) exit 42 }}
+' /etc/passwd > "$tmp_passwd" || status=$?
+if [ "$status" -eq 42 ]; then
+    echo "UID/GID sync target user is missing: $target_user" >&2
+    exit 1
+elif [ "$status" -ne 0 ]; then
+    exit "$status"
+fi
+cat "$tmp_passwd" >/etc/passwd
+rm -f "$tmp_passwd"
+
+if [ -f /etc/group ]; then
+    target_group="$(awk -F: -v gid="$old_gid" '$3 == gid {{ print $1; exit }}' /etc/group)"
+    if [ -n "$target_group" ]; then
+        conflict_group="$(awk -F: -v gid="$new_gid" -v group="$target_group" '$3 == gid && $1 != group {{ print $1; exit }}' /etc/group)"
+        if [ -n "$conflict_group" ]; then
+            echo "UID/GID sync target GID conflicts with existing group: $conflict_group ($new_gid)" >&2
+            exit 1
+        fi
+        tmp_group="$(mktemp)"
+        awk -F: -v OFS=: -v group="$target_group" -v gid="$new_gid" '
+            $1 == group {{ $3 = gid }}
+            {{ print }}
+        ' /etc/group > "$tmp_group"
+        cat "$tmp_group" >/etc/group
+        rm -f "$tmp_group"
+    fi
+fi
+
+if [ -n "$target_home" ] && [ -d "$target_home" ]; then
+    chown -R "$new_uid:$new_gid" "$target_home"
+fi
+"#,
+        target_user = target_user,
+        old_uid = input.old_uid,
+        old_gid = input.old_gid,
+        new_uid = input.new_uid,
+        new_gid = input.new_gid,
+    ))
+}
+
 fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String> {
     let mut script = String::new();
     script.push_str("set -eu\n");
@@ -490,6 +621,10 @@ fn dockerfile_user(user: &str) -> Result<&str> {
     }
 
     Ok(user)
+}
+
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 fn feature_env_file(
@@ -954,9 +1089,10 @@ mod tests {
     use super::{
         DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_SENTINEL,
         FEATURE_ENTRYPOINT_WRAPPER, FEATURE_ENTRYPOINT_WRAPPER_FILE, FEATURE_ENTRYPOINTS_FILE,
-        FeatureLayerBuildFeature, FeatureLayerBuildInput, build_image_options,
-        create_build_context_tar, prepare_feature_layer_build_context, resolve_build_context,
-        tar_contains_path,
+        FeatureLayerBuildFeature, FeatureLayerBuildInput, UID_GID_SYNC_SCRIPT_FILE,
+        UidGidSyncLayerBuildInput, build_image_options, create_build_context_tar,
+        prepare_feature_layer_build_context, prepare_uid_gid_sync_layer_build_context,
+        resolve_build_context, tar_contains_path,
     };
 
     #[test]
@@ -1234,6 +1370,40 @@ mod tests {
             .unwrap(),
             "VERSION='1.2'\n"
         );
+    }
+
+    #[test]
+    fn uid_gid_sync_layer_build_context_writes_sync_dockerfile_and_script() {
+        let temp = tempdir("uid-gid-sync-layer-build-context");
+        let context_dir = temp.path().join("context");
+        let context = prepare_uid_gid_sync_layer_build_context(&UidGidSyncLayerBuildInput {
+            base_image: "alpine:3.20".to_owned(),
+            final_user: "vscode".to_owned(),
+            target_user: "vscode".to_owned(),
+            old_uid: 2001,
+            old_gid: 2001,
+            new_uid: 1000,
+            new_gid: 1000,
+            context_dir,
+        })
+        .unwrap();
+
+        let tar = create_build_context_tar(&context).unwrap();
+        let dockerfile = fs::read_to_string(context.dockerfile_path).unwrap();
+        let script =
+            fs::read_to_string(context.context_dir.join(UID_GID_SYNC_SCRIPT_FILE)).unwrap();
+
+        assert!(tar_contains_path(&tar, "Dockerfile"));
+        assert!(tar_contains_path(&tar, UID_GID_SYNC_SCRIPT_FILE));
+        assert!(dockerfile.contains("FROM alpine:3.20"));
+        assert!(dockerfile.contains("USER root"));
+        assert!(dockerfile.contains("USER vscode"));
+        assert!(script.contains("target_user='vscode'"));
+        assert!(script.contains("UID/GID sync target UID conflicts"));
+        assert!(script.contains("UID/GID sync target GID conflicts"));
+        assert!(script.contains("cat \"$tmp_passwd\" >/etc/passwd"));
+        assert!(script.contains("cat \"$tmp_group\" >/etc/group"));
+        assert!(script.contains("chown -R \"$new_uid:$new_gid\" \"$target_home\""));
     }
 
     #[test]
