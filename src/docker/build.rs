@@ -496,12 +496,12 @@ rm -f "$tmp_passwd"
 
 if [ -f /etc/group ]; then
     target_group="$(awk -F: -v gid="$old_gid" '$3 == gid {{ print $1; exit }}' /etc/group)"
+    conflict_group="$(awk -F: -v gid="$new_gid" -v group="$target_group" '$3 == gid && (group == "" || $1 != group) {{ print $1; exit }}' /etc/group)"
+    if [ -n "$conflict_group" ]; then
+        echo "UID/GID sync target GID conflicts with existing group: $conflict_group ($new_gid)" >&2
+        exit 1
+    fi
     if [ -n "$target_group" ]; then
-        conflict_group="$(awk -F: -v gid="$new_gid" -v group="$target_group" '$3 == gid && $1 != group {{ print $1; exit }}' /etc/group)"
-        if [ -n "$conflict_group" ]; then
-            echo "UID/GID sync target GID conflicts with existing group: $conflict_group ($new_gid)" >&2
-            exit 1
-        fi
         tmp_group="$(mktemp)"
         awk -F: -v OFS=: -v group="$target_group" -v gid="$new_gid" '
             $1 == group {{ $3 = gid }}

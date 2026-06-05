@@ -79,6 +79,7 @@ use crate::{
             UidGidSyncPlan, UidGidSyncTargetKind, current_host_user_ids, image_config_user,
             resolve_effective_users_from_image, resolve_remote_user,
             resolve_remote_user_from_image, resolve_uid_gid_sync_plan_from_image,
+            uid_gid_sync_runtime_user,
         },
     },
     host::{
@@ -2036,6 +2037,7 @@ async fn build_uid_gid_sync_layer_image(
     let final_user = image_config_user(client, &base_image)
         .await?
         .unwrap_or_else(|| "root".to_owned());
+    let final_user = uid_gid_sync_runtime_user(&final_user, &plan.uid_gid_sync_plan)?;
     let context = prepare_uid_gid_sync_layer_build_context(&UidGidSyncLayerBuildInput {
         base_image,
         final_user,
@@ -2219,8 +2221,12 @@ async fn create_and_start_container(
         working_dir: Some(plan.workspace_folder.clone()),
         mounts: plan.mounts.clone(),
     });
+    let container_user = uid_gid_sync_runtime_user(
+        &plan.effective_users.container_user.user,
+        &plan.uid_gid_sync_plan,
+    )?;
     let spec = ContainerCreateSpec {
-        user: Some(plan.effective_users.container_user.user.clone()),
+        user: Some(container_user),
         ..spec
     };
     let container_id = create_container(client, &spec).await?;
@@ -5218,6 +5224,100 @@ type = "bind"
 
     #[cfg(unix)]
     #[test]
+    fn up_detach_rewrites_numeric_image_user_after_uid_gid_sync() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-numeric-user");
+            let image = format!(
+                "decune-test/uid-gid-sync-numeric-user-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_numeric_uid_gid_user_image(&client, &image).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                assert_eq!(
+                    inspect.config.and_then(|config| config.user),
+                    Some(format!("syncuser:{}", host.gid))
+                );
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "id -u; id -g".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(output.stdout)?,
+                    format!("{}\n{}\n", host.uid, host.gid)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn up_detach_fails_uid_gid_sync_when_host_ids_conflict() {
         if HostPlatform::current() != HostPlatform::Linux {
             return;
@@ -5257,6 +5357,76 @@ type = "bind"
                 remove_container(&client, &container_name, true, true).await?;
                 remove_image(&client, &image, true).await?;
                 build_uid_gid_conflict_user_image(&client, &image, host.uid, host.gid).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
+                assert!(
+                    message.contains("Failed to build Docker image")
+                        && message.contains("Docker stream error"),
+                    "{message}"
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_fails_uid_gid_sync_gid_conflict_without_target_group_entry() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-missing-target-group");
+            let image = format!(
+                "decune-test/uid-gid-sync-missing-target-group-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_missing_target_group_conflict_image(&client, &image, host.gid).await?;
 
                 let error = run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
@@ -6426,6 +6596,37 @@ user = "root"
         .await
     }
 
+    async fn build_numeric_uid_gid_user_image(
+        client: &DockerClient,
+        image: &str,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-numeric-user-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            "FROM alpine:3.20\nRUN addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser\nUSER 2001:2001\n",
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
     async fn build_uid_gid_conflict_user_image(
         client: &DockerClient,
         image: &str,
@@ -6441,6 +6642,40 @@ user = "root"
             &dockerfile_path,
             format!(
                 "FROM alpine:3.20\nRUN addgroup -g {conflict_gid} conflictuser && adduser -D -u {conflict_uid} -G conflictuser -h /home/conflictuser conflictuser && addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser\nUSER syncuser\n"
+            ),
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_missing_target_group_conflict_image(
+        client: &DockerClient,
+        image: &str,
+        conflict_gid: u32,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-missing-group-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            format!(
+                "FROM alpine:3.20\nRUN addgroup -g {conflict_gid} conflictgroup && addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser && awk -F: '$3 != 2001 {{ print }}' /etc/group >/tmp/group && cat /tmp/group >/etc/group\nUSER syncuser\n"
             ),
         )
         .unwrap();

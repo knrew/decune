@@ -300,6 +300,32 @@ pub(crate) async fn resolve_uid_gid_sync_plan_from_image(
     }
 }
 
+pub(crate) fn uid_gid_sync_runtime_user(user: &str, plan: &UidGidSyncPlan) -> Result<String> {
+    let UidGidSyncPlan::Sync { target, container } = plan else {
+        return Ok(user.to_owned());
+    };
+    let Some(parsed) = parse_docker_image_config_user(Some(user))? else {
+        return Ok(user.to_owned());
+    };
+    if parsed.user != DockerUserIdentifier::Id(container.uid) {
+        return Ok(parsed.raw);
+    }
+
+    let mut runtime_user = container.name.clone();
+    if let Some(group) = parsed.group {
+        runtime_user.push(':');
+        match group {
+            DockerUserIdentifier::Id(gid) if gid == container.gid => {
+                runtime_user.push_str(&target.host.gid.to_string());
+            }
+            DockerUserIdentifier::Id(gid) => runtime_user.push_str(&gid.to_string()),
+            DockerUserIdentifier::Name(group) => runtime_user.push_str(&group),
+        }
+    }
+
+    Ok(runtime_user)
+}
+
 #[allow(dead_code)]
 pub(crate) async fn remote_user_home(
     client: &DockerClient,
@@ -985,6 +1011,51 @@ mod tests {
 
         assert_eq!(selected.user, "1000:2000");
         assert_eq!(selected.source, RemoteUserSource::ImageConfig);
+    }
+
+    #[test]
+    fn rewrites_numeric_sync_runtime_user_when_it_matches_old_target_uid() {
+        let host = HostUserIds {
+            uid: 1000,
+            gid: 1000,
+        };
+        let plan = UidGidSyncPlan::Sync {
+            target: UidGidSyncTarget {
+                kind: UidGidSyncTargetKind::RemoteUser,
+                user: "syncuser".to_owned(),
+                host,
+            },
+            container: ResolvedUserIds {
+                name: "syncuser".to_owned(),
+                uid: 2001,
+                gid: 2001,
+            },
+        };
+
+        assert_eq!(
+            uid_gid_sync_runtime_user("2001", &plan).unwrap(),
+            "syncuser"
+        );
+        assert_eq!(
+            uid_gid_sync_runtime_user("2001:2001", &plan).unwrap(),
+            "syncuser:1000"
+        );
+        assert_eq!(
+            uid_gid_sync_runtime_user("2001:shared", &plan).unwrap(),
+            "syncuser:shared"
+        );
+        assert_eq!(
+            uid_gid_sync_runtime_user("2001:3000", &plan).unwrap(),
+            "syncuser:3000"
+        );
+        assert_eq!(
+            uid_gid_sync_runtime_user("2002:2001", &plan).unwrap(),
+            "2002:2001"
+        );
+        assert_eq!(
+            uid_gid_sync_runtime_user("syncuser", &plan).unwrap(),
+            "syncuser"
+        );
     }
 
     #[test]
