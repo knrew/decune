@@ -73,8 +73,10 @@ use crate::{
         ports::{ResolvedForwardPort, resolve_forward_ports},
         resource::DockerResources,
         user::{
-            RemoteUserResolveInput, image_config_user, resolve_remote_user,
-            resolve_remote_user_from_image,
+            EffectiveUserResolveInput, EffectiveUsers, HostPlatform, UidGidSyncPlan,
+            current_host_user_ids, image_config_user, resolve_effective_users_from_image,
+            resolve_remote_user, resolve_remote_user_from_image,
+            resolve_uid_gid_sync_plan_from_image,
         },
     },
     host::{
@@ -203,6 +205,8 @@ pub(crate) struct UpPlan {
     pub(crate) resources: DockerResources,
     pub(crate) config_layers: ConfigMergeInput,
     pub(crate) config: ResolvedConfig,
+    pub(crate) effective_users: EffectiveUsers,
+    pub(crate) uid_gid_sync_plan: UidGidSyncPlan,
     pub(crate) workspace_folder: String,
     pub(crate) mounts: Vec<DockerMountSpec>,
     pub(crate) forward_ports: Vec<ResolvedForwardPort>,
@@ -614,6 +618,8 @@ fn build_up_plan_inner(
         resources,
         config_layers,
         config,
+        effective_users: EffectiveUsers::root(),
+        uid_gid_sync_plan: UidGidSyncPlan::default(),
         workspace_folder: workspace_location.workspace_folder,
         mounts,
         forward_ports,
@@ -754,11 +760,18 @@ async fn ensure_container_started(
             plan_resolution,
         )
         .await?;
+        let existing_container_image = containers.first().and_then(existing_container_image_id);
+        let existing_remote_user_image = existing_remote_user_image_for_decision(
+            &client,
+            &preliminary_plan,
+            existing_container_image,
+        )
+        .await?;
         let (existing_plan, _) = finalize_up_plan_mounts(
             &client,
             &workspace,
             existing_plan,
-            containers.first().and_then(existing_container_image_id),
+            existing_remote_user_image,
             containers.first().and_then(existing_container_config_hash),
             Some((options.pull, options.no_cache)),
             options.update_features,
@@ -1327,17 +1340,25 @@ async fn finalize_mounts_and_resources_for_plan(
     lookup_image: &str,
     update_features: bool,
 ) -> Result<UpPlan> {
-    let remote_user = resolve_remote_user_from_image(
+    let effective_users = resolve_effective_users_from_image(
         client,
         lookup_image,
-        RemoteUserResolveInput {
-            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
-            image_metadata_remote_user: None,
-        },
+        effective_user_input_from_config_layers(&plan.config_layers),
     )
     .await?;
-    let remote_user_name = remote_user.user;
-    let remote_user_home = remote_user.home;
+    let remote_user =
+        resolve_remote_user_from_image(client, lookup_image, &effective_users).await?;
+    let uid_gid_sync_plan = resolve_uid_gid_sync_plan_from_image(
+        client,
+        lookup_image,
+        &effective_users,
+        plan.config.devcontainer.update_remote_user_uid,
+        HostPlatform::current(),
+        current_host_user_ids(),
+    )
+    .await?;
+    let remote_user_name = remote_user.user.clone();
+    let remote_user_home = remote_user.home.clone();
     let workspace_location =
         resolve_workspace_location(workspace, &plan.config, |workspace_folder| {
             mount_variable_context(
@@ -1390,10 +1411,62 @@ async fn finalize_mounts_and_resources_for_plan(
     plan.image = image;
     plan.base_image = base_image;
     plan.resources = resources;
+    plan.effective_users = effective_users;
+    plan.uid_gid_sync_plan = uid_gid_sync_plan;
     plan.workspace_folder = workspace_location.workspace_folder;
     plan.mounts = mounts;
 
     Ok(plan)
+}
+
+fn effective_user_input_from_config_layers(
+    config_layers: &ConfigMergeInput,
+) -> EffectiveUserResolveInput<'_> {
+    EffectiveUserResolveInput {
+        devcontainer_remote_user: config_layers
+            .devcontainer
+            .as_ref()
+            .and_then(layer_remote_user),
+        devcontainer_container_user: config_layers
+            .devcontainer
+            .as_ref()
+            .and_then(layer_container_user),
+        image_metadata_remote_user: merged_metadata_remote_user(config_layers),
+        image_metadata_container_user: merged_metadata_container_user(config_layers),
+        image_config_user: None,
+    }
+}
+
+fn merged_metadata_remote_user(config_layers: &ConfigMergeInput) -> Option<&str> {
+    config_layers
+        .image_metadata
+        .iter()
+        .chain(config_layers.feature_metadata.iter())
+        .filter_map(layer_remote_user)
+        .next_back()
+}
+
+fn merged_metadata_container_user(config_layers: &ConfigMergeInput) -> Option<&str> {
+    config_layers
+        .image_metadata
+        .iter()
+        .chain(config_layers.feature_metadata.iter())
+        .filter_map(layer_container_user)
+        .next_back()
+}
+
+fn layer_remote_user(layer: &ConfigLayer) -> Option<&str> {
+    layer
+        .devcontainer
+        .as_ref()
+        .and_then(|devcontainer| devcontainer.remote_user.as_deref())
+}
+
+fn layer_container_user(layer: &ConfigLayer) -> Option<&str> {
+    layer
+        .devcontainer
+        .as_ref()
+        .and_then(|devcontainer| devcontainer.container_user.as_deref())
 }
 
 async fn startup_command_hash_input(
@@ -1971,6 +2044,10 @@ async fn create_and_start_container(
         working_dir: Some(plan.workspace_folder.clone()),
         mounts: plan.mounts.clone(),
     });
+    let spec = ContainerCreateSpec {
+        user: Some(plan.effective_users.container_user.user.clone()),
+        ..spec
+    };
     let container_id = create_container(client, &spec).await?;
     start_new_container(
         client,
@@ -2003,10 +2080,7 @@ async fn prepare_up_lifecycle(
     let remote_user = resolve_remote_user(
         &started.client,
         &started.outcome.container_name,
-        RemoteUserResolveInput {
-            explicit_remote_user: started.plan.config.devcontainer.remote_user.as_deref(),
-            image_metadata_remote_user: None,
-        },
+        &started.plan.effective_users,
     )
     .await?;
 
@@ -2028,10 +2102,7 @@ async fn start_host_daemon_for_up(started: &StartedUpContainer) -> Result<HostDa
     let remote_user = resolve_remote_user(
         &started.client,
         &started.outcome.container_name,
-        RemoteUserResolveInput {
-            explicit_remote_user: started.plan.config.devcontainer.remote_user.as_deref(),
-            image_metadata_remote_user: None,
-        },
+        &started.plan.effective_users,
     )
     .await?;
 
@@ -2215,15 +2286,7 @@ async fn detect_container_arch_for_forward_agent(
 }
 
 async fn attach_shell(client: &DockerClient, plan: &UpPlan, container_name: &str) -> Result<i64> {
-    let remote_user = resolve_remote_user(
-        client,
-        container_name,
-        RemoteUserResolveInput {
-            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
-            image_metadata_remote_user: None,
-        },
-    )
-    .await?;
+    let remote_user = resolve_remote_user(client, container_name, &plan.effective_users).await?;
     let env = resolve_exec_env(
         client,
         container_name,
@@ -2846,6 +2909,24 @@ fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
         .filter(|image_id| !image_id.trim().is_empty())
 }
 
+async fn existing_remote_user_image_for_decision<'a>(
+    client: &DockerClient,
+    preliminary_plan: &UpPlan,
+    existing_container_image: Option<&'a str>,
+) -> Result<Option<&'a str>> {
+    if preliminary_plan.build_context.is_some() {
+        return Ok(existing_container_image);
+    }
+
+    if local_image_presence(client, &preliminary_plan.base_image).await?
+        == LocalImagePresence::Present
+    {
+        return Ok(None);
+    }
+
+    Ok(existing_container_image)
+}
+
 fn existing_container_config_hash(container: &UpContainerSummary) -> Option<&str> {
     container
         .config_hash
@@ -2896,6 +2977,9 @@ mod tests {
     use crate::docker::mounts::DockerMountSpec;
     use crate::docker::ports::ResolvedForwardPort;
     use crate::docker::resource::DockerResources;
+    use crate::docker::user::{
+        EffectiveUserResolveInput, EffectiveUsers, UidGidSyncPlan, resolve_effective_users,
+    };
     use crate::host::credentials::{
         GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET, SSH_AGENT_SOCKET_TARGET,
     };
@@ -4514,6 +4598,49 @@ type = "bind"
     }
 
     #[test]
+    fn create_and_start_container_uses_effective_container_user() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let mut plan = test_up_plan_with_image_source("alpine:3.20");
+            plan.workspace_folder = "/".to_owned();
+            plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: Some("nobody"),
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: None,
+            })
+            .unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                create_and_start_container(&client, &plan, false, false, false).await?;
+
+                let inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                assert_eq!(
+                    inspect.config.and_then(|config| config.user),
+                    Some("nobody".to_owned())
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn up_detach_recreates_legacy_container_missing_decune_runtime_mount() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -5736,8 +5863,9 @@ user = "root"
                 assert!(
                     error
                         .to_string()
-                        .contains("Failed to start Docker container")
+                        .contains("Remote user does not exist in container")
                 );
+                assert!(error.to_string().contains("decune-missing-user"));
 
                 let containers = list_workspace_containers(&client, workspace.id()).await?;
                 assert!(
@@ -5866,6 +5994,8 @@ user = "root"
             },
             config_layers: ConfigMergeInput::default(),
             config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspaces/project".to_owned(),
             mounts: Vec::new(),
             forward_ports: Vec::new(),
