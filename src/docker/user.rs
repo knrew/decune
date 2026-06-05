@@ -152,6 +152,7 @@ pub(crate) enum UidGidSyncNoopReason {
     Disabled,
     NonLinuxHost,
     NoExplicitUser,
+    NumericUserWithoutPasswd,
     Root,
 }
 
@@ -192,10 +193,21 @@ pub(crate) struct ResolvedRemoteUser {
     pub(crate) user: String,
     pub(crate) uid: u32,
     pub(crate) gid: u32,
-    pub(crate) home: String,
+    pub(crate) home: Option<String>,
     pub(crate) shell: Option<String>,
     pub(crate) source: RemoteUserSource,
     pub(crate) fallback_from: Option<String>,
+}
+
+impl ResolvedRemoteUser {
+    pub(crate) fn home(&self) -> Result<&str> {
+        self.home.as_deref().with_context(|| {
+            format!(
+                "Remote user home directory is unavailable because the user has no passwd entry: {}",
+                self.user
+            )
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -266,14 +278,19 @@ pub(crate) async fn resolve_uid_gid_sync_plan_from_image(
             let result = async {
                 start_container(client, &container).await?;
                 let lookup_user = docker_user_lookup_key(&target.user);
-                let record = lookup_container_user(client, &container, lookup_user)
-                    .await?
-                    .with_context(|| {
-                        format!(
-                            "UID/GID sync user does not exist in image {image}: {}",
-                            target.user
-                        )
-                    })?;
+                let Some(record) = lookup_container_user(client, &container, lookup_user).await?
+                else {
+                    if is_numeric_user_identity(&target.user) {
+                        return Ok(UidGidSyncPlan::Noop {
+                            reason: UidGidSyncNoopReason::NumericUserWithoutPasswd,
+                        });
+                    }
+
+                    bail!(
+                        "UID/GID sync user does not exist in image {image}: {}",
+                        target.user
+                    );
+                };
                 Ok(UidGidSyncPlan::Sync {
                     target,
                     container: ResolvedUserIds {
@@ -468,20 +485,32 @@ async fn resolve_selected_remote_user(
     selection: RemoteUserSelection,
 ) -> Result<ResolvedRemoteUser> {
     let lookup_user = docker_user_lookup_key(&selection.user);
-    let record = lookup_container_user(client, container, lookup_user)
-        .await?
-        .with_context(|| {
-            format!(
-                "Remote user does not exist in container {container}: {}",
-                selection.user
-            )
-        })?;
+    let record = lookup_container_user(client, container, lookup_user).await?;
+    let Some(record) = record else {
+        if is_numeric_user_identity(&selection.user) {
+            let ids = resolve_numeric_remote_user_ids(client, container, &selection.user).await?;
+            return Ok(ResolvedRemoteUser {
+                user: selection.user,
+                uid: ids.uid,
+                gid: ids.gid,
+                home: None,
+                shell: None,
+                source: selection.source,
+                fallback_from: None,
+            });
+        }
+
+        bail!(
+            "Remote user does not exist in container {container}: {}",
+            selection.user
+        );
+    };
 
     Ok(ResolvedRemoteUser {
         user: selection.user,
         uid: record.uid,
         gid: record.gid,
-        home: record.home,
+        home: Some(record.home),
         shell: record.shell,
         source: selection.source,
         fallback_from: None,
@@ -695,8 +724,56 @@ fn docker_user_lookup_key(user: &str) -> &str {
         .trim()
 }
 
+fn is_numeric_user_identity(user: &str) -> bool {
+    let user = docker_user_lookup_key(user);
+    !user.is_empty() && user.chars().all(|ch| ch.is_ascii_digit())
+}
+
 fn is_root_user(user: &str) -> bool {
     matches!(docker_user_lookup_key(user), ROOT_USER | "0")
+}
+
+async fn resolve_numeric_remote_user_ids(
+    client: &DockerClient,
+    container: &str,
+    user: &str,
+) -> Result<ResolvedUserIds> {
+    let command = vec![
+        "/bin/sh".to_owned(),
+        "-c".to_owned(),
+        "id -u && id -g".to_owned(),
+    ];
+    let output = exec_capture_output(
+        client,
+        container,
+        &ExecCommandSpec {
+            command: command.clone(),
+            user: Some(user.to_owned()),
+            working_dir: None,
+            env: BTreeMap::new(),
+            tty: false,
+        },
+    )
+    .await
+    .with_context(|| format!("Failed to query numeric user in container {container}: {user}"))?;
+    ensure_success_output(container, &command, &output).with_context(|| {
+        format!("Failed to query numeric user in container {container}: {user}")
+    })?;
+
+    let stdout = String::from_utf8(output.stdout).with_context(|| {
+        format!("Numeric user lookup returned non-UTF-8 output in container: {container}")
+    })?;
+    let mut lines = stdout.lines();
+    let uid = parse_passwd_id(lines.next().unwrap_or_default(), "uid")
+        .with_context(|| format!("Failed to parse numeric user uid: {user}"))?;
+    let gid = parse_passwd_id(lines.next().unwrap_or_default(), "gid")
+        .with_context(|| format!("Failed to parse numeric user gid: {user}"))?;
+
+    Ok(ResolvedUserIds {
+        name: docker_user_lookup_key(user).to_owned(),
+        uid,
+        gid,
+    })
 }
 
 #[cfg(unix)]
@@ -1133,6 +1210,49 @@ mod tests {
     }
 
     #[test]
+    fn numeric_remote_user_without_passwd_entry_resolves_ids_without_home() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let image = test_image_tag("remote-user-numeric-without-passwd");
+            let result = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                build_numeric_user_without_passwd_test_image(&client, &image).await?;
+                let effective_users = resolve_effective_users_from_image(
+                    &client,
+                    &image,
+                    EffectiveUserResolveInput {
+                        devcontainer_remote_user: None,
+                        devcontainer_container_user: None,
+                        image_metadata_remote_user: None,
+                        image_metadata_container_user: None,
+                        image_config_user: None,
+                    },
+                )
+                .await?;
+
+                let user =
+                    resolve_remote_user_from_image(&client, &image, &effective_users).await?;
+
+                assert_eq!(user.user, "2004:2005");
+                assert_eq!(user.uid, 2004);
+                assert_eq!(user.gid, 2005);
+                assert_eq!(user.home, None);
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_image(&client, &image, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn resolves_root_user_from_root_image() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1150,7 +1270,7 @@ mod tests {
                 let user = resolve_remote_user(&client, &name, &effective_users).await?;
 
                 assert_eq!(user.user, "root");
-                assert_eq!(user.home, "/root");
+                assert_eq!(user.home.as_deref(), Some("/root"));
                 assert_eq!(user.source, RemoteUserSource::RootFallback);
                 assert_eq!(user.fallback_from, None);
                 assert_eq!(remote_user_home(&client, &name, "root").await?, "/root");
@@ -1195,7 +1315,7 @@ mod tests {
                 let user = resolve_remote_user(&client, &name, &effective_users).await?;
 
                 assert_eq!(user.user, "vscode");
-                assert_eq!(user.home, "/home/vscode");
+                assert_eq!(user.home.as_deref(), Some("/home/vscode"));
                 assert_eq!(user.source, RemoteUserSource::ImageConfig);
                 assert_eq!(user.fallback_from, None);
 
@@ -1240,7 +1360,7 @@ mod tests {
                 let user = resolve_remote_user(&client, &name, &effective_users).await?;
 
                 assert_eq!(user.user, "vscode:shared");
-                assert_eq!(user.home, "/home/vscode");
+                assert_eq!(user.home.as_deref(), Some("/home/vscode"));
                 assert_eq!(user.source, RemoteUserSource::ImageConfig);
                 assert_eq!(user.fallback_from, None);
 
@@ -1327,11 +1447,11 @@ mod tests {
                 let metadata = resolve_remote_user(&client, &name, &metadata_users).await?;
 
                 assert_eq!(explicit.user, "vscode");
-                assert_eq!(explicit.home, "/home/vscode");
+                assert_eq!(explicit.home.as_deref(), Some("/home/vscode"));
                 assert_eq!(explicit.source, RemoteUserSource::Explicit);
                 assert_eq!(explicit.fallback_from, None);
                 assert_eq!(metadata.user, "vscode");
-                assert_eq!(metadata.home, "/home/vscode");
+                assert_eq!(metadata.home.as_deref(), Some("/home/vscode"));
                 assert_eq!(metadata.source, RemoteUserSource::ImageMetadata);
                 assert_eq!(metadata.fallback_from, None);
 
@@ -1550,6 +1670,57 @@ mod tests {
     }
 
     #[test]
+    fn uid_gid_sync_plan_noops_for_numeric_target_without_passwd_entry() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let client = DockerClient::connect_from_env().unwrap();
+            let image = test_image_tag("uid-gid-sync-numeric-without-passwd");
+            let result = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                build_numeric_user_without_passwd_test_image(&client, &image).await?;
+                let host = HostUserIds { uid: 501, gid: 20 };
+                let users = resolve_effective_users_from_image(
+                    &client,
+                    &image,
+                    EffectiveUserResolveInput {
+                        devcontainer_remote_user: Some("2004:2005"),
+                        devcontainer_container_user: None,
+                        image_metadata_remote_user: None,
+                        image_metadata_container_user: None,
+                        image_config_user: None,
+                    },
+                )
+                .await?;
+
+                assert_eq!(
+                    resolve_uid_gid_sync_plan_from_image(
+                        &client,
+                        &image,
+                        &users,
+                        true,
+                        HostPlatform::Linux,
+                        host,
+                    )
+                    .await?,
+                    UidGidSyncPlan::Noop {
+                        reason: UidGidSyncNoopReason::NumericUserWithoutPasswd
+                    }
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_image(&client, &image, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn uid_gid_sync_plan_errors_when_explicit_target_user_is_missing() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1704,6 +1875,40 @@ mod tests {
             LABEL decune.test.image="{image}"
             RUN addgroup -g 2003 numeric && adduser -D -u 2003 -G numeric numeric
             USER 2003:2003
+            "#
+            ),
+        )?;
+
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_numeric_user_without_passwd_test_image(
+        client: &DockerClient,
+        image: &str,
+    ) -> Result<()> {
+        let context = tempfile::tempdir()?;
+        let dockerfile_path = context.path().join("Dockerfile");
+        std::fs::write(
+            &dockerfile_path,
+            format!(
+                r#"
+            FROM alpine:3.20
+            LABEL decune.test.image="{image}"
+            USER 2004:2005
             "#
             ),
         )?;

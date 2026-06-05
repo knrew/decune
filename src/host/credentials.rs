@@ -612,6 +612,13 @@ async fn setup_git_credential_helper(
         return Ok(());
     }
 
+    let Some(remote_home) = remote_user.home.as_deref() else {
+        ui::warn(&format!(
+            "Git credential forwarding is unavailable in container: {container}: remote user home is unavailable"
+        ));
+        return Ok(());
+    };
+
     if !git_credential_runtime_accessible(client, container, remote_user).await {
         ui::warn(&format!(
             "Git credential forwarding is unavailable in container: {container}"
@@ -620,14 +627,14 @@ async fn setup_git_credential_helper(
     }
 
     let script = git_credential_helper_setup_script(&config.credentials.git);
-    let env = BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]);
+    let env = BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]);
     let setup_result = exec_capture_output(
         client,
         container,
         &ExecCommandSpec {
             command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
             user: Some(remote_user.user.clone()),
-            working_dir: Some(remote_user.home.clone()),
+            working_dir: Some(remote_home.to_owned()),
             env,
             tty: false,
         },
@@ -683,14 +690,21 @@ async fn setup_git_user_config(
         return Ok(());
     }
 
-    let env = BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]);
+    let Some(remote_home) = remote_user.home.as_deref() else {
+        ui::warn(&format!(
+            "Git user config copy is unavailable in container: {container}: remote user home is unavailable"
+        ));
+        return Ok(());
+    };
+
+    let env = BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]);
     let setup_result = exec_capture(
         client,
         container,
         &ExecCommandSpec {
             command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
             user: Some(remote_user.user.clone()),
-            working_dir: Some(remote_user.home.clone()),
+            working_dir: Some(remote_home.to_owned()),
             env,
             tty: false,
         },
@@ -720,6 +734,13 @@ pub(crate) async fn setup_github_cli_credentials(
         clear_github_cli_config_dir(client, container).await;
         return Ok(());
     }
+
+    let Some(remote_home) = remote_user.home.as_deref() else {
+        ui::warn(&format!(
+            "GitHub CLI token forwarding is unavailable in container: {container}: remote user home is unavailable"
+        ));
+        return Ok(());
+    };
 
     if !github_cli_available(client, container, remote_user).await {
         ui::warn(&format!(
@@ -751,8 +772,8 @@ pub(crate) async fn setup_github_cli_credentials(
                 github_cli_setup_script(&config.credentials.github),
             ],
             user: Some(remote_user.user.clone()),
-            working_dir: Some(remote_user.home.clone()),
-            env: BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]),
+            working_dir: Some(remote_home.to_owned()),
+            env: BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]),
             tty: false,
         },
     )
@@ -828,6 +849,10 @@ async fn git_credential_runtime_accessible(
     container: &str,
     remote_user: &ResolvedRemoteUser,
 ) -> bool {
+    let Some(remote_home) = remote_user.home.as_deref() else {
+        return false;
+    };
+
     let output = exec_capture_output(
         client,
         container,
@@ -840,8 +865,8 @@ async fn git_credential_runtime_accessible(
                 ),
             ],
             user: Some(remote_user.user.clone()),
-            working_dir: Some(remote_user.home.clone()),
-            env: BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]),
+            working_dir: Some(remote_home.to_owned()),
+            env: BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]),
             tty: false,
         },
     )
@@ -879,6 +904,10 @@ async fn github_cli_available(
     container: &str,
     remote_user: &ResolvedRemoteUser,
 ) -> bool {
+    let Some(remote_home) = remote_user.home.as_deref() else {
+        return false;
+    };
+
     let output = exec_capture_output(
         client,
         container,
@@ -889,8 +918,8 @@ async fn github_cli_available(
                 "command -v gh >/dev/null 2>&1".to_owned(),
             ],
             user: Some(remote_user.user.clone()),
-            working_dir: Some(remote_user.home.clone()),
-            env: BTreeMap::from([("HOME".to_owned(), remote_user.home.clone())]),
+            working_dir: Some(remote_home.to_owned()),
+            env: BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]),
             tty: false,
         },
     )
@@ -909,7 +938,14 @@ pub(crate) async fn install_staged_host_gitconfig(
         return Ok(());
     }
 
-    let target = format!("{}/.gitconfig", remote_user.home);
+    let Some(remote_home) = remote_user.home.as_deref() else {
+        ui::warn(&format!(
+            "Git global config copy is unavailable in container: {container}: remote user home is unavailable"
+        ));
+        return Ok(());
+    };
+
+    let target = format!("{remote_home}/.gitconfig");
     let script = format!(
         "set -e\nif [ -f {source} ]; then rm -f {target}; cp {source} {target}; chown {uid}:{gid} {target}; chmod 600 {target}; fi\n",
         source = shell_quote(HOST_GITCONFIG_TARGET),

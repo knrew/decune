@@ -186,7 +186,7 @@ mod tests {
             1000,
             1001,
             "vscode".to_owned(),
-            "/home/vscode".to_owned(),
+            Some("/home/vscode".to_owned()),
         )
     }
 

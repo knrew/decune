@@ -1365,6 +1365,14 @@ async fn finalize_mounts_and_resources_for_plan(
         current_host_user_ids(),
     )
     .await?;
+    if let Some(warning) = uid_gid_sync_warning(
+        &plan.config_layers,
+        &uid_gid_sync_plan,
+        plan.config.devcontainer.update_remote_user_uid,
+        HostPlatform::current(),
+    ) {
+        ui::warn(&warning);
+    }
     let remote_user_name = remote_user.user.clone();
     let remote_user_home = remote_user.home.clone();
     let workspace_location =
@@ -1526,8 +1534,66 @@ fn uid_gid_sync_noop_reason_name(reason: UidGidSyncNoopReason) -> &'static str {
         UidGidSyncNoopReason::Disabled => "disabled",
         UidGidSyncNoopReason::NonLinuxHost => "nonLinuxHost",
         UidGidSyncNoopReason::NoExplicitUser => "noExplicitUser",
+        UidGidSyncNoopReason::NumericUserWithoutPasswd => "numericUserWithoutPasswd",
         UidGidSyncNoopReason::Root => "root",
     }
+}
+
+fn uid_gid_sync_warning(
+    config_layers: &ConfigMergeInput,
+    plan: &UidGidSyncPlan,
+    update_remote_user_uid: bool,
+    host_platform: HostPlatform,
+) -> Option<String> {
+    if host_platform != HostPlatform::Linux {
+        if explicit_update_remote_user_uid(config_layers) == Some(true) {
+            return Some(
+                "UID/GID sync is only supported on Linux hosts; skipping updateRemoteUserUID"
+                    .to_owned(),
+            );
+        }
+
+        return None;
+    }
+
+    if update_remote_user_uid
+        && matches!(
+            plan,
+            UidGidSyncPlan::Noop {
+                reason: UidGidSyncNoopReason::NumericUserWithoutPasswd
+            }
+        )
+    {
+        return Some(
+            "UID/GID sync is skipped because the configured numeric user has no passwd entry"
+                .to_owned(),
+        );
+    }
+
+    None
+}
+
+fn explicit_update_remote_user_uid(config_layers: &ConfigMergeInput) -> Option<bool> {
+    let mut explicit = None;
+    for layer in config_layers
+        .image_metadata
+        .iter()
+        .chain(config_layers.feature_metadata.iter())
+        .chain(config_layers.global.iter())
+        .chain(config_layers.devcontainer.iter())
+        .chain(config_layers.project.iter())
+        .chain(config_layers.cli.iter())
+    {
+        if let Some(update_remote_user_uid) = layer
+            .devcontainer
+            .as_ref()
+            .and_then(|devcontainer| devcontainer.update_remote_user_uid)
+        {
+            explicit = Some(update_remote_user_uid);
+        }
+    }
+
+    explicit
 }
 
 fn merged_metadata_remote_user(config_layers: &ConfigMergeInput) -> Option<&str> {
@@ -2970,14 +3036,19 @@ fn static_mount_variable_context(
         .clone()
         .unwrap_or_else(|| "root".to_owned());
 
-    mount_variable_context(workspace, workspace_folder, remote_user, "/root".to_owned())
+    mount_variable_context(
+        workspace,
+        workspace_folder,
+        remote_user,
+        Some("/root".to_owned()),
+    )
 }
 
 fn mount_variable_context(
     workspace: &Workspace,
     workspace_folder: &str,
     remote_user: String,
-    remote_user_home: String,
+    remote_user_home: Option<String>,
 ) -> crate::config::variables::VariableContext {
     crate::config::variables::VariableContext::new(
         workspace.root().to_path_buf(),
@@ -3183,8 +3254,8 @@ mod tests {
     use crate::docker::ports::ResolvedForwardPort;
     use crate::docker::resource::DockerResources;
     use crate::docker::user::{
-        EffectiveUserResolveInput, EffectiveUsers, HostPlatform, UidGidSyncPlan,
-        current_host_user_ids, resolve_effective_users,
+        EffectiveUserResolveInput, EffectiveUsers, HostPlatform, UidGidSyncNoopReason,
+        UidGidSyncPlan, current_host_user_ids, resolve_effective_users,
     };
     use crate::host::credentials::{
         GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET, SSH_AGENT_SOCKET_TARGET,
@@ -3200,7 +3271,7 @@ mod tests {
         create_and_start_container, decide_existing_container, default_workspace_folder,
         first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
         run_attached_up, run_detached_up, shell_command_candidates,
-        should_auto_add_github_cli_feature,
+        should_auto_add_github_cli_feature, uid_gid_sync_warning,
     };
 
     #[test]
@@ -5314,6 +5385,62 @@ type = "bind"
             let image_cleanup = remove_image(&client, &image, true).await;
             result.and(container_cleanup).and(image_cleanup).unwrap();
         });
+    }
+
+    #[test]
+    fn uid_gid_sync_warning_reports_only_explicit_true_on_non_linux() {
+        let default_layers = ConfigMergeInput::default();
+        let explicit_true = ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    update_remote_user_uid: Some(true),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        };
+        let explicit_false = ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    update_remote_user_uid: Some(false),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        };
+        let plan = UidGidSyncPlan::Noop {
+            reason: UidGidSyncNoopReason::NonLinuxHost,
+        };
+
+        assert_eq!(
+            uid_gid_sync_warning(&default_layers, &plan, true, HostPlatform::NonLinux),
+            None
+        );
+        assert!(
+            uid_gid_sync_warning(&explicit_true, &plan, true, HostPlatform::NonLinux)
+                .is_some_and(|warning| warning.contains("skipping updateRemoteUserUID"))
+        );
+        assert_eq!(
+            uid_gid_sync_warning(&explicit_false, &plan, false, HostPlatform::NonLinux),
+            None
+        );
+    }
+
+    #[test]
+    fn uid_gid_sync_warning_reports_numeric_user_without_passwd_noop() {
+        let warning = uid_gid_sync_warning(
+            &ConfigMergeInput::default(),
+            &UidGidSyncPlan::Noop {
+                reason: UidGidSyncNoopReason::NumericUserWithoutPasswd,
+            },
+            true,
+            HostPlatform::Linux,
+        )
+        .expect("numeric no-passwd sync no-op must be user-visible");
+
+        assert!(warning.contains("numeric user has no passwd entry"));
     }
 
     #[cfg(unix)]
