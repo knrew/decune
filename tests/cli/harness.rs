@@ -847,7 +847,7 @@ digest = "{manifest_digest}"
     let cache_root = cache_home.join("decune/features");
     fs::create_dir_all(&cache_root).unwrap();
     let archive = cache_root.join(format!("{}.tgz", manifest_digest.replace(':', "_")));
-    let metadata = r#"{"id":"github-cli","version":"1.0.0"}"#;
+    let metadata = r#"{"id":"github-cli","version":"1.0.0","name":"GitHub CLI"}"#;
     write_feature_archive(
         &archive,
         &[

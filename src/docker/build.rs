@@ -1311,7 +1311,7 @@ mod tests {
         fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
         fs::write(
             source.join("devcontainer-feature.json"),
-            r#"{"id":"tool","version":"1.0.0"}"#,
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
         )
         .unwrap();
         let context_dir = temp.path().join("context");
@@ -1320,12 +1320,20 @@ mod tests {
             devcontainer_id: "workspace-id".to_owned(),
             final_user: "vscode".to_owned(),
             entrypoints: vec!["touch /tmp/feature-${devcontainerId}".to_owned()],
-            install_env: BTreeMap::new(),
+            install_env: BTreeMap::from([
+                ("_CONTAINER_USER".to_owned(), "root".to_owned()),
+                ("_CONTAINER_USER_HOME".to_owned(), "/root".to_owned()),
+                ("_REMOTE_USER".to_owned(), "vscode".to_owned()),
+                ("_REMOTE_USER_HOME".to_owned(), "/home/vscode".to_owned()),
+            ]),
             context_dir,
             features: vec![FeatureLayerBuildFeature {
                 id: "ghcr.io/example/features/tool".to_owned(),
                 source_dir: source,
-                option_env: BTreeMap::from([("VERSION".to_owned(), "1.2".to_owned())]),
+                option_env: BTreeMap::from([(
+                    "VERSION".to_owned(),
+                    "1.2'$(echo unsafe)".to_owned(),
+                )]),
                 container_env: BTreeMap::new(),
             }],
         })
@@ -1368,7 +1376,7 @@ mod tests {
                     .join("000-ghcr-io-example-features-tool/devcontainer-features.env")
             )
             .unwrap(),
-            "VERSION='1.2'\n"
+            "VERSION='1.2'\"'\"'$(echo unsafe)'\n_CONTAINER_USER='root'\n_CONTAINER_USER_HOME='/root'\n_REMOTE_USER='vscode'\n_REMOTE_USER_HOME='/home/vscode'\n"
         );
     }
 
@@ -1414,7 +1422,7 @@ mod tests {
         fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
         fs::write(
             source.join("devcontainer-feature.json"),
-            r#"{"id":"tool","version":"1.0.0"}"#,
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
         )
         .unwrap();
         let context_dir = temp.path().join("context");
@@ -1456,7 +1464,7 @@ mod tests {
         fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
         fs::write(
             source.join("devcontainer-feature.json"),
-            r#"{"id":"tool","version":"1.0.0"}"#,
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
         )
         .unwrap();
         let context_dir = temp.path().join("context");

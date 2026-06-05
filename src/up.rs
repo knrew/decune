@@ -2196,7 +2196,9 @@ fn feature_install_env(plan: &UpPlan, image_user: &str) -> BTreeMap<String, Stri
 
     BTreeMap::from([
         ("_CONTAINER_USER".to_owned(), container_user),
+        ("_CONTAINER_USER_HOME".to_owned(), String::new()),
         ("_REMOTE_USER".to_owned(), remote_user),
+        ("_REMOTE_USER_HOME".to_owned(), String::new()),
     ])
 }
 
