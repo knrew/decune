@@ -268,20 +268,34 @@ pub(crate) async fn create_workspace_image_tag(
 pub(crate) async fn create_image_without_devcontainer_metadata(
     image_tag: &str,
 ) -> anyhow::Result<()> {
+    create_image_with_cmd(image_tag, Vec::new()).await
+}
+
+pub(crate) async fn create_image_with_cmd(image_tag: &str, cmd: Vec<&str>) -> anyhow::Result<()> {
     let docker = Docker::connect_with_defaults()?;
     ensure_alpine_image(&docker).await?;
 
-    let (repo, tag) = image_tag
-        .rsplit_once(':')
-        .ok_or_else(|| anyhow::anyhow!("test image tag must include a tag: {image_tag}"))?;
-    let options = TagImageOptionsBuilder::default()
-        .repo(repo)
-        .tag(tag)
-        .build();
+    if cmd.is_empty() {
+        let (repo, tag) = image_tag
+            .rsplit_once(':')
+            .ok_or_else(|| anyhow::anyhow!("test image tag must include a tag: {image_tag}"))?;
+        let options = TagImageOptionsBuilder::default()
+            .repo(repo)
+            .tag(tag)
+            .build();
 
-    docker.tag_image("alpine:3.20", Some(options)).await?;
+        docker.tag_image("alpine:3.20", Some(options)).await?;
+        return Ok(());
+    }
 
-    Ok(())
+    commit_alpine_configured_image(
+        image_tag,
+        ContainerConfig {
+            cmd: Some(cmd.into_iter().map(ToOwned::to_owned).collect()),
+            ..Default::default()
+        },
+    )
+    .await
 }
 
 pub(crate) async fn create_image_with_github_cli(image_tag: &str) -> anyhow::Result<()> {
@@ -384,11 +398,54 @@ pub(crate) async fn create_image_with_devcontainer_metadata_label_and_cmd(
     metadata: &str,
     cmd: Vec<&str>,
 ) -> anyhow::Result<()> {
+    let labels = HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]);
+    commit_alpine_configured_image(
+        image_tag,
+        ContainerConfig {
+            labels: Some(labels),
+            cmd: Some(cmd.into_iter().map(ToOwned::to_owned).collect()),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+pub(crate) async fn create_nonroot_image_with_devcontainer_metadata_label_and_cmd(
+    image_tag: &str,
+    metadata: &str,
+    cmd: Vec<&str>,
+) -> anyhow::Result<()> {
+    let labels = HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]);
+    commit_alpine_image_from_script(
+        image_tag,
+        Some("adduser -D -u 20001 app\n"),
+        ContainerConfig {
+            labels: Some(labels),
+            cmd: Some(cmd.into_iter().map(ToOwned::to_owned).collect()),
+            user: Some("app".to_owned()),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
+async fn commit_alpine_configured_image(
+    image_tag: &str,
+    config: ContainerConfig,
+) -> anyhow::Result<()> {
+    commit_alpine_image_from_script(image_tag, None, config).await
+}
+
+async fn commit_alpine_image_from_script(
+    image_tag: &str,
+    script: Option<&str>,
+    config: ContainerConfig,
+) -> anyhow::Result<()> {
     let docker = Docker::connect_with_defaults()?;
     ensure_alpine_image(&docker).await?;
 
     let container_name = format!(
-        "decune-image-metadata-label-{}",
+        "decune-configured-image-{}",
         image_tag
             .chars()
             .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
@@ -405,10 +462,18 @@ pub(crate) async fn create_image_with_devcontainer_metadata_label_and_cmd(
     let create_options = CreateContainerOptionsBuilder::default()
         .name(&container_name)
         .build();
-    let body = ContainerCreateBody {
-        image: Some("alpine:3.20".to_owned()),
-        cmd: Some(vec!["true".to_owned()]),
-        ..Default::default()
+    let body = match script {
+        Some(script) => ContainerCreateBody {
+            image: Some("alpine:3.20".to_owned()),
+            entrypoint: Some(vec!["/bin/sh".to_owned()]),
+            cmd: Some(vec!["-c".to_owned(), script.to_owned()]),
+            ..Default::default()
+        },
+        None => ContainerCreateBody {
+            image: Some("alpine:3.20".to_owned()),
+            cmd: Some(vec!["true".to_owned()]),
+            ..Default::default()
+        },
     };
 
     docker.create_container(Some(create_options), body).await?;
@@ -436,18 +501,12 @@ pub(crate) async fn create_image_with_devcontainer_metadata_label_and_cmd(
     let (repo, tag) = image_tag
         .rsplit_once(':')
         .ok_or_else(|| anyhow::anyhow!("test image tag must include a tag: {image_tag}"))?;
-    let labels = HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]);
     let commit_options = CommitContainerOptionsBuilder::default()
         .container(&container_name)
         .repo(repo)
         .tag(tag)
         .pause(false)
         .build();
-    let config = ContainerConfig {
-        labels: Some(labels),
-        cmd: Some(cmd.into_iter().map(ToOwned::to_owned).collect()),
-        ..Default::default()
-    };
 
     docker.commit_container(commit_options, config).await?;
     docker
