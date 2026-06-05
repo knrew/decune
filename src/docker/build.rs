@@ -460,7 +460,7 @@ feature_startup_id() {
 }
 sentinel=/run/decune/feature-entrypoints-complete
 sentinel_startup_id=$(feature_startup_id)
-rm -f "$sentinel"
+: > "$sentinel"
 if [ -f /usr/local/share/decune/feature-entrypoints ]; then
     while IFS= read -r entrypoint; do
         if [ -n "$entrypoint" ]; then
@@ -468,7 +468,6 @@ if [ -f /usr/local/share/decune/feature-entrypoints ]; then
         fi
     done </usr/local/share/decune/feature-entrypoints
 fi
-mkdir -p /run/decune
 printf '%s\n' "$sentinel_startup_id" > "$sentinel"
 if [ "$#" -eq 0 ]; then
     trap 'exit 0' TERM
@@ -1219,6 +1218,9 @@ mod tests {
         assert!(dockerfile.contains("USER vscode"));
         assert!(wrapper.contains(FEATURE_ENTRYPOINT_SENTINEL));
         assert!(wrapper.contains("sentinel_startup_id=$(feature_startup_id)"));
+        assert!(wrapper.contains(": > \"$sentinel\""));
+        assert!(!wrapper.contains("rm -f \"$sentinel\""));
+        assert!(!wrapper.contains("mkdir -p /run/decune"));
         assert!(install_script.contains("./install.sh"));
         assert!(!install_script.contains("/bin/sh ./install.sh"));
         assert!(install_script.contains("rm -rf /tmp/decune-features"));

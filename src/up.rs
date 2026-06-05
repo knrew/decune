@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
+    fs,
     future::Future,
+    os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
@@ -101,6 +103,9 @@ static IMAGE_COMMAND_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const KEEPALIVE_STARTUP_CHECK_DELAY: Duration = Duration::from_millis(200);
 const ORIGINAL_COMMAND_STARTUP_MONITOR_WINDOW: Duration = Duration::from_secs(2);
 const FEATURE_ENTRYPOINT_SENTINEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const FEATURE_ENTRYPOINT_SENTINEL_MODE: u32 = 0o666;
+const FEATURE_ENTRYPOINT_RUNTIME_DIR_MODE: u32 = 0o711;
+const FEATURE_ENTRYPOINT_SHIM_HASH_VERSION: &str = "2";
 const DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS: &[&str] = &[
     DECUNE_RUNTIME_TARGET,
     SSH_AGENT_SOCKET_TARGET,
@@ -581,6 +586,7 @@ fn build_up_plan_inner(
     if mount_resolution == MountResolution::Resolve {
         hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     }
+    add_internal_hash_versions(&mut hash_input, &config);
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
         workspace,
@@ -663,6 +669,15 @@ fn feature_lock_hash_inputs(
     }
 
     Ok(entries)
+}
+
+fn add_internal_hash_versions(input: &mut ConfigHashInput<'_>, config: &ResolvedConfig) {
+    if !config.devcontainer.entrypoints.is_empty() {
+        input.internal_versions.insert(
+            "feature_entrypoint_shim".to_owned(),
+            FEATURE_ENTRYPOINT_SHIM_HASH_VERSION.to_owned(),
+        );
+    }
 }
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
@@ -975,11 +990,73 @@ fn add_prepared_credential_runtime_mounts(
         .devcontainer
         .container_env
         .extend(ssh_agent.container_env().clone());
+    prepare_feature_entrypoint_sentinel_runtime(&plan, runtime_dir)?;
 
     Ok((
         plan,
         CredentialRuntime::new(git_credentials, github_cli, ssh_agent, forward),
     ))
+}
+
+fn prepare_feature_entrypoint_sentinel_runtime(plan: &UpPlan, runtime_dir: &Path) -> Result<()> {
+    if plan.config.devcontainer.entrypoints.is_empty() {
+        return Ok(());
+    }
+
+    fs::create_dir_all(runtime_dir).with_context(|| {
+        format!(
+            "Failed to create Feature entrypoint runtime directory: {}",
+            runtime_dir.display()
+        )
+    })?;
+    fs::set_permissions(
+        runtime_dir,
+        fs::Permissions::from_mode(FEATURE_ENTRYPOINT_RUNTIME_DIR_MODE),
+    )
+    .with_context(|| {
+        format!(
+            "Failed to set Feature entrypoint runtime directory permissions: {}",
+            runtime_dir.display()
+        )
+    })?;
+
+    let sentinel = feature_entrypoint_sentinel_runtime_path(runtime_dir)?;
+    let _file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(FEATURE_ENTRYPOINT_SENTINEL_MODE)
+        .open(&sentinel)
+        .with_context(|| {
+            format!(
+                "Failed to prepare Feature entrypoint sentinel: {}",
+                sentinel.display()
+            )
+        })?;
+    fs::set_permissions(
+        &sentinel,
+        fs::Permissions::from_mode(FEATURE_ENTRYPOINT_SENTINEL_MODE),
+    )
+    .with_context(|| {
+        format!(
+            "Failed to set Feature entrypoint sentinel permissions: {}",
+            sentinel.display()
+        )
+    })?;
+
+    Ok(())
+}
+
+fn feature_entrypoint_sentinel_runtime_path(runtime_dir: &Path) -> Result<PathBuf> {
+    let sentinel_target = Path::new(FEATURE_ENTRYPOINT_SENTINEL);
+    let relative = sentinel_target
+        .strip_prefix(DECUNE_RUNTIME_TARGET)
+        .with_context(|| {
+            format!(
+                "Feature entrypoint sentinel must be under {DECUNE_RUNTIME_TARGET}: {FEATURE_ENTRYPOINT_SENTINEL}"
+            )
+        })?;
+    Ok(runtime_dir.join(relative))
 }
 
 fn extend_runtime_mounts(mounts: &mut Vec<DockerMountSpec>, runtime_mounts: &[DockerMountSpec]) {
@@ -1296,6 +1373,7 @@ async fn finalize_mounts_and_resources_for_plan(
     };
     hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     hash_input.startup_command = startup_command_hash_input(client, &plan, lookup_image).await?;
+    add_internal_hash_versions(&mut hash_input, &plan.config);
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
         workspace,

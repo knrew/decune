@@ -410,8 +410,35 @@ pub(crate) async fn create_image_with_devcontainer_metadata_label_and_cmd(
     .await
 }
 
+pub(crate) async fn create_nonroot_image_with_devcontainer_metadata_label_and_cmd(
+    image_tag: &str,
+    metadata: &str,
+    cmd: Vec<&str>,
+) -> anyhow::Result<()> {
+    let labels = HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]);
+    commit_alpine_image_from_script(
+        image_tag,
+        Some("adduser -D -u 20001 app\n"),
+        ContainerConfig {
+            labels: Some(labels),
+            cmd: Some(cmd.into_iter().map(ToOwned::to_owned).collect()),
+            user: Some("app".to_owned()),
+            ..Default::default()
+        },
+    )
+    .await
+}
+
 async fn commit_alpine_configured_image(
     image_tag: &str,
+    config: ContainerConfig,
+) -> anyhow::Result<()> {
+    commit_alpine_image_from_script(image_tag, None, config).await
+}
+
+async fn commit_alpine_image_from_script(
+    image_tag: &str,
+    script: Option<&str>,
     config: ContainerConfig,
 ) -> anyhow::Result<()> {
     let docker = Docker::connect_with_defaults()?;
@@ -435,10 +462,18 @@ async fn commit_alpine_configured_image(
     let create_options = CreateContainerOptionsBuilder::default()
         .name(&container_name)
         .build();
-    let body = ContainerCreateBody {
-        image: Some("alpine:3.20".to_owned()),
-        cmd: Some(vec!["true".to_owned()]),
-        ..Default::default()
+    let body = match script {
+        Some(script) => ContainerCreateBody {
+            image: Some("alpine:3.20".to_owned()),
+            entrypoint: Some(vec!["/bin/sh".to_owned()]),
+            cmd: Some(vec!["-c".to_owned(), script.to_owned()]),
+            ..Default::default()
+        },
+        None => ContainerCreateBody {
+            image: Some("alpine:3.20".to_owned()),
+            cmd: Some(vec!["true".to_owned()]),
+            ..Default::default()
+        },
     };
 
     docker.create_container(Some(create_options), body).await?;

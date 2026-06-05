@@ -23,6 +23,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) config: &'a ResolvedConfig,
     pub(crate) feature_locks: Vec<FeatureLockHashEntry>,
     pub(crate) cli_flags: BTreeMap<String, Value>,
+    pub(crate) internal_versions: BTreeMap<String, String>,
     pub(crate) build: Option<BuildHashInput>,
     pub(crate) resolved_mounts: Vec<MountHashInput>,
     pub(crate) startup_command: Option<StartupCommandHashInput>,
@@ -34,6 +35,7 @@ impl<'a> ConfigHashInput<'a> {
             config,
             feature_locks: Vec::new(),
             cli_flags: BTreeMap::new(),
+            internal_versions: BTreeMap::new(),
             build: None,
             resolved_mounts: Vec::new(),
             startup_command: None,
@@ -108,6 +110,11 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
     writer.field("cli_flags", |writer| {
         writer.map(input.cli_flags.iter(), |writer, value| {
             writer.toml_value(value);
+        });
+    });
+    writer.field("internal_versions", |writer| {
+        writer.map(input.internal_versions.iter(), |writer, value| {
+            writer.string(value);
         });
     });
     writer.field("build", |writer| match &input.build {
