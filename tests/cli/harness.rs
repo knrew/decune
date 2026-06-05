@@ -235,7 +235,7 @@ pub(crate) async fn cleanup_workspace_images(workspace_root: &Path) -> anyhow::R
     let docker = Docker::connect_with_defaults()?;
     let options = RemoveImageOptionsBuilder::default()
         .force(true)
-        .noprune(false)
+        .noprune(true)
         .build();
 
     for image in workspace_images(workspace_root).await? {
@@ -711,7 +711,7 @@ pub(crate) async fn remove_image_if_exists(image: &str) -> anyhow::Result<()> {
 
     let options = RemoveImageOptionsBuilder::default()
         .force(true)
-        .noprune(false)
+        .noprune(true)
         .build();
     docker.remove_image(image, Some(options), None).await?;
 
