@@ -327,11 +327,18 @@ pub(crate) fn uid_gid_sync_runtime_user(user: &str, plan: &UidGidSyncPlan) -> Re
     let Some(parsed) = parse_docker_image_config_user(Some(user))? else {
         return Ok(user.to_owned());
     };
-    if parsed.user != DockerUserIdentifier::Id(container.uid) {
+    let matches_sync_user = match &parsed.user {
+        DockerUserIdentifier::Id(uid) => *uid == container.uid,
+        DockerUserIdentifier::Name(name) => name == &container.name,
+    };
+    if !matches_sync_user {
         return Ok(parsed.raw);
     }
 
-    let mut runtime_user = container.name.clone();
+    let mut runtime_user = match parsed.user {
+        DockerUserIdentifier::Id(_) => container.name.clone(),
+        DockerUserIdentifier::Name(name) => name,
+    };
     if let Some(group) = parsed.group {
         runtime_user.push(':');
         match group {
@@ -1127,6 +1134,18 @@ mod tests {
         assert_eq!(
             uid_gid_sync_runtime_user("2001:3000", &plan).unwrap(),
             "syncuser:3000"
+        );
+        assert_eq!(
+            uid_gid_sync_runtime_user("syncuser:2001", &plan).unwrap(),
+            "syncuser:1000"
+        );
+        assert_eq!(
+            uid_gid_sync_runtime_user("syncuser:3000", &plan).unwrap(),
+            "syncuser:3000"
+        );
+        assert_eq!(
+            uid_gid_sync_runtime_user("otheruser:2001", &plan).unwrap(),
+            "otheruser:2001"
         );
         assert_eq!(
             uid_gid_sync_runtime_user("2002:2001", &plan).unwrap(),
