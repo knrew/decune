@@ -100,7 +100,6 @@ const GITHUB_CLI_FEATURE_CANONICAL_ID: &str = "ghcr.io/devcontainers/features/gi
 static IMAGE_COMMAND_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 const KEEPALIVE_STARTUP_CHECK_DELAY: Duration = Duration::from_millis(200);
 const ORIGINAL_COMMAND_STARTUP_MONITOR_WINDOW: Duration = Duration::from_secs(2);
-const FEATURE_ENTRYPOINT_STARTUP_TIMEOUT: Duration = Duration::from_secs(30);
 const FEATURE_ENTRYPOINT_SENTINEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS: &[&str] = &[
     DECUNE_RUNTIME_TARGET,
@@ -2379,18 +2378,11 @@ async fn wait_for_feature_entrypoint_sentinel(
     client: &DockerClient,
     container_name: &str,
 ) -> Result<()> {
-    let wait = async {
-        loop {
-            tokio::time::sleep(FEATURE_ENTRYPOINT_SENTINEL_POLL_INTERVAL).await;
-            if feature_entrypoint_sentinel_is_current(client, container_name).await? {
-                return Ok(());
-            }
+    loop {
+        tokio::time::sleep(FEATURE_ENTRYPOINT_SENTINEL_POLL_INTERVAL).await;
+        if feature_entrypoint_sentinel_is_current(client, container_name).await? {
+            return Ok(());
         }
-    };
-
-    match tokio::time::timeout(FEATURE_ENTRYPOINT_STARTUP_TIMEOUT, wait).await {
-        Ok(result) => result,
-        Err(_) => bail!("Timed out waiting for Feature entrypoints to complete: {container_name}"),
     }
 }
 
