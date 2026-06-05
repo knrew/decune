@@ -223,8 +223,11 @@ pub(crate) async fn resolve_remote_user(
     client: &DockerClient,
     container: &str,
     effective_users: &EffectiveUsers,
+    uid_gid_sync_plan: &UidGidSyncPlan,
 ) -> Result<ResolvedRemoteUser> {
-    resolve_selected_remote_user(client, container, effective_users.remote_selection()).await
+    let mut selection = effective_users.remote_selection();
+    selection.user = uid_gid_sync_runtime_user(&selection.user, uid_gid_sync_plan)?;
+    resolve_selected_remote_user(client, container, selection).await
 }
 
 pub(crate) async fn resolve_effective_users_from_image(
@@ -1267,7 +1270,13 @@ mod tests {
                 create_running_user_test_container(&client, &name, "alpine:3.20").await?;
 
                 let effective_users = EffectiveUsers::root();
-                let user = resolve_remote_user(&client, &name, &effective_users).await?;
+                let user = resolve_remote_user(
+                    &client,
+                    &name,
+                    &effective_users,
+                    &UidGidSyncPlan::default(),
+                )
+                .await?;
 
                 assert_eq!(user.user, "root");
                 assert_eq!(user.home.as_deref(), Some("/root"));
@@ -1312,7 +1321,13 @@ mod tests {
                     },
                 )
                 .await?;
-                let user = resolve_remote_user(&client, &name, &effective_users).await?;
+                let user = resolve_remote_user(
+                    &client,
+                    &name,
+                    &effective_users,
+                    &UidGidSyncPlan::default(),
+                )
+                .await?;
 
                 assert_eq!(user.user, "vscode");
                 assert_eq!(user.home.as_deref(), Some("/home/vscode"));
@@ -1357,7 +1372,13 @@ mod tests {
                     },
                 )
                 .await?;
-                let user = resolve_remote_user(&client, &name, &effective_users).await?;
+                let user = resolve_remote_user(
+                    &client,
+                    &name,
+                    &effective_users,
+                    &UidGidSyncPlan::default(),
+                )
+                .await?;
 
                 assert_eq!(user.user, "vscode:shared");
                 assert_eq!(user.home.as_deref(), Some("/home/vscode"));
@@ -1395,9 +1416,14 @@ mod tests {
                     image_metadata_container_user: None,
                     image_config_user: None,
                 })?;
-                let error = resolve_remote_user(&client, &name, &effective_users)
-                    .await
-                    .expect_err("missing explicit user must be a configuration error");
+                let error = resolve_remote_user(
+                    &client,
+                    &name,
+                    &effective_users,
+                    &UidGidSyncPlan::default(),
+                )
+                .await
+                .expect_err("missing explicit user must be a configuration error");
                 let message = error.to_string();
 
                 assert!(message.contains("Remote user does not exist"));
@@ -1443,8 +1469,20 @@ mod tests {
                     image_metadata_container_user: None,
                     image_config_user: None,
                 })?;
-                let explicit = resolve_remote_user(&client, &name, &explicit_users).await?;
-                let metadata = resolve_remote_user(&client, &name, &metadata_users).await?;
+                let explicit = resolve_remote_user(
+                    &client,
+                    &name,
+                    &explicit_users,
+                    &UidGidSyncPlan::default(),
+                )
+                .await?;
+                let metadata = resolve_remote_user(
+                    &client,
+                    &name,
+                    &metadata_users,
+                    &UidGidSyncPlan::default(),
+                )
+                .await?;
 
                 assert_eq!(explicit.user, "vscode");
                 assert_eq!(explicit.home.as_deref(), Some("/home/vscode"));

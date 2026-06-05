@@ -2328,6 +2328,7 @@ async fn prepare_up_lifecycle(
         &started.client,
         &started.outcome.container_name,
         &started.plan.effective_users,
+        &started.plan.uid_gid_sync_plan,
     )
     .await?;
 
@@ -2350,6 +2351,7 @@ async fn start_host_daemon_for_up(started: &StartedUpContainer) -> Result<HostDa
         &started.client,
         &started.outcome.container_name,
         &started.plan.effective_users,
+        &started.plan.uid_gid_sync_plan,
     )
     .await?;
 
@@ -2533,7 +2535,13 @@ async fn detect_container_arch_for_forward_agent(
 }
 
 async fn attach_shell(client: &DockerClient, plan: &UpPlan, container_name: &str) -> Result<i64> {
-    let remote_user = resolve_remote_user(client, container_name, &plan.effective_users).await?;
+    let remote_user = resolve_remote_user(
+        client,
+        container_name,
+        &plan.effective_users,
+        &plan.uid_gid_sync_plan,
+    )
+    .await?;
     let env = resolve_exec_env(
         client,
         container_name,
@@ -5366,6 +5374,92 @@ type = "bind"
                             "id -u; id -g".to_owned(),
                         ],
                         user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(output.stdout)?,
+                    format!("{}\n{}\n", host.uid, host.gid)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_rewrites_numeric_remote_user_after_uid_gid_sync() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 || host.uid == 2001 || host.gid == 2001 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-numeric-remote-user");
+            let image = format!(
+                "decune-test/uid-gid-sync-numeric-remote-user-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "2001:2001",
+                      "postCreateCommand": "id -u >/tmp/decune-remote-user-ids; id -g >>/tmp/decune-remote-user-ids"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_numeric_uid_gid_user_image(&client, &image).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-remote-user-ids".to_owned(),
+                        ],
+                        user: Some("root".to_owned()),
                         working_dir: None,
                         env: BTreeMap::new(),
                         tty: false,
