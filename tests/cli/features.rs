@@ -42,10 +42,15 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             {
               "id": "env-tool",
               "version": "1.0.0",
+              "name": "Env Tool",
               "options": {
                 "value": {
                   "type": "string",
                   "default": "default"
+                },
+                "default-value": {
+                  "type": "string",
+                  "default": "from-default"
                 }
               },
               "containerEnv": {
@@ -61,6 +66,7 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             r#"
             set -eu
             test "${VALUE:-}" = "from-option"
+            test "${DEFAULT_VALUE:-}" = "from-default"
             test "${FROM_FEATURE:-}" = yes
             test "${_CONTAINER_USER:-}" = root
             test "${_REMOTE_USER:-}" = remoteuser
@@ -145,6 +151,7 @@ fn up_detach_rejects_feature_metadata_remote_user() {
             {
               "id": "user-tool",
               "version": "1.0.0",
+              "name": "User Tool",
               "remoteUser": "featureuser"
             }
             "#,
@@ -228,7 +235,8 @@ fn up_detach_preserves_base_image_user_after_feature_layer() {
             r#"
             {
               "id": "root-tool",
-              "version": "1.0.0"
+              "version": "1.0.0",
+              "name": "Root Tool"
             }
             "#,
         )
@@ -307,6 +315,7 @@ fn up_detach_isolates_feature_option_env_between_features() {
             {
               "id": "alpha",
               "version": "1.0.0",
+              "name": "Alpha",
               "options": {
                 "version": {
                   "type": "string",
@@ -334,7 +343,8 @@ fn up_detach_isolates_feature_option_env_between_features() {
             r#"
             {
               "id": "beta",
-              "version": "1.0.0"
+              "version": "1.0.0",
+              "name": "Beta"
             }
             "#,
         )
@@ -408,6 +418,7 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
             {
               "id": "lifecycle-tool",
               "version": "1.0.0",
+              "name": "Lifecycle Tool",
               "postStartCommand": "echo feature-post-start >> /tmp/decune-feature-lifecycle"
             }
             "#,
@@ -528,6 +539,7 @@ fn up_detach_runs_feature_lifecycle_before_user_lifecycle() {
             {
               "id": "alpha",
               "version": "1.0.0",
+              "name": "Alpha",
               "postStartCommand": "printf 'alpha\n' >> /tmp/decune-lifecycle-order"
             }
             "#,
@@ -543,6 +555,7 @@ fn up_detach_runs_feature_lifecycle_before_user_lifecycle() {
             {
               "id": "beta",
               "version": "1.0.0",
+              "name": "Beta",
               "postStartCommand": "printf 'beta\n' >> /tmp/decune-lifecycle-order"
             }
             "#,
@@ -610,6 +623,7 @@ fn up_detach_runs_feature_entrypoint_before_lifecycle() {
             {
               "id": "entrypoint-tool",
               "version": "1.0.0",
+              "name": "Entrypoint Tool",
               "entrypoint": "touch /tmp/decune-feature-entrypoint"
             }
             "#,
@@ -692,6 +706,7 @@ fn up_detach_runs_feature_entrypoint_as_nonroot_image_user() {
             {
               "id": "entrypoint-tool",
               "version": "1.0.0",
+              "name": "Entrypoint Tool",
               "entrypoint": "touch /tmp/decune-feature-entrypoint"
             }
             "#,
@@ -774,6 +789,7 @@ fn up_detach_runs_feature_entrypoint_when_override_command_is_false() {
             {
               "id": "entrypoint-tool",
               "version": "1.0.0",
+              "name": "Entrypoint Tool",
               "entrypoint": "touch /tmp/decune-feature-entrypoint"
             }
             "#,
@@ -846,6 +862,7 @@ fn up_detach_runs_feature_entrypoints_in_install_order() {
             {
               "id": "alpha",
               "version": "1.0.0",
+              "name": "Alpha",
               "entrypoint": "printf '%s\\n' alpha >> /tmp/decune-feature-entrypoint-order"
             }
             "#,
@@ -861,6 +878,7 @@ fn up_detach_runs_feature_entrypoints_in_install_order() {
             {
               "id": "beta",
               "version": "1.0.0",
+              "name": "Beta",
               "entrypoint": "printf '%s\\n' beta >> /tmp/decune-feature-entrypoint-order"
             }
             "#,
@@ -928,6 +946,7 @@ fn up_detach_waits_for_slow_feature_entrypoint_without_timing_out() {
             {
               "id": "entrypoint-tool",
               "version": "1.0.0",
+              "name": "Entrypoint Tool",
               "entrypoint": "sleep 31; touch /tmp/decune-slow-feature-entrypoint"
             }
             "#,
@@ -997,6 +1016,7 @@ fn up_detach_fails_when_feature_entrypoint_exits_non_zero() {
             {
               "id": "entrypoint-tool",
               "version": "1.0.0",
+              "name": "Entrypoint Tool",
               "entrypoint": "echo decune-entrypoint-failed >&2; exit 23"
             }
             "#,
@@ -1067,6 +1087,7 @@ fn up_detach_fails_when_feature_entrypoint_exits_non_zero_after_delay() {
             {
               "id": "entrypoint-tool",
               "version": "1.0.0",
+              "name": "Entrypoint Tool",
               "entrypoint": "sleep 1; echo decune-entrypoint-failed >&2; exit 23"
             }
             "#,

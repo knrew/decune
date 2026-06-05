@@ -155,6 +155,7 @@ pub(crate) struct OciLayerDescriptor {
 pub(crate) struct FeatureMetadata {
     pub(crate) id: String,
     pub(crate) version: String,
+    pub(crate) name: String,
     #[serde(default, rename = "legacyIds")]
     pub(crate) legacy_ids: Vec<String>,
     #[serde(default, rename = "dependsOn")]
@@ -890,7 +891,7 @@ fn validate_feature_metadata_document(raw: &JsonValue) -> Result<()> {
         bail!("Feature metadata must be a JSON object");
     };
 
-    for required in ["id", "version"] {
+    for required in ["id", "version", "name"] {
         if !object.contains_key(required) {
             bail!("Feature metadata must specify {required}");
         }
@@ -979,6 +980,9 @@ fn validate_feature_metadata_schema(metadata: &FeatureMetadata) -> Result<()> {
     }
     if metadata.version.trim().is_empty() {
         bail!("Feature metadata version must not be empty");
+    }
+    if metadata.name.trim().is_empty() {
+        bail!("Feature metadata name must not be empty");
     }
     for (option, schema) in &metadata.options {
         validate_feature_option_schema(&metadata.id, option, schema)?;
@@ -1259,6 +1263,7 @@ pub(crate) fn feature_option_env(
     metadata: &FeatureMetadata,
 ) -> Result<BTreeMap<String, String>> {
     let mut env = BTreeMap::new();
+    let mut env_sources = BTreeMap::new();
 
     for (option, schema) in &metadata.options {
         if option == "enabled" {
@@ -1270,7 +1275,7 @@ pub(crate) fn feature_option_env(
         }
         if let Some(default) = &schema.default {
             let value = feature_option_json_value(&feature.id, option, default, schema)?;
-            env.insert(feature_option_env_name(option), value);
+            insert_feature_option_env(&mut env, &mut env_sources, &feature.id, option, value)?;
         }
     }
 
@@ -1283,10 +1288,28 @@ pub(crate) fn feature_option_env(
             validate_feature_option_schema(&feature.id, option, schema)?;
         }
         let value = feature_option_toml_value(&feature.id, option, value, schema)?;
-        env.insert(feature_option_env_name(option), value);
+        insert_feature_option_env(&mut env, &mut env_sources, &feature.id, option, value)?;
     }
 
     Ok(env)
+}
+
+fn insert_feature_option_env(
+    env: &mut BTreeMap<String, String>,
+    env_sources: &mut BTreeMap<String, String>,
+    feature_id: &str,
+    option: &str,
+    value: String,
+) -> Result<()> {
+    let key = feature_option_env_name(option);
+    if let Some(existing_option) = env_sources.get(&key) {
+        bail!(
+            "Feature option environment variable collision for {feature_id}: options `{existing_option}` and `{option}` both map to {key}"
+        );
+    }
+    env_sources.insert(key.clone(), option.to_owned());
+    env.insert(key, value);
+    Ok(())
 }
 
 fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
@@ -3191,7 +3214,7 @@ mod tests {
         fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
         fs::write(
             feature_dir.join("devcontainer-feature.json"),
-            r#"{"id":"different-tool","version":"1.0.0"}"#,
+            r#"{"id":"different-tool","version":"1.0.0","name":"Different Tool"}"#,
         )
         .unwrap();
         fs::write(feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
@@ -3231,7 +3254,7 @@ mod tests {
         fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
         fs::write(
             feature_dir.join("devcontainer-feature.json"),
-            r#"{"id":"local","version":"1.0.0"}"#,
+            r#"{"id":"local","version":"1.0.0","name":"Local"}"#,
         )
         .unwrap();
         fs::write(
@@ -3301,6 +3324,7 @@ mod tests {
             r#"{
                 "id": "tool",
                 "version": "1.0.0",
+                "name": "Tool",
                 "dependsOn": {
                     "./features/base": {
                         "version": "1.2"
@@ -3312,7 +3336,7 @@ mod tests {
         fs::write(tool_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
         fs::write(
             base_dir.join("devcontainer-feature.json"),
-            r#"{"id":"base","version":"1.0.0"}"#,
+            r#"{"id":"base","version":"1.0.0","name":"Base"}"#,
         )
         .unwrap();
         fs::write(base_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
@@ -3361,7 +3385,7 @@ mod tests {
         fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
         fs::write(
             feature_dir.join("devcontainer-feature.json"),
-            r#"{"id":"outside-feature","version":"1.0.0"}"#,
+            r#"{"id":"outside-feature","version":"1.0.0","name":"Outside Feature"}"#,
         )
         .unwrap();
         fs::write(feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
@@ -3393,11 +3417,11 @@ mod tests {
         for (property, content) in [
             (
                 "initializeCommand",
-                r#"{"id":"tool","version":"1.0.0","initializeCommand":"echo host"}"#,
+                r#"{"id":"tool","version":"1.0.0","name":"Tool","initializeCommand":"echo host"}"#,
             ),
             (
                 "waitFor",
-                r#"{"id":"tool","version":"1.0.0","waitFor":"postCreateCommand"}"#,
+                r#"{"id":"tool","version":"1.0.0","name":"Tool","waitFor":"postCreateCommand"}"#,
             ),
         ] {
             fs::write(&metadata_path, content).unwrap();
@@ -3415,23 +3439,23 @@ mod tests {
         for (property, content) in [
             (
                 "remoteUser",
-                r#"{"id":"tool","version":"1.0.0","remoteUser":"vscode"}"#,
+                r#"{"id":"tool","version":"1.0.0","name":"Tool","remoteUser":"vscode"}"#,
             ),
             (
                 "workspaceFolder",
-                r#"{"id":"tool","version":"1.0.0","workspaceFolder":"/workspace"}"#,
+                r#"{"id":"tool","version":"1.0.0","name":"Tool","workspaceFolder":"/workspace"}"#,
             ),
             (
                 "runArgs",
-                r#"{"id":"tool","version":"1.0.0","runArgs":["--init"]}"#,
+                r#"{"id":"tool","version":"1.0.0","name":"Tool","runArgs":["--init"]}"#,
             ),
             (
                 "image",
-                r#"{"id":"tool","version":"1.0.0","image":"alpine:3.20"}"#,
+                r#"{"id":"tool","version":"1.0.0","name":"Tool","image":"alpine:3.20"}"#,
             ),
             (
                 "x-extra",
-                r#"{"id":"tool","version":"1.0.0","x-extra":true}"#,
+                r#"{"id":"tool","version":"1.0.0","name":"Tool","x-extra":true}"#,
             ),
         ] {
             fs::write(&metadata_path, content).unwrap();
@@ -3442,16 +3466,17 @@ mod tests {
     }
 
     #[test]
-    fn feature_metadata_requires_id_version_and_option_defaults() {
+    fn feature_metadata_requires_id_version_name_and_option_defaults() {
         let temp = tempfile::tempdir().unwrap();
         let metadata_path = temp.path().join("devcontainer-feature.json");
 
         for (expected, content) in [
-            ("id", r#"{"version":"1.0.0"}"#),
-            ("version", r#"{"id":"tool"}"#),
+            ("id", r#"{"version":"1.0.0","name":"Tool"}"#),
+            ("version", r#"{"id":"tool","name":"Tool"}"#),
+            ("name", r#"{"id":"tool","version":"1.0.0"}"#),
             (
                 "default",
-                r#"{"id":"tool","version":"1.0.0","options":{"version":{"type":"string"}}}"#,
+                r#"{"id":"tool","version":"1.0.0","name":"Tool","options":{"version":{"type":"string"}}}"#,
             ),
         ] {
             fs::write(&metadata_path, content).unwrap();
@@ -3538,7 +3563,7 @@ mod tests {
         fs::write(local_feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
         fs::write(
             local_feature_dir.join("devcontainer-feature.json"),
-            r#"{"id":"tool","version":"1.0.0"}"#,
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
         )
         .unwrap();
         write_feature_lock_file(
@@ -3692,7 +3717,7 @@ mod tests {
                 ("feature/install.sh", b"#!/bin/sh\n".as_slice()),
                 (
                     "feature/devcontainer-feature.json",
-                    br#"{"id":"tool","version":"1.0.0"}"#.as_slice(),
+                    br#"{"id":"tool","version":"1.0.0","name":"Tool"}"#.as_slice(),
                 ),
             ],
         );
@@ -3740,7 +3765,7 @@ mod tests {
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
                 (
                     "devcontainer-feature.json",
-                    br#"{"id":"tool","version":"1.0.0"}"#.as_slice(),
+                    br#"{"id":"tool","version":"1.0.0","name":"Tool"}"#.as_slice(),
                 ),
             ],
         );
@@ -3793,7 +3818,7 @@ mod tests {
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
                 (
                     "devcontainer-feature.json",
-                    br#"{"id":"stale","version":"1.0.0"}"#.as_slice(),
+                    br#"{"id":"stale","version":"1.0.0","name":"Stale"}"#.as_slice(),
                 ),
             ],
         );
@@ -3804,7 +3829,7 @@ mod tests {
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
                 (
                     "devcontainer-feature.json",
-                    br#"{"id":"fresh","version":"1.0.0"}"#.as_slice(),
+                    br#"{"id":"fresh","version":"1.0.0","name":"Fresh"}"#.as_slice(),
                 ),
             ],
         );
@@ -3858,7 +3883,7 @@ mod tests {
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
                 (
                     "devcontainer-feature.json",
-                    br#"{"id":"tool","version":"1.0.0"}"#.as_slice(),
+                    br#"{"id":"tool","version":"1.0.0","name":"Tool"}"#.as_slice(),
                 ),
             ],
         );
@@ -4626,6 +4651,11 @@ mod tests {
 
     #[test]
     fn feature_option_env_uses_feature_spec_name_conversion() {
+        assert_eq!(feature_option_env_name("version"), "VERSION");
+        assert_eq!(feature_option_env_name("install-zsh"), "INSTALL_ZSH");
+        assert_eq!(feature_option_env_name("node.version"), "NODE_VERSION");
+        assert_eq!(feature_option_env_name("1password"), "_PASSWORD");
+
         let feature = feature_install_input(
             "ghcr.io/example/features/tool:1",
             FeatureMetadata {
@@ -4677,6 +4707,48 @@ mod tests {
         assert_eq!(env.get("_DEBUG").map(String::as_str), Some("true"));
         assert_eq!(env.get("FOO_BAR").map(String::as_str), Some("dash"));
         assert_eq!(env.get("HAS_SPACE").map(String::as_str), Some("space"));
+    }
+
+    #[test]
+    fn feature_option_env_rejects_converted_env_key_collision() {
+        let feature = feature_install_input(
+            "ghcr.io/example/features/tool:1",
+            FeatureMetadata {
+                options: BTreeMap::from([
+                    (
+                        "foo-bar".to_owned(),
+                        FeatureOptionSchema {
+                            option_type: Some("string".to_owned()),
+                            default: Some(serde_json::json!("dash")),
+                            enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
+                        },
+                    ),
+                    (
+                        "foo_bar".to_owned(),
+                        FeatureOptionSchema {
+                            option_type: Some("string".to_owned()),
+                            default: Some(serde_json::json!("underscore")),
+                            enum_values: Vec::new(),
+                            ..FeatureOptionSchema::default()
+                        },
+                    ),
+                ]),
+                ..FeatureMetadata::default()
+            },
+        );
+
+        let error = feature_option_env(&feature.feature, &feature.metadata).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Feature option environment variable collision"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("FOO_BAR"), "{error:#}");
+        assert!(error.to_string().contains("foo-bar"), "{error:#}");
+        assert!(error.to_string().contains("foo_bar"), "{error:#}");
     }
 
     #[test]
@@ -4842,7 +4914,7 @@ mod tests {
                 ("install.sh", b"#!/bin/sh\n".as_slice()),
                 (
                     "devcontainer-feature.json",
-                    br#"{"id":"tool","version":"1.0.0"}"#.as_slice(),
+                    br#"{"id":"tool","version":"1.0.0","name":"Tool"}"#.as_slice(),
                 ),
             ],
         );
@@ -5407,7 +5479,7 @@ printf '{"Username":"store-user","Secret":"store-token"}'
     ) {
         let temp = tempfile::tempdir().unwrap();
         let archive = temp.path().join("feature.tgz");
-        let metadata = format!(r#"{{"id":"{id}","version":"1.0.0"}}"#);
+        let metadata = format!(r#"{{"id":"{id}","version":"1.0.0","name":"{id}"}}"#);
         write_feature_archive(
             &archive,
             &[
