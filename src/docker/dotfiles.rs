@@ -37,7 +37,12 @@ pub(crate) async fn setup_dotfiles(
     remote_user: &ResolvedRemoteUser,
     variables: &VariableContext,
 ) -> Result<()> {
-    let script = dotfile_setup_script(config, &remote_user.home, variables)?;
+    if config.dotfiles.is_empty() {
+        return Ok(());
+    }
+
+    let remote_home = remote_user.home()?;
+    let script = dotfile_setup_script(config, remote_home, variables)?;
     if script.is_empty() {
         return Ok(());
     }
@@ -48,7 +53,7 @@ pub(crate) async fn setup_dotfiles(
         &ExecCommandSpec {
             command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
             user: Some(remote_user.user.clone()),
-            working_dir: Some(remote_user.home.clone()),
+            working_dir: Some(remote_home.to_owned()),
             env: Default::default(),
             tty: false,
         },
@@ -326,7 +331,7 @@ mod tests {
             1000,
             1000,
             "vscode".to_owned(),
-            "/home/vscode".to_owned(),
+            Some("/home/vscode".to_owned()),
         )
     }
 

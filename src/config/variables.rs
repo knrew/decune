@@ -12,7 +12,7 @@ pub(crate) struct VariableContext {
     uid: u32,
     gid: u32,
     remote_user: String,
-    remote_user_home: String,
+    remote_user_home: Option<String>,
 }
 
 impl VariableContext {
@@ -26,7 +26,7 @@ impl VariableContext {
         uid: u32,
         gid: u32,
         remote_user: String,
-        remote_user_home: String,
+        remote_user_home: Option<String>,
     ) -> Self {
         Self {
             local_workspace_folder,
@@ -105,7 +105,11 @@ where
         "uid" => Ok(context.uid.to_string()),
         "gid" => Ok(context.gid.to_string()),
         "remoteUser" => Ok(context.remote_user.clone()),
-        "remoteUserHome" => Ok(context.remote_user_home.clone()),
+        "remoteUserHome" => context.remote_user_home.clone().ok_or_else(|| {
+            anyhow!(
+                "${{remoteUserHome}} is unavailable because the remote user has no passwd entry"
+            )
+        }),
         _ => Err(anyhow!("Unknown config variable: ${{{expression}}}")),
     }
 }
@@ -148,7 +152,7 @@ mod tests {
             1000,
             1001,
             "vscode".to_owned(),
-            "/home/vscode".to_owned(),
+            Some("/home/vscode".to_owned()),
         )
     }
 
@@ -159,6 +163,20 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
 
         expand_variables_with(input, &context(), |name| Ok(values.get(name).cloned()))
+    }
+
+    fn context_without_remote_user_home() -> VariableContext {
+        VariableContext::new(
+            PathBuf::from("/workspace/project"),
+            "project".to_owned(),
+            "/workspaces/project".to_owned(),
+            "project".to_owned(),
+            "abc123def456".to_owned(),
+            1000,
+            1001,
+            "1001:1001".to_owned(),
+            None,
+        )
     }
 
     #[test]
@@ -174,6 +192,22 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
         assert_eq!(
             expanded,
             "/workspace/project:project:/workspaces/project:project:abc123def456:1000:1001:vscode:/home/vscode"
+        );
+    }
+
+    #[test]
+    fn remote_user_home_errors_when_unavailable() {
+        let context = context_without_remote_user_home();
+
+        let remote_user = expand_variables_with("${remoteUser}", &context, |_| Ok(None)).unwrap();
+        let error = expand_variables_with("${remoteUserHome}", &context, |_| Ok(None))
+            .expect_err("remoteUserHome must require a resolved passwd home");
+
+        assert_eq!(remote_user, "1001:1001");
+        assert!(
+            error
+                .to_string()
+                .contains("remote user has no passwd entry")
         );
     }
 

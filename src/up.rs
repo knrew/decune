@@ -20,7 +20,8 @@ use crate::{
     config::{
         ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry,
         MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
-        MountVolumeOptionsHashInput, StartupCommandHashInput, config_hash,
+        MountVolumeOptionsHashInput, StartupCommandHashInput, UidGidSyncHashInput,
+        UidGidSyncHashState, config_hash,
         layer::{LayerDevcontainerMount, LayerFeature},
         load::load_config_file,
         resolve_config,
@@ -46,8 +47,9 @@ use crate::{
         build::{
             DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_SENTINEL,
             FEATURE_ENTRYPOINT_WRAPPER, FeatureLayerBuildFeature, FeatureLayerBuildInput,
-            ResolvedBuildContext, build_hash_input, build_image,
-            prepare_feature_layer_build_context, resolve_build_context,
+            ResolvedBuildContext, UidGidSyncLayerBuildInput, build_hash_input, build_image,
+            prepare_feature_layer_build_context, prepare_uid_gid_sync_layer_build_context,
+            resolve_build_context,
         },
         client::DockerClient,
         container::{
@@ -73,8 +75,11 @@ use crate::{
         ports::{ResolvedForwardPort, resolve_forward_ports},
         resource::DockerResources,
         user::{
-            RemoteUserResolveInput, image_config_user, resolve_remote_user,
-            resolve_remote_user_from_image,
+            EffectiveUserResolveInput, EffectiveUsers, HostPlatform, UidGidSyncNoopReason,
+            UidGidSyncPlan, UidGidSyncTargetKind, current_host_user_ids, image_config_user,
+            resolve_effective_users_from_image, resolve_remote_user,
+            resolve_remote_user_from_image, resolve_uid_gid_sync_plan_from_image,
+            uid_gid_sync_runtime_user,
         },
     },
     host::{
@@ -200,9 +205,12 @@ pub(crate) struct UpPlan {
     pub(crate) build_options: DockerBuildOptions,
     pub(crate) feature_install: Option<PreparedFeatureInstallPlan>,
     pub(crate) feature_build_context_dir: Option<PathBuf>,
+    pub(crate) uid_gid_sync_build_context_dir: Option<PathBuf>,
     pub(crate) resources: DockerResources,
     pub(crate) config_layers: ConfigMergeInput,
     pub(crate) config: ResolvedConfig,
+    pub(crate) effective_users: EffectiveUsers,
+    pub(crate) uid_gid_sync_plan: UidGidSyncPlan,
     pub(crate) workspace_folder: String,
     pub(crate) mounts: Vec<DockerMountSpec>,
     pub(crate) forward_ports: Vec<ResolvedForwardPort>,
@@ -587,14 +595,16 @@ fn build_up_plan_inner(
         hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     }
     add_internal_hash_versions(&mut hash_input, &config);
+    hash_input.uid_gid_sync =
+        static_uid_gid_sync_hash_input(&config_layers, config.devcontainer.update_remote_user_uid);
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
         workspace,
         hash,
         devcontainer_json.path().display().to_string(),
     );
-    let base_image = base_image_source(&config, &resources)?;
-    let image = final_image_source(&config, &resources)?;
+    let base_image = base_image_source(&config, &resources, &UidGidSyncPlan::default())?;
+    let image = final_image_source(&config, &resources, &UidGidSyncPlan::default())?;
     let forward_ports = match resolution.forwarding {
         ForwardingResolution::Resolve => resolve_forward_ports(&config.ports.entries)?,
         ForwardingResolution::IgnoreDetached => Vec::new(),
@@ -611,9 +621,12 @@ fn build_up_plan_inner(
         build_options,
         feature_install: None,
         feature_build_context_dir: None,
+        uid_gid_sync_build_context_dir: None,
         resources,
         config_layers,
         config,
+        effective_users: EffectiveUsers::root(),
+        uid_gid_sync_plan: UidGidSyncPlan::default(),
         workspace_folder: workspace_location.workspace_folder,
         mounts,
         forward_ports,
@@ -754,11 +767,18 @@ async fn ensure_container_started(
             plan_resolution,
         )
         .await?;
+        let existing_container_image = containers.first().and_then(existing_container_image_id);
+        let existing_remote_user_image = existing_remote_user_image_for_decision(
+            &client,
+            &existing_plan,
+            existing_container_image,
+        )
+        .await?;
         let (existing_plan, _) = finalize_up_plan_mounts(
             &client,
             &workspace,
             existing_plan,
-            containers.first().and_then(existing_container_image_id),
+            existing_remote_user_image,
             containers.first().and_then(existing_container_config_hash),
             Some((options.pull, options.no_cache)),
             options.update_features,
@@ -836,7 +856,8 @@ async fn ensure_container_started(
     )
     .await?;
     let (plan, credentials) = add_credential_runtime_mounts(plan, workspace.paths().runtime_dir())?;
-    let image_prepared = image_prepared || mount_image_prepared;
+    let image_prepared =
+        mount_image_prepared || (image_prepared && !plan_requires_final_image_layer(&plan));
     warn_about_deferred_features(&plan.config);
 
     match decide_existing_container(
@@ -1299,10 +1320,10 @@ async fn finalize_up_plan_mounts(
     ))
     .await?;
 
-    if image_prepared && plan_requires_workspace_layer(&plan) {
+    if image_prepared && plan_requires_final_image_layer(&plan) {
         if let Some((pull, no_cache)) = build_for_lookup {
             prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
-            build_feature_layer_image(client, &plan, no_cache).await?;
+            build_workspace_image_layers(client, &plan, no_cache).await?;
         }
         if plan.image != lookup_image {
             remove_image(client, &lookup_image, false).await?;
@@ -1327,17 +1348,33 @@ async fn finalize_mounts_and_resources_for_plan(
     lookup_image: &str,
     update_features: bool,
 ) -> Result<UpPlan> {
-    let remote_user = resolve_remote_user_from_image(
+    let effective_users = resolve_effective_users_from_image(
         client,
         lookup_image,
-        RemoteUserResolveInput {
-            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
-            image_metadata_remote_user: None,
-        },
+        effective_user_input_from_config_layers(&plan.config_layers),
     )
     .await?;
-    let remote_user_name = remote_user.user;
-    let remote_user_home = remote_user.home;
+    let remote_user =
+        resolve_remote_user_from_image(client, lookup_image, &effective_users).await?;
+    let uid_gid_sync_plan = resolve_uid_gid_sync_plan_from_image(
+        client,
+        lookup_image,
+        &effective_users,
+        plan.config.devcontainer.update_remote_user_uid,
+        HostPlatform::current(),
+        current_host_user_ids(),
+    )
+    .await?;
+    if let Some(warning) = uid_gid_sync_warning(
+        &plan.config_layers,
+        &uid_gid_sync_plan,
+        plan.config.devcontainer.update_remote_user_uid,
+        HostPlatform::current(),
+    ) {
+        ui::warn(&warning);
+    }
+    let remote_user_name = remote_user.user.clone();
+    let remote_user_home = remote_user.home.clone();
     let workspace_location =
         resolve_workspace_location(workspace, &plan.config, |workspace_folder| {
             mount_variable_context(
@@ -1374,6 +1411,11 @@ async fn finalize_mounts_and_resources_for_plan(
     hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     hash_input.startup_command = startup_command_hash_input(client, &plan, lookup_image).await?;
     add_internal_hash_versions(&mut hash_input, &plan.config);
+    hash_input.uid_gid_sync = uid_gid_sync_hash_input(
+        &uid_gid_sync_plan,
+        plan.config.devcontainer.update_remote_user_uid,
+        HostPlatform::current(),
+    );
     let hash = config_hash(&hash_input);
     let resources = DockerResources::from_workspace(
         workspace,
@@ -1384,16 +1426,206 @@ async fn finalize_mounts_and_resources_for_plan(
             .cloned()
             .unwrap_or_default(),
     );
-    let image = final_image_source(&plan.config, &resources)?;
-    let base_image = base_image_source(&plan.config, &resources)?;
+    let image = final_image_source(&plan.config, &resources, &uid_gid_sync_plan)?;
+    let base_image = base_image_source(&plan.config, &resources, &uid_gid_sync_plan)?;
 
     plan.image = image;
     plan.base_image = base_image;
     plan.resources = resources;
+    plan.effective_users = effective_users;
+    plan.uid_gid_sync_plan = uid_gid_sync_plan;
+    if plan_requires_uid_gid_sync_layer(&plan) {
+        plan.uid_gid_sync_build_context_dir = Some(
+            workspace
+                .paths()
+                .cache_dir()
+                .join("uid-gid-sync-build-context"),
+        );
+    }
     plan.workspace_folder = workspace_location.workspace_folder;
     plan.mounts = mounts;
 
     Ok(plan)
+}
+
+fn effective_user_input_from_config_layers(
+    config_layers: &ConfigMergeInput,
+) -> EffectiveUserResolveInput<'_> {
+    EffectiveUserResolveInput {
+        devcontainer_remote_user: config_layers
+            .devcontainer
+            .as_ref()
+            .and_then(layer_remote_user),
+        devcontainer_container_user: config_layers
+            .devcontainer
+            .as_ref()
+            .and_then(layer_container_user),
+        image_metadata_remote_user: merged_metadata_remote_user(config_layers),
+        image_metadata_container_user: merged_metadata_container_user(config_layers),
+        image_config_user: None,
+    }
+}
+
+fn uid_gid_sync_hash_input(
+    plan: &UidGidSyncPlan,
+    update_remote_user_uid: bool,
+    host_platform: HostPlatform,
+) -> Option<UidGidSyncHashInput> {
+    if !update_remote_user_uid || host_platform != HostPlatform::Linux {
+        return None;
+    }
+
+    Some(match plan {
+        UidGidSyncPlan::Sync { target, .. } => UidGidSyncHashInput {
+            state: UidGidSyncHashState::Sync,
+            host_uid: target.host.uid,
+            host_gid: target.host.gid,
+            target_kind: Some(uid_gid_sync_target_kind_name(target.kind).to_owned()),
+            target_user: Some(target.user.clone()),
+        },
+        UidGidSyncPlan::Noop { reason } => UidGidSyncHashInput {
+            state: UidGidSyncHashState::Noop(uid_gid_sync_noop_reason_name(*reason).to_owned()),
+            host_uid: current_host_user_ids().uid,
+            host_gid: current_host_user_ids().gid,
+            target_kind: None,
+            target_user: None,
+        },
+    })
+}
+
+fn static_uid_gid_sync_hash_input(
+    config_layers: &ConfigMergeInput,
+    update_remote_user_uid: bool,
+) -> Option<UidGidSyncHashInput> {
+    if !update_remote_user_uid || HostPlatform::current() != HostPlatform::Linux {
+        return None;
+    }
+
+    let input = effective_user_input_from_config_layers(config_layers);
+    if input.devcontainer_remote_user.is_some()
+        || input.image_metadata_remote_user.is_some()
+        || input.devcontainer_container_user.is_some()
+        || input.image_metadata_container_user.is_some()
+    {
+        return None;
+    }
+
+    let host = current_host_user_ids();
+    Some(UidGidSyncHashInput {
+        state: UidGidSyncHashState::Noop(
+            uid_gid_sync_noop_reason_name(UidGidSyncNoopReason::NoExplicitUser).to_owned(),
+        ),
+        host_uid: host.uid,
+        host_gid: host.gid,
+        target_kind: None,
+        target_user: None,
+    })
+}
+
+fn uid_gid_sync_target_kind_name(kind: UidGidSyncTargetKind) -> &'static str {
+    match kind {
+        UidGidSyncTargetKind::RemoteUser => "remoteUser",
+        UidGidSyncTargetKind::ContainerUser => "containerUser",
+    }
+}
+
+fn uid_gid_sync_noop_reason_name(reason: UidGidSyncNoopReason) -> &'static str {
+    match reason {
+        UidGidSyncNoopReason::Disabled => "disabled",
+        UidGidSyncNoopReason::NonLinuxHost => "nonLinuxHost",
+        UidGidSyncNoopReason::NoExplicitUser => "noExplicitUser",
+        UidGidSyncNoopReason::NumericUserWithoutPasswd => "numericUserWithoutPasswd",
+        UidGidSyncNoopReason::Root => "root",
+    }
+}
+
+fn uid_gid_sync_warning(
+    config_layers: &ConfigMergeInput,
+    plan: &UidGidSyncPlan,
+    update_remote_user_uid: bool,
+    host_platform: HostPlatform,
+) -> Option<String> {
+    if host_platform != HostPlatform::Linux {
+        if explicit_update_remote_user_uid(config_layers) == Some(true) {
+            return Some(
+                "UID/GID sync is only supported on Linux hosts; skipping updateRemoteUserUID"
+                    .to_owned(),
+            );
+        }
+
+        return None;
+    }
+
+    if update_remote_user_uid
+        && matches!(
+            plan,
+            UidGidSyncPlan::Noop {
+                reason: UidGidSyncNoopReason::NumericUserWithoutPasswd
+            }
+        )
+    {
+        return Some(
+            "UID/GID sync is skipped because the configured numeric user has no passwd entry"
+                .to_owned(),
+        );
+    }
+
+    None
+}
+
+fn explicit_update_remote_user_uid(config_layers: &ConfigMergeInput) -> Option<bool> {
+    let mut explicit = None;
+    for layer in config_layers
+        .image_metadata
+        .iter()
+        .chain(config_layers.feature_metadata.iter())
+        .chain(config_layers.global.iter())
+        .chain(config_layers.devcontainer.iter())
+        .chain(config_layers.project.iter())
+        .chain(config_layers.cli.iter())
+    {
+        if let Some(update_remote_user_uid) = layer
+            .devcontainer
+            .as_ref()
+            .and_then(|devcontainer| devcontainer.update_remote_user_uid)
+        {
+            explicit = Some(update_remote_user_uid);
+        }
+    }
+
+    explicit
+}
+
+fn merged_metadata_remote_user(config_layers: &ConfigMergeInput) -> Option<&str> {
+    config_layers
+        .image_metadata
+        .iter()
+        .chain(config_layers.feature_metadata.iter())
+        .filter_map(layer_remote_user)
+        .next_back()
+}
+
+fn merged_metadata_container_user(config_layers: &ConfigMergeInput) -> Option<&str> {
+    config_layers
+        .image_metadata
+        .iter()
+        .chain(config_layers.feature_metadata.iter())
+        .filter_map(layer_container_user)
+        .next_back()
+}
+
+fn layer_remote_user(layer: &ConfigLayer) -> Option<&str> {
+    layer
+        .devcontainer
+        .as_ref()
+        .and_then(|devcontainer| devcontainer.remote_user.as_deref())
+}
+
+fn layer_container_user(layer: &ConfigLayer) -> Option<&str> {
+    layer
+        .devcontainer
+        .as_ref()
+        .and_then(|devcontainer| devcontainer.container_user.as_deref())
 }
 
 async fn startup_command_hash_input(
@@ -1687,8 +1919,8 @@ fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> Result<UpPlan> {
     plan.config_layers.cli = Some(cli_layer);
     plan.config = resolve_config(plan.config_layers.clone());
     plan.feature_install = None;
-    plan.image = final_image_source(&plan.config, &plan.resources)?;
-    plan.base_image = base_image_source(&plan.config, &plan.resources)?;
+    plan.image = final_image_source(&plan.config, &plan.resources, &plan.uid_gid_sync_plan)?;
+    plan.base_image = base_image_source(&plan.config, &plan.resources, &plan.uid_gid_sync_plan)?;
 
     Ok(plan)
 }
@@ -1843,6 +2075,48 @@ async fn build_feature_layer_image(
     build_image(
         client,
         DockerBuildInput {
+            image_tag: feature_layer_image(plan),
+            labels: plan.resources.labels.clone().into_iter().collect(),
+            context,
+            options: DockerBuildOptions {
+                no_cache,
+                ..DockerBuildOptions::default()
+            },
+        },
+    )
+    .await
+}
+
+async fn build_uid_gid_sync_layer_image(
+    client: &DockerClient,
+    plan: &UpPlan,
+    no_cache: bool,
+) -> Result<()> {
+    let UidGidSyncPlan::Sync { target, container } = &plan.uid_gid_sync_plan else {
+        return Ok(());
+    };
+    let context_dir = plan
+        .uid_gid_sync_build_context_dir
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("UID/GID sync build context directory was not prepared"))?;
+    let base_image = uid_gid_sync_base_image(plan);
+    let final_user = image_config_user(client, &base_image)
+        .await?
+        .unwrap_or_else(|| "root".to_owned());
+    let final_user = uid_gid_sync_runtime_user(&final_user, &plan.uid_gid_sync_plan)?;
+    let context = prepare_uid_gid_sync_layer_build_context(&UidGidSyncLayerBuildInput {
+        base_image,
+        final_user,
+        target_user: container.name.clone(),
+        old_uid: container.uid,
+        old_gid: container.gid,
+        new_uid: target.host.uid,
+        new_gid: target.host.gid,
+        context_dir: context_dir.clone(),
+    })?;
+    build_image(
+        client,
+        DockerBuildInput {
             image_tag: plan.image.clone(),
             labels: plan.resources.labels.clone().into_iter().collect(),
             context,
@@ -1855,8 +2129,50 @@ async fn build_feature_layer_image(
     .await
 }
 
+async fn build_workspace_image_layers(
+    client: &DockerClient,
+    plan: &UpPlan,
+    no_cache: bool,
+) -> Result<()> {
+    if plan_requires_workspace_layer(plan) {
+        build_feature_layer_image(client, plan, no_cache).await?;
+    }
+    if plan_requires_uid_gid_sync_layer(plan) {
+        build_uid_gid_sync_layer_image(client, plan, no_cache).await?;
+    }
+    Ok(())
+}
+
+fn feature_layer_image(plan: &UpPlan) -> String {
+    if plan_requires_uid_gid_sync_layer(plan) {
+        format!("{}-features", plan.image)
+    } else {
+        plan.image.clone()
+    }
+}
+
+fn uid_gid_sync_base_image(plan: &UpPlan) -> String {
+    if plan_requires_workspace_layer(plan) {
+        feature_layer_image(plan)
+    } else {
+        plan.base_image.clone()
+    }
+}
+
 fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
     plan.feature_install.is_some() || config_requires_workspace_layer(&plan.config)
+}
+
+fn plan_requires_uid_gid_sync_layer(plan: &UpPlan) -> bool {
+    uid_gid_sync_plan_requires_layer(&plan.uid_gid_sync_plan)
+}
+
+fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> bool {
+    matches!(plan, UidGidSyncPlan::Sync { .. })
+}
+
+fn plan_requires_final_image_layer(plan: &UpPlan) -> bool {
+    plan_requires_workspace_layer(plan) || plan_requires_uid_gid_sync_layer(plan)
 }
 
 fn config_requires_workspace_layer(config: &ResolvedConfig) -> bool {
@@ -1907,10 +2223,10 @@ async fn create_and_start_container(
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    if plan_requires_workspace_layer(plan) {
+    if plan_requires_final_image_layer(plan) {
         if !image_prepared {
             prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
-            build_feature_layer_image(client, plan, no_cache).await?;
+            build_workspace_image_layers(client, plan, no_cache).await?;
         }
     } else if let Some(context) = plan.build_context.clone() {
         if !image_prepared {
@@ -1971,6 +2287,14 @@ async fn create_and_start_container(
         working_dir: Some(plan.workspace_folder.clone()),
         mounts: plan.mounts.clone(),
     });
+    let container_user = uid_gid_sync_runtime_user(
+        &plan.effective_users.container_user.user,
+        &plan.uid_gid_sync_plan,
+    )?;
+    let spec = ContainerCreateSpec {
+        user: Some(container_user),
+        ..spec
+    };
     let container_id = create_container(client, &spec).await?;
     start_new_container(
         client,
@@ -2003,10 +2327,8 @@ async fn prepare_up_lifecycle(
     let remote_user = resolve_remote_user(
         &started.client,
         &started.outcome.container_name,
-        RemoteUserResolveInput {
-            explicit_remote_user: started.plan.config.devcontainer.remote_user.as_deref(),
-            image_metadata_remote_user: None,
-        },
+        &started.plan.effective_users,
+        &started.plan.uid_gid_sync_plan,
     )
     .await?;
 
@@ -2028,10 +2350,8 @@ async fn start_host_daemon_for_up(started: &StartedUpContainer) -> Result<HostDa
     let remote_user = resolve_remote_user(
         &started.client,
         &started.outcome.container_name,
-        RemoteUserResolveInput {
-            explicit_remote_user: started.plan.config.devcontainer.remote_user.as_deref(),
-            image_metadata_remote_user: None,
-        },
+        &started.plan.effective_users,
+        &started.plan.uid_gid_sync_plan,
     )
     .await?;
 
@@ -2218,10 +2538,8 @@ async fn attach_shell(client: &DockerClient, plan: &UpPlan, container_name: &str
     let remote_user = resolve_remote_user(
         client,
         container_name,
-        RemoteUserResolveInput {
-            explicit_remote_user: plan.config.devcontainer.remote_user.as_deref(),
-            image_metadata_remote_user: None,
-        },
+        &plan.effective_users,
+        &plan.uid_gid_sync_plan,
     )
     .await?;
     let env = resolve_exec_env(
@@ -2522,8 +2840,14 @@ fn container_exited_during_startup_error(
     anyhow::anyhow!("Container exited during startup: {container_name}{exit}")
 }
 
-fn final_image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {
-    if config_requires_workspace_layer(config) {
+fn final_image_source(
+    config: &ResolvedConfig,
+    resources: &DockerResources,
+    uid_gid_sync_plan: &UidGidSyncPlan,
+) -> Result<String> {
+    if config_requires_workspace_layer(config)
+        || uid_gid_sync_plan_requires_layer(uid_gid_sync_plan)
+    {
         return Ok(resources.image_tag.clone());
     }
 
@@ -2534,11 +2858,16 @@ fn final_image_source(config: &ResolvedConfig, resources: &DockerResources) -> R
     }
 }
 
-fn base_image_source(config: &ResolvedConfig, resources: &DockerResources) -> Result<String> {
+fn base_image_source(
+    config: &ResolvedConfig,
+    resources: &DockerResources,
+    uid_gid_sync_plan: &UidGidSyncPlan,
+) -> Result<String> {
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
         Some(ResolvedDevcontainerSource::Dockerfile(_))
-            if config_requires_workspace_layer(config) =>
+            if config_requires_workspace_layer(config)
+                || uid_gid_sync_plan_requires_layer(uid_gid_sync_plan) =>
         {
             Ok(format!("{}-base", resources.image_tag))
         }
@@ -2715,14 +3044,19 @@ fn static_mount_variable_context(
         .clone()
         .unwrap_or_else(|| "root".to_owned());
 
-    mount_variable_context(workspace, workspace_folder, remote_user, "/root".to_owned())
+    mount_variable_context(
+        workspace,
+        workspace_folder,
+        remote_user,
+        Some("/root".to_owned()),
+    )
 }
 
 fn mount_variable_context(
     workspace: &Workspace,
     workspace_folder: &str,
     remote_user: String,
-    remote_user_home: String,
+    remote_user_home: Option<String>,
 ) -> crate::config::variables::VariableContext {
     crate::config::variables::VariableContext::new(
         workspace.root().to_path_buf(),
@@ -2846,6 +3180,34 @@ fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
         .filter(|image_id| !image_id.trim().is_empty())
 }
 
+async fn existing_remote_user_image_for_decision<'a>(
+    client: &DockerClient,
+    plan: &UpPlan,
+    existing_container_image: Option<&'a str>,
+) -> Result<Option<&'a str>> {
+    if plan.build_context.is_some() {
+        return Ok(existing_container_image);
+    }
+
+    if effective_users_depend_on_image_config_user(plan) {
+        return Ok(existing_container_image);
+    }
+
+    if local_image_presence(client, &plan.base_image).await? == LocalImagePresence::Present {
+        return Ok(None);
+    }
+
+    Ok(existing_container_image)
+}
+
+fn effective_users_depend_on_image_config_user(plan: &UpPlan) -> bool {
+    let input = effective_user_input_from_config_layers(&plan.config_layers);
+    input.devcontainer_remote_user.is_none()
+        && input.image_metadata_remote_user.is_none()
+        && input.devcontainer_container_user.is_none()
+        && input.image_metadata_container_user.is_none()
+}
+
 fn existing_container_config_hash(container: &UpContainerSummary) -> Option<&str> {
     container
         .config_hash
@@ -2889,6 +3251,9 @@ mod tests {
     };
     use crate::config::types::{GitHttpsMode, GithubCredentialsMode, MountType, PortProtocol};
     use crate::config::{ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash};
+    use crate::docker::build::{
+        DockerBuildInput, DockerBuildOptions, ResolvedBuildContext, build_image,
+    };
     use crate::docker::client::DockerClient;
     use crate::docker::container::{remove_container, stop_container};
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
@@ -2896,6 +3261,10 @@ mod tests {
     use crate::docker::mounts::DockerMountSpec;
     use crate::docker::ports::ResolvedForwardPort;
     use crate::docker::resource::DockerResources;
+    use crate::docker::user::{
+        EffectiveUserResolveInput, EffectiveUsers, HostPlatform, UidGidSyncNoopReason,
+        UidGidSyncPlan, current_host_user_ids, resolve_effective_users,
+    };
     use crate::host::credentials::{
         GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET, SSH_AGENT_SOCKET_TARGET,
     };
@@ -2910,7 +3279,7 @@ mod tests {
         create_and_start_container, decide_existing_container, default_workspace_folder,
         first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
         run_attached_up, run_detached_up, shell_command_candidates,
-        should_auto_add_github_cli_feature,
+        should_auto_add_github_cli_feature, uid_gid_sync_warning,
     };
 
     #[test]
@@ -4514,6 +4883,49 @@ type = "bind"
     }
 
     #[test]
+    fn create_and_start_container_uses_effective_container_user() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let mut plan = test_up_plan_with_image_source("alpine:3.20");
+            plan.workspace_folder = "/".to_owned();
+            plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: Some("nobody"),
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: None,
+            })
+            .unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                create_and_start_container(&client, &plan, false, false, false).await?;
+
+                let inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                assert_eq!(
+                    inspect.config.and_then(|config| config.user),
+                    Some("nobody".to_owned())
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+
+    #[test]
     fn up_detach_recreates_legacy_container_missing_decune_runtime_mount() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -4714,6 +5126,640 @@ type = "bind"
                 .await?;
                 assert_eq!(second.container_name, container_name);
                 assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_detach_reuses_existing_image_config_user_when_source_tag_user_changes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-reuse-image-user-change");
+            let image = format!(
+                "decune-test/reuse-image-user-change-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                build_user_image(&client, &image, "olduser").await?;
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!first.reused);
+
+                build_user_image(&client, &image, "newuser").await?;
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert_eq!(second.container_name, container_name);
+                assert!(second.reused);
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec!["id".to_owned(), "-un".to_owned()],
+                        user: Some("olduser".to_owned()),
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout)?, "olduser\n");
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_syncs_remote_user_uid_gid_on_linux_host() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync");
+            let image = format!("decune-test/uid-gid-sync-{}:latest", workspace.id());
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_user_image(&client, &image, "syncuser", 2001, 2001).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "id -u; id -g".to_owned(),
+                        ],
+                        user: Some("syncuser".to_owned()),
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(output.stdout)?,
+                    format!("{}\n{}\n", host.uid, host.gid)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_rewrites_numeric_image_user_after_uid_gid_sync() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-numeric-user");
+            let image = format!(
+                "decune-test/uid-gid-sync-numeric-user-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_numeric_uid_gid_user_image(&client, &image).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                assert_eq!(
+                    inspect.config.and_then(|config| config.user),
+                    Some(format!("syncuser:{}", host.gid))
+                );
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "id -u; id -g".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(output.stdout)?,
+                    format!("{}\n{}\n", host.uid, host.gid)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_rewrites_named_image_user_numeric_group_after_uid_gid_sync() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 || host.gid == 2001 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-named-user-numeric-group");
+            let image = format!(
+                "decune-test/uid-gid-sync-named-user-numeric-group-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_named_uid_numeric_gid_user_image(&client, &image).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let inspect = client
+                    .raw()
+                    .inspect_container(&container_name, None)
+                    .await?;
+                assert_eq!(
+                    inspect.config.and_then(|config| config.user),
+                    Some(format!("syncuser:{}", host.gid))
+                );
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "id -u; id -g".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(output.stdout)?,
+                    format!("{}\n{}\n", host.uid, host.gid)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_rewrites_numeric_remote_user_after_uid_gid_sync() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 || host.uid == 2001 || host.gid == 2001 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-numeric-remote-user");
+            let image = format!(
+                "decune-test/uid-gid-sync-numeric-remote-user-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "2001:2001",
+                      "postCreateCommand": "id -u >/tmp/decune-remote-user-ids; id -g >>/tmp/decune-remote-user-ids"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_numeric_uid_gid_user_image(&client, &image).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-remote-user-ids".to_owned(),
+                        ],
+                        user: Some("root".to_owned()),
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(output.stdout)?,
+                    format!("{}\n{}\n", host.uid, host.gid)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn uid_gid_sync_warning_reports_only_explicit_true_on_non_linux() {
+        let default_layers = ConfigMergeInput::default();
+        let explicit_true = ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    update_remote_user_uid: Some(true),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        };
+        let explicit_false = ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    update_remote_user_uid: Some(false),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        };
+        let plan = UidGidSyncPlan::Noop {
+            reason: UidGidSyncNoopReason::NonLinuxHost,
+        };
+
+        assert_eq!(
+            uid_gid_sync_warning(&default_layers, &plan, true, HostPlatform::NonLinux),
+            None
+        );
+        assert!(
+            uid_gid_sync_warning(&explicit_true, &plan, true, HostPlatform::NonLinux)
+                .is_some_and(|warning| warning.contains("skipping updateRemoteUserUID"))
+        );
+        assert_eq!(
+            uid_gid_sync_warning(&explicit_false, &plan, false, HostPlatform::NonLinux),
+            None
+        );
+    }
+
+    #[test]
+    fn uid_gid_sync_warning_reports_numeric_user_without_passwd_noop() {
+        let warning = uid_gid_sync_warning(
+            &ConfigMergeInput::default(),
+            &UidGidSyncPlan::Noop {
+                reason: UidGidSyncNoopReason::NumericUserWithoutPasswd,
+            },
+            true,
+            HostPlatform::Linux,
+        )
+        .expect("numeric no-passwd sync no-op must be user-visible");
+
+        assert!(warning.contains("numeric user has no passwd entry"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_fails_uid_gid_sync_when_host_ids_conflict() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-conflict");
+            let image = format!(
+                "decune-test/uid-gid-sync-conflict-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_conflict_user_image(&client, &image, host.uid, host.gid).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
+                assert!(
+                    message.contains("Failed to build Docker image")
+                        && message.contains("Docker stream error"),
+                    "{message}"
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_fails_uid_gid_sync_gid_conflict_without_target_group_entry() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-missing-target-group");
+            let image = format!(
+                "decune-test/uid-gid-sync-missing-target-group-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_missing_target_group_conflict_image(&client, &image, host.gid).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
+                assert!(
+                    message.contains("Failed to build Docker image")
+                        && message.contains("Docker stream error"),
+                    "{message}"
+                );
 
                 Ok(())
             }
@@ -5736,8 +6782,9 @@ user = "root"
                 assert!(
                     error
                         .to_string()
-                        .contains("Failed to start Docker container")
+                        .contains("Remote user does not exist in container")
                 );
+                assert!(error.to_string().contains("decune-missing-user"));
 
                 let containers = list_workspace_containers(&client, workspace.id()).await?;
                 assert!(
@@ -5820,6 +6867,181 @@ user = "root"
         config_hash(&input)
     }
 
+    async fn build_user_image(
+        client: &DockerClient,
+        image: &str,
+        user: &str,
+    ) -> anyhow::Result<()> {
+        build_uid_gid_user_image(client, image, user, 2001, 2001).await
+    }
+
+    async fn build_uid_gid_user_image(
+        client: &DockerClient,
+        image: &str,
+        user: &str,
+        uid: u32,
+        gid: u32,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-user-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            format!(
+                "FROM alpine:3.20\nRUN addgroup -g {gid} {user} && adduser -D -u {uid} -G {user} -h /home/{user} {user}\nUSER {user}\n"
+            ),
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_numeric_uid_gid_user_image(
+        client: &DockerClient,
+        image: &str,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-numeric-user-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            "FROM alpine:3.20\nRUN addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser\nUSER 2001:2001\n",
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_named_uid_numeric_gid_user_image(
+        client: &DockerClient,
+        image: &str,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-named-user-numeric-group-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            "FROM alpine:3.20\nRUN addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser\nUSER syncuser:2001\n",
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_uid_gid_conflict_user_image(
+        client: &DockerClient,
+        image: &str,
+        conflict_uid: u32,
+        conflict_gid: u32,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-user-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            format!(
+                "FROM alpine:3.20\nRUN addgroup -g {conflict_gid} conflictuser && adduser -D -u {conflict_uid} -G conflictuser -h /home/conflictuser conflictuser && addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser\nUSER syncuser\n"
+            ),
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_missing_target_group_conflict_image(
+        client: &DockerClient,
+        image: &str,
+        conflict_gid: u32,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-missing-group-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            format!(
+                "FROM alpine:3.20\nRUN addgroup -g {conflict_gid} conflictgroup && addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser && awk -F: '$3 != 2001 {{ print }}' /etc/group >/tmp/group && cat /tmp/group >/etc/group\nUSER syncuser\n"
+            ),
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
     fn mount_summary(source: Option<&str>, target: &str) -> UpMountSummary {
         mount_summary_with_type(source, target, MountType::Bind)
     }
@@ -5858,6 +7080,7 @@ user = "root"
             build_options: crate::docker::build::DockerBuildOptions::default(),
             feature_install: None,
             feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
             resources: DockerResources {
                 container_name: "decune-test".to_owned(),
                 image_tag: "decune/test:stable-hash".to_owned(),
@@ -5866,6 +7089,8 @@ user = "root"
             },
             config_layers: ConfigMergeInput::default(),
             config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspaces/project".to_owned(),
             mounts: Vec::new(),
             forward_ports: Vec::new(),
