@@ -1770,7 +1770,8 @@ type = "bind"
 
             let result: anyhow::Result<()> = async {
                 remove_container(&client, &container_name, true, true).await?;
-                create_and_start_container(&client, &plan, false, false, false).await?;
+                let workspace = test_workspace("docker-up-effective-container-user-state");
+                create_and_start_container(&client, &workspace, &plan, false, false, false).await?;
 
                 let inspect = client
                     .raw()
@@ -1814,8 +1815,15 @@ type = "bind"
             let result: anyhow::Result<()> = async {
                 remove_container(&client, &container_name, true, true).await?;
 
-                let legacy =
-                    create_and_start_container(&client, &legacy_plan, false, false, false).await?;
+                let legacy = create_and_start_container(
+                    &client,
+                    &workspace,
+                    &legacy_plan,
+                    false,
+                    false,
+                    false,
+                )
+                .await?;
                 let legacy_inspect = client
                     .raw()
                     .inspect_container(&container_name, None)

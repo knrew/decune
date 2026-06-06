@@ -113,7 +113,6 @@ pub(crate) fn sync_state_with_container(
 ) -> Result<WorkspaceState> {
     let state_dir = state_dir.as_ref();
     let existing = load_state_file(state_dir).ok().flatten();
-    let now = current_timestamp();
     let lifecycle = existing
         .as_ref()
         .filter(|state| state_matches_container(state, &container))
@@ -123,14 +122,33 @@ pub(crate) fn sync_state_with_container(
         .as_ref()
         .filter(|state| state_matches_container(state, &container))
         .map(|state| state.created_at.clone())
-        .unwrap_or_else(|| now.clone());
+        .unwrap_or_else(current_timestamp);
+
+    write_state_for_container(
+        state_dir,
+        workspace_root,
+        container,
+        lifecycle,
+        Some(created_at),
+    )
+}
+
+pub(crate) fn write_state_for_container(
+    state_dir: impl AsRef<Path>,
+    workspace_root: &Path,
+    container: StateContainerSnapshot,
+    lifecycle: LifecycleState,
+    created_at: Option<String>,
+) -> Result<WorkspaceState> {
+    let state_dir = state_dir.as_ref();
+    let now = current_timestamp();
     let state = WorkspaceState {
         version: STATE_VERSION,
         workspace: workspace_root.display().to_string(),
         container_id: container.container_id,
         image: container.image,
         config_hash: container.config_hash,
-        created_at,
+        created_at: created_at.unwrap_or_else(|| now.clone()),
         last_started_at: now,
         lifecycle,
     };

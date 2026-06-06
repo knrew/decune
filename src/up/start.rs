@@ -147,21 +147,45 @@ fn sync_started_state(
     outcome: &UpOutcome,
     lifecycle_path: LifecycleRunPath,
 ) -> Result<WorkspaceState> {
-    let lifecycle = match lifecycle_path {
-        LifecycleRunPath::New => LifecycleState::default(),
-        LifecycleRunPath::Started | LifecycleRunPath::Running => LifecycleState::all_completed(),
+    let container = StateContainerSnapshot {
+        container_id: outcome.container_id.clone(),
+        image: plan.image.clone(),
+        config_hash: plan.resources.config_hash.clone(),
     };
+    match lifecycle_path {
+        LifecycleRunPath::New => state::sync_state_with_container(
+            workspace.paths().state_dir(),
+            workspace.root(),
+            container,
+            LifecycleState::default(),
+        ),
+        LifecycleRunPath::Started | LifecycleRunPath::Running => {
+            let state_file = state::state_file_path(workspace.paths().state_dir());
+            let existing = state::load_state_file(workspace.paths().state_dir())?;
+            let Some(existing) =
+                existing.filter(|state| state_matches_container_snapshot(state, &container))
+            else {
+                bail!(
+                    "Cannot safely reuse existing dev container without matching lifecycle state: {}. Run decune rebuild to recreate it.",
+                    state_file.display()
+                );
+            };
+            state::write_state_for_container(
+                workspace.paths().state_dir(),
+                workspace.root(),
+                container,
+                existing.lifecycle,
+                Some(existing.created_at),
+            )
+        }
+    }
+}
 
-    state::sync_state_with_container(
-        workspace.paths().state_dir(),
-        workspace.root(),
-        StateContainerSnapshot {
-            container_id: outcome.container_id.clone(),
-            image: plan.image.clone(),
-            config_hash: plan.resources.config_hash.clone(),
-        },
-        lifecycle,
-    )
+fn state_matches_container_snapshot(
+    state: &WorkspaceState,
+    container: &StateContainerSnapshot,
+) -> bool {
+    state.container_id == container.container_id && state.config_hash == container.config_hash
 }
 
 pub(in crate::up) async fn ensure_container_started(
@@ -304,6 +328,7 @@ pub(in crate::up) async fn ensure_container_started(
         ExistingContainerDecision::Create => {
             let outcome = create_and_start_container(
                 &client,
+                &workspace,
                 &plan,
                 options.pull,
                 options.no_cache,
@@ -323,6 +348,7 @@ pub(in crate::up) async fn ensure_container_started(
             recreate_existing_containers(&client, &containers).await?;
             let outcome = create_and_start_container(
                 &client,
+                &workspace,
                 &plan,
                 options.pull,
                 options.no_cache,
@@ -547,27 +573,30 @@ async fn recreate_existing_containers(
 #[cfg(test)]
 pub(in crate::up) async fn create_and_start_container(
     client: &DockerClient,
+    workspace: &Workspace,
     plan: &UpPlan,
     pull: bool,
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    create_and_start_container_inner(client, plan, pull, no_cache, image_prepared).await
+    create_and_start_container_inner(client, workspace, plan, pull, no_cache, image_prepared).await
 }
 
 #[cfg(not(test))]
 async fn create_and_start_container(
     client: &DockerClient,
+    workspace: &Workspace,
     plan: &UpPlan,
     pull: bool,
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    create_and_start_container_inner(client, plan, pull, no_cache, image_prepared).await
+    create_and_start_container_inner(client, workspace, plan, pull, no_cache, image_prepared).await
 }
 
 async fn create_and_start_container_inner(
     client: &DockerClient,
+    workspace: &Workspace,
     plan: &UpPlan,
     pull: bool,
     no_cache: bool,
@@ -650,8 +679,22 @@ async fn create_and_start_container_inner(
         ..spec
     };
     let container_id = create_container(client, &spec).await?;
+    if let Err(state_error) = persist_initial_container_state(workspace, plan, &container_id) {
+        let cleanup = remove_container(client, &plan.resources.container_name, true, true).await;
+        return match cleanup {
+            Ok(()) => Err(state_error.context(format!(
+                "Failed to persist initial lifecycle state for Docker container: {}",
+                plan.resources.container_name
+            ))),
+            Err(cleanup_error) => Err(state_error.context(format!(
+                "Failed to persist initial lifecycle state for Docker container: {}. Failed to remove Docker container after state failure: {}: {cleanup_error:#}",
+                plan.resources.container_name, plan.resources.container_name
+            ))),
+        };
+    }
     start_new_container(
         client,
+        workspace,
         &plan.resources.container_name,
         startup_verification_for_plan(plan),
     )
@@ -662,6 +705,23 @@ async fn create_and_start_container_inner(
         container_name: plan.resources.container_name.clone(),
         reused: false,
     })
+}
+
+fn persist_initial_container_state(
+    workspace: &Workspace,
+    plan: &UpPlan,
+    container_id: &str,
+) -> Result<WorkspaceState> {
+    state::sync_state_with_container(
+        workspace.paths().state_dir(),
+        workspace.root(),
+        StateContainerSnapshot {
+            container_id: container_id.to_owned(),
+            image: plan.image.clone(),
+            config_hash: plan.resources.config_hash.clone(),
+        },
+        LifecycleState::default(),
+    )
 }
 
 fn startup_verification_for_plan(plan: &UpPlan) -> StartupVerification {
@@ -680,6 +740,7 @@ fn startup_verification_for_plan(plan: &UpPlan) -> StartupVerification {
 
 async fn start_new_container(
     client: &DockerClient,
+    workspace: &Workspace,
     container_name: &str,
     verification: StartupVerification,
 ) -> Result<()> {
@@ -688,7 +749,10 @@ async fn start_new_container(
         Err(start_error) => {
             let cleanup = remove_container(client, container_name, true, true).await;
             match cleanup {
-                Ok(()) => Err(start_error),
+                Ok(()) => {
+                    state::reconcile_state_without_container(workspace.paths().state_dir())?;
+                    Err(start_error)
+                }
                 Err(cleanup_error) => Err(start_error.context(format!(
                     "Failed to remove Docker container after start failure: {container_name}: {cleanup_error:#}"
                 ))),
