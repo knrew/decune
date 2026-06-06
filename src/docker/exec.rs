@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{collections::BTreeMap, pin::Pin, time::Duration};
 
 use anyhow::{Context, Result, bail};
@@ -22,6 +20,7 @@ use crate::{
     terminal::{self, RawTerminalGuard},
 };
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ExecAttachMode {
     Capture,
@@ -100,6 +99,7 @@ pub(crate) async fn exec_attach(
     })
 }
 
+#[allow(dead_code)]
 pub(crate) async fn exec_attach_stdio(
     client: &DockerClient,
     container: &str,
@@ -470,6 +470,7 @@ async fn watch_terminal_resize(docker: Docker, exec_id: String) {
 #[cfg(not(unix))]
 async fn watch_terminal_resize(_docker: Docker, _exec_id: String) {}
 
+#[allow(dead_code)]
 pub(crate) fn ensure_success_exit(
     container: &str,
     command: &[String],

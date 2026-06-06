@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use serde_json::Value as JsonValue;
@@ -45,6 +43,7 @@ pub(crate) struct ConfigLayer {
 }
 
 impl ConfigLayer {
+    #[allow(dead_code)]
     pub(crate) fn from_raw_decune(raw: RawDecuneConfig) -> Self {
         Self::from_raw_decune_with_origin(raw, ConfigPathOrigin::Project)
     }

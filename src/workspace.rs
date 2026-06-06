@@ -95,7 +95,6 @@ impl WorkspacePaths {
         &self.runtime_dir
     }
 
-    #[allow(dead_code)]
     pub(crate) fn cache_dir(&self) -> &Path {
         &self.cache_dir
     }

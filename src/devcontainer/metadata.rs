@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use anyhow::{Result, anyhow};
@@ -73,6 +71,7 @@ pub(crate) struct DevcontainerMetadata {
     unsupported_properties: BTreeMap<String, Value>,
 }
 
+#[allow(dead_code)]
 impl DevcontainerMetadata {
     pub(crate) fn source(&self) -> Option<&DevcontainerSource> {
         self.source.as_ref()
