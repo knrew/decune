@@ -85,7 +85,18 @@ pub(in crate::up) async fn run_container_start_lifecycle_for_up(
     started: &StartedUpContainer,
     lifecycle: &PreparedLifecycleRunContext<'_>,
 ) -> Result<()> {
-    run_container_start_lifecycle(started.lifecycle_path, lifecycle).await
+    let mut lifecycle_state = started.state.borrow().lifecycle;
+    run_container_start_lifecycle(
+        started.lifecycle_path,
+        lifecycle,
+        &mut lifecycle_state,
+        |updated_lifecycle| {
+            let mut started_state = started.state.borrow_mut();
+            started_state.lifecycle = *updated_lifecycle;
+            crate::state::write_state_file(started.workspace.paths().state_dir(), &started_state)
+        },
+    )
+    .await
 }
 
 pub(in crate::up) async fn run_attach_lifecycle_for_up(

@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -36,6 +37,7 @@ use crate::{
         },
         forward::{ForwardRuntime, prepare_forward_runtime},
     },
+    state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
     up::{
         build::{
@@ -71,6 +73,7 @@ pub(in crate::up) struct StartedUpContainer {
     pub(in crate::up) plan: UpPlan,
     pub(in crate::up) outcome: UpOutcome,
     pub(in crate::up) lifecycle_path: LifecycleRunPath,
+    pub(in crate::up) state: RefCell<WorkspaceState>,
     _credentials: CredentialRuntime,
 }
 
@@ -117,6 +120,111 @@ impl CredentialRuntime {
     }
 }
 
+fn started_up_container(
+    client: DockerClient,
+    workspace: Workspace,
+    plan: UpPlan,
+    outcome: UpOutcome,
+    lifecycle_path: LifecycleRunPath,
+    credentials: CredentialRuntime,
+) -> Result<StartedUpContainer> {
+    let state = sync_started_state(&workspace, &plan, &outcome, lifecycle_path)?;
+
+    Ok(started_up_container_with_state(
+        client,
+        workspace,
+        plan,
+        outcome,
+        lifecycle_path,
+        credentials,
+        state,
+    ))
+}
+
+fn started_up_container_with_state(
+    client: DockerClient,
+    workspace: Workspace,
+    plan: UpPlan,
+    outcome: UpOutcome,
+    lifecycle_path: LifecycleRunPath,
+    credentials: CredentialRuntime,
+    state: WorkspaceState,
+) -> StartedUpContainer {
+    StartedUpContainer {
+        client,
+        workspace,
+        plan,
+        outcome,
+        lifecycle_path,
+        state: RefCell::new(state),
+        _credentials: credentials,
+    }
+}
+
+fn sync_started_state(
+    workspace: &Workspace,
+    plan: &UpPlan,
+    outcome: &UpOutcome,
+    lifecycle_path: LifecycleRunPath,
+) -> Result<WorkspaceState> {
+    let container = StateContainerSnapshot {
+        container_id: outcome.container_id.clone(),
+        image: plan.image.clone(),
+        config_hash: plan.resources.config_hash.clone(),
+    };
+    match lifecycle_path {
+        LifecycleRunPath::New => state::sync_state_with_container(
+            workspace.paths().state_dir(),
+            workspace.root(),
+            container,
+            LifecycleState::default(),
+        ),
+        LifecycleRunPath::Started | LifecycleRunPath::Running => {
+            let existing = reusable_lifecycle_state(workspace, &container)?;
+            write_reused_started_state(workspace, container, existing)
+        }
+    }
+}
+
+fn reusable_lifecycle_state(
+    workspace: &Workspace,
+    container: &StateContainerSnapshot,
+) -> Result<WorkspaceState> {
+    let state_file = state::state_file_path(workspace.paths().state_dir());
+    let existing = state::load_state_file(workspace.paths().state_dir())?;
+    let Some(existing) =
+        existing.filter(|state| state_matches_container_snapshot(state, container))
+    else {
+        bail!(
+            "Cannot safely reuse existing dev container without matching lifecycle state: {}. Run decune rebuild to recreate it.",
+            state_file.display()
+        );
+    };
+
+    Ok(existing)
+}
+
+fn write_reused_started_state(
+    workspace: &Workspace,
+    container: StateContainerSnapshot,
+    existing: WorkspaceState,
+) -> Result<WorkspaceState> {
+    state::write_state_for_container(
+        workspace.paths().state_dir(),
+        workspace.root(),
+        container,
+        existing.lifecycle,
+        Some(existing.created_at),
+    )
+}
+
+fn state_matches_container_snapshot(
+    state: &WorkspaceState,
+    container: &StateContainerSnapshot,
+) -> bool {
+    state.container_id == container.container_id && state.config_hash == container.config_hash
+}
+
 pub(in crate::up) async fn ensure_container_started(
     options: UpOptions,
     forwarding_resolution: ForwardingResolution,
@@ -134,6 +242,9 @@ pub(in crate::up) async fn ensure_container_started(
 
     let client = DockerClient::connect_from_env()?;
     let containers = list_workspace_containers(&client, workspace.id()).await?;
+    if containers.is_empty() {
+        state::reconcile_state_without_container(workspace.paths().state_dir())?;
+    }
 
     if !options.rebuild && !containers.is_empty() {
         let existing_plan = build_existing_container_decision_plan(
@@ -185,36 +296,29 @@ pub(in crate::up) async fn ensure_container_started(
                     container_name: name,
                     reused: true,
                 };
-                return Ok(StartedUpContainer {
+                return started_up_container(
                     client,
                     workspace,
-                    plan: existing_plan,
+                    existing_plan,
                     outcome,
-                    lifecycle_path: LifecycleRunPath::Running,
-                    _credentials: credentials,
-                });
+                    LifecycleRunPath::Running,
+                    credentials,
+                );
             }
             ExistingContainerDecision::StartStopped { id, name } => {
                 warn_about_deferred_features(&existing_plan.config);
-                start_container_and_verify_running(
-                    &client,
-                    &name,
-                    startup_verification_for_plan(&existing_plan),
-                )
-                .await?;
-                let outcome = UpOutcome {
-                    container_id: id,
-                    container_name: name,
-                    reused: true,
-                };
-                return Ok(StartedUpContainer {
+                let (outcome, state) =
+                    start_stopped_existing_container(&client, &workspace, &existing_plan, id, name)
+                        .await?;
+                return Ok(started_up_container_with_state(
                     client,
                     workspace,
-                    plan: existing_plan,
+                    existing_plan,
                     outcome,
-                    lifecycle_path: LifecycleRunPath::Started,
-                    _credentials: credentials,
-                });
+                    LifecycleRunPath::Started,
+                    credentials,
+                    state,
+                ));
             }
             ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
         }
@@ -254,39 +358,41 @@ pub(in crate::up) async fn ensure_container_started(
         ExistingContainerDecision::Create => {
             let outcome = create_and_start_container(
                 &client,
+                &workspace,
                 &plan,
                 options.pull,
                 options.no_cache,
                 image_prepared,
             )
             .await?;
-            Ok(StartedUpContainer {
+            started_up_container(
                 client,
                 workspace,
                 plan,
                 outcome,
-                lifecycle_path: LifecycleRunPath::New,
-                _credentials: credentials,
-            })
+                LifecycleRunPath::New,
+                credentials,
+            )
         }
         ExistingContainerDecision::Recreate { containers } => {
             recreate_existing_containers(&client, &containers).await?;
             let outcome = create_and_start_container(
                 &client,
+                &workspace,
                 &plan,
                 options.pull,
                 options.no_cache,
                 image_prepared,
             )
             .await?;
-            Ok(StartedUpContainer {
+            started_up_container(
                 client,
                 workspace,
                 plan,
                 outcome,
-                lifecycle_path: LifecycleRunPath::New,
-                _credentials: credentials,
-            })
+                LifecycleRunPath::New,
+                credentials,
+            )
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
             let outcome = UpOutcome {
@@ -294,37 +400,61 @@ pub(in crate::up) async fn ensure_container_started(
                 container_name: name,
                 reused: true,
             };
-            Ok(StartedUpContainer {
+            started_up_container(
                 client,
                 workspace,
                 plan,
                 outcome,
-                lifecycle_path: LifecycleRunPath::Running,
-                _credentials: credentials,
-            })
+                LifecycleRunPath::Running,
+                credentials,
+            )
         }
         ExistingContainerDecision::StartStopped { id, name } => {
-            start_container_and_verify_running(
-                &client,
-                &name,
-                startup_verification_for_plan(&plan),
-            )
-            .await?;
-            let outcome = UpOutcome {
-                container_id: id,
-                container_name: name,
-                reused: true,
-            };
-            Ok(StartedUpContainer {
+            let (outcome, state) =
+                start_stopped_existing_container(&client, &workspace, &plan, id, name).await?;
+            Ok(started_up_container_with_state(
                 client,
                 workspace,
                 plan,
                 outcome,
-                lifecycle_path: LifecycleRunPath::Started,
-                _credentials: credentials,
-            })
+                LifecycleRunPath::Started,
+                credentials,
+                state,
+            ))
         }
     }
+}
+
+async fn start_stopped_existing_container(
+    client: &DockerClient,
+    workspace: &Workspace,
+    plan: &UpPlan,
+    container_id: String,
+    container_name: String,
+) -> Result<(UpOutcome, WorkspaceState)> {
+    let container = StateContainerSnapshot {
+        container_id: container_id.clone(),
+        image: plan.image.clone(),
+        config_hash: plan.resources.config_hash.clone(),
+    };
+    let existing_state = reusable_lifecycle_state(workspace, &container)?;
+
+    start_container_and_verify_running(
+        client,
+        &container_name,
+        startup_verification_for_plan(plan),
+    )
+    .await?;
+
+    let state = write_reused_started_state(workspace, container, existing_state)?;
+    Ok((
+        UpOutcome {
+            container_id,
+            container_name,
+            reused: true,
+        },
+        state,
+    ))
 }
 
 fn add_credential_runtime_mounts(
@@ -497,27 +627,30 @@ async fn recreate_existing_containers(
 #[cfg(test)]
 pub(in crate::up) async fn create_and_start_container(
     client: &DockerClient,
+    workspace: &Workspace,
     plan: &UpPlan,
     pull: bool,
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    create_and_start_container_inner(client, plan, pull, no_cache, image_prepared).await
+    create_and_start_container_inner(client, workspace, plan, pull, no_cache, image_prepared).await
 }
 
 #[cfg(not(test))]
 async fn create_and_start_container(
     client: &DockerClient,
+    workspace: &Workspace,
     plan: &UpPlan,
     pull: bool,
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    create_and_start_container_inner(client, plan, pull, no_cache, image_prepared).await
+    create_and_start_container_inner(client, workspace, plan, pull, no_cache, image_prepared).await
 }
 
 async fn create_and_start_container_inner(
     client: &DockerClient,
+    workspace: &Workspace,
     plan: &UpPlan,
     pull: bool,
     no_cache: bool,
@@ -600,8 +733,22 @@ async fn create_and_start_container_inner(
         ..spec
     };
     let container_id = create_container(client, &spec).await?;
+    if let Err(state_error) = persist_initial_container_state(workspace, plan, &container_id) {
+        let cleanup = remove_container(client, &plan.resources.container_name, true, true).await;
+        return match cleanup {
+            Ok(()) => Err(state_error.context(format!(
+                "Failed to persist initial lifecycle state for Docker container: {}",
+                plan.resources.container_name
+            ))),
+            Err(cleanup_error) => Err(state_error.context(format!(
+                "Failed to persist initial lifecycle state for Docker container: {}. Failed to remove Docker container after state failure: {}: {cleanup_error:#}",
+                plan.resources.container_name, plan.resources.container_name
+            ))),
+        };
+    }
     start_new_container(
         client,
+        workspace,
         &plan.resources.container_name,
         startup_verification_for_plan(plan),
     )
@@ -612,6 +759,23 @@ async fn create_and_start_container_inner(
         container_name: plan.resources.container_name.clone(),
         reused: false,
     })
+}
+
+fn persist_initial_container_state(
+    workspace: &Workspace,
+    plan: &UpPlan,
+    container_id: &str,
+) -> Result<WorkspaceState> {
+    state::sync_state_with_container(
+        workspace.paths().state_dir(),
+        workspace.root(),
+        StateContainerSnapshot {
+            container_id: container_id.to_owned(),
+            image: plan.image.clone(),
+            config_hash: plan.resources.config_hash.clone(),
+        },
+        LifecycleState::default(),
+    )
 }
 
 fn startup_verification_for_plan(plan: &UpPlan) -> StartupVerification {
@@ -630,6 +794,7 @@ fn startup_verification_for_plan(plan: &UpPlan) -> StartupVerification {
 
 async fn start_new_container(
     client: &DockerClient,
+    workspace: &Workspace,
     container_name: &str,
     verification: StartupVerification,
 ) -> Result<()> {
@@ -638,7 +803,10 @@ async fn start_new_container(
         Err(start_error) => {
             let cleanup = remove_container(client, container_name, true, true).await;
             match cleanup {
-                Ok(()) => Err(start_error),
+                Ok(()) => {
+                    state::reconcile_state_without_container(workspace.paths().state_dir())?;
+                    Err(start_error)
+                }
                 Err(cleanup_error) => Err(start_error.context(format!(
                     "Failed to remove Docker container after start failure: {container_name}: {cleanup_error:#}"
                 ))),
