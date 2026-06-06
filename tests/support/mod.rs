@@ -1,5 +1,6 @@
 use std::{
     fs, io,
+    os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
 };
 
@@ -40,6 +41,11 @@ impl TempWorkspace {
         }
 
         fs::write(&path, contents)?;
+        if path.file_name().is_some_and(|name| name == "install.sh") {
+            let mut permissions = fs::metadata(&path)?.permissions();
+            permissions.set_mode(permissions.mode() | 0o111);
+            fs::set_permissions(&path, permissions)?;
+        }
         Ok(path)
     }
 

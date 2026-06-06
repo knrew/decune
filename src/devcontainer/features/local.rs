@@ -5,15 +5,36 @@ use sha2::{Digest, Sha256};
 
 use super::hex_lower;
 
-pub(super) fn ensure_feature_files(source_dir: &Path) -> Result<()> {
-    for name in ["install.sh", "devcontainer-feature.json"] {
-        let path = source_dir.join(name);
-        if !path.is_file() {
-            bail!(
-                "Feature directory must contain {name}: {}",
-                source_dir.display()
-            );
-        }
+pub(super) fn ensure_feature_files(source_dir: &Path, feature_ref: &str) -> Result<()> {
+    let install_script = source_dir.join("install.sh");
+    if !install_script.is_file() {
+        bail!(
+            "Invalid local Feature `{feature_ref}`: missing required install.sh in {}",
+            source_dir.display()
+        );
+    }
+    let mode = fs::metadata(&install_script)
+        .with_context(|| {
+            format!(
+                "Failed to inspect local Feature install.sh for `{feature_ref}`: {}",
+                install_script.display()
+            )
+        })?
+        .permissions()
+        .mode();
+    if mode & 0o111 == 0 {
+        bail!(
+            "Invalid local Feature `{feature_ref}`: install.sh must be executable: {}",
+            install_script.display()
+        );
+    }
+
+    let metadata = source_dir.join("devcontainer-feature.json");
+    if !metadata.is_file() {
+        bail!(
+            "Invalid local Feature `{feature_ref}`: missing required devcontainer-feature.json in {}",
+            source_dir.display()
+        );
     }
 
     Ok(())
@@ -22,6 +43,7 @@ pub(super) fn ensure_feature_files(source_dir: &Path) -> Result<()> {
 pub(super) fn validate_local_feature_directory_name(
     source_dir: &Path,
     metadata_id: &str,
+    feature_ref: &str,
 ) -> Result<()> {
     let directory_name = source_dir
         .file_name()
@@ -34,7 +56,7 @@ pub(super) fn validate_local_feature_directory_name(
         })?;
     if directory_name != metadata_id {
         bail!(
-            "Local Feature directory name must match Feature metadata id: {} has directory name `{}` but metadata id `{}`",
+            "Invalid local Feature `{feature_ref}`: local Feature directory name must match Feature metadata id: {} has directory name `{}` but metadata id `{}`",
             source_dir.display(),
             directory_name,
             metadata_id

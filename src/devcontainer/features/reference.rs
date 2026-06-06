@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -79,7 +79,35 @@ pub(crate) fn parse_feature_ref_from_devcontainer_dir(
         )?));
     }
 
-    parse_feature_ref(value)
+    if Path::new(value).is_absolute() {
+        return Err(invalid_feature_ref(
+            value,
+            "local Feature path must not be absolute; use a ./ path relative to the devcontainer directory",
+        ));
+    }
+    if value.contains("://") {
+        return Err(invalid_feature_ref(
+            value,
+            "URL scheme Feature refs are not supported in decune v0.1",
+        ));
+    }
+    if value == ".." || value.starts_with("../") {
+        return Err(invalid_feature_ref(
+            value,
+            "local Feature path must not contain .. traversal; use a ./ path inside the devcontainer directory",
+        ));
+    }
+
+    parse_feature_ref(value).map_err(|error| {
+        if looks_like_relative_local_feature_path(value) {
+            invalid_feature_ref(
+                value,
+                "local Feature paths must start with ./ and stay inside the devcontainer directory",
+            )
+        } else {
+            error
+        }
+    })
 }
 
 pub(super) fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
@@ -166,12 +194,44 @@ fn parse_local_feature_ref(value: &str, devcontainer_dir: &Path) -> Result<Local
         .strip_prefix("./")
         .filter(|path| !path.is_empty())
         .ok_or_else(|| invalid_feature_ref(value, "local feature path is empty"))?;
+    let relative = normalize_local_feature_relative_path(value, relative)?;
 
     Ok(LocalFeatureRef {
         original: value.to_owned(),
-        path: devcontainer_dir.join(relative),
-        canonical_id: format!("local:{relative}"),
+        path: devcontainer_dir.join(&relative),
+        canonical_id: format!("local:{}", relative.display()),
     })
+}
+
+fn normalize_local_feature_relative_path(value: &str, relative: &str) -> Result<PathBuf> {
+    let mut normalized = PathBuf::new();
+    for component in Path::new(relative).components() {
+        match component {
+            Component::Normal(component) => normalized.push(component),
+            Component::CurDir => {}
+            Component::ParentDir => {
+                return Err(invalid_feature_ref(
+                    value,
+                    "local Feature path must not contain .. traversal",
+                ));
+            }
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(invalid_feature_ref(
+                    value,
+                    "local Feature path must be relative to the devcontainer directory",
+                ));
+            }
+        }
+    }
+    if normalized.as_os_str().is_empty() {
+        return Err(invalid_feature_ref(value, "local feature path is empty"));
+    }
+
+    Ok(normalized)
+}
+
+fn looks_like_relative_local_feature_path(value: &str) -> bool {
+    value.starts_with('.') || value.split('/').count() == 2
 }
 
 fn validate_oci_feature_registry(value: &str, registry: &str) -> Result<()> {
@@ -548,6 +608,66 @@ mod tests {
                 canonical_id: "local:features/local".to_owned(),
             })
         );
+    }
+
+    #[test]
+    fn local_feature_path_rejects_absolute_path() {
+        let error = parse_feature_ref_from_devcontainer_dir(
+            "/workspace/.devcontainer/features/local",
+            Path::new("/workspace/.devcontainer"),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("/workspace/.devcontainer/features/local"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("absolute"), "{error:#}");
+    }
+
+    #[test]
+    fn local_feature_path_rejects_url_scheme() {
+        let error = parse_feature_ref_from_devcontainer_dir(
+            "file:///workspace/.devcontainer/features/local",
+            Path::new("/workspace/.devcontainer"),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("file:///workspace/.devcontainer/features/local"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("URL scheme"), "{error:#}");
+    }
+
+    #[test]
+    fn local_feature_path_rejects_relative_path_without_dot_slash() {
+        let error = parse_feature_ref_from_devcontainer_dir(
+            "features/local",
+            Path::new("/workspace/.devcontainer"),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("features/local"), "{error:#}");
+        assert!(error.to_string().contains("./"), "{error:#}");
+    }
+
+    #[test]
+    fn local_feature_path_rejects_parent_directory_traversal() {
+        for reference in ["../outside", "./../outside", "./features/../outside"] {
+            let error = parse_feature_ref_from_devcontainer_dir(
+                reference,
+                Path::new("/workspace/.devcontainer"),
+            )
+            .unwrap_err();
+
+            assert!(error.to_string().contains(reference), "{error:#}");
+            assert!(error.to_string().contains(".."), "{error:#}");
+        }
     }
 
     fn sha256_digest(hex: &str) -> String {
