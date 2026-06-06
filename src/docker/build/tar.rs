@@ -7,37 +7,14 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
-use super::{context::ResolvedBuildContext, context::collect_context_entries};
+use super::context::{ResolvedBuildContext, build_context_entries};
 
 const TAR_BLOCK_SIZE: usize = 512;
 
 pub(crate) fn create_build_context_tar(context: &ResolvedBuildContext) -> Result<Vec<u8>> {
     let rules = DockerignoreRules::load(context.dockerignore_path.as_deref())?;
     let mut output = Vec::new();
-    let mut entries = Vec::new();
-    collect_context_entries(
-        &context.context_dir,
-        &context.context_dir,
-        &rules,
-        &mut entries,
-    )?;
-    entries.push(context.dockerfile_in_context.clone());
-    if let Some(dockerignore_path) = &context.dockerignore_path {
-        let dockerignore_in_context = dockerignore_path
-            .strip_prefix(&context.context_dir)
-            .with_context(|| {
-                format!(
-                    ".dockerignore must be inside build context: {} is outside {}",
-                    dockerignore_path.display(),
-                    context.context_dir.display()
-                )
-            })?
-            .to_path_buf();
-        entries.push(dockerignore_in_context);
-    }
-
-    entries.sort();
-    entries.dedup();
+    let entries = build_context_entries(context, &rules)?;
     for relative_path in entries {
         append_tar_entry(&mut output, &context.context_dir, &relative_path)?;
     }
@@ -72,7 +49,7 @@ pub(super) struct DockerignoreRules {
 }
 
 impl DockerignoreRules {
-    fn load(path: Option<&Path>) -> Result<Self> {
+    pub(super) fn load(path: Option<&Path>) -> Result<Self> {
         let Some(path) = path else {
             return Ok(Self { rules: Vec::new() });
         };
@@ -399,6 +376,37 @@ mod tests {
         assert!(text.contains("included-content"));
         assert!(!text.contains("excluded-secret"));
         assert!(!text.contains("excluded-cache"));
+    }
+
+    #[test]
+    fn dockerfile_specific_ignore_overrides_root_dockerignore_for_tar_context() {
+        let temp = tempdir("dockerfile-specific-ignore-tar");
+        let root = temp.path();
+        let devcontainer_file = root.join(".devcontainer/devcontainer.json");
+        let context_dir = root.join(".devcontainer");
+        fs::create_dir_all(&context_dir).unwrap();
+        fs::write(context_dir.join("Dockerfile"), "FROM alpine\n").unwrap();
+        fs::write(context_dir.join(".dockerignore"), "specific-kept.txt\n").unwrap();
+        fs::write(
+            context_dir.join("Dockerfile.dockerignore"),
+            "specific-secret.env\n",
+        )
+        .unwrap();
+        fs::write(context_dir.join("specific-kept.txt"), "included\n").unwrap();
+        fs::write(context_dir.join("specific-secret.env"), "excluded\n").unwrap();
+        let build = LayerDevcontainerBuild {
+            dockerfile: "Dockerfile".to_owned(),
+            context: None,
+            args: Default::default(),
+            target: None,
+            cache_from: Vec::new(),
+        };
+        let context = resolve_build_context(root, &devcontainer_file, &build).unwrap();
+
+        let tar = create_build_context_tar(&context).unwrap();
+
+        assert!(tar_contains_path(&tar, "specific-kept.txt"));
+        assert!(!tar_contains_path(&tar, "specific-secret.env"));
     }
 
     #[test]

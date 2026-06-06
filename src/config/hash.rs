@@ -111,7 +111,9 @@ pub(crate) struct BuildHashInput {
     pub(crate) dockerfile_path: Option<String>,
     pub(crate) dockerfile_content_hash: Option<String>,
     pub(crate) context_path: Option<String>,
+    pub(crate) dockerignore_path: Option<String>,
     pub(crate) dockerignore_content_hash: Option<String>,
+    pub(crate) context_content_hash: Option<String>,
 }
 
 pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
@@ -712,8 +714,14 @@ fn write_build_input(writer: &mut CanonicalWriter, build: &BuildHashInput) {
         writer.field("context_path", |writer| {
             writer.option_string(build.context_path.as_deref());
         });
+        writer.field("dockerignore_path", |writer| {
+            writer.option_string(build.dockerignore_path.as_deref());
+        });
         writer.field("dockerignore_content_hash", |writer| {
             writer.option_string(build.dockerignore_content_hash.as_deref());
+        });
+        writer.field("context_content_hash", |writer| {
+            writer.option_string(build.context_content_hash.as_deref());
         });
     });
 }
@@ -1181,6 +1189,48 @@ shell = false
         let second = config_hash(&ConfigHashInput {
             build: Some(BuildHashInput {
                 dockerignore_content_hash: Some("sha256:second".to_owned()),
+                ..BuildHashInput::default()
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn dockerignore_path_alone_changes_hash() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            build: Some(BuildHashInput {
+                dockerignore_path: Some(".devcontainer/.dockerignore".to_owned()),
+                ..BuildHashInput::default()
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            build: Some(BuildHashInput {
+                dockerignore_path: Some(".devcontainer/Dockerfile.dockerignore".to_owned()),
+                ..BuildHashInput::default()
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn context_content_hash_alone_changes_hash() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            build: Some(BuildHashInput {
+                context_content_hash: Some("sha256:first".to_owned()),
+                ..BuildHashInput::default()
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            build: Some(BuildHashInput {
+                context_content_hash: Some("sha256:second".to_owned()),
                 ..BuildHashInput::default()
             }),
             ..ConfigHashInput::new(&config)
