@@ -25,6 +25,7 @@ use crate::{
         install_staged_host_gitconfig, remove_staged_host_gitconfig, setup_git_credentials,
         setup_github_cli_credentials,
     },
+    state::{LifecycleCompletion, LifecycleState},
 };
 
 #[allow(dead_code)]
@@ -233,29 +234,53 @@ pub(crate) fn lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
 
 #[allow(dead_code)]
 pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
+    container_start_lifecycle_plan_with_state(path, &LifecycleState::default())
+}
+
+pub(crate) fn container_start_lifecycle_plan_with_state(
+    path: LifecycleRunPath,
+    state: &LifecycleState,
+) -> Vec<LifecycleStep> {
     match path {
-        LifecycleRunPath::New => vec![
-            LifecycleStep::Hooks(HookStage::BeforeInitialize),
-            LifecycleStep::Lifecycle(LifecycleStage::Initialize),
-            LifecycleStep::Hooks(HookStage::AfterInitialize),
-            LifecycleStep::ImagePreparation,
-            LifecycleStep::ContainerCreate,
-            LifecycleStep::ContainerStart,
-            LifecycleStep::HostDaemonStart,
-            LifecycleStep::DecuneSetup,
-            LifecycleStep::Hooks(HookStage::BeforeOnCreate),
-            LifecycleStep::Lifecycle(LifecycleStage::OnCreate),
-            LifecycleStep::Hooks(HookStage::AfterOnCreate),
-            LifecycleStep::Hooks(HookStage::BeforeUpdateContent),
-            LifecycleStep::Lifecycle(LifecycleStage::UpdateContent),
-            LifecycleStep::Hooks(HookStage::AfterUpdateContent),
-            LifecycleStep::Hooks(HookStage::BeforePostCreate),
-            LifecycleStep::Lifecycle(LifecycleStage::PostCreate),
-            LifecycleStep::Hooks(HookStage::AfterPostCreate),
-            LifecycleStep::Hooks(HookStage::BeforePostStart),
-            LifecycleStep::Lifecycle(LifecycleStage::PostStart),
-            LifecycleStep::Hooks(HookStage::AfterPostStart),
-        ],
+        LifecycleRunPath::New => {
+            let mut steps = vec![
+                LifecycleStep::Hooks(HookStage::BeforeInitialize),
+                LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+                LifecycleStep::Hooks(HookStage::AfterInitialize),
+                LifecycleStep::ImagePreparation,
+                LifecycleStep::ContainerCreate,
+                LifecycleStep::ContainerStart,
+                LifecycleStep::HostDaemonStart,
+                LifecycleStep::DecuneSetup,
+            ];
+            push_creation_lifecycle_steps(
+                &mut steps,
+                *state,
+                LifecycleCompletion::OnCreate,
+                HookStage::BeforeOnCreate,
+                LifecycleStage::OnCreate,
+            );
+            push_creation_lifecycle_steps(
+                &mut steps,
+                *state,
+                LifecycleCompletion::UpdateContent,
+                HookStage::BeforeUpdateContent,
+                LifecycleStage::UpdateContent,
+            );
+            push_creation_lifecycle_steps(
+                &mut steps,
+                *state,
+                LifecycleCompletion::PostCreate,
+                HookStage::BeforePostCreate,
+                LifecycleStage::PostCreate,
+            );
+            steps.extend([
+                LifecycleStep::Hooks(HookStage::BeforePostStart),
+                LifecycleStep::Lifecycle(LifecycleStage::PostStart),
+                LifecycleStep::Hooks(HookStage::AfterPostStart),
+            ]);
+            steps
+        }
         LifecycleRunPath::Started => vec![
             LifecycleStep::Hooks(HookStage::BeforeInitialize),
             LifecycleStep::Lifecycle(LifecycleStage::Initialize),
@@ -275,6 +300,24 @@ pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<Life
             LifecycleStep::DecuneSetup,
         ],
     }
+}
+
+fn push_creation_lifecycle_steps(
+    steps: &mut Vec<LifecycleStep>,
+    state: LifecycleState,
+    completion: LifecycleCompletion,
+    before_hook: HookStage,
+    lifecycle_stage: LifecycleStage,
+) {
+    if state.is_completed(completion) {
+        return;
+    }
+
+    steps.extend([
+        LifecycleStep::Hooks(before_hook),
+        LifecycleStep::Lifecycle(lifecycle_stage),
+        LifecycleStep::Hooks(after_hook_stage(before_hook).expect("creation hook has after hook")),
+    ]);
 }
 
 #[allow(dead_code)]
@@ -406,21 +449,36 @@ fn current_gid() -> u32 {
 pub(crate) async fn run_container_start_lifecycle(
     path: LifecycleRunPath,
     context: &PreparedLifecycleRunContext<'_>,
+    state: &mut LifecycleState,
+    mut save_state: impl FnMut(&LifecycleState) -> Result<()>,
 ) -> Result<()> {
     match path {
         LifecycleRunPath::New => {
-            run_container_stage(context, HookStage::BeforeOnCreate, LifecycleStage::OnCreate)
-                .await?;
-            run_container_stage(
+            run_container_creation_stage(
                 context,
-                HookStage::BeforeUpdateContent,
-                LifecycleStage::UpdateContent,
+                state,
+                LifecycleCompletion::OnCreate,
+                HookStage::BeforeOnCreate,
+                LifecycleStage::OnCreate,
+                &mut save_state,
             )
             .await?;
-            run_container_stage(
+            run_container_creation_stage(
                 context,
+                state,
+                LifecycleCompletion::UpdateContent,
+                HookStage::BeforeUpdateContent,
+                LifecycleStage::UpdateContent,
+                &mut save_state,
+            )
+            .await?;
+            run_container_creation_stage(
+                context,
+                state,
+                LifecycleCompletion::PostCreate,
                 HookStage::BeforePostCreate,
                 LifecycleStage::PostCreate,
+                &mut save_state,
             )
             .await?;
             run_container_stage(
@@ -440,6 +498,25 @@ pub(crate) async fn run_container_start_lifecycle(
         }
         LifecycleRunPath::Running => {}
     }
+
+    Ok(())
+}
+
+async fn run_container_creation_stage(
+    context: &PreparedLifecycleRunContext<'_>,
+    state: &mut LifecycleState,
+    completion: LifecycleCompletion,
+    before_hook: HookStage,
+    lifecycle_stage: LifecycleStage,
+    save_state: &mut impl FnMut(&LifecycleState) -> Result<()>,
+) -> Result<()> {
+    if state.is_completed(completion) {
+        return Ok(());
+    }
+
+    run_container_stage(context, before_hook, lifecycle_stage).await?;
+    state.mark_completed(completion);
+    save_state(state)?;
 
     Ok(())
 }
@@ -1328,6 +1405,36 @@ mod tests {
                 LifecycleStep::Hooks(HookStage::AfterInitialize),
                 LifecycleStep::HostDaemonStart,
                 LifecycleStep::DecuneSetup,
+            ]
+        );
+    }
+
+    #[test]
+    fn lifecycle_start_phase_plan_skips_completed_creation_stages_from_state() {
+        assert_eq!(
+            container_start_lifecycle_plan_with_state(
+                LifecycleRunPath::New,
+                &crate::state::LifecycleState {
+                    on_create_completed: true,
+                    update_content_completed: false,
+                    post_create_completed: true,
+                },
+            ),
+            vec![
+                LifecycleStep::Hooks(HookStage::BeforeInitialize),
+                LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+                LifecycleStep::Hooks(HookStage::AfterInitialize),
+                LifecycleStep::ImagePreparation,
+                LifecycleStep::ContainerCreate,
+                LifecycleStep::ContainerStart,
+                LifecycleStep::HostDaemonStart,
+                LifecycleStep::DecuneSetup,
+                LifecycleStep::Hooks(HookStage::BeforeUpdateContent),
+                LifecycleStep::Lifecycle(LifecycleStage::UpdateContent),
+                LifecycleStep::Hooks(HookStage::AfterUpdateContent),
+                LifecycleStep::Hooks(HookStage::BeforePostStart),
+                LifecycleStep::Lifecycle(LifecycleStage::PostStart),
+                LifecycleStep::Hooks(HookStage::AfterPostStart),
             ]
         );
     }

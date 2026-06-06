@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -36,6 +37,7 @@ use crate::{
         },
         forward::{ForwardRuntime, prepare_forward_runtime},
     },
+    state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
     up::{
         build::{
@@ -71,6 +73,7 @@ pub(in crate::up) struct StartedUpContainer {
     pub(in crate::up) plan: UpPlan,
     pub(in crate::up) outcome: UpOutcome,
     pub(in crate::up) lifecycle_path: LifecycleRunPath,
+    pub(in crate::up) state: RefCell<WorkspaceState>,
     _credentials: CredentialRuntime,
 }
 
@@ -117,6 +120,50 @@ impl CredentialRuntime {
     }
 }
 
+fn started_up_container(
+    client: DockerClient,
+    workspace: Workspace,
+    plan: UpPlan,
+    outcome: UpOutcome,
+    lifecycle_path: LifecycleRunPath,
+    credentials: CredentialRuntime,
+) -> Result<StartedUpContainer> {
+    let state = sync_started_state(&workspace, &plan, &outcome, lifecycle_path)?;
+
+    Ok(StartedUpContainer {
+        client,
+        workspace,
+        plan,
+        outcome,
+        lifecycle_path,
+        state: RefCell::new(state),
+        _credentials: credentials,
+    })
+}
+
+fn sync_started_state(
+    workspace: &Workspace,
+    plan: &UpPlan,
+    outcome: &UpOutcome,
+    lifecycle_path: LifecycleRunPath,
+) -> Result<WorkspaceState> {
+    let lifecycle = match lifecycle_path {
+        LifecycleRunPath::New => LifecycleState::default(),
+        LifecycleRunPath::Started | LifecycleRunPath::Running => LifecycleState::all_completed(),
+    };
+
+    state::sync_state_with_container(
+        workspace.paths().state_dir(),
+        workspace.root(),
+        StateContainerSnapshot {
+            container_id: outcome.container_id.clone(),
+            image: plan.image.clone(),
+            config_hash: plan.resources.config_hash.clone(),
+        },
+        lifecycle,
+    )
+}
+
 pub(in crate::up) async fn ensure_container_started(
     options: UpOptions,
     forwarding_resolution: ForwardingResolution,
@@ -134,6 +181,9 @@ pub(in crate::up) async fn ensure_container_started(
 
     let client = DockerClient::connect_from_env()?;
     let containers = list_workspace_containers(&client, workspace.id()).await?;
+    if containers.is_empty() {
+        state::reconcile_state_without_container(workspace.paths().state_dir())?;
+    }
 
     if !options.rebuild && !containers.is_empty() {
         let existing_plan = build_existing_container_decision_plan(
@@ -185,14 +235,14 @@ pub(in crate::up) async fn ensure_container_started(
                     container_name: name,
                     reused: true,
                 };
-                return Ok(StartedUpContainer {
+                return started_up_container(
                     client,
                     workspace,
-                    plan: existing_plan,
+                    existing_plan,
                     outcome,
-                    lifecycle_path: LifecycleRunPath::Running,
-                    _credentials: credentials,
-                });
+                    LifecycleRunPath::Running,
+                    credentials,
+                );
             }
             ExistingContainerDecision::StartStopped { id, name } => {
                 warn_about_deferred_features(&existing_plan.config);
@@ -207,14 +257,14 @@ pub(in crate::up) async fn ensure_container_started(
                     container_name: name,
                     reused: true,
                 };
-                return Ok(StartedUpContainer {
+                return started_up_container(
                     client,
                     workspace,
-                    plan: existing_plan,
+                    existing_plan,
                     outcome,
-                    lifecycle_path: LifecycleRunPath::Started,
-                    _credentials: credentials,
-                });
+                    LifecycleRunPath::Started,
+                    credentials,
+                );
             }
             ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
         }
@@ -260,14 +310,14 @@ pub(in crate::up) async fn ensure_container_started(
                 image_prepared,
             )
             .await?;
-            Ok(StartedUpContainer {
+            started_up_container(
                 client,
                 workspace,
                 plan,
                 outcome,
-                lifecycle_path: LifecycleRunPath::New,
-                _credentials: credentials,
-            })
+                LifecycleRunPath::New,
+                credentials,
+            )
         }
         ExistingContainerDecision::Recreate { containers } => {
             recreate_existing_containers(&client, &containers).await?;
@@ -279,14 +329,14 @@ pub(in crate::up) async fn ensure_container_started(
                 image_prepared,
             )
             .await?;
-            Ok(StartedUpContainer {
+            started_up_container(
                 client,
                 workspace,
                 plan,
                 outcome,
-                lifecycle_path: LifecycleRunPath::New,
-                _credentials: credentials,
-            })
+                LifecycleRunPath::New,
+                credentials,
+            )
         }
         ExistingContainerDecision::ReuseRunning { id, name } => {
             let outcome = UpOutcome {
@@ -294,14 +344,14 @@ pub(in crate::up) async fn ensure_container_started(
                 container_name: name,
                 reused: true,
             };
-            Ok(StartedUpContainer {
+            started_up_container(
                 client,
                 workspace,
                 plan,
                 outcome,
-                lifecycle_path: LifecycleRunPath::Running,
-                _credentials: credentials,
-            })
+                LifecycleRunPath::Running,
+                credentials,
+            )
         }
         ExistingContainerDecision::StartStopped { id, name } => {
             start_container_and_verify_running(
@@ -315,14 +365,14 @@ pub(in crate::up) async fn ensure_container_started(
                 container_name: name,
                 reused: true,
             };
-            Ok(StartedUpContainer {
+            started_up_container(
                 client,
                 workspace,
                 plan,
                 outcome,
-                lifecycle_path: LifecycleRunPath::Started,
-                _credentials: credentials,
-            })
+                LifecycleRunPath::Started,
+                credentials,
+            )
         }
     }
 }

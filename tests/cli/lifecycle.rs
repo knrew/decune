@@ -63,6 +63,88 @@ fn up_detach_creates_and_reuses_image_container() {
 }
 
 #[test]
+fn up_detach_regenerates_missing_state_from_existing_container() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "onCreateCommand": "printf x >> /tmp/decune-on-create-count"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let state_home = path_roots.path().join("state");
+    let state_file = state_home
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("state.toml");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let first_state = fs::read_to_string(&state_file).unwrap();
+        assert!(first_state.contains("container_id = "));
+        assert!(first_state.contains("on_create_completed = true"));
+        fs::remove_file(&state_file).unwrap();
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Reusing running dev container"));
+
+        let regenerated = fs::read_to_string(&state_file).unwrap();
+        assert!(regenerated.contains("container_id = "));
+        assert!(regenerated.contains("config_hash = "));
+        assert!(regenerated.contains("on_create_completed = true"));
+        assert!(regenerated.contains("update_content_completed = true"));
+        assert!(regenerated.contains("post_create_completed = true"));
+        let on_create_count = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/tmp/decune-on-create-count"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(on_create_count, "x");
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_runs_initialize_when_reusing_running_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
