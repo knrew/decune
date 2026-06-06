@@ -447,7 +447,7 @@ fn up_detach_resumes_pending_creation_lifecycle_when_reusing_running_container()
 }
 
 #[test]
-fn up_detach_does_not_rerun_completed_creation_command_after_after_hook_failure() {
+fn up_detach_retries_failed_after_hook_without_rerunning_completed_creation_command() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -471,7 +471,7 @@ fn up_detach_does_not_rerun_completed_creation_command_after_after_hook_failure(
             version = 1
 
             [[hooks.after_on_create]]
-            command = "test ! -f fail-after-on-create"
+            command = "test ! -f fail-after-on-create && printf after-on-create >> /tmp/decune-lifecycle-order"
             where = "container"
             "#,
         )
@@ -507,6 +507,7 @@ fn up_detach_does_not_rerun_completed_creation_command_after_after_hook_failure(
 
         let failed_state = fs::read_to_string(&state_file).unwrap();
         assert!(failed_state.contains("on_create_completed = true"));
+        assert!(failed_state.contains("after_on_create_completed = false"));
         assert!(failed_state.contains("update_content_completed = false"));
         assert!(failed_state.contains("post_create_completed = false"));
 
@@ -523,6 +524,7 @@ fn up_detach_does_not_rerun_completed_creation_command_after_after_hook_failure(
 
         let completed_state = fs::read_to_string(&state_file).unwrap();
         assert!(completed_state.contains("on_create_completed = true"));
+        assert!(completed_state.contains("after_on_create_completed = true"));
         assert!(completed_state.contains("update_content_completed = true"));
         assert!(completed_state.contains("post_create_completed = true"));
 
@@ -537,7 +539,7 @@ fn up_detach_does_not_rerun_completed_creation_command_after_after_hook_failure(
             .unwrap();
         assert_eq!(
             lifecycle_order,
-            "on-createupdate-contentpost-createpost-start"
+            "on-createafter-on-createupdate-contentpost-createpost-start"
         );
     });
 

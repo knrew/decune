@@ -310,11 +310,17 @@ fn push_creation_lifecycle_steps(
         return;
     }
 
-    steps.extend([
-        LifecycleStep::Hooks(before_hook),
-        LifecycleStep::Lifecycle(lifecycle_stage),
-        LifecycleStep::Hooks(after_hook_stage(before_hook).expect("creation hook has after hook")),
-    ]);
+    if !state.is_command_completed(completion) {
+        steps.extend([
+            LifecycleStep::Hooks(before_hook),
+            LifecycleStep::Lifecycle(lifecycle_stage),
+        ]);
+    }
+    if !state.is_after_hook_completed(completion) {
+        steps.push(LifecycleStep::Hooks(
+            after_hook_stage(before_hook).expect("creation hook has after hook"),
+        ));
+    }
 }
 
 #[allow(dead_code)]
@@ -547,11 +553,17 @@ async fn run_container_creation_stage(
         return Ok(());
     }
 
-    run_hook_stage(context, before_hook).await?;
-    run_lifecycle_stage(context, lifecycle_stage).await?;
-    state.mark_completed(completion);
-    save_state(state)?;
-    run_hook_stage(context, after_hook_stage(before_hook)?).await?;
+    if !state.is_command_completed(completion) {
+        run_hook_stage(context, before_hook).await?;
+        run_lifecycle_stage(context, lifecycle_stage).await?;
+        state.mark_command_completed(completion);
+        save_state(state)?;
+    }
+    if !state.is_after_hook_completed(completion) {
+        run_hook_stage(context, after_hook_stage(before_hook)?).await?;
+        state.mark_after_hook_completed(completion);
+        save_state(state)?;
+    }
 
     Ok(())
 }
@@ -1451,8 +1463,11 @@ mod tests {
                 LifecycleRunPath::New,
                 &crate::state::LifecycleState {
                     on_create_completed: true,
+                    after_on_create_completed: true,
                     update_content_completed: false,
+                    after_update_content_completed: false,
                     post_create_completed: true,
+                    after_post_create_completed: true,
                 },
             ),
             vec![
@@ -1475,14 +1490,51 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_start_phase_plan_resumes_pending_after_hook_without_command() {
+        assert_eq!(
+            container_start_lifecycle_plan_with_state(
+                LifecycleRunPath::Running,
+                &crate::state::LifecycleState {
+                    on_create_completed: true,
+                    after_on_create_completed: false,
+                    update_content_completed: false,
+                    after_update_content_completed: false,
+                    post_create_completed: false,
+                    after_post_create_completed: false,
+                },
+            ),
+            vec![
+                LifecycleStep::Hooks(HookStage::BeforeInitialize),
+                LifecycleStep::Lifecycle(LifecycleStage::Initialize),
+                LifecycleStep::Hooks(HookStage::AfterInitialize),
+                LifecycleStep::HostDaemonStart,
+                LifecycleStep::DecuneSetup,
+                LifecycleStep::Hooks(HookStage::AfterOnCreate),
+                LifecycleStep::Hooks(HookStage::BeforeUpdateContent),
+                LifecycleStep::Lifecycle(LifecycleStage::UpdateContent),
+                LifecycleStep::Hooks(HookStage::AfterUpdateContent),
+                LifecycleStep::Hooks(HookStage::BeforePostCreate),
+                LifecycleStep::Lifecycle(LifecycleStage::PostCreate),
+                LifecycleStep::Hooks(HookStage::AfterPostCreate),
+                LifecycleStep::Hooks(HookStage::BeforePostStart),
+                LifecycleStep::Lifecycle(LifecycleStage::PostStart),
+                LifecycleStep::Hooks(HookStage::AfterPostStart),
+            ]
+        );
+    }
+
+    #[test]
     fn lifecycle_start_phase_plan_resumes_pending_creation_stages_when_running() {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::Running,
                 &crate::state::LifecycleState {
                     on_create_completed: true,
+                    after_on_create_completed: true,
                     update_content_completed: false,
+                    after_update_content_completed: false,
                     post_create_completed: false,
+                    after_post_create_completed: false,
                 },
             ),
             vec![
@@ -1511,8 +1563,11 @@ mod tests {
                 LifecycleRunPath::Started,
                 &crate::state::LifecycleState {
                     on_create_completed: true,
+                    after_on_create_completed: true,
                     update_content_completed: true,
+                    after_update_content_completed: true,
                     post_create_completed: false,
+                    after_post_create_completed: false,
                 },
             ),
             vec![

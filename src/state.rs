@@ -36,21 +36,30 @@ pub(crate) struct LifecycleState {
     #[serde(default)]
     pub(crate) on_create_completed: bool,
     #[serde(default)]
+    pub(crate) after_on_create_completed: bool,
+    #[serde(default)]
     pub(crate) update_content_completed: bool,
     #[serde(default)]
+    pub(crate) after_update_content_completed: bool,
+    #[serde(default)]
     pub(crate) post_create_completed: bool,
+    #[serde(default)]
+    pub(crate) after_post_create_completed: bool,
 }
 
 impl LifecycleState {
     pub(crate) fn all_completed() -> Self {
         Self {
             on_create_completed: true,
+            after_on_create_completed: true,
             update_content_completed: true,
+            after_update_content_completed: true,
             post_create_completed: true,
+            after_post_create_completed: true,
         }
     }
 
-    pub(crate) fn is_completed(self, completion: LifecycleCompletion) -> bool {
+    pub(crate) fn is_command_completed(self, completion: LifecycleCompletion) -> bool {
         match completion {
             LifecycleCompletion::OnCreate => self.on_create_completed,
             LifecycleCompletion::UpdateContent => self.update_content_completed,
@@ -58,11 +67,31 @@ impl LifecycleState {
         }
     }
 
-    pub(crate) fn mark_completed(&mut self, completion: LifecycleCompletion) {
+    pub(crate) fn is_after_hook_completed(self, completion: LifecycleCompletion) -> bool {
+        match completion {
+            LifecycleCompletion::OnCreate => self.after_on_create_completed,
+            LifecycleCompletion::UpdateContent => self.after_update_content_completed,
+            LifecycleCompletion::PostCreate => self.after_post_create_completed,
+        }
+    }
+
+    pub(crate) fn is_completed(self, completion: LifecycleCompletion) -> bool {
+        self.is_command_completed(completion) && self.is_after_hook_completed(completion)
+    }
+
+    pub(crate) fn mark_command_completed(&mut self, completion: LifecycleCompletion) {
         match completion {
             LifecycleCompletion::OnCreate => self.on_create_completed = true,
             LifecycleCompletion::UpdateContent => self.update_content_completed = true,
             LifecycleCompletion::PostCreate => self.post_create_completed = true,
+        }
+    }
+
+    pub(crate) fn mark_after_hook_completed(&mut self, completion: LifecycleCompletion) {
+        match completion {
+            LifecycleCompletion::OnCreate => self.after_on_create_completed = true,
+            LifecycleCompletion::UpdateContent => self.after_update_content_completed = true,
+            LifecycleCompletion::PostCreate => self.after_post_create_completed = true,
         }
     }
 }
@@ -377,8 +406,11 @@ mod tests {
             },
             LifecycleState {
                 on_create_completed: true,
+                after_on_create_completed: true,
                 update_content_completed: true,
+                after_update_content_completed: true,
                 post_create_completed: false,
+                after_post_create_completed: false,
             },
         )
         .unwrap();
