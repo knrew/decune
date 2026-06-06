@@ -2174,8 +2174,6 @@ fn feature_layer_image(plan: &UpPlan) -> String {
 fn uid_gid_sync_base_image(plan: &UpPlan) -> String {
     if plan_requires_workspace_layer(plan) {
         feature_layer_image(plan)
-    } else if plan_requires_uid_gid_sync_layer(plan) {
-        pre_uid_gid_sync_layer_resources(plan).image_tag.clone()
     } else {
         plan.base_image.clone()
     }
@@ -7734,7 +7732,7 @@ user = "root"
     }
 
     #[test]
-    fn dockerfile_uid_gid_sync_base_uses_pre_uid_gid_sync_resources() {
+    fn dockerfile_uid_gid_sync_base_uses_resolved_base_image_without_workspace_layer() {
         let mut config = ResolvedConfig::default();
         config.devcontainer.source = Some(ResolvedDevcontainerSource::Dockerfile(
             crate::config::layer::LayerDevcontainerBuild {
@@ -7747,13 +7745,25 @@ user = "root"
         ));
         let mut plan = test_up_plan_with_config(config);
         plan.image = "decune/test:final-sync-hash".to_owned();
-        plan.base_image = "decune/test:final-sync-hash-base".to_owned();
+        plan.base_image = "decune/test:pre-sync-hash".to_owned();
         plan.resources.image_tag = plan.image.clone();
         plan.resources.config_hash = "final-sync-hash".to_owned();
         plan.pre_uid_gid_sync_resources = Some(test_resources("pre-sync-hash"));
         plan.uid_gid_sync_plan = sync_plan();
 
         assert_eq!(uid_gid_sync_base_image(&plan), "decune/test:pre-sync-hash");
+    }
+
+    #[test]
+    fn image_uid_gid_sync_base_uses_original_image_without_workspace_layer() {
+        let mut plan = test_up_plan_with_image_source("alpine:3.20");
+        plan.image = "decune/test:final-sync-hash".to_owned();
+        plan.resources.image_tag = plan.image.clone();
+        plan.resources.config_hash = "final-sync-hash".to_owned();
+        plan.pre_uid_gid_sync_resources = Some(test_resources("pre-sync-hash"));
+        plan.uid_gid_sync_plan = sync_plan();
+
+        assert_eq!(uid_gid_sync_base_image(&plan), "alpine:3.20");
     }
 
     fn test_up_plan_with_config(config: ResolvedConfig) -> UpPlan {
