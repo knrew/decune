@@ -5305,6 +5305,383 @@ type = "bind"
 
     #[cfg(unix)]
     #[test]
+    fn up_detach_syncs_container_user_uid_gid_when_remote_user_is_not_set() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 || host.uid == 2001 || host.gid == 2001 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-container-user");
+            let image = format!(
+                "decune-test/uid-gid-sync-container-user-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "containerUser": "syncuser",
+                      "postCreateCommand": "id -u >/tmp/decune-container-user-ids; id -g >>/tmp/decune-container-user-ids"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_user_image(&client, &image, "syncuser", 2001, 2001).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let inspect = client.raw().inspect_container(&container_name, None).await?;
+                assert_eq!(
+                    inspect.config.and_then(|config| config.user),
+                    Some("syncuser".to_owned())
+                );
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-container-user-ids".to_owned(),
+                        ],
+                        user: Some("root".to_owned()),
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(output.stdout)?,
+                    format!("{}\n{}\n", host.uid, host.gid)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_syncs_remote_user_without_renumbering_distinct_container_user() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0
+            || host.gid == 0
+            || host.uid == 2001
+            || host.gid == 2001
+            || host.uid == 2002
+            || host.gid == 2002
+        {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-distinct-users");
+            let image = format!(
+                "decune-test/uid-gid-sync-distinct-users-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "containerUser": "containeruser",
+                      "remoteUser": "remoteuser",
+                      "postCreateCommand": "id -u >/tmp/decune-remote-user-ids; id -g >>/tmp/decune-remote-user-ids"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_distinct_uid_gid_users_image(&client, &image).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let remote_output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-remote-user-ids".to_owned(),
+                        ],
+                        user: Some("root".to_owned()),
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(
+                    String::from_utf8(remote_output.stdout)?,
+                    format!("{}\n{}\n", host.uid, host.gid)
+                );
+
+                let container_output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "id -u containeruser; id -g containeruser".to_owned(),
+                        ],
+                        user: Some("root".to_owned()),
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(container_output.stdout)?, "2002\n2002\n");
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_does_not_sync_remote_user_when_update_remote_user_uid_is_false() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 || (host.uid == 2001 && host.gid == 2001) {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-disabled");
+            let image = format!(
+                "decune-test/uid-gid-sync-disabled-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser",
+                      "updateRemoteUserUID": false,
+                      "postCreateCommand": "id -u >/tmp/decune-disabled-user-ids; id -g >>/tmp/decune-disabled-user-ids"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_user_image(&client, &image, "syncuser", 2001, 2001).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "cat /tmp/decune-disabled-user-ids".to_owned(),
+                        ],
+                        user: Some("root".to_owned()),
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout)?, "2001\n2001\n");
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_applies_uid_gid_sync_after_feature_layer() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 || host.uid == 2001 || host.gid == 2001 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-after-feature");
+            let image = format!(
+                "decune-test/uid-gid-sync-after-feature-{}:latest",
+                workspace.id()
+            );
+            fs::create_dir_all(workspace.root().join(".devcontainer/features/order-tool"))
+                .unwrap();
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "features": {{
+                        "./features/order-tool": {{}}
+                      }},
+                      "remoteUser": "syncuser",
+                      "postCreateCommand": "test \"$(cat /usr/local/share/decune-feature-syncuser-uid)\" = 2001 && test \"$(id -u)\" = {host_uid} && test \"$(id -g)\" = {host_gid}"
+                    }}
+                    "#,
+                    host_uid = host.uid,
+                    host_gid = host.gid,
+                ),
+            );
+            fs::write(
+                workspace
+                    .root()
+                    .join(".devcontainer/features/order-tool/devcontainer-feature.json"),
+                r#"{"id":"order-tool","version":"1.0.0","name":"Order Tool"}"#,
+            )
+            .unwrap();
+            fs::write(
+                workspace
+                    .root()
+                    .join(".devcontainer/features/order-tool/install.sh"),
+                r#"
+                set -eu
+                mkdir -p /usr/local/share
+                id -u syncuser >/usr/local/share/decune-feature-syncuser-uid
+                test "$(cat /usr/local/share/decune-feature-syncuser-uid)" = 2001
+                "#,
+            )
+            .unwrap();
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_user_image(&client, &image, "syncuser", 2001, 2001).await?;
+
+                let outcome = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!outcome.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn up_detach_rewrites_numeric_image_user_after_uid_gid_sync() {
         if HostPlatform::current() != HostPlatform::Linux {
             return;
@@ -6894,6 +7271,37 @@ user = "root"
             format!(
                 "FROM alpine:3.20\nRUN addgroup -g {gid} {user} && adduser -D -u {uid} -G {user} -h /home/{user} {user}\nUSER {user}\n"
             ),
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_distinct_uid_gid_users_image(
+        client: &DockerClient,
+        image: &str,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-distinct-users-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            "FROM alpine:3.20\nRUN addgroup -g 2001 remoteuser && adduser -D -u 2001 -G remoteuser -h /home/remoteuser remoteuser && addgroup -g 2002 containeruser && adduser -D -u 2002 -G containeruser -h /home/containeruser containeruser\nUSER containeruser\n",
         )
         .unwrap();
         build_image(
