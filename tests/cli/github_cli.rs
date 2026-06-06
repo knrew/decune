@@ -453,10 +453,6 @@ fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_aut
                 .unwrap()
         });
 
-        workspace
-            .write_file(".devcontainer/build-state", "probe-build-should-not-run\n")
-            .unwrap();
-
         decune()
             .env("PATH", &fake_path)
             .env_remove("SSH_AUTH_SOCK")
@@ -466,6 +462,7 @@ fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_aut
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Reusing running dev container"))
+            .stderr(predicate::str::contains("Building Docker image").not())
             .stderr(predicate::str::contains("github-test-secret").not());
 
         runtime.block_on(async {

@@ -477,62 +477,23 @@ async fn startup_command_image(
 }
 
 async fn prepare_command_probe_image_for_plan(
-    client: &DockerClient,
-    plan: &UpPlan,
+    _client: &DockerClient,
+    _plan: &UpPlan,
     remote_user_image: Option<&str>,
-    build_for_lookup: Option<(bool, bool)>,
+    _build_for_lookup: Option<(bool, bool)>,
 ) -> Result<Option<CommandProbeImage>> {
-    if remote_user_image.is_none() {
+    let Some(remote_user_image) = remote_user_image else {
         return Ok(None);
-    }
+    };
 
-    if plan_requires_workspace_layer(plan) {
-        let Some((pull, no_cache)) = build_for_lookup else {
-            return Ok(None);
-        };
-        prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
-        build_feature_layer_image(client, plan, no_cache).await?;
-        return Ok(Some(CommandProbeImage {
-            image: plan.image.clone(),
-            uses_existing_image: false,
-        }));
-    }
-
-    if let Some(context) = plan.build_context.clone() {
-        let Some((pull, no_cache)) = build_for_lookup else {
-            return Ok(None);
-        };
-        let mut build_options = plan.build_options.clone();
-        build_options.pull = pull;
-        build_options.no_cache = no_cache;
-        build_image(
-            client,
-            DockerBuildInput {
-                image_tag: plan.base_image.clone(),
-                labels: plan.resources.labels.clone().into_iter().collect(),
-                context,
-                options: build_options,
-            },
-        )
-        .await?;
-        return Ok(Some(CommandProbeImage {
-            image: plan.base_image.clone(),
-            uses_existing_image: false,
-        }));
-    }
-
-    match local_image_presence(client, &plan.base_image).await? {
-        LocalImagePresence::Present => Ok(Some(CommandProbeImage {
-            image: plan.base_image.clone(),
-            uses_existing_image: false,
-        })),
-        LocalImagePresence::Missing => Ok(Some(CommandProbeImage {
-            image: remote_user_image
-                .expect("remote user image must be set")
-                .to_owned(),
-            uses_existing_image: true,
-        })),
-    }
+    // Existing-container reconciliation should probe the image that the
+    // container is actually using. Building current inputs here would make a
+    // metadata probe observe changes before the explicit config-hash/rebuild
+    // decision below.
+    Ok(Some(CommandProbeImage {
+        image: remote_user_image.to_owned(),
+        uses_existing_image: true,
+    }))
 }
 
 async fn prepare_feature_metadata_for_plan(
