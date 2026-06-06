@@ -581,13 +581,10 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
         image: (*lookup.image).clone(),
         uses_existing_image: false,
     });
-    let image_has_gh = image_has_command(
-        client,
-        &command_probe_image.image,
-        "gh",
-        &plan.config.devcontainer.container_env,
-    )
-    .await?;
+    let command_probe_env =
+        command_probe_container_env(client, workspace, &plan, &command_probe_image.image).await?;
+    let image_has_gh =
+        image_has_command(client, &command_probe_image.image, "gh", &command_probe_env).await?;
     if image_has_gh && command_probe_image.uses_existing_image {
         return Box::pin(choose_github_cli_feature_plan_for_existing_image_probe(
             client,
@@ -663,6 +660,40 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
     }
 
     Ok(plan)
+}
+
+async fn command_probe_container_env(
+    client: &DockerClient,
+    workspace: &Workspace,
+    plan: &UpPlan,
+    image: &str,
+) -> Result<BTreeMap<String, String>> {
+    let effective_users = resolve_effective_users_from_image(
+        client,
+        image,
+        effective_user_input_from_config_layers(&plan.config_layers),
+    )
+    .await?;
+    let remote_user = resolve_remote_user_from_image(client, image, &effective_users).await?;
+    let remote_user_name = remote_user.user.clone();
+    let remote_user_home = remote_user.home.clone();
+    let workspace_location =
+        resolve_workspace_location(workspace, &plan.config, |workspace_folder| {
+            mount_variable_context(
+                workspace,
+                workspace_folder,
+                remote_user_name.clone(),
+                remote_user_home.clone(),
+            )
+        })?;
+    let mount_variables = mount_variable_context(
+        workspace,
+        &workspace_location.workspace_folder,
+        remote_user.user,
+        remote_user.home,
+    );
+
+    expand_container_env(&plan.config.devcontainer.container_env, &mount_variables)
 }
 
 pub(in crate::up) fn should_auto_add_github_cli_feature(
