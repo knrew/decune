@@ -920,7 +920,7 @@ mod tests {
     }
 
     #[test]
-    fn local_feature_non_executable_install_script_is_rejected() {
+    fn local_feature_non_executable_install_script_is_accepted() {
         let temp = tempfile::tempdir().unwrap();
         let workspace_root = temp.path().join("workspace");
         let devcontainer_dir = workspace_root.join(".devcontainer");
@@ -940,7 +940,7 @@ mod tests {
             options: BTreeMap::new(),
         }];
 
-        let error = prepare_feature_install_plan(
+        let plan = prepare_feature_install_plan(
             &features,
             &devcontainer_dir.join("devcontainer.json"),
             &workspace_root,
@@ -949,10 +949,14 @@ mod tests {
             &[],
             false,
         )
-        .unwrap_err();
+        .unwrap()
+        .unwrap();
 
-        assert!(error.to_string().contains("./features/tool"), "{error:#}");
-        assert!(error.to_string().contains("executable"), "{error:#}");
+        assert_eq!(plan.entries.len(), 1);
+        assert_eq!(
+            plan.entries[0].source_dir,
+            feature_dir.canonicalize().unwrap()
+        );
     }
 
     #[test]

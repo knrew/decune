@@ -13,21 +13,6 @@ pub(super) fn ensure_feature_files(source_dir: &Path, feature_ref: &str) -> Resu
             source_dir.display()
         );
     }
-    let mode = fs::metadata(&install_script)
-        .with_context(|| {
-            format!(
-                "Failed to inspect local Feature install.sh for `{feature_ref}`: {}",
-                install_script.display()
-            )
-        })?
-        .permissions()
-        .mode();
-    if mode & 0o111 == 0 {
-        bail!(
-            "Invalid local Feature `{feature_ref}`: install.sh must be executable: {}",
-            install_script.display()
-        );
-    }
 
     let metadata = source_dir.join("devcontainer-feature.json");
     if !metadata.is_file() {

@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     fs,
+    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -94,6 +95,12 @@ pub(crate) fn prepare_feature_layer_build_context(
             format!(
                 "Failed to stage Feature files from {}",
                 feature.source_dir.display()
+            )
+        })?;
+        make_executable(&feature_dir.join("install.sh")).with_context(|| {
+            format!(
+                "Failed to make staged Feature install script executable: {}",
+                feature_dir.join("install.sh").display()
             )
         })?;
         let env_path = feature_dir.join("devcontainer-features.env");
@@ -320,9 +327,19 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
+fn make_executable(path: &Path) -> Result<()> {
+    let mut permissions = fs::metadata(path)
+        .with_context(|| format!("Failed to inspect file permissions: {}", path.display()))?
+        .permissions();
+    permissions.set_mode(permissions.mode() | 0o111);
+    fs::set_permissions(path, permissions)
+        .with_context(|| format!("Failed to update file permissions: {}", path.display()))?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs};
+    use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
 
     use tempfile::TempDir;
 
@@ -377,6 +394,9 @@ mod tests {
             fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINTS_FILE)).unwrap();
         let wrapper =
             fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINT_WRAPPER_FILE)).unwrap();
+        let staged_install = context
+            .context_dir
+            .join("000-ghcr-io-example-features-tool/install.sh");
 
         assert!(tar_contains_path(
             &tar,
@@ -398,6 +418,10 @@ mod tests {
         assert!(install_script.contains("./install.sh"));
         assert!(!install_script.contains("/bin/sh ./install.sh"));
         assert!(install_script.contains("rm -rf /tmp/decune-features"));
+        assert_ne!(
+            fs::metadata(staged_install).unwrap().permissions().mode() & 0o111,
+            0
+        );
         assert_eq!(entrypoints, "touch /tmp/feature-workspace-id\n");
         assert_eq!(
             fs::read_to_string(
