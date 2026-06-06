@@ -202,6 +202,141 @@ fn clean_force_removes_github_token_file_before_docker_access() {
 }
 
 #[test]
+fn clean_without_force_fails_non_interactive_before_docker_and_state_cleanup() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let state_home = path_roots.path().join("state");
+    let runtime_home = path_roots.path().join("runtime");
+    let workspace_id = workspace_id(&workspace_root);
+    let state_dir = state_home.join("decune").join(&workspace_id);
+    let runtime_dir = runtime_home.join("decune").join(&workspace_id);
+    let token_dir = runtime_dir.join("secrets");
+    let token_file = token_dir.join("github-token");
+    let missing_docker_socket = path_roots.path().join("missing-docker.sock");
+
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(&token_dir).unwrap();
+    fs::write(state_dir.join("state.toml"), "version = 1\n").unwrap();
+    fs::write(runtime_dir.join("socket"), "").unwrap();
+    fs::write(&token_file, "github-test-secret\n").unwrap();
+
+    decune()
+        .arg("clean")
+        .arg(&workspace_root)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_RUNTIME_DIR", &runtime_home)
+        .env(
+            "DOCKER_HOST",
+            format!("unix://{}", missing_docker_socket.display()),
+        )
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Cannot confirm clean in a non-interactive terminal",
+        ))
+        .stderr(predicate::str::contains("github-test-secret").not());
+
+    assert!(state_dir.is_dir());
+    assert!(runtime_dir.is_dir());
+    assert!(token_file.is_file());
+}
+
+#[test]
+fn clean_without_force_fails_non_interactive_without_removing_managed_volume() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let volume_name = format!("decune-clean-non-tty-{workspace_id}");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_volumes(&workspace_root).await.unwrap();
+        create_managed_volume(&workspace_root, &volume_name)
+            .await
+            .unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("clean")
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Cannot confirm clean in a non-interactive terminal",
+            ));
+
+        runtime.block_on(async {
+            let volumes = workspace_volumes(&workspace_root).await.unwrap();
+            assert_eq!(volumes, vec![volume_name.clone()]);
+        });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_volumes(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn clean_without_force_fails_non_interactive_without_removing_managed_container() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        runtime.block_on(async {
+            create_term_marker_container(&workspace_root).await.unwrap();
+        });
+
+        decune()
+            .arg("clean")
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Cannot confirm clean in a non-interactive terminal",
+            ));
+
+        runtime.block_on(async {
+            let containers = workspace_containers(&workspace_root).await.unwrap();
+            assert_eq!(containers.len(), 1);
+            assert!(
+                containers[0]
+                    .state
+                    .as_ref()
+                    .is_some_and(|state| state.to_string() == "running")
+            );
+        });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn clean_force_stops_running_container_before_removal() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();

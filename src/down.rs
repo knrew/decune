@@ -63,9 +63,8 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
 }
 
 pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
-    if clean_requires_confirmation(options.force, io::stdin().is_terminal()) && !confirm_clean()? {
-        bail!("Clean cancelled");
-    }
+    let stdin_is_terminal = io::stdin().is_terminal();
+    ensure_clean_confirmed(options.force, stdin_is_terminal, confirm_clean)?;
 
     let workspace = Workspace::resolve(&options.workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
@@ -104,6 +103,27 @@ pub(crate) fn clean_requires_confirmation(force: bool, stdin_is_terminal: bool) 
     !force && stdin_is_terminal
 }
 
+pub(crate) fn clean_rejects_non_interactive(force: bool, stdin_is_terminal: bool) -> bool {
+    !force && !stdin_is_terminal
+}
+
+fn ensure_clean_confirmed(
+    force: bool,
+    stdin_is_terminal: bool,
+    confirm: impl FnOnce() -> Result<bool>,
+) -> Result<()> {
+    if clean_rejects_non_interactive(force, stdin_is_terminal) {
+        bail!(
+            "Cannot confirm clean in a non-interactive terminal; rerun with --force to remove resources"
+        );
+    }
+    if clean_requires_confirmation(force, stdin_is_terminal) && !confirm()? {
+        bail!("Clean cancelled");
+    }
+
+    Ok(())
+}
+
 fn confirm_clean() -> Result<bool> {
     let mut stderr = io::stderr();
     stderr
@@ -118,7 +138,11 @@ fn confirm_clean() -> Result<bool> {
         .read_line(&mut input)
         .context("Failed to read clean confirmation response")?;
 
-    Ok(matches!(input.trim(), "y" | "Y" | "yes" | "YES" | "Yes"))
+    Ok(clean_confirmation_response_is_yes(&input))
+}
+
+fn clean_confirmation_response_is_yes(input: &str) -> bool {
+    matches!(input.trim(), "y" | "Y" | "yes" | "YES" | "Yes")
 }
 
 fn stop_timeout_seconds(timeout_seconds: u64) -> Result<i32> {
@@ -156,13 +180,58 @@ fn managed_container(container: ContainerSummary) -> Option<ManagedContainer> {
 
 #[cfg(test)]
 mod tests {
-    use super::{clean_requires_confirmation, stop_timeout_seconds};
+    use super::stop_timeout_seconds;
+    use anyhow::Result;
 
     #[test]
     fn clean_confirmation_is_required_only_for_interactive_non_force_runs() {
-        assert!(clean_requires_confirmation(false, true));
-        assert!(!clean_requires_confirmation(true, true));
-        assert!(!clean_requires_confirmation(false, false));
+        assert!(super::clean_requires_confirmation(false, true));
+        assert!(!super::clean_requires_confirmation(true, true));
+        assert!(!super::clean_requires_confirmation(false, false));
+    }
+
+    #[test]
+    fn clean_non_interactive_without_force_is_rejected_before_cleanup() {
+        assert!(super::clean_rejects_non_interactive(false, false));
+        assert!(!super::clean_rejects_non_interactive(true, false));
+        assert!(!super::clean_rejects_non_interactive(false, true));
+    }
+
+    #[test]
+    fn clean_prompt_accepts_only_explicit_yes() {
+        assert!(super::clean_confirmation_response_is_yes("y\n"));
+        assert!(super::clean_confirmation_response_is_yes("yes\n"));
+        assert!(super::clean_confirmation_response_is_yes("YES\n"));
+        assert!(!super::clean_confirmation_response_is_yes("\n"));
+        assert!(!super::clean_confirmation_response_is_yes("no\n"));
+    }
+
+    #[test]
+    fn clean_confirmation_gate_handles_interactive_accept_and_reject() {
+        assert!(super::ensure_clean_confirmed(false, true, || Ok(true)).is_ok());
+
+        let error = super::ensure_clean_confirmed(false, true, || Ok(false)).unwrap_err();
+        assert!(error.to_string().contains("Clean cancelled"));
+    }
+
+    #[test]
+    fn clean_confirmation_gate_rejects_non_interactive_and_skips_prompt_for_force() {
+        let error = super::ensure_clean_confirmed(false, false, || Ok(true)).unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("Cannot confirm clean in a non-interactive terminal")
+        );
+
+        let mut prompted = false;
+        assert!(
+            super::ensure_clean_confirmed(true, false, || -> Result<bool> {
+                prompted = true;
+                Ok(false)
+            })
+            .is_ok()
+        );
+        assert!(!prompted);
     }
 
     #[test]
