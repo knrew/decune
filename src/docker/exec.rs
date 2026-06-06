@@ -431,7 +431,11 @@ async fn exec_has_finished(docker: &Docker, exec_id: &str) -> Result<bool> {
 }
 
 fn exec_inspect_has_finished(inspect: &ExecInspectResponse) -> bool {
-    matches!(inspect.running, Some(false)) || inspect.exit_code.is_some()
+    match inspect.running {
+        Some(true) => false,
+        Some(false) => true,
+        None => inspect.exit_code.is_some(),
+    }
 }
 
 fn spawn_resize_loop(docker: Docker, exec_id: String) -> tokio::task::JoinHandle<()> {
@@ -666,7 +670,7 @@ mod tests {
     }
 
     #[test]
-    fn exec_inspect_has_finished_when_not_running_or_exit_code_is_available() {
+    fn exec_inspect_has_finished_respects_running_state_before_exit_code() {
         let stopped_without_exit_code = ExecInspectResponse {
             running: Some(false),
             exit_code: None,
@@ -682,10 +686,16 @@ mod tests {
             exit_code: None,
             ..Default::default()
         };
+        let running_with_exit_code = ExecInspectResponse {
+            running: Some(true),
+            exit_code: Some(0),
+            ..Default::default()
+        };
 
         assert!(exec_inspect_has_finished(&stopped_without_exit_code));
         assert!(exec_inspect_has_finished(&exited_without_running_state));
         assert!(!exec_inspect_has_finished(&running));
+        assert!(!exec_inspect_has_finished(&running_with_exit_code));
     }
 
     #[test]
