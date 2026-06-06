@@ -207,6 +207,7 @@ pub(crate) struct UpPlan {
     pub(crate) feature_build_context_dir: Option<PathBuf>,
     pub(crate) uid_gid_sync_build_context_dir: Option<PathBuf>,
     pub(crate) resources: DockerResources,
+    pub(crate) pre_uid_gid_sync_resources: Option<DockerResources>,
     pub(crate) config_layers: ConfigMergeInput,
     pub(crate) config: ResolvedConfig,
     pub(crate) effective_users: EffectiveUsers,
@@ -623,6 +624,7 @@ fn build_up_plan_inner(
         feature_build_context_dir: None,
         uid_gid_sync_build_context_dir: None,
         resources,
+        pre_uid_gid_sync_resources: None,
         config_layers,
         config,
         effective_users: EffectiveUsers::root(),
@@ -1274,7 +1276,11 @@ async fn finalize_up_plan_mounts(
                 client,
                 DockerBuildInput {
                     image_tag: plan.base_image.clone(),
-                    labels: plan.resources.labels.clone().into_iter().collect(),
+                    labels: pre_uid_gid_sync_layer_resources(&plan)
+                        .labels
+                        .clone()
+                        .into_iter()
+                        .collect(),
                     context,
                     options: build_options,
                 },
@@ -1411,27 +1417,35 @@ async fn finalize_mounts_and_resources_for_plan(
     hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     hash_input.startup_command = startup_command_hash_input(client, &plan, lookup_image).await?;
     add_internal_hash_versions(&mut hash_input, &plan.config);
+    let config_file = plan
+        .resources
+        .labels
+        .get("devcontainer.config_file")
+        .cloned()
+        .unwrap_or_default();
+    let pre_uid_gid_sync_resources =
+        uid_gid_sync_plan_requires_layer(&uid_gid_sync_plan).then(|| {
+            DockerResources::from_workspace(
+                workspace,
+                config_hash(&hash_input),
+                config_file.clone(),
+            )
+        });
     hash_input.uid_gid_sync = uid_gid_sync_hash_input(
         &uid_gid_sync_plan,
         plan.config.devcontainer.update_remote_user_uid,
         HostPlatform::current(),
     );
     let hash = config_hash(&hash_input);
-    let resources = DockerResources::from_workspace(
-        workspace,
-        hash,
-        plan.resources
-            .labels
-            .get("devcontainer.config_file")
-            .cloned()
-            .unwrap_or_default(),
-    );
+    let resources = DockerResources::from_workspace(workspace, hash, config_file);
     let image = final_image_source(&plan.config, &resources, &uid_gid_sync_plan)?;
-    let base_image = base_image_source(&plan.config, &resources, &uid_gid_sync_plan)?;
+    let base_image_resources = pre_uid_gid_sync_resources.as_ref().unwrap_or(&resources);
+    let base_image = base_image_source(&plan.config, base_image_resources, &uid_gid_sync_plan)?;
 
     plan.image = image;
     plan.base_image = base_image;
     plan.resources = resources;
+    plan.pre_uid_gid_sync_resources = pre_uid_gid_sync_resources;
     plan.effective_users = effective_users;
     plan.uid_gid_sync_plan = uid_gid_sync_plan;
     if plan_requires_uid_gid_sync_layer(&plan) {
@@ -2043,7 +2057,9 @@ async fn build_feature_layer_image(
         .unwrap_or_else(|| "root".to_owned());
     let install_env = feature_install_env(plan, &final_user);
     let devcontainer_id = plan
-        .resources
+        .pre_uid_gid_sync_resources
+        .as_ref()
+        .unwrap_or(&plan.resources)
         .labels
         .get("decune.workspace_id")
         .cloned()
@@ -2076,7 +2092,11 @@ async fn build_feature_layer_image(
         client,
         DockerBuildInput {
             image_tag: feature_layer_image(plan),
-            labels: plan.resources.labels.clone().into_iter().collect(),
+            labels: pre_uid_gid_sync_layer_resources(plan)
+                .labels
+                .clone()
+                .into_iter()
+                .collect(),
             context,
             options: DockerBuildOptions {
                 no_cache,
@@ -2145,7 +2165,7 @@ async fn build_workspace_image_layers(
 
 fn feature_layer_image(plan: &UpPlan) -> String {
     if plan_requires_uid_gid_sync_layer(plan) {
-        format!("{}-features", plan.image)
+        pre_uid_gid_sync_layer_resources(plan).image_tag.clone()
     } else {
         plan.image.clone()
     }
@@ -2157,6 +2177,12 @@ fn uid_gid_sync_base_image(plan: &UpPlan) -> String {
     } else {
         plan.base_image.clone()
     }
+}
+
+fn pre_uid_gid_sync_layer_resources(plan: &UpPlan) -> &DockerResources {
+    plan.pre_uid_gid_sync_resources
+        .as_ref()
+        .unwrap_or(&plan.resources)
 }
 
 fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
@@ -2863,13 +2889,12 @@ fn final_image_source(
 fn base_image_source(
     config: &ResolvedConfig,
     resources: &DockerResources,
-    uid_gid_sync_plan: &UidGidSyncPlan,
+    _uid_gid_sync_plan: &UidGidSyncPlan,
 ) -> Result<String> {
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
         Some(ResolvedDevcontainerSource::Dockerfile(_))
-            if config_requires_workspace_layer(config)
-                || uid_gid_sync_plan_requires_layer(uid_gid_sync_plan) =>
+            if config_requires_workspace_layer(config) =>
         {
             Ok(format!("{}-base", resources.image_tag))
         }
@@ -3264,8 +3289,9 @@ mod tests {
     use crate::docker::ports::ResolvedForwardPort;
     use crate::docker::resource::DockerResources;
     use crate::docker::user::{
-        EffectiveUserResolveInput, EffectiveUsers, HostPlatform, UidGidSyncNoopReason,
-        UidGidSyncPlan, current_host_user_ids, resolve_effective_users,
+        EffectiveUserResolveInput, EffectiveUsers, HostPlatform, HostUserIds, ResolvedUserIds,
+        UidGidSyncNoopReason, UidGidSyncPlan, UidGidSyncTarget, UidGidSyncTargetKind,
+        current_host_user_ids, resolve_effective_users,
     };
     use crate::host::credentials::{
         GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET, SSH_AGENT_SOCKET_TARGET,
@@ -3279,9 +3305,9 @@ mod tests {
         add_github_cli_feature_to_plan, build_up_plan, build_up_plan_with_forwarding_resolution,
         build_up_plan_with_image_metadata, build_up_plan_with_update_features, container_summary,
         create_and_start_container, decide_existing_container, default_workspace_folder,
-        first_successful_shell_candidate, list_workspace_containers, mount_hash_inputs,
-        run_attached_up, run_detached_up, shell_command_candidates,
-        should_auto_add_github_cli_feature, uid_gid_sync_warning,
+        feature_layer_image, first_successful_shell_candidate, list_workspace_containers,
+        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
+        should_auto_add_github_cli_feature, uid_gid_sync_base_image, uid_gid_sync_warning,
     };
 
     #[test]
@@ -7689,6 +7715,57 @@ user = "root"
         }
     }
 
+    #[test]
+    fn feature_layer_image_uses_pre_uid_gid_sync_resources_when_sync_layer_is_needed() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.entrypoints = vec!["/usr/local/share/decune/feature.sh".to_owned()];
+        let mut plan = test_up_plan_with_config(config);
+        plan.image = "decune/test:final-sync-hash".to_owned();
+        plan.resources.image_tag = plan.image.clone();
+        plan.resources.config_hash = "final-sync-hash".to_owned();
+        plan.pre_uid_gid_sync_resources = Some(test_resources("pre-sync-hash"));
+        plan.base_image = "alpine:3.20".to_owned();
+        plan.uid_gid_sync_plan = sync_plan();
+
+        assert_eq!(feature_layer_image(&plan), "decune/test:pre-sync-hash");
+        assert_eq!(uid_gid_sync_base_image(&plan), "decune/test:pre-sync-hash");
+    }
+
+    #[test]
+    fn dockerfile_uid_gid_sync_base_uses_resolved_base_image_without_workspace_layer() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.source = Some(ResolvedDevcontainerSource::Dockerfile(
+            crate::config::layer::LayerDevcontainerBuild {
+                dockerfile: "Dockerfile".to_owned(),
+                context: Some(".".to_owned()),
+                args: BTreeMap::new(),
+                target: None,
+                cache_from: Vec::new(),
+            },
+        ));
+        let mut plan = test_up_plan_with_config(config);
+        plan.image = "decune/test:final-sync-hash".to_owned();
+        plan.base_image = "decune/test:pre-sync-hash".to_owned();
+        plan.resources.image_tag = plan.image.clone();
+        plan.resources.config_hash = "final-sync-hash".to_owned();
+        plan.pre_uid_gid_sync_resources = Some(test_resources("pre-sync-hash"));
+        plan.uid_gid_sync_plan = sync_plan();
+
+        assert_eq!(uid_gid_sync_base_image(&plan), "decune/test:pre-sync-hash");
+    }
+
+    #[test]
+    fn image_uid_gid_sync_base_uses_original_image_without_workspace_layer() {
+        let mut plan = test_up_plan_with_image_source("alpine:3.20");
+        plan.image = "decune/test:final-sync-hash".to_owned();
+        plan.resources.image_tag = plan.image.clone();
+        plan.resources.config_hash = "final-sync-hash".to_owned();
+        plan.pre_uid_gid_sync_resources = Some(test_resources("pre-sync-hash"));
+        plan.uid_gid_sync_plan = sync_plan();
+
+        assert_eq!(uid_gid_sync_base_image(&plan), "alpine:3.20");
+    }
+
     fn test_up_plan_with_config(config: ResolvedConfig) -> UpPlan {
         UpPlan {
             image: "alpine:3.20".to_owned(),
@@ -7704,6 +7781,7 @@ user = "root"
                 labels: BTreeMap::new(),
                 config_hash: "stable-hash".to_owned(),
             },
+            pre_uid_gid_sync_resources: None,
             config_layers: ConfigMergeInput::default(),
             config,
             effective_users: EffectiveUsers::root(),
@@ -7712,6 +7790,36 @@ user = "root"
             mounts: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
+        }
+    }
+
+    fn sync_plan() -> UidGidSyncPlan {
+        UidGidSyncPlan::Sync {
+            target: UidGidSyncTarget {
+                kind: UidGidSyncTargetKind::RemoteUser,
+                user: "vscode".to_owned(),
+                host: HostUserIds {
+                    uid: 1000,
+                    gid: 1000,
+                },
+            },
+            container: ResolvedUserIds {
+                name: "vscode".to_owned(),
+                uid: 2001,
+                gid: 2001,
+            },
+        }
+    }
+
+    fn test_resources(config_hash: &str) -> DockerResources {
+        DockerResources {
+            container_name: "decune-test".to_owned(),
+            image_tag: format!("decune/test:{config_hash}"),
+            labels: BTreeMap::from([
+                ("decune.workspace_id".to_owned(), "workspace-id".to_owned()),
+                ("decune.config_hash".to_owned(), config_hash.to_owned()),
+            ]),
+            config_hash: config_hash.to_owned(),
         }
     }
 
