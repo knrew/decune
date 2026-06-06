@@ -112,7 +112,7 @@ fn down_and_clean_manage_image_container() {
 }
 
 #[test]
-fn down_removes_github_token_file_and_keeps_token_directory_without_container() {
+fn down_removes_github_token_file_and_keeps_secret_directory_without_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let path_roots = tempfile::tempdir().unwrap();
@@ -121,8 +121,8 @@ fn down_removes_github_token_file_and_keeps_token_directory_without_container() 
     let token_dir = runtime_home
         .join("decune")
         .join(&workspace_id)
-        .join("gh-token");
-    let token_file = token_dir.join("token");
+        .join("secrets");
+    let token_file = token_dir.join("github-token");
     let marker_file = token_dir.join("marker");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -174,8 +174,8 @@ fn clean_force_removes_github_token_file_before_docker_access() {
     let token_dir = runtime_home
         .join("decune")
         .join(&workspace_id)
-        .join("gh-token");
-    let token_file = token_dir.join("token");
+        .join("secrets");
+    let token_file = token_dir.join("github-token");
     let marker_file = token_dir.join("marker");
     let missing_docker_socket = path_roots.path().join("missing-docker.sock");
 

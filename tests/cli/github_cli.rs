@@ -51,7 +51,7 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
         .join("decune")
         .join(&workspace_id)
         .join("state.toml");
-    let github_token_file = runtime_dir.join("gh-token").join("token");
+    let github_token_file = runtime_dir.join("secrets").join("github-token");
     let host_daemon_socket = runtime_dir.join("host-daemon.sock");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -96,7 +96,15 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
             );
         });
 
-        assert!(!github_token_file.exists());
+        assert_eq!(fs::read_to_string(&github_token_file).unwrap(), "");
+        assert_eq!(
+            fs::metadata(&github_token_file)
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
         assert!(!host_daemon_socket.exists());
         assert!(
             !fs::read_to_string(&state_file)
@@ -252,6 +260,8 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
               'if [ "$1" = auth ] && [ "$2" = login ]; then' \
               '  test "${{GH_CONFIG_DIR:-}}" = /run/decune/gh' \
               '  mkdir -p "$GH_CONFIG_DIR"' \
+              '  test -r /run/decune/secrets/github-token' \
+              '  if sh -c "printf bad >> /run/decune/secrets/github-token" 2>/dev/null; then exit 92; fi' \
               '  cat > "$GH_CONFIG_DIR/token"' \
               '  exit 0' \
               'fi' \
@@ -261,6 +271,7 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
               'fi' \
               'if [ "$1" = auth ] && [ "$2" = status ]; then' \
               '  test "${{GH_CONFIG_DIR:-}}" = /run/decune/gh' \
+              '  test -w "$GH_CONFIG_DIR"' \
               '  grep -qx "$(printf %s%s github-test -secret)" "$GH_CONFIG_DIR/token"' \
               '  exit 0' \
               'fi' \
@@ -380,8 +391,9 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
               'if [ "$1" = auth ] && [ "$2" = login ]; then' \
               '  test "${{GH_CONFIG_DIR:-}}" = /run/decune/gh' \
               '  mkdir -p "$GH_CONFIG_DIR"' \
+              '  test -r /run/decune/secrets/github-token' \
+              '  if sh -c "printf bad >> /run/decune/secrets/github-token" 2>/dev/null; then exit 92; fi' \
               '  cat > "$GH_CONFIG_DIR/token"' \
-              '  test ! -e /run/decune/gh-token/token || ! test -r /run/decune/gh-token/token' \
               '  exit 0' \
               'fi' \
               'if [ "$1" = auth ] && [ "$2" = setup-git ]; then' \
@@ -390,6 +402,7 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
               'fi' \
               'if [ "$1" = auth ] && [ "$2" = status ]; then' \
               '  test "${{GH_CONFIG_DIR:-}}" = /run/decune/gh' \
+              '  test -w "$GH_CONFIG_DIR"' \
               '  grep -qx "$(printf %s%s github-test -secret)" "$GH_CONFIG_DIR/token"' \
               '  exit 0' \
               'fi' \
@@ -560,7 +573,10 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
                 .await
                 .unwrap();
             assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
-            assert!(inspect_has_mount_target(&inspect, "/run/decune/gh-token"));
+            assert!(inspect_has_mount_target(
+                &inspect,
+                "/run/decune/secrets/github-token"
+            ));
             assert!(inspect_has_mount_target(&inspect, "/run/decune/gh"));
             inspect.id.unwrap()
         });
@@ -581,7 +597,10 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
                 .unwrap();
             assert_ne!(inspect.id.as_deref(), Some(first_id.as_str()));
             assert!(!inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
-            assert!(!inspect_has_mount_target(&inspect, "/run/decune/gh-token"));
+            assert!(!inspect_has_mount_target(
+                &inspect,
+                "/run/decune/secrets/github-token"
+            ));
             assert!(!inspect_has_mount_target(&inspect, "/run/decune/gh"));
         });
     });
@@ -634,6 +653,8 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
           'if [ "$1" = auth ] && [ "$2" = login ]; then' \
           '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
           '  mkdir -p "$GH_CONFIG_DIR"' \
+          '  test -r /run/decune/secrets/github-token' \
+          '  if sh -c "printf bad >> /run/decune/secrets/github-token" 2>/dev/null; then exit 92; fi' \
           '  cat > "$GH_CONFIG_DIR/token"' \
           '  exit 0' \
           'fi' \
@@ -766,6 +787,8 @@ fn up_detach_reuses_auto_added_github_cli_feature_container_when_source_tag_is_r
           'if [ "$1" = auth ] && [ "$2" = login ]; then' \
           '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
           '  mkdir -p "$GH_CONFIG_DIR"' \
+          '  test -r /run/decune/secrets/github-token' \
+          '  if sh -c "printf bad >> /run/decune/secrets/github-token" 2>/dev/null; then exit 92; fi' \
           '  cat > "$GH_CONFIG_DIR/token"' \
           '  exit 0' \
           'fi' \
@@ -1007,6 +1030,8 @@ fn up_detach_detects_github_cli_from_container_env_path_before_auto_adding_featu
                 'if [ "$1" = auth ] && [ "$2" = login ]; then' \
                 '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
                 '  mkdir -p "$GH_CONFIG_DIR"' \
+                '  test -r /run/decune/secrets/github-token' \
+                '  if sh -c "printf bad >> /run/decune/secrets/github-token" 2>/dev/null; then exit 92; fi' \
                 '  cat > "$GH_CONFIG_DIR/token"' \
                 '  exit 0' \
                 'fi' \
@@ -1116,6 +1141,8 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
               'if [ "$1" = auth ] && [ "$2" = login ]; then' \
               '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
               '  mkdir -p "$GH_CONFIG_DIR"' \
+              '  test -r /run/decune/secrets/github-token' \
+              '  if sh -c "printf bad >> /run/decune/secrets/github-token" 2>/dev/null; then exit 92; fi' \
               '  cat > "$GH_CONFIG_DIR/token"' \
               '  exit 0' \
               'fi' \
@@ -1263,6 +1290,8 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
               'if [ "$1" = auth ] && [ "$2" = login ]; then' \
               '  test "${GH_CONFIG_DIR:-}" = /run/decune/gh' \
               '  mkdir -p "$GH_CONFIG_DIR"' \
+              '  test -r /run/decune/secrets/github-token' \
+              '  if sh -c "printf bad >> /run/decune/secrets/github-token" 2>/dev/null; then exit 92; fi' \
               '  cat > "$GH_CONFIG_DIR/token"' \
               '  exit 0' \
               'fi' \
