@@ -864,6 +864,21 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn reads_current_host_user_ids_from_process_identity() {
+        let ids = current_host_user_ids();
+
+        assert_eq!(ids.uid, unsafe { libc::getuid() });
+        assert_eq!(ids.gid, unsafe { libc::getgid() });
+    }
+
+    #[test]
+    #[cfg(not(unix))]
+    fn defaults_current_host_user_ids_on_non_unix_builds() {
+        assert_eq!(current_host_user_ids(), HostUserIds { uid: 0, gid: 0 });
+    }
+
+    #[test]
     fn resolves_effective_container_and_remote_users_from_all_sources() {
         let remote_only = resolve_effective_users(EffectiveUserResolveInput {
             devcontainer_remote_user: Some("remote"),
