@@ -1,7 +1,6 @@
 use std::{
     collections::BTreeMap,
     fs,
-    future::Future,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -9,7 +8,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use bollard::models::{ContainerSummary, MountBindOptions, MountVolumeOptions};
 use bollard::query_parameters::WaitContainerOptionsBuilder;
 use futures_util::{
     FutureExt, TryStreamExt,
@@ -18,38 +16,24 @@ use futures_util::{
 
 use crate::{
     config::{
-        ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry,
-        MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
-        MountVolumeOptionsHashInput, StartupCommandHashInput, UidGidSyncHashInput,
-        UidGidSyncHashState, config_hash,
-        layer::{LayerDevcontainerMount, LayerFeature},
-        load::load_config_file,
-        resolve_config,
-        resolved::ResolvedConfig,
-        resolved::ResolvedDevcontainerSource,
-        types::{GithubCredentialsMode, MountType},
+        ConfigHashInput, ConfigLayer, StartupCommandHashInput, config_hash, layer::LayerFeature,
+        resolve_config, resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource,
+        types::GithubCredentialsMode,
     },
     devcontainer::{
-        features::{
-            FeatureRef, PreparedFeatureInstallPlan, parse_feature_ref_from_devcontainer_dir,
-            prepare_feature_install_plan, read_feature_lock_file, remove_feature_lock_file,
-            resolve_locked_feature_ref,
-        },
-        json::DevcontainerJson,
+        features::{prepare_feature_install_plan, remove_feature_lock_file},
         lifecycle::{
             LifecycleRunContext, LifecycleRunPath, PreparedLifecycleRunContext,
             prepare_container_lifecycle, run_attach_lifecycle, run_container_start_lifecycle,
             run_host_initialize_lifecycle,
         },
-        metadata::parse_metadata,
     },
     docker::{
         build::{
             DockerBuildInput, DockerBuildOptions, FEATURE_ENTRYPOINT_SENTINEL,
             FEATURE_ENTRYPOINT_WRAPPER, FeatureLayerBuildFeature, FeatureLayerBuildInput,
-            ResolvedBuildContext, UidGidSyncLayerBuildInput, build_hash_input, build_image,
+            UidGidSyncLayerBuildInput, build_hash_input, build_image,
             prepare_feature_layer_build_context, prepare_uid_gid_sync_layer_build_context,
-            resolve_build_context,
         },
         client::DockerClient,
         container::{
@@ -57,7 +41,6 @@ use crate::{
             devcontainer_keepalive_command, remove_container, start_container, stop_container,
             workspace_container_list_options,
         },
-        dotfiles::dotfile_mount_specs,
         exec::{
             ExecCommandSpec, exec_attach, exec_capture, exec_capture_output, exec_detached,
             inspect_exec, resolve_exec_env, run_attached_exec_stdio,
@@ -69,14 +52,10 @@ use crate::{
             image_has_devcontainer_metadata_label_if_present, image_startup_command,
             local_image_presence, remove_image, tag_image,
         },
-        mounts::{
-            DockerMountSpec, config_mount_specs, devcontainer_mount_spec, normalize_container_path,
-        },
-        ports::{ResolvedForwardPort, resolve_forward_ports},
+        mounts::{DockerMountSpec, normalize_container_path},
         resource::DockerResources,
         user::{
-            EffectiveUserResolveInput, EffectiveUsers, HostPlatform, UidGidSyncNoopReason,
-            UidGidSyncPlan, UidGidSyncTargetKind, current_host_user_ids, image_config_user,
+            HostPlatform, UidGidSyncPlan, current_host_user_ids, image_config_user,
             resolve_effective_users_from_image, resolve_remote_user,
             resolve_remote_user_from_image, resolve_uid_gid_sync_plan_from_image,
             uid_gid_sync_runtime_user,
@@ -84,8 +63,7 @@ use crate::{
     },
     host::{
         credentials::{
-            DECUNE_RUNTIME_TARGET, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET,
-            GitCredentialRuntime, GithubCliRuntime, SSH_AGENT_SOCKET_TARGET, SshAgentRuntime,
+            DECUNE_RUNTIME_TARGET, GitCredentialRuntime, GithubCliRuntime, SshAgentRuntime,
             host_github_auth_token_available, prepare_git_credential_runtime,
             prepare_github_cli_runtime, prepare_ssh_agent_runtime,
         },
@@ -100,7 +78,47 @@ use crate::{
     workspace::Workspace,
 };
 
-const CONFIG_HASH_LABEL: &str = "decune.config_hash";
+mod existing;
+mod mounts;
+mod plan;
+mod shell;
+mod types;
+mod uid_gid;
+
+pub(crate) use existing::{
+    CredentialRuntimeMountPolicy, container_summary, decide_existing_container,
+};
+#[cfg(test)]
+pub(crate) use mounts::default_workspace_folder;
+pub(crate) use mounts::mount_hash_inputs;
+use mounts::{
+    mount_variable_context, resolve_workspace_location, static_mount_variable_context,
+    workspace_mounts_from_resolved,
+};
+pub(crate) use plan::build_up_plan_with_forwarding_resolution;
+use plan::{
+    add_internal_hash_versions, base_image_source,
+    build_preliminary_up_plan_with_forwarding_resolution,
+    build_up_plan_with_image_metadata_and_forwarding_resolution, config_requires_workspace_layer,
+    feature_lock_hash_inputs, final_image_source,
+};
+#[cfg(test)]
+pub(crate) use plan::{
+    build_up_plan, build_up_plan_with_image_metadata, build_up_plan_with_update_features,
+};
+pub(crate) use shell::{first_successful_shell_candidate, shell_command_candidates};
+pub(crate) use types::{
+    ExistingContainerDecision, ForwardingResolution, MountResolution, StartupVerification,
+    UpContainerSummary, UpMountSummary, UpOptions, UpOutcome, UpPlan, UpPlanResolution,
+    WorkspaceLocation,
+};
+use uid_gid::{
+    effective_user_input_from_config_layers, effective_users_depend_on_image_config_user,
+    plan_requires_uid_gid_sync_layer, pre_uid_gid_sync_layer_resources,
+    static_uid_gid_sync_hash_input, uid_gid_sync_hash_input, uid_gid_sync_plan_requires_layer,
+};
+pub(crate) use uid_gid::{uid_gid_sync_base_image, uid_gid_sync_warning};
+
 const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
 const GITHUB_CLI_FEATURE_REF: &str = "ghcr.io/devcontainers/features/github-cli:1";
 const GITHUB_CLI_FEATURE_CANONICAL_ID: &str = "ghcr.io/devcontainers/features/github-cli";
@@ -110,48 +128,6 @@ const ORIGINAL_COMMAND_STARTUP_MONITOR_WINDOW: Duration = Duration::from_secs(2)
 const FEATURE_ENTRYPOINT_SENTINEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const FEATURE_ENTRYPOINT_SENTINEL_MODE: u32 = 0o666;
 const FEATURE_ENTRYPOINT_RUNTIME_DIR_MODE: u32 = 0o711;
-const FEATURE_ENTRYPOINT_SHIM_HASH_VERSION: &str = "2";
-const DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS: &[&str] = &[
-    DECUNE_RUNTIME_TARGET,
-    SSH_AGENT_SOCKET_TARGET,
-    GITHUB_CLI_TOKEN_DIR_TARGET,
-    GITHUB_CLI_CONFIG_TARGET,
-];
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum MountResolution {
-    Resolve,
-    DeferConfigMounts,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ForwardingResolution {
-    Resolve,
-    IgnoreDetached,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StartupVerification {
-    Keepalive,
-    OriginalCommand,
-    FeatureEntrypoints { monitor_delegated_command: bool },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct UpPlanResolution {
-    forwarding: ForwardingResolution,
-    update_features: bool,
-}
-
-impl UpPlanResolution {
-    fn new(forwarding: ForwardingResolution, update_features: bool) -> Self {
-        Self {
-            forwarding,
-            update_features,
-        }
-    }
-}
-
 struct ImageLookupPreparation<'a> {
     image: &'a mut String,
     remote_user_image: Option<&'a str>,
@@ -164,76 +140,6 @@ struct ImageLookupPreparation<'a> {
 struct CommandProbeImage {
     image: String,
     uses_existing_image: bool,
-}
-
-struct WorkspaceLocation {
-    workspace_folder: String,
-    workspace_mount: DockerMountSpec,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UpMountSummary {
-    pub(crate) source: Option<String>,
-    pub(crate) target: String,
-    pub(crate) mount_type: MountType,
-    pub(crate) read_only: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UpContainerSummary {
-    pub(crate) id: String,
-    pub(crate) name: String,
-    pub(crate) image_id: Option<String>,
-    pub(crate) config_hash: Option<String>,
-    pub(crate) mounts: Option<Vec<UpMountSummary>>,
-    pub(crate) running: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ExistingContainerDecision {
-    Create,
-    Recreate { containers: Vec<UpContainerSummary> },
-    ReuseRunning { id: String, name: String },
-    StartStopped { id: String, name: String },
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct UpPlan {
-    pub(crate) image: String,
-    pub(crate) base_image: String,
-    pub(crate) build_context: Option<ResolvedBuildContext>,
-    pub(crate) build_options: DockerBuildOptions,
-    pub(crate) feature_install: Option<PreparedFeatureInstallPlan>,
-    pub(crate) feature_build_context_dir: Option<PathBuf>,
-    pub(crate) uid_gid_sync_build_context_dir: Option<PathBuf>,
-    pub(crate) resources: DockerResources,
-    pub(crate) pre_uid_gid_sync_resources: Option<DockerResources>,
-    pub(crate) config_layers: ConfigMergeInput,
-    pub(crate) config: ResolvedConfig,
-    pub(crate) effective_users: EffectiveUsers,
-    pub(crate) uid_gid_sync_plan: UidGidSyncPlan,
-    pub(crate) workspace_folder: String,
-    pub(crate) mounts: Vec<DockerMountSpec>,
-    pub(crate) forward_ports: Vec<ResolvedForwardPort>,
-    pub(crate) ignored_detached_forwarding: bool,
-}
-
-#[derive(Debug, Clone)]
-pub(crate) struct UpOptions {
-    pub(crate) workspace: PathBuf,
-    pub(crate) config_path: Option<PathBuf>,
-    pub(crate) cli_layer: ConfigLayer,
-    pub(crate) pull: bool,
-    pub(crate) rebuild: bool,
-    pub(crate) no_cache: bool,
-    pub(crate) update_features: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct UpOutcome {
-    pub(crate) container_id: String,
-    pub(crate) container_name: String,
-    pub(crate) reused: bool,
 }
 
 struct StartedUpContainer {
@@ -251,41 +157,6 @@ struct CredentialRuntime {
     _ssh_agent: SshAgentRuntime,
     _forward: ForwardRuntime,
     mount_policy: CredentialRuntimeMountPolicy,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CredentialRuntimeMountPolicy {
-    required_mounts: Vec<UpMountSummary>,
-    managed_targets: Vec<String>,
-}
-
-impl CredentialRuntimeMountPolicy {
-    fn new(required_mounts: Vec<UpMountSummary>) -> Self {
-        Self {
-            required_mounts,
-            managed_targets: DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS
-                .iter()
-                .map(|target| (*target).to_owned())
-                .collect(),
-        }
-    }
-
-    fn required_mounts(&self) -> &[UpMountSummary] {
-        &self.required_mounts
-    }
-
-    fn required_mount_for_existing(&self, existing: &UpMountSummary) -> bool {
-        self.required_mounts
-            .iter()
-            .any(|required| mount_matches_required(existing, required))
-    }
-
-    fn is_managed_target(&self, target: &str) -> bool {
-        let target = normalize_container_path(target);
-        self.managed_targets
-            .iter()
-            .any(|managed| target == normalize_container_path(managed))
-    }
 }
 
 impl CredentialRuntime {
@@ -323,378 +194,6 @@ impl CredentialRuntime {
     }
 }
 
-pub(crate) fn decide_existing_container(
-    containers: &[UpContainerSummary],
-    expected_config_hash: &str,
-    mount_policy: &CredentialRuntimeMountPolicy,
-    rebuild: bool,
-) -> Result<ExistingContainerDecision> {
-    if rebuild {
-        return if containers.is_empty() {
-            Ok(ExistingContainerDecision::Create)
-        } else {
-            Ok(ExistingContainerDecision::Recreate {
-                containers: containers.to_vec(),
-            })
-        };
-    }
-
-    let Some(container) = containers.first() else {
-        return Ok(ExistingContainerDecision::Create);
-    };
-
-    if container.config_hash.as_deref() != Some(expected_config_hash) {
-        bail!("Dev container configuration changed. Run decune rebuild to recreate it.");
-    }
-
-    if !container_matches_credential_mount_policy(container, mount_policy) {
-        return Ok(ExistingContainerDecision::Recreate {
-            containers: containers.to_vec(),
-        });
-    }
-
-    if container.running {
-        Ok(ExistingContainerDecision::ReuseRunning {
-            id: container.id.clone(),
-            name: container.name.clone(),
-        })
-    } else {
-        Ok(ExistingContainerDecision::StartStopped {
-            id: container.id.clone(),
-            name: container.name.clone(),
-        })
-    }
-}
-
-fn container_matches_credential_mount_policy(
-    container: &UpContainerSummary,
-    mount_policy: &CredentialRuntimeMountPolicy,
-) -> bool {
-    container_has_required_mounts(container, mount_policy.required_mounts())
-        && !container_has_stale_managed_mount(container, mount_policy)
-}
-
-fn container_has_required_mounts(
-    container: &UpContainerSummary,
-    required_mounts: &[UpMountSummary],
-) -> bool {
-    if required_mounts.is_empty() {
-        return true;
-    }
-
-    let Some(existing_mounts) = &container.mounts else {
-        return false;
-    };
-    required_mounts.iter().all(|required| {
-        existing_mounts
-            .iter()
-            .any(|mount| mount_matches_required(mount, required))
-    })
-}
-
-fn container_has_stale_managed_mount(
-    container: &UpContainerSummary,
-    mount_policy: &CredentialRuntimeMountPolicy,
-) -> bool {
-    let Some(existing_mounts) = &container.mounts else {
-        return false;
-    };
-
-    existing_mounts.iter().any(|mount| {
-        mount_policy.is_managed_target(&mount.target)
-            && !mount_policy.required_mount_for_existing(mount)
-    })
-}
-
-fn mount_matches_required(existing: &UpMountSummary, required: &UpMountSummary) -> bool {
-    if normalize_container_path(&existing.target) != normalize_container_path(&required.target) {
-        return false;
-    }
-    if existing.mount_type != required.mount_type {
-        return false;
-    }
-    if existing.read_only != required.read_only {
-        return false;
-    }
-
-    match required.source.as_deref() {
-        Some(required_source) => existing.source.as_deref() == Some(required_source),
-        None => true,
-    }
-}
-
-pub(crate) fn default_workspace_folder(workspace: &Workspace) -> String {
-    format!("/workspaces/{}", workspace.basename())
-}
-
-#[cfg(test)]
-pub(crate) fn build_up_plan(
-    workspace: &Workspace,
-    explicit_config_path: Option<&Path>,
-    cli_layer: ConfigLayer,
-) -> Result<UpPlan> {
-    build_up_plan_inner(
-        workspace,
-        explicit_config_path,
-        cli_layer,
-        Vec::new(),
-        false,
-        MountResolution::Resolve,
-        UpPlanResolution::new(ForwardingResolution::Resolve, false),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn build_up_plan_with_update_features(
-    workspace: &Workspace,
-    explicit_config_path: Option<&Path>,
-    cli_layer: ConfigLayer,
-    update_features: bool,
-) -> Result<UpPlan> {
-    build_up_plan_inner(
-        workspace,
-        explicit_config_path,
-        cli_layer,
-        Vec::new(),
-        false,
-        MountResolution::Resolve,
-        UpPlanResolution::new(ForwardingResolution::Resolve, update_features),
-    )
-}
-
-#[cfg(test)]
-pub(crate) fn build_up_plan_with_image_metadata(
-    workspace: &Workspace,
-    explicit_config_path: Option<&Path>,
-    cli_layer: ConfigLayer,
-    image_metadata: Vec<ConfigLayer>,
-) -> Result<UpPlan> {
-    build_up_plan_inner(
-        workspace,
-        explicit_config_path,
-        cli_layer,
-        image_metadata,
-        false,
-        MountResolution::Resolve,
-        UpPlanResolution::new(ForwardingResolution::Resolve, false),
-    )
-}
-
-fn build_preliminary_up_plan_with_forwarding_resolution(
-    workspace: &Workspace,
-    explicit_config_path: Option<&Path>,
-    cli_layer: ConfigLayer,
-    forwarding_resolution: ForwardingResolution,
-    update_features: bool,
-) -> Result<UpPlan> {
-    build_up_plan_inner(
-        workspace,
-        explicit_config_path,
-        cli_layer,
-        Vec::new(),
-        false,
-        MountResolution::DeferConfigMounts,
-        UpPlanResolution::new(forwarding_resolution, update_features),
-    )
-}
-
-fn build_up_plan_with_forwarding_resolution(
-    workspace: &Workspace,
-    explicit_config_path: Option<&Path>,
-    cli_layer: ConfigLayer,
-    forwarding_resolution: ForwardingResolution,
-    update_features: bool,
-) -> Result<UpPlan> {
-    build_up_plan_inner(
-        workspace,
-        explicit_config_path,
-        cli_layer,
-        Vec::new(),
-        false,
-        MountResolution::Resolve,
-        UpPlanResolution::new(forwarding_resolution, update_features),
-    )
-}
-
-fn build_up_plan_with_image_metadata_and_forwarding_resolution(
-    workspace: &Workspace,
-    explicit_config_path: Option<&Path>,
-    cli_layer: ConfigLayer,
-    image_metadata: Vec<ConfigLayer>,
-    ignored_image_metadata_forwarding: bool,
-    forwarding_resolution: ForwardingResolution,
-    update_features: bool,
-) -> Result<UpPlan> {
-    build_up_plan_inner(
-        workspace,
-        explicit_config_path,
-        cli_layer,
-        image_metadata,
-        ignored_image_metadata_forwarding,
-        MountResolution::Resolve,
-        UpPlanResolution::new(forwarding_resolution, update_features),
-    )
-}
-
-fn build_up_plan_inner(
-    workspace: &Workspace,
-    explicit_config_path: Option<&Path>,
-    cli_layer: ConfigLayer,
-    image_metadata: Vec<ConfigLayer>,
-    ignored_image_metadata_forwarding: bool,
-    mount_resolution: MountResolution,
-    resolution: UpPlanResolution,
-) -> Result<UpPlan> {
-    let devcontainer_json = DevcontainerJson::load(workspace.root(), explicit_config_path)?;
-    let metadata = parse_metadata(devcontainer_json.value().clone())?;
-    let devcontainer_layer = match resolution.forwarding {
-        ForwardingResolution::Resolve => metadata.to_config_layer()?,
-        ForwardingResolution::IgnoreDetached => metadata.to_config_layer_without_forward_ports()?,
-    };
-    let global_layer = ConfigLayer::from_raw_decune_with_origin(
-        load_config_file(workspace.paths().global_config_path())?,
-        crate::config::path::ConfigPathOrigin::Global,
-    );
-    let project_layer = ConfigLayer::from_raw_decune_with_origin(
-        load_config_file(workspace.paths().project_config_path())?,
-        crate::config::path::ConfigPathOrigin::Project,
-    );
-    let config_layers = ConfigMergeInput {
-        image_metadata,
-        global: Some(global_layer),
-        devcontainer: Some(devcontainer_layer),
-        project: Some(project_layer),
-        cli: Some(cli_layer),
-        ..ConfigMergeInput::default()
-    };
-    let config = resolve_config(config_layers.clone());
-    let (build_context, build_options) =
-        dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
-    let workspace_location = resolve_workspace_location(workspace, &config, |workspace_folder| {
-        static_mount_variable_context(workspace, workspace_folder, &config)
-    })?;
-    let mount_variables =
-        static_mount_variable_context(workspace, &workspace_location.workspace_folder, &config);
-    let mounts = workspace_mounts_from_resolved(
-        workspace_location.workspace_mount,
-        workspace.root(),
-        &config,
-        &mount_variables,
-        mount_resolution,
-    )?;
-    let mut hash_input = ConfigHashInput::new(&config);
-    if let Some(context) = &build_context {
-        hash_input.build = Some(build_hash_input(context)?);
-    }
-    hash_input.feature_locks = feature_lock_hash_inputs(
-        workspace,
-        devcontainer_json.path(),
-        &config,
-        resolution.update_features,
-    )?;
-    if mount_resolution == MountResolution::Resolve {
-        hash_input.resolved_mounts = mount_hash_inputs(&mounts);
-    }
-    add_internal_hash_versions(&mut hash_input, &config);
-    hash_input.uid_gid_sync =
-        static_uid_gid_sync_hash_input(&config_layers, config.devcontainer.update_remote_user_uid);
-    let hash = config_hash(&hash_input);
-    let resources = DockerResources::from_workspace(
-        workspace,
-        hash,
-        devcontainer_json.path().display().to_string(),
-    );
-    let base_image = base_image_source(&config, &resources, &UidGidSyncPlan::default())?;
-    let image = final_image_source(&config, &resources, &UidGidSyncPlan::default())?;
-    let forward_ports = match resolution.forwarding {
-        ForwardingResolution::Resolve => resolve_forward_ports(&config.ports.entries)?,
-        ForwardingResolution::IgnoreDetached => Vec::new(),
-    };
-    let ignored_detached_forwarding = resolution.forwarding == ForwardingResolution::IgnoreDetached
-        && (ignored_image_metadata_forwarding
-            || !metadata.forward_ports().is_empty()
-            || !config.ports.entries.is_empty());
-
-    Ok(UpPlan {
-        image,
-        base_image,
-        build_context,
-        build_options,
-        feature_install: None,
-        feature_build_context_dir: None,
-        uid_gid_sync_build_context_dir: None,
-        resources,
-        pre_uid_gid_sync_resources: None,
-        config_layers,
-        config,
-        effective_users: EffectiveUsers::root(),
-        uid_gid_sync_plan: UidGidSyncPlan::default(),
-        workspace_folder: workspace_location.workspace_folder,
-        mounts,
-        forward_ports,
-        ignored_detached_forwarding,
-    })
-}
-
-fn feature_lock_hash_inputs(
-    workspace: &Workspace,
-    devcontainer_file: &Path,
-    config: &ResolvedConfig,
-    update_features: bool,
-) -> Result<Vec<FeatureLockHashEntry>> {
-    if config.features.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    let devcontainer_dir = devcontainer_file.parent().with_context(|| {
-        format!(
-            "Failed to resolve devcontainer directory for {}",
-            devcontainer_file.display()
-        )
-    })?;
-    let references = config
-        .features
-        .iter()
-        .map(|feature| {
-            parse_feature_ref_from_devcontainer_dir(&feature.id, devcontainer_dir)
-                .with_context(|| format!("Failed to parse Feature ref: {}", feature.id))
-        })
-        .collect::<Result<Vec<_>>>()?;
-
-    if update_features {
-        return Ok(Vec::new());
-    }
-
-    let lock_path = workspace.root().join(".decune").join("features.lock.toml");
-    let lock = read_feature_lock_file(&lock_path)?;
-    let mut entries = Vec::new();
-
-    for reference in references {
-        let _resolved = resolve_locked_feature_ref(&reference, &lock, false);
-        let canonical_id = reference.canonical_id().to_owned();
-
-        if let FeatureRef::Oci(reference) = reference
-            && let Some(digest) = lock.digest_for_reference(&reference)
-        {
-            entries.push(FeatureLockHashEntry {
-                feature_id: canonical_id,
-                digest: digest.to_owned(),
-            });
-        }
-    }
-
-    Ok(entries)
-}
-
-fn add_internal_hash_versions(input: &mut ConfigHashInput<'_>, config: &ResolvedConfig) {
-    if !config.devcontainer.entrypoints.is_empty() {
-        input.internal_versions.insert(
-            "feature_entrypoint_shim".to_owned(),
-            FEATURE_ENTRYPOINT_SHIM_HASH_VERSION.to_owned(),
-        );
-    }
-}
-
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     let started = ensure_container_started(options, ForwardingResolution::IgnoreDetached).await?;
     warn_about_detached_forwarding(&started.plan);
@@ -729,7 +228,7 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     stop_forwarding(forwarding).await;
 
     let exit_code = attach_result?;
-    Ok(clamp_exit_code(exit_code))
+    Ok(shell::clamp_exit_code(exit_code))
 }
 
 fn warn_about_detached_forwarding(plan: &UpPlan) {
@@ -764,12 +263,16 @@ async fn ensure_container_started(
             &workspace,
             options.config_path.as_deref(),
             options.cli_layer.clone(),
-            containers.first().and_then(existing_container_image_id),
+            containers
+                .first()
+                .and_then(existing::existing_container_image_id),
             &preliminary_plan,
             plan_resolution,
         )
         .await?;
-        let existing_container_image = containers.first().and_then(existing_container_image_id);
+        let existing_container_image = containers
+            .first()
+            .and_then(existing::existing_container_image_id);
         let existing_remote_user_image = existing_remote_user_image_for_decision(
             &client,
             &existing_plan,
@@ -781,7 +284,9 @@ async fn ensure_container_started(
             &workspace,
             existing_plan,
             existing_remote_user_image,
-            containers.first().and_then(existing_container_config_hash),
+            containers
+                .first()
+                .and_then(existing::existing_container_config_hash),
             Some((options.pull, options.no_cache)),
             options.update_features,
         )
@@ -1462,186 +967,6 @@ async fn finalize_mounts_and_resources_for_plan(
     Ok(plan)
 }
 
-fn effective_user_input_from_config_layers(
-    config_layers: &ConfigMergeInput,
-) -> EffectiveUserResolveInput<'_> {
-    EffectiveUserResolveInput {
-        devcontainer_remote_user: config_layers
-            .devcontainer
-            .as_ref()
-            .and_then(layer_remote_user),
-        devcontainer_container_user: config_layers
-            .devcontainer
-            .as_ref()
-            .and_then(layer_container_user),
-        image_metadata_remote_user: merged_metadata_remote_user(config_layers),
-        image_metadata_container_user: merged_metadata_container_user(config_layers),
-        image_config_user: None,
-    }
-}
-
-fn uid_gid_sync_hash_input(
-    plan: &UidGidSyncPlan,
-    update_remote_user_uid: bool,
-    host_platform: HostPlatform,
-) -> Option<UidGidSyncHashInput> {
-    if !update_remote_user_uid || host_platform != HostPlatform::Linux {
-        return None;
-    }
-
-    Some(match plan {
-        UidGidSyncPlan::Sync { target, .. } => UidGidSyncHashInput {
-            state: UidGidSyncHashState::Sync,
-            host_uid: target.host.uid,
-            host_gid: target.host.gid,
-            target_kind: Some(uid_gid_sync_target_kind_name(target.kind).to_owned()),
-            target_user: Some(target.user.clone()),
-        },
-        UidGidSyncPlan::Noop { reason } => UidGidSyncHashInput {
-            state: UidGidSyncHashState::Noop(uid_gid_sync_noop_reason_name(*reason).to_owned()),
-            host_uid: current_host_user_ids().uid,
-            host_gid: current_host_user_ids().gid,
-            target_kind: None,
-            target_user: None,
-        },
-    })
-}
-
-fn static_uid_gid_sync_hash_input(
-    config_layers: &ConfigMergeInput,
-    update_remote_user_uid: bool,
-) -> Option<UidGidSyncHashInput> {
-    if !update_remote_user_uid || HostPlatform::current() != HostPlatform::Linux {
-        return None;
-    }
-
-    let input = effective_user_input_from_config_layers(config_layers);
-    if input.devcontainer_remote_user.is_some()
-        || input.image_metadata_remote_user.is_some()
-        || input.devcontainer_container_user.is_some()
-        || input.image_metadata_container_user.is_some()
-    {
-        return None;
-    }
-
-    let host = current_host_user_ids();
-    Some(UidGidSyncHashInput {
-        state: UidGidSyncHashState::Noop(
-            uid_gid_sync_noop_reason_name(UidGidSyncNoopReason::NoExplicitUser).to_owned(),
-        ),
-        host_uid: host.uid,
-        host_gid: host.gid,
-        target_kind: None,
-        target_user: None,
-    })
-}
-
-fn uid_gid_sync_target_kind_name(kind: UidGidSyncTargetKind) -> &'static str {
-    match kind {
-        UidGidSyncTargetKind::RemoteUser => "remoteUser",
-        UidGidSyncTargetKind::ContainerUser => "containerUser",
-    }
-}
-
-fn uid_gid_sync_noop_reason_name(reason: UidGidSyncNoopReason) -> &'static str {
-    match reason {
-        UidGidSyncNoopReason::Disabled => "disabled",
-        UidGidSyncNoopReason::NonLinuxHost => "nonLinuxHost",
-        UidGidSyncNoopReason::NoExplicitUser => "noExplicitUser",
-        UidGidSyncNoopReason::NumericUserWithoutPasswd => "numericUserWithoutPasswd",
-        UidGidSyncNoopReason::Root => "root",
-    }
-}
-
-fn uid_gid_sync_warning(
-    config_layers: &ConfigMergeInput,
-    plan: &UidGidSyncPlan,
-    update_remote_user_uid: bool,
-    host_platform: HostPlatform,
-) -> Option<String> {
-    if host_platform != HostPlatform::Linux {
-        if explicit_update_remote_user_uid(config_layers) == Some(true) {
-            return Some(
-                "UID/GID sync is only supported on Linux hosts; skipping updateRemoteUserUID"
-                    .to_owned(),
-            );
-        }
-
-        return None;
-    }
-
-    if update_remote_user_uid
-        && matches!(
-            plan,
-            UidGidSyncPlan::Noop {
-                reason: UidGidSyncNoopReason::NumericUserWithoutPasswd
-            }
-        )
-    {
-        return Some(
-            "UID/GID sync is skipped because the configured numeric user has no passwd entry"
-                .to_owned(),
-        );
-    }
-
-    None
-}
-
-fn explicit_update_remote_user_uid(config_layers: &ConfigMergeInput) -> Option<bool> {
-    let mut explicit = None;
-    for layer in config_layers
-        .image_metadata
-        .iter()
-        .chain(config_layers.feature_metadata.iter())
-        .chain(config_layers.global.iter())
-        .chain(config_layers.devcontainer.iter())
-        .chain(config_layers.project.iter())
-        .chain(config_layers.cli.iter())
-    {
-        if let Some(update_remote_user_uid) = layer
-            .devcontainer
-            .as_ref()
-            .and_then(|devcontainer| devcontainer.update_remote_user_uid)
-        {
-            explicit = Some(update_remote_user_uid);
-        }
-    }
-
-    explicit
-}
-
-fn merged_metadata_remote_user(config_layers: &ConfigMergeInput) -> Option<&str> {
-    config_layers
-        .image_metadata
-        .iter()
-        .chain(config_layers.feature_metadata.iter())
-        .filter_map(layer_remote_user)
-        .next_back()
-}
-
-fn merged_metadata_container_user(config_layers: &ConfigMergeInput) -> Option<&str> {
-    config_layers
-        .image_metadata
-        .iter()
-        .chain(config_layers.feature_metadata.iter())
-        .filter_map(layer_container_user)
-        .next_back()
-}
-
-fn layer_remote_user(layer: &ConfigLayer) -> Option<&str> {
-    layer
-        .devcontainer
-        .as_ref()
-        .and_then(|devcontainer| devcontainer.remote_user.as_deref())
-}
-
-fn layer_container_user(layer: &ConfigLayer) -> Option<&str> {
-    layer
-        .devcontainer
-        .as_ref()
-        .and_then(|devcontainer| devcontainer.container_user.as_deref())
-}
-
 async fn startup_command_hash_input(
     client: &DockerClient,
     plan: &UpPlan,
@@ -2171,38 +1496,12 @@ fn feature_layer_image(plan: &UpPlan) -> String {
     }
 }
 
-fn uid_gid_sync_base_image(plan: &UpPlan) -> String {
-    if plan_requires_workspace_layer(plan) {
-        feature_layer_image(plan)
-    } else {
-        plan.base_image.clone()
-    }
-}
-
-fn pre_uid_gid_sync_layer_resources(plan: &UpPlan) -> &DockerResources {
-    plan.pre_uid_gid_sync_resources
-        .as_ref()
-        .unwrap_or(&plan.resources)
-}
-
 fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
     plan.feature_install.is_some() || config_requires_workspace_layer(&plan.config)
 }
 
-fn plan_requires_uid_gid_sync_layer(plan: &UpPlan) -> bool {
-    uid_gid_sync_plan_requires_layer(&plan.uid_gid_sync_plan)
-}
-
-fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> bool {
-    matches!(plan, UidGidSyncPlan::Sync { .. })
-}
-
 fn plan_requires_final_image_layer(plan: &UpPlan) -> bool {
     plan_requires_workspace_layer(plan) || plan_requires_uid_gid_sync_layer(plan)
-}
-
-fn config_requires_workspace_layer(config: &ResolvedConfig) -> bool {
-    !config.features.is_empty() || !config.devcontainer.entrypoints.is_empty()
 }
 
 fn feature_install_env(plan: &UpPlan, image_user: &str) -> BTreeMap<String, String> {
@@ -2605,64 +1904,6 @@ async fn attach_shell(client: &DockerClient, plan: &UpPlan, container_name: &str
     run_attached_exec_stdio(client, container_name, &spec, attached).await
 }
 
-pub(crate) async fn first_successful_shell_candidate<T, F, Fut>(
-    candidates: Vec<String>,
-    mut start_candidate: F,
-) -> Result<T>
-where
-    F: FnMut(String) -> Fut,
-    Fut: Future<Output = Result<T>>,
-{
-    if candidates.is_empty() {
-        bail!("No shell command candidate is available");
-    }
-
-    let mut failures = Vec::new();
-    for command in candidates {
-        match start_candidate(command.clone()).await {
-            Ok(result) => return Ok(result),
-            Err(error) => failures.push(format!("{command}: {error:#}")),
-        }
-    }
-
-    bail!(
-        "Failed to start any shell command candidate. Tried: {}",
-        failures.join("; ")
-    )
-}
-
-pub(crate) fn shell_command_candidates(
-    config_shell: Option<&str>,
-    remote_user_shell: Option<&str>,
-) -> Vec<String> {
-    if let Some(shell) = normalized_shell(config_shell) {
-        return vec![shell];
-    }
-
-    let mut candidates = Vec::new();
-    if let Some(shell) = normalized_shell(remote_user_shell) {
-        candidates.push(shell);
-    }
-    candidates.push("/bin/bash".to_owned());
-    candidates.push("/bin/sh".to_owned());
-    candidates.dedup();
-    candidates
-}
-
-fn normalized_shell(shell: Option<&str>) -> Option<String> {
-    shell
-        .map(str::trim)
-        .filter(|shell| !shell.is_empty())
-        .map(ToOwned::to_owned)
-}
-
-fn clamp_exit_code(exit_code: i64) -> i32 {
-    match exit_code {
-        0..=255 => exit_code as i32,
-        _ => 1,
-    }
-}
-
 fn startup_verification_for_plan(plan: &UpPlan) -> StartupVerification {
     if !plan.config.devcontainer.entrypoints.is_empty() {
         return StartupVerification::FeatureEntrypoints {
@@ -2868,265 +2109,6 @@ fn container_exited_during_startup_error(
     anyhow::anyhow!("Container exited during startup: {container_name}{exit}")
 }
 
-fn final_image_source(
-    config: &ResolvedConfig,
-    resources: &DockerResources,
-    uid_gid_sync_plan: &UidGidSyncPlan,
-) -> Result<String> {
-    if config_requires_workspace_layer(config)
-        || uid_gid_sync_plan_requires_layer(uid_gid_sync_plan)
-    {
-        return Ok(resources.image_tag.clone());
-    }
-
-    match &config.devcontainer.source {
-        Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
-        Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
-        None => bail!("Devcontainer image is required"),
-    }
-}
-
-fn base_image_source(
-    config: &ResolvedConfig,
-    resources: &DockerResources,
-    _uid_gid_sync_plan: &UidGidSyncPlan,
-) -> Result<String> {
-    match &config.devcontainer.source {
-        Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
-        Some(ResolvedDevcontainerSource::Dockerfile(_))
-            if config_requires_workspace_layer(config) =>
-        {
-            Ok(format!("{}-base", resources.image_tag))
-        }
-        Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
-        None => bail!("Devcontainer image is required"),
-    }
-}
-
-fn dockerfile_build_input(
-    workspace_root: &Path,
-    devcontainer_file: &Path,
-    config: &ResolvedConfig,
-) -> Result<(Option<ResolvedBuildContext>, DockerBuildOptions)> {
-    match &config.devcontainer.source {
-        Some(ResolvedDevcontainerSource::Dockerfile(build)) => Ok((
-            Some(resolve_build_context(
-                workspace_root,
-                devcontainer_file,
-                build,
-            )?),
-            DockerBuildOptions {
-                build_args: build.args.clone(),
-                target: build.target.clone(),
-                cache_from: build.cache_from.clone(),
-                ..DockerBuildOptions::default()
-            },
-        )),
-        _ => Ok((None, DockerBuildOptions::default())),
-    }
-}
-
-fn workspace_mounts_from_resolved(
-    workspace_mount: DockerMountSpec,
-    workspace_root: &Path,
-    config: &ResolvedConfig,
-    variables: &crate::config::variables::VariableContext,
-    mount_resolution: MountResolution,
-) -> Result<Vec<DockerMountSpec>> {
-    let workspace_target = workspace_mount.target.clone();
-    let mut mounts = vec![workspace_mount];
-    if mount_resolution == MountResolution::Resolve {
-        let config_mounts = config_mount_specs(config, workspace_root, variables)?;
-        reject_workspace_mount_target_conflicts(&workspace_target, &config_mounts)?;
-        mounts.extend(config_mounts);
-
-        let dotfile_mounts = dotfile_mount_specs(config, workspace_root, variables)?;
-        reject_workspace_mount_target_conflicts(&workspace_target, &dotfile_mounts)?;
-        mounts.extend(dotfile_mounts);
-    }
-
-    Ok(mounts)
-}
-
-fn reject_workspace_mount_target_conflicts(
-    workspace_target: &str,
-    mounts: &[DockerMountSpec],
-) -> Result<()> {
-    let workspace_target = normalize_container_path(workspace_target);
-    if mounts
-        .iter()
-        .any(|mount| normalize_container_path(&mount.target) == workspace_target)
-    {
-        bail!("Mount target conflicts with workspace mount target: {workspace_target}");
-    }
-
-    Ok(())
-}
-
-fn resolve_workspace_location<F>(
-    workspace: &Workspace,
-    config: &ResolvedConfig,
-    variables_for_workspace_folder: F,
-) -> Result<WorkspaceLocation>
-where
-    F: Fn(&str) -> crate::config::variables::VariableContext,
-{
-    let seed_workspace_folder = config
-        .devcontainer
-        .workspace_folder
-        .clone()
-        .unwrap_or_else(|| default_workspace_folder(workspace));
-    let variables = variables_for_workspace_folder(&seed_workspace_folder);
-    let workspace_mount = workspace_mount_spec(workspace, config, &variables)?;
-    let workspace_folder = config
-        .devcontainer
-        .workspace_folder
-        .clone()
-        .unwrap_or_else(|| workspace_mount.target.clone());
-
-    Ok(WorkspaceLocation {
-        workspace_folder,
-        workspace_mount,
-    })
-}
-
-fn workspace_mount_spec(
-    workspace: &Workspace,
-    config: &ResolvedConfig,
-    variables: &crate::config::variables::VariableContext,
-) -> Result<DockerMountSpec> {
-    if let Some(workspace_mount) = &config.devcontainer.workspace_mount {
-        return devcontainer_mount_spec(
-            &LayerDevcontainerMount::String(workspace_mount.clone()),
-            workspace.root(),
-            variables,
-        )
-        .context("Failed to resolve workspaceMount");
-    }
-
-    Ok(DockerMountSpec {
-        source: Some(workspace.root().display().to_string()),
-        target: default_workspace_folder(workspace),
-        mount_type: MountType::Bind,
-        read_only: false,
-        consistency: None,
-        bind_options: None,
-        volume_options: None,
-    })
-}
-
-fn mount_hash_inputs(mounts: &[DockerMountSpec]) -> Vec<MountHashInput> {
-    mounts
-        .iter()
-        .map(|mount| MountHashInput {
-            source: mount.source.clone(),
-            target: mount.target.clone(),
-            mount_type: mount.mount_type,
-            read_only: mount.read_only,
-            consistency: mount.consistency.clone(),
-            bind_options: mount.bind_options.as_ref().map(bind_options_hash_input),
-            volume_options: mount.volume_options.as_ref().map(volume_options_hash_input),
-        })
-        .collect()
-}
-
-fn bind_options_hash_input(options: &MountBindOptions) -> MountBindOptionsHashInput {
-    MountBindOptionsHashInput {
-        propagation: options.propagation.map(|value| value.to_string()),
-        non_recursive: options.non_recursive,
-        create_mountpoint: options.create_mountpoint,
-        read_only_non_recursive: options.read_only_non_recursive,
-        read_only_force_recursive: options.read_only_force_recursive,
-    }
-}
-
-fn volume_options_hash_input(options: &MountVolumeOptions) -> MountVolumeOptionsHashInput {
-    MountVolumeOptionsHashInput {
-        no_copy: options.no_copy,
-        labels: options
-            .labels
-            .clone()
-            .map(|labels| labels.into_iter().collect()),
-        driver_config: options.driver_config.as_ref().map(|driver_config| {
-            MountVolumeDriverConfigHashInput {
-                name: driver_config.name.clone(),
-                options: driver_config
-                    .options
-                    .clone()
-                    .map(|options| options.into_iter().collect()),
-            }
-        }),
-        subpath: options.subpath.clone(),
-    }
-}
-
-fn static_mount_variable_context(
-    workspace: &Workspace,
-    workspace_folder: &str,
-    config: &ResolvedConfig,
-) -> crate::config::variables::VariableContext {
-    let remote_user = config
-        .devcontainer
-        .remote_user
-        .clone()
-        .unwrap_or_else(|| "root".to_owned());
-
-    mount_variable_context(
-        workspace,
-        workspace_folder,
-        remote_user,
-        Some("/root".to_owned()),
-    )
-}
-
-fn mount_variable_context(
-    workspace: &Workspace,
-    workspace_folder: &str,
-    remote_user: String,
-    remote_user_home: Option<String>,
-) -> crate::config::variables::VariableContext {
-    crate::config::variables::VariableContext::new(
-        workspace.root().to_path_buf(),
-        workspace.basename().to_owned(),
-        workspace_folder.to_owned(),
-        container_workspace_folder_basename(workspace_folder, workspace),
-        workspace.id().to_owned(),
-        current_uid(),
-        current_gid(),
-        remote_user,
-        remote_user_home,
-    )
-}
-
-fn container_workspace_folder_basename(workspace_folder: &str, workspace: &Workspace) -> String {
-    Path::new(workspace_folder)
-        .file_name()
-        .and_then(|value| value.to_str())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| workspace.basename())
-        .to_owned()
-}
-
-#[cfg(unix)]
-fn current_uid() -> u32 {
-    unsafe { libc::getuid() }
-}
-
-#[cfg(not(unix))]
-fn current_uid() -> u32 {
-    0
-}
-
-#[cfg(unix)]
-fn current_gid() -> u32 {
-    unsafe { libc::getgid() }
-}
-
-#[cfg(not(unix))]
-fn current_gid() -> u32 {
-    0
-}
-
 async fn list_workspace_containers(
     client: &DockerClient,
     workspace_id: &str,
@@ -3143,68 +2125,6 @@ async fn list_workspace_containers(
         .into_iter()
         .filter_map(container_summary)
         .collect())
-}
-
-fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> {
-    let id = container.id?;
-    let name = container
-        .names
-        .and_then(|names| names.into_iter().next())
-        .map(|name| name.trim_start_matches('/').to_owned())
-        .unwrap_or_else(|| id.clone());
-    let config_hash = container
-        .labels
-        .and_then(|labels| labels.get(CONFIG_HASH_LABEL).cloned());
-    let mounts = container.mounts.map(|mounts| {
-        mounts
-            .into_iter()
-            .filter_map(|mount| {
-                let bollard::models::MountPoint {
-                    typ,
-                    source,
-                    destination,
-                    rw,
-                    ..
-                } = mount;
-                let read_only = !rw.unwrap_or(true);
-                let mount_type = mount_type_from_summary(typ.as_deref())?;
-                destination.map(|target| UpMountSummary {
-                    source,
-                    target,
-                    mount_type,
-                    read_only,
-                })
-            })
-            .collect()
-    });
-    let running = container
-        .state
-        .is_some_and(|state| state.to_string() == "running");
-
-    Some(UpContainerSummary {
-        id,
-        name,
-        image_id: container.image_id,
-        config_hash,
-        mounts,
-        running,
-    })
-}
-
-fn mount_type_from_summary(value: Option<&str>) -> Option<MountType> {
-    match value {
-        Some("bind") => Some(MountType::Bind),
-        Some("volume") => Some(MountType::Volume),
-        Some("tmpfs") => Some(MountType::Tmpfs),
-        _ => None,
-    }
-}
-
-fn existing_container_image_id(container: &UpContainerSummary) -> Option<&str> {
-    container
-        .image_id
-        .as_deref()
-        .filter(|image_id| !image_id.trim().is_empty())
 }
 
 async fn existing_remote_user_image_for_decision<'a>(
@@ -3225,21 +2145,6 @@ async fn existing_remote_user_image_for_decision<'a>(
     }
 
     Ok(existing_container_image)
-}
-
-fn effective_users_depend_on_image_config_user(plan: &UpPlan) -> bool {
-    let input = effective_user_input_from_config_layers(&plan.config_layers);
-    input.devcontainer_remote_user.is_none()
-        && input.image_metadata_remote_user.is_none()
-        && input.devcontainer_container_user.is_none()
-        && input.image_metadata_container_user.is_none()
-}
-
-fn existing_container_config_hash(container: &UpContainerSummary) -> Option<&str> {
-    container
-        .config_hash
-        .as_deref()
-        .filter(|config_hash| !config_hash.trim().is_empty())
 }
 
 fn warn_about_deferred_features(config: &ResolvedConfig) {
