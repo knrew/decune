@@ -237,6 +237,110 @@ fn up_detach_resumes_pending_creation_lifecycle_when_reusing_running_container()
 }
 
 #[test]
+fn up_detach_does_not_rerun_completed_creation_command_after_after_hook_failure() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "onCreateCommand": "printf on-create >> /tmp/decune-lifecycle-order",
+              "updateContentCommand": "printf update-content >> /tmp/decune-lifecycle-order",
+              "postCreateCommand": "printf post-create >> /tmp/decune-lifecycle-order",
+              "postStartCommand": "printf post-start >> /tmp/decune-lifecycle-order"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [[hooks.after_on_create]]
+            command = "test ! -f fail-after-on-create"
+            where = "container"
+            "#,
+        )
+        .unwrap();
+    workspace.write_file("fail-after-on-create", "").unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let state_home = path_roots.path().join("state");
+    let state_file = state_home
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("state.toml");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Lifecycle stage after_on_create failed",
+            ));
+
+        let failed_state = fs::read_to_string(&state_file).unwrap();
+        assert!(failed_state.contains("on_create_completed = true"));
+        assert!(failed_state.contains("update_content_completed = false"));
+        assert!(failed_state.contains("post_create_completed = false"));
+
+        fs::remove_file(workspace_root.join("fail-after-on-create")).unwrap();
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Reusing running dev container"));
+
+        let completed_state = fs::read_to_string(&state_file).unwrap();
+        assert!(completed_state.contains("on_create_completed = true"));
+        assert!(completed_state.contains("update_content_completed = true"));
+        assert!(completed_state.contains("post_create_completed = true"));
+
+        let lifecycle_order = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/tmp/decune-lifecycle-order"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(
+            lifecycle_order,
+            "on-createupdate-contentpost-createpost-start"
+        );
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_runs_initialize_when_reusing_running_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();

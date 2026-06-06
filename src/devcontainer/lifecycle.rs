@@ -547,9 +547,11 @@ async fn run_container_creation_stage(
         return Ok(());
     }
 
-    run_container_stage(context, before_hook, lifecycle_stage).await?;
+    run_hook_stage(context, before_hook).await?;
+    run_lifecycle_stage(context, lifecycle_stage).await?;
     state.mark_completed(completion);
     save_state(state)?;
+    run_hook_stage(context, after_hook_stage(before_hook)?).await?;
 
     Ok(())
 }
