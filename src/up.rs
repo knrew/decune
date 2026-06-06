@@ -3305,9 +3305,10 @@ mod tests {
         add_github_cli_feature_to_plan, build_up_plan, build_up_plan_with_forwarding_resolution,
         build_up_plan_with_image_metadata, build_up_plan_with_update_features, container_summary,
         create_and_start_container, decide_existing_container, default_workspace_folder,
-        feature_layer_image, first_successful_shell_candidate, list_workspace_containers,
-        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
-        should_auto_add_github_cli_feature, uid_gid_sync_base_image, uid_gid_sync_warning,
+        feature_layer_image, finalize_up_plan_mounts, first_successful_shell_candidate,
+        list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
+        shell_command_candidates, should_auto_add_github_cli_feature, uid_gid_sync_base_image,
+        uid_gid_sync_warning,
     };
 
     #[test]
@@ -5617,6 +5618,225 @@ type = "bind"
 
     #[cfg(unix)]
     #[test]
+    fn up_plan_finalization_noops_uid_gid_sync_for_root_remote_user() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-root-noop");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "remoteUser": "root"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            ensure_image(&client, "alpine:3.20", PullPolicy::Missing)
+                .await
+                .unwrap();
+            let (plan, image_prepared) = finalize_up_plan_mounts(
+                &client,
+                &workspace,
+                plan,
+                None,
+                None,
+                Some((false, false)),
+                false,
+            )
+            .await
+            .unwrap();
+
+            assert!(!image_prepared);
+            assert_eq!(plan.image, "alpine:3.20");
+            assert_eq!(plan.base_image, "alpine:3.20");
+            assert_eq!(
+                plan.uid_gid_sync_plan,
+                UidGidSyncPlan::Noop {
+                    reason: UidGidSyncNoopReason::Root
+                }
+            );
+            assert!(plan.pre_uid_gid_sync_resources.is_none());
+            assert!(plan.uid_gid_sync_build_context_dir.is_none());
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_plan_finalization_uses_image_user_without_uid_gid_sync_when_metadata_user_is_missing() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-image-user-only");
+            let image = format!(
+                "decune-test/uid-gid-sync-image-user-only-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_user_image(&client, &image, "imageuser", 2001, 2001).await?;
+
+                let (plan, image_prepared) = finalize_up_plan_mounts(
+                    &client,
+                    &workspace,
+                    plan,
+                    None,
+                    None,
+                    Some((false, false)),
+                    false,
+                )
+                .await?;
+
+                assert!(!image_prepared);
+                assert_eq!(plan.image, image);
+                assert_eq!(plan.base_image, image);
+                assert_eq!(plan.effective_users.remote_user.user, "imageuser");
+                assert_eq!(
+                    plan.uid_gid_sync_plan,
+                    UidGidSyncPlan::Noop {
+                        reason: UidGidSyncNoopReason::NoExplicitUser
+                    }
+                );
+                assert!(plan.pre_uid_gid_sync_resources.is_none());
+                assert!(plan.uid_gid_sync_build_context_dir.is_none());
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn up_plan_finalization_includes_uid_gid_sync_state_in_final_hash_and_image_tag() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-hash-tag");
+            let image = format!(
+                "decune-test/uid-gid-sync-hash-tag-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_user_image(&client, &image, "syncuser", 2001, 2001).await?;
+
+                let (plan, image_prepared) = finalize_up_plan_mounts(
+                    &client,
+                    &workspace,
+                    plan,
+                    None,
+                    None,
+                    Some((false, false)),
+                    false,
+                )
+                .await?;
+                let pre_sync_resources = plan
+                    .pre_uid_gid_sync_resources
+                    .as_ref()
+                    .expect("sync plan must preserve pre-sync resources");
+
+                assert!(!image_prepared);
+                assert!(matches!(
+                    plan.uid_gid_sync_plan,
+                    UidGidSyncPlan::Sync { .. }
+                ));
+                assert_eq!(plan.image, plan.resources.image_tag);
+                assert_eq!(plan.base_image, image);
+                assert_eq!(
+                    plan.resources.labels["decune.config_hash"],
+                    plan.resources.config_hash
+                );
+                assert_eq!(
+                    pre_sync_resources.labels["decune.config_hash"],
+                    pre_sync_resources.config_hash
+                );
+                assert_ne!(plan.resources.config_hash, pre_sync_resources.config_hash);
+                assert_ne!(plan.resources.image_tag, pre_sync_resources.image_tag);
+                assert!(plan.uid_gid_sync_build_context_dir.is_some());
+
+                let UidGidSyncPlan::Sync { target, .. } = &plan.uid_gid_sync_plan else {
+                    unreachable!("sync plan was checked above");
+                };
+                assert_eq!(target.host, host);
+                assert_eq!(target.user, "syncuser");
+                assert_eq!(target.kind, UidGidSyncTargetKind::RemoteUser);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn up_detach_applies_uid_gid_sync_after_feature_layer() {
         if HostPlatform::current() != HostPlatform::Linux {
             return;
@@ -6034,6 +6254,63 @@ type = "bind"
         .expect("numeric no-passwd sync no-op must be user-visible");
 
         assert!(warning.contains("numeric user has no passwd entry"));
+    }
+
+    #[test]
+    fn up_detach_reports_missing_explicit_uid_gid_sync_target_user() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-missing-target-user");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "remoteUser": "missing-sync-user"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                remove_container(&client, &container_name, true, true).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
+                assert!(message.contains("Remote user does not exist in container"));
+                assert!(message.contains("missing-sync-user"));
+
+                let containers = list_workspace_containers(&client, workspace.id()).await?;
+                assert!(
+                    !containers
+                        .iter()
+                        .any(|container| container.name == container_name)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
     }
 
     #[cfg(unix)]
