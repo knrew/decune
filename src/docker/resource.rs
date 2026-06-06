@@ -16,6 +16,7 @@ const DOCKER_REPOSITORY_NAME_MAX: usize = 255;
 pub(crate) struct DockerResources {
     pub(crate) container_name: String,
     pub(crate) image_tag: String,
+    pub(crate) workspace_volume_name: String,
     pub(crate) labels: BTreeMap<String, String>,
     pub(crate) config_hash: String,
 }
@@ -26,11 +27,11 @@ impl DockerResources {
         config_hash: impl Into<String>,
         config_file: impl Into<String>,
     ) -> Self {
-        let resource_basename = docker_name_segment(workspace.basename());
+        let safe_workspace_slug = workspace.safe_slug();
         let config_hash = config_hash.into();
         let workspace_root = workspace.root().display().to_string();
         let config_file = config_file.into();
-        let image_repository = docker_image_repository(&resource_basename, workspace.id());
+        let image_repository = docker_image_repository(safe_workspace_slug, workspace.id());
         let labels = labels([
             (MANAGED_LABEL, "true".to_owned()),
             (WORKSPACE_LABEL, workspace_root.clone()),
@@ -42,17 +43,16 @@ impl DockerResources {
         ]);
 
         Self {
-            container_name: format!("decune-{resource_basename}-{}", workspace.id()),
+            container_name: format!("decune-{safe_workspace_slug}-{}", workspace.id()),
             image_tag: format!("{image_repository}:{config_hash}"),
+            workspace_volume_name: workspace_volume_name(safe_workspace_slug, workspace.id()),
             labels,
             config_hash,
         }
     }
 
     pub(crate) fn image_repository_for_workspace(workspace: &Workspace) -> String {
-        let resource_basename = docker_name_segment(workspace.basename());
-
-        docker_image_repository(&resource_basename, workspace.id())
+        docker_image_repository(workspace.safe_slug(), workspace.id())
     }
 }
 
@@ -103,34 +103,13 @@ fn docker_image_repository(resource_basename: &str, workspace_id: &str) -> Strin
     format!("{IMAGE_REPOSITORY_PREFIX}{basename}-{workspace_id}")
 }
 
+fn workspace_volume_name(safe_workspace_slug: &str, workspace_id: &str) -> String {
+    format!("decune-{safe_workspace_slug}-{workspace_id}-workspace")
+}
+
 fn truncate_docker_name_segment(value: &str, max_len: usize) -> String {
     let mut output = value.to_owned();
     output.truncate(max_len);
-
-    while output.ends_with('-') {
-        output.pop();
-    }
-
-    if output.is_empty() {
-        "workspace".to_owned()
-    } else {
-        output
-    }
-}
-
-fn docker_name_segment(value: &str) -> String {
-    let mut output = String::new();
-    let mut previous_was_separator = true;
-
-    for character in value.chars().flat_map(char::to_lowercase) {
-        if character.is_ascii_alphanumeric() {
-            output.push(character);
-            previous_was_separator = false;
-        } else if !previous_was_separator {
-            output.push('-');
-            previous_was_separator = true;
-        }
-    }
 
     while output.ends_with('-') {
         output.pop();
@@ -185,17 +164,18 @@ mod tests {
             config_file.display().to_string(),
         );
 
+        assert_eq!(workspace.safe_slug(), "project");
         assert_eq!(
             resources.container_name,
-            format!("decune-{}-{}", workspace.basename(), workspace.id())
+            format!("decune-project-{}", workspace.id())
         );
         assert_eq!(
             resources.image_tag,
-            format!(
-                "decune/{}-{}:abc123def456",
-                workspace.basename(),
-                workspace.id()
-            )
+            format!("decune/project-{}:abc123def456", workspace.id())
+        );
+        assert_eq!(
+            resources.workspace_volume_name,
+            format!("decune-project-{}-workspace", workspace.id())
         );
         assert_eq!(resources.config_hash, "abc123def456");
         assert_eq!(resources.labels["decune.managed"], "true");
@@ -241,10 +221,11 @@ mod tests {
     }
 
     #[test]
-    fn container_name_keeps_long_sanitized_basename_without_docker_length_truncation() {
+    fn resource_names_truncate_safe_workspace_slug_to_48_chars() {
         let basename = "a".repeat(249);
         let root = fixture_root(&basename);
         let workspace = Workspace::resolve(&root).unwrap();
+        let safe_slug = "a".repeat(48);
 
         let resources = DockerResources::from_workspace(
             &workspace,
@@ -254,7 +235,43 @@ mod tests {
 
         assert_eq!(
             resources.container_name,
-            format!("decune-{basename}-{}", workspace.id())
+            format!("decune-{safe_slug}-{}", workspace.id())
+        );
+        assert_eq!(
+            resources.image_tag,
+            format!("decune/{safe_slug}-{}:abc123", workspace.id())
+        );
+    }
+
+    #[test]
+    fn resource_names_keep_workspace_id_for_distinct_workspaces_with_same_slug() {
+        let first_root = fixture_root("Project Name");
+        let second_root = fixture_root("Project Name");
+        let first = Workspace::resolve(&first_root).unwrap();
+        let second = Workspace::resolve(&second_root).unwrap();
+
+        let first_resources = DockerResources::from_workspace(
+            &first,
+            "abc123",
+            "/workspace/.devcontainer/devcontainer.json",
+        );
+        let second_resources = DockerResources::from_workspace(
+            &second,
+            "abc123",
+            "/workspace/.devcontainer/devcontainer.json",
+        );
+
+        assert_eq!(first.safe_slug(), "project-name");
+        assert_eq!(second.safe_slug(), "project-name");
+        assert_ne!(first.id(), second.id());
+        assert_ne!(
+            first_resources.container_name,
+            second_resources.container_name
+        );
+        assert_ne!(first_resources.image_tag, second_resources.image_tag);
+        assert_ne!(
+            first_resources.workspace_volume_name,
+            second_resources.workspace_volume_name
         );
     }
 

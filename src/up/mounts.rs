@@ -21,7 +21,7 @@ use crate::{
 use super::{MountResolution, WorkspaceLocation};
 
 pub(crate) fn default_workspace_folder(workspace: &Workspace) -> String {
-    format!("/workspaces/{}", workspace.basename())
+    format!("/workspaces/{}", workspace.safe_slug())
 }
 
 pub(super) fn workspace_mounts_from_resolved(
@@ -231,13 +231,16 @@ mod tests {
     use crate::{config::types::MountType, docker::mounts::DockerMountSpec, workspace::Workspace};
 
     #[test]
-    fn default_workspace_folder_uses_workspace_basename() {
+    fn default_workspace_folder_uses_safe_workspace_slug() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("project");
+        let root = temp.path().join("Project Name!");
         std::fs::create_dir(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
 
-        assert_eq!(default_workspace_folder(&workspace), "/workspaces/project");
+        assert_eq!(
+            default_workspace_folder(&workspace),
+            "/workspaces/project-name"
+        );
     }
 
     #[test]

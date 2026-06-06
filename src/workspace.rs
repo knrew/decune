@@ -10,12 +10,14 @@ use sha2::{Digest, Sha256};
 use crate::error::ResultExt;
 
 const FALLBACK_WORKSPACE_BASENAME: &str = "workspace";
+const SAFE_WORKSPACE_SLUG_MAX_LEN: usize = 48;
 const WORKSPACE_ID_HEX_LEN: usize = 12;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Workspace {
     root: PathBuf,
     basename: String,
+    safe_slug: String,
     id: String,
     paths: WorkspacePaths,
 }
@@ -33,12 +35,14 @@ impl Workspace {
             .canonicalize()
             .with_path_context("canonicalize workspace root", &root)?;
         let basename = workspace_basename(&root);
+        let safe_slug = safe_workspace_slug(&basename);
         let id = workspace_id(&root);
         let paths = WorkspacePaths::resolve(&root, &id)?;
 
         Ok(Self {
             root,
             basename,
+            safe_slug,
             id,
             paths,
         })
@@ -50,6 +54,10 @@ impl Workspace {
 
     pub(crate) fn basename(&self) -> &str {
         &self.basename
+    }
+
+    pub(crate) fn safe_slug(&self) -> &str {
+        &self.safe_slug
     }
 
     pub(crate) fn id(&self) -> &str {
@@ -230,6 +238,61 @@ fn workspace_basename(root: &Path) -> String {
         .to_owned()
 }
 
+fn safe_workspace_slug(basename: &str) -> String {
+    let mut output = String::new();
+    let mut previous_was_hyphen = false;
+
+    for character in basename.chars() {
+        let character = character.to_ascii_lowercase();
+
+        if character.is_ascii_alphanumeric() || character == '.' || character == '_' {
+            output.push(character);
+            previous_was_hyphen = false;
+        } else {
+            push_collapsed_hyphen(&mut output, &mut previous_was_hyphen);
+        }
+    }
+
+    trim_safe_slug_separators(&mut output);
+    truncate_safe_workspace_slug(&mut output);
+
+    if output.is_empty() {
+        FALLBACK_WORKSPACE_BASENAME.to_owned()
+    } else {
+        output
+    }
+}
+
+fn push_collapsed_hyphen(output: &mut String, previous_was_hyphen: &mut bool) {
+    if !output.is_empty() && !*previous_was_hyphen {
+        output.push('-');
+        *previous_was_hyphen = true;
+    }
+}
+
+fn truncate_safe_workspace_slug(output: &mut String) {
+    output.truncate(SAFE_WORKSPACE_SLUG_MAX_LEN);
+    trim_safe_slug_separators(output);
+}
+
+fn trim_safe_slug_separators(output: &mut String) {
+    while output
+        .as_bytes()
+        .last()
+        .is_some_and(|byte| matches!(byte, b'.' | b'_' | b'-'))
+    {
+        output.pop();
+    }
+
+    let trim_start = output
+        .bytes()
+        .take_while(|byte| matches!(byte, b'.' | b'_' | b'-'))
+        .count();
+    if trim_start > 0 {
+        output.drain(..trim_start);
+    }
+}
+
 fn workspace_id(root: &Path) -> String {
     let digest = Sha256::digest(root.to_string_lossy().as_bytes());
     let mut id = String::with_capacity(WORKSPACE_ID_HEX_LEN);
@@ -276,7 +339,9 @@ mod tests {
     #[cfg(unix)]
     use std::os::unix::fs as unix_fs;
 
-    use super::{PathRoots, Workspace, WorkspacePaths, git_stdout_line, workspace_id};
+    use super::{
+        PathRoots, Workspace, WorkspacePaths, git_stdout_line, safe_workspace_slug, workspace_id,
+    };
 
     fn fixture_root(name: &str) -> PathBuf {
         let root = std::env::temp_dir()
@@ -515,6 +580,25 @@ mod tests {
         assert_eq!(
             workspace_id(Path::new("/workspace/project")),
             "e3af8a725158"
+        );
+    }
+
+    #[test]
+    fn safe_workspace_slug_normalizes_workspace_basename_for_docker_resources() {
+        assert_eq!(safe_workspace_slug("Project Name"), "project-name");
+        assert_eq!(safe_workspace_slug("日本語"), "workspace");
+        assert_eq!(safe_workspace_slug("!!!"), "workspace");
+        assert_eq!(safe_workspace_slug("APP__Name...v2"), "app__name...v2");
+        assert_eq!(safe_workspace_slug(" - Project__Name.. "), "project__name");
+    }
+
+    #[test]
+    fn safe_workspace_slug_collapses_hyphens_and_truncates_to_48_chars() {
+        assert_eq!(safe_workspace_slug("a !@# b"), "a-b");
+        assert_eq!(safe_workspace_slug(&"A".repeat(80)), "a".repeat(48));
+        assert_eq!(
+            safe_workspace_slug(&format!("{}!!!", "A".repeat(48))),
+            "a".repeat(48)
         );
     }
 }
