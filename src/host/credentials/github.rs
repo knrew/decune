@@ -219,7 +219,8 @@ pub(crate) async fn setup_github_cli_credentials(
         return Ok(());
     };
 
-    if !github_cli_available(client, container, remote_user).await {
+    let Some(github_cli_path) = resolve_github_cli_path(client, container, remote_user).await
+    else {
         ui::warn(&format!(
             "GitHub CLI token forwarding is unavailable in container: {container}"
         ));
@@ -227,7 +228,7 @@ pub(crate) async fn setup_github_cli_credentials(
             ui::warn("GitHub CLI Feature is configured but gh is not available in the container");
         }
         return Ok(());
-    }
+    };
 
     if prepare_github_cli_config_dir(client, container, remote_user)
         .await
@@ -246,7 +247,7 @@ pub(crate) async fn setup_github_cli_credentials(
             command: vec![
                 "/bin/sh".to_owned(),
                 "-c".to_owned(),
-                github_cli_auth_login_script(&config.credentials.github),
+                github_cli_auth_login_script(&config.credentials.github, &github_cli_path),
             ],
             user: Some("root".to_owned()),
             working_dir: Some(remote_home.to_owned()),
@@ -276,7 +277,7 @@ pub(crate) async fn setup_github_cli_credentials(
             command: vec![
                 "/bin/sh".to_owned(),
                 "-lc".to_owned(),
-                github_cli_setup_git_script(&config.credentials.github),
+                github_cli_setup_git_script(&config.credentials.github, &github_cli_path),
             ],
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
@@ -375,14 +376,12 @@ async fn github_token_file_accessible(
     matches!(output, Ok(output) if output.exit_code == 0)
 }
 
-async fn github_cli_available(
+async fn resolve_github_cli_path(
     client: &crate::docker::client::DockerClient,
     container: &str,
     remote_user: &ResolvedRemoteUser,
-) -> bool {
-    let Some(remote_home) = remote_user.home.as_deref() else {
-        return false;
-    };
+) -> Option<String> {
+    let remote_home = remote_user.home.as_deref()?;
 
     let output = exec_capture_output(
         client,
@@ -390,10 +389,10 @@ async fn github_cli_available(
         &ExecCommandSpec {
             command: vec![
                 "/bin/sh".to_owned(),
-                "-c".to_owned(),
-                "command -v gh >/dev/null 2>&1".to_owned(),
+                "-lc".to_owned(),
+                "command -v gh".to_owned(),
             ],
-            user: Some("root".to_owned()),
+            user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
             env: BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]),
             tty: false,
@@ -401,30 +400,42 @@ async fn github_cli_available(
     )
     .await;
 
-    matches!(output, Ok(output) if output.exit_code == 0)
+    let output = match output {
+        Ok(output) if output.exit_code == 0 => output,
+        _ => return None,
+    };
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let path = stdout.lines().next()?.trim();
+    if path.starts_with('/') {
+        Some(path.to_owned())
+    } else {
+        None
+    }
 }
 
-fn github_cli_auth_login_script(credentials: &ResolvedGithubCredentials) -> String {
+fn github_cli_auth_login_script(credentials: &ResolvedGithubCredentials, gh_path: &str) -> String {
     if !github_cli_credentials_enabled(credentials) {
         return String::new();
     }
 
     format!(
-        "set -e\ntoken_file={token_file}\nGH_CONFIG_DIR={config_dir} gh auth login --with-token < \"$token_file\"\nchown -R {config_owner} {config_dir}\nchmod 700 {config_dir}\n",
+        "set -e\ntoken_file={token_file}\nGH_CONFIG_DIR={config_dir} {gh_path} auth login --with-token < \"$token_file\"\nchown -R {config_owner} {config_dir}\nchmod 700 {config_dir}\n",
         config_dir = shell_quote(GITHUB_CLI_CONFIG_TARGET),
         token_file = shell_quote(GITHUB_CLI_TOKEN_TARGET),
+        gh_path = shell_quote(gh_path),
         config_owner = "${DECUNE_GH_CONFIG_OWNER:?}",
     )
 }
 
-fn github_cli_setup_git_script(credentials: &ResolvedGithubCredentials) -> String {
+fn github_cli_setup_git_script(credentials: &ResolvedGithubCredentials, gh_path: &str) -> String {
     if !github_cli_credentials_enabled(credentials) {
         return String::new();
     }
 
     format!(
-        "set -e\nGH_CONFIG_DIR={config_dir} gh auth setup-git\n",
+        "set -e\nGH_CONFIG_DIR={config_dir} {gh_path} auth setup-git\n",
         config_dir = shell_quote(GITHUB_CLI_CONFIG_TARGET),
+        gh_path = shell_quote(gh_path),
     )
 }
 
@@ -821,11 +832,16 @@ mod tests {
 
     #[test]
     fn github_auth_login_script_uses_secret_token_file_without_embedding_token() {
-        let script = github_cli_auth_login_script(&ResolvedConfig::default().credentials.github);
+        let script = github_cli_auth_login_script(
+            &ResolvedConfig::default().credentials.github,
+            "/opt/github cli/bin/gh",
+        );
 
         assert!(script.contains("GH_CONFIG_DIR='/run/decune/gh'"));
         assert!(script.contains("token_file='/run/decune/secrets/github-token'"));
-        assert!(script.contains("gh auth login --with-token < \"$token_file\""));
+        assert!(
+            script.contains("'/opt/github cli/bin/gh' auth login --with-token < \"$token_file\"")
+        );
         assert!(!script.contains("gh auth setup-git"));
         assert!(!script.contains(".decune-token"));
         assert!(!script.contains("test-secret"));
@@ -833,7 +849,10 @@ mod tests {
 
     #[test]
     fn github_auth_login_script_does_not_copy_token_into_config_dir() {
-        let script = github_cli_auth_login_script(&ResolvedConfig::default().credentials.github);
+        let script = github_cli_auth_login_script(
+            &ResolvedConfig::default().credentials.github,
+            "/opt/github cli/bin/gh",
+        );
 
         assert!(!script.contains("cp "));
         assert!(!script.contains(".decune-token"));
@@ -841,10 +860,13 @@ mod tests {
 
     #[test]
     fn github_setup_git_script_uses_config_dir_without_token_file() {
-        let script = github_cli_setup_git_script(&ResolvedConfig::default().credentials.github);
+        let script = github_cli_setup_git_script(
+            &ResolvedConfig::default().credentials.github,
+            "/opt/github cli/bin/gh",
+        );
 
         assert!(script.contains("GH_CONFIG_DIR='/run/decune/gh'"));
-        assert!(script.contains("gh auth setup-git"));
+        assert!(script.contains("'/opt/github cli/bin/gh' auth setup-git"));
         assert!(!script.contains("github-token"));
         assert!(!script.contains("test-secret"));
     }
