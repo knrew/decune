@@ -19,15 +19,16 @@ use crate::{
 pub(crate) const DECUNE_RUNTIME_TARGET: &str = "/run/decune";
 pub(super) const GIT_CREDENTIAL_HELPER_NAME: &str = "git-credential-decune";
 pub(super) const HOST_GITCONFIG_NAME: &str = "host-gitconfig";
-pub(super) const GITHUB_CLI_TOKEN_DIR_NAME: &str = "gh-token";
-pub(super) const GITHUB_CLI_TOKEN_FILE_NAME: &str = "token";
+pub(super) const GITHUB_CLI_LEGACY_TOKEN_DIR_NAME: &str = "gh-token";
+pub(super) const GITHUB_CLI_LEGACY_TOKEN_FILE_NAME: &str = "token";
+pub(super) const GITHUB_CLI_SECRET_DIR_NAME: &str = "secrets";
+pub(super) const GITHUB_CLI_TOKEN_FILE_NAME: &str = "github-token";
 pub(super) const HOST_DAEMON_SOCKET_TARGET: &str = "/run/decune/host-daemon.sock";
 pub(super) const GIT_CREDENTIAL_HELPER_TARGET: &str = "/run/decune/git-credential-decune";
 pub(super) const HOST_GITCONFIG_TARGET: &str = "/run/decune/host-gitconfig";
-pub(crate) const GITHUB_CLI_TOKEN_DIR_TARGET: &str = "/run/decune/gh-token";
-pub(crate) const GITHUB_CLI_TOKEN_TARGET: &str = "/run/decune/gh-token/token";
+pub(crate) const GITHUB_CLI_LEGACY_TOKEN_DIR_TARGET: &str = "/run/decune/gh-token";
+pub(crate) const GITHUB_CLI_TOKEN_TARGET: &str = "/run/decune/secrets/github-token";
 pub(crate) const GITHUB_CLI_CONFIG_TARGET: &str = "/run/decune/gh";
-pub(super) const GITHUB_CLI_CONFIG_TOKEN_TARGET: &str = "/run/decune/gh/.decune-token";
 pub(crate) const SSH_AGENT_SOCKET_TARGET: &str = "/run/decune/ssh-agent.sock";
 
 pub(crate) struct GitCredentialRuntime {
@@ -89,8 +90,26 @@ impl GithubCliRuntime {
 impl Drop for GithubCliRuntime {
     fn drop(&mut self) {
         if let Some(path) = &self.token_file {
-            cleanup_github_cli_token_file_best_effort(path);
+            scrub_github_cli_token_file_best_effort(path);
         }
+    }
+}
+
+pub(super) fn scrub_github_cli_token_file_best_effort(path: &Path) {
+    match fs::OpenOptions::new().write(true).truncate(true).open(path) {
+        Ok(file) => {
+            if let Err(error) = file.sync_all() {
+                ui::warn(&format!(
+                    "Failed to scrub GitHub CLI token file: {}. Remove it manually: {error}",
+                    path.display()
+                ));
+            }
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => ui::warn(&format!(
+            "Failed to scrub GitHub CLI token file: {}. Remove it manually: {error}",
+            path.display()
+        )),
     }
 }
 

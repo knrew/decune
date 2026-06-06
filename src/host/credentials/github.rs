@@ -21,9 +21,10 @@ use crate::{
     },
     host::{
         credentials::runtime::{
-            GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_CONFIG_TOKEN_TARGET, GITHUB_CLI_TOKEN_DIR_NAME,
-            GITHUB_CLI_TOKEN_DIR_TARGET, GITHUB_CLI_TOKEN_FILE_NAME, GITHUB_CLI_TOKEN_TARGET,
-            GithubCliRuntime, cleanup_github_cli_token_file_best_effort, shell_quote,
+            GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_LEGACY_TOKEN_DIR_NAME,
+            GITHUB_CLI_LEGACY_TOKEN_FILE_NAME, GITHUB_CLI_SECRET_DIR_NAME,
+            GITHUB_CLI_TOKEN_FILE_NAME, GITHUB_CLI_TOKEN_TARGET, GithubCliRuntime,
+            cleanup_github_cli_token_file_best_effort, shell_quote,
         },
         runtime::prepare_private_runtime_dir,
     },
@@ -36,9 +37,8 @@ pub(crate) fn prepare_github_cli_runtime(
     config: &ResolvedConfig,
     runtime_dir: &Path,
 ) -> Result<GithubCliRuntime> {
-    remove_github_cli_token_file(runtime_dir)?;
-
     if !github_cli_credentials_enabled(&config.credentials.github) {
+        remove_github_cli_token_file(runtime_dir)?;
         return Ok(GithubCliRuntime::empty());
     }
 
@@ -51,39 +51,41 @@ pub(crate) fn prepare_github_cli_runtime_with_token(
     runtime_dir: &Path,
     token: Option<&str>,
 ) -> Result<GithubCliRuntime> {
-    remove_github_cli_token_file(runtime_dir)?;
-
     if !github_cli_credentials_enabled(&config.credentials.github) {
+        remove_github_cli_token_file(runtime_dir)?;
         return Ok(GithubCliRuntime::empty());
     }
 
     let Some(token) = token else {
+        remove_github_cli_token_file(runtime_dir)?;
         return Ok(GithubCliRuntime::empty());
     };
     let Some(token) = normalize_github_token(token) else {
+        remove_github_cli_token_file(runtime_dir)?;
         return Ok(GithubCliRuntime::empty());
     };
     ui::warn(
         "GitHub credential forwarding is enabled; disable [credentials.github] for untrusted repositories.",
     );
 
+    remove_legacy_github_cli_token_file(runtime_dir)?;
     prepare_private_runtime_dir(runtime_dir, "GitHub CLI")?;
 
-    let token_dir = runtime_dir.join(GITHUB_CLI_TOKEN_DIR_NAME);
-    fs::create_dir_all(&token_dir).with_context(|| {
+    let secret_dir = runtime_dir.join(GITHUB_CLI_SECRET_DIR_NAME);
+    fs::create_dir_all(&secret_dir).with_context(|| {
         format!(
-            "Failed to create GitHub CLI token directory: {}",
-            token_dir.display()
+            "Failed to create GitHub CLI secret directory: {}",
+            secret_dir.display()
         )
     })?;
-    fs::set_permissions(&token_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
+    fs::set_permissions(&secret_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
         format!(
-            "Failed to set GitHub CLI token directory permissions: {}",
-            token_dir.display()
+            "Failed to set GitHub CLI secret directory permissions: {}",
+            secret_dir.display()
         )
     })?;
 
-    let token_file = token_dir.join(GITHUB_CLI_TOKEN_FILE_NAME);
+    let token_file = secret_dir.join(GITHUB_CLI_TOKEN_FILE_NAME);
     let mut file = fs::OpenOptions::new()
         .write(true)
         .create(true)
@@ -118,8 +120,8 @@ pub(crate) fn prepare_github_cli_runtime_with_token(
     Ok(GithubCliRuntime {
         mounts: vec![
             DockerMountSpec {
-                source: Some(token_dir.display().to_string()),
-                target: GITHUB_CLI_TOKEN_DIR_TARGET.to_owned(),
+                source: Some(token_file.display().to_string()),
+                target: GITHUB_CLI_TOKEN_TARGET.to_owned(),
                 mount_type: MountType::Bind,
                 read_only: true,
                 consistency: None,
@@ -145,15 +147,33 @@ pub(crate) fn prepare_github_cli_runtime_with_token(
 }
 
 pub(crate) fn remove_github_cli_token_file(runtime_dir: &Path) -> Result<()> {
+    for token_file in github_cli_token_cleanup_paths(runtime_dir) {
+        match fs::remove_file(&token_file) {
+            Ok(()) => {}
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to remove GitHub CLI token file: {}",
+                        token_file.display()
+                    )
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+fn remove_legacy_github_cli_token_file(runtime_dir: &Path) -> Result<()> {
     let token_file = runtime_dir
-        .join(GITHUB_CLI_TOKEN_DIR_NAME)
-        .join(GITHUB_CLI_TOKEN_FILE_NAME);
+        .join(GITHUB_CLI_LEGACY_TOKEN_DIR_NAME)
+        .join(GITHUB_CLI_LEGACY_TOKEN_FILE_NAME);
     match fs::remove_file(&token_file) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| {
             format!(
-                "Failed to remove GitHub CLI token file: {}",
+                "Failed to remove legacy GitHub CLI token file: {}",
                 token_file.display()
             )
         }),
@@ -161,10 +181,20 @@ pub(crate) fn remove_github_cli_token_file(runtime_dir: &Path) -> Result<()> {
 }
 
 pub(crate) fn cleanup_github_cli_token_file(runtime_dir: &Path) {
-    let token_file = runtime_dir
-        .join(GITHUB_CLI_TOKEN_DIR_NAME)
-        .join(GITHUB_CLI_TOKEN_FILE_NAME);
-    cleanup_github_cli_token_file_best_effort(&token_file);
+    for token_file in github_cli_token_cleanup_paths(runtime_dir) {
+        cleanup_github_cli_token_file_best_effort(&token_file);
+    }
+}
+
+fn github_cli_token_cleanup_paths(runtime_dir: &Path) -> [std::path::PathBuf; 2] {
+    [
+        runtime_dir
+            .join(GITHUB_CLI_SECRET_DIR_NAME)
+            .join(GITHUB_CLI_TOKEN_FILE_NAME),
+        runtime_dir
+            .join(GITHUB_CLI_LEGACY_TOKEN_DIR_NAME)
+            .join(GITHUB_CLI_LEGACY_TOKEN_FILE_NAME),
+    ]
 }
 
 pub(crate) async fn setup_github_cli_credentials(
@@ -189,7 +219,8 @@ pub(crate) async fn setup_github_cli_credentials(
         return Ok(());
     };
 
-    if !github_cli_available(client, container, remote_user).await {
+    let Some(github_cli_path) = resolve_github_cli_path(client, container, remote_user).await
+    else {
         ui::warn(&format!(
             "GitHub CLI token forwarding is unavailable in container: {container}"
         ));
@@ -197,7 +228,7 @@ pub(crate) async fn setup_github_cli_credentials(
             ui::warn("GitHub CLI Feature is configured but gh is not available in the container");
         }
         return Ok(());
-    }
+    };
 
     if prepare_github_cli_config_dir(client, container, remote_user)
         .await
@@ -209,14 +240,44 @@ pub(crate) async fn setup_github_cli_credentials(
         return Ok(());
     }
 
-    let setup_result = exec_capture(
+    let login_result = exec_capture(
+        client,
+        container,
+        &ExecCommandSpec {
+            command: vec![
+                "/bin/sh".to_owned(),
+                "-c".to_owned(),
+                github_cli_auth_login_script(&config.credentials.github, &github_cli_path),
+            ],
+            user: Some("root".to_owned()),
+            working_dir: Some(remote_home.to_owned()),
+            env: BTreeMap::from([
+                ("HOME".to_owned(), remote_home.to_owned()),
+                (
+                    "DECUNE_GH_CONFIG_OWNER".to_owned(),
+                    format!("{}:{}", remote_user.uid, remote_user.gid),
+                ),
+            ]),
+            tty: false,
+        },
+    )
+    .await
+    .with_context(|| format!("Failed to login GitHub CLI in container: {container}"));
+    if login_result.is_err() {
+        ui::warn(&format!(
+            "GitHub CLI token forwarding is unavailable in container: {container}"
+        ));
+        return Ok(());
+    }
+
+    let setup_git_result = exec_capture(
         client,
         container,
         &ExecCommandSpec {
             command: vec![
                 "/bin/sh".to_owned(),
                 "-lc".to_owned(),
-                github_cli_setup_script(&config.credentials.github),
+                github_cli_setup_git_script(&config.credentials.github, &github_cli_path),
             ],
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
@@ -225,8 +286,10 @@ pub(crate) async fn setup_github_cli_credentials(
         },
     )
     .await
-    .with_context(|| format!("Failed to setup GitHub CLI credentials in container: {container}"));
-    if setup_result.is_err() {
+    .with_context(|| {
+        format!("Failed to setup GitHub CLI Git integration in container: {container}")
+    });
+    if setup_git_result.is_err() {
         ui::warn(&format!(
             "GitHub CLI token forwarding is unavailable in container: {container}"
         ));
@@ -241,10 +304,8 @@ async fn prepare_github_cli_config_dir(
     remote_user: &ResolvedRemoteUser,
 ) -> Result<()> {
     let script = format!(
-        "set -e\nmkdir -p {config_dir}\nrm -rf {config_dir}/* {config_dir}/.[!.]* {config_dir}/..?* 2>/dev/null || true\ncp {token_file} {config_token_file}\nchown {uid}:{gid} {config_dir} {config_token_file}\nchmod 700 {config_dir}\nchmod 600 {config_token_file}\n",
+        "set -e\nmkdir -p {config_dir}\nrm -rf {config_dir}/* {config_dir}/.[!.]* {config_dir}/..?* 2>/dev/null || true\nchown {uid}:{gid} {config_dir}\nchmod 700 {config_dir}\n",
         config_dir = shell_quote(GITHUB_CLI_CONFIG_TARGET),
-        token_file = shell_quote(GITHUB_CLI_TOKEN_TARGET),
-        config_token_file = shell_quote(GITHUB_CLI_CONFIG_TOKEN_TARGET),
         uid = remote_user.uid,
         gid = remote_user.gid,
     );
@@ -253,7 +314,7 @@ async fn prepare_github_cli_config_dir(
         client,
         container,
         &ExecCommandSpec {
-            command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
+            command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
             user: Some("root".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
@@ -281,7 +342,7 @@ async fn clear_github_cli_config_dir(
         client,
         container,
         &ExecCommandSpec {
-            command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
+            command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
             user: Some("root".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
@@ -301,7 +362,7 @@ async fn github_token_file_accessible(
         &ExecCommandSpec {
             command: vec![
                 "/bin/sh".to_owned(),
-                "-lc".to_owned(),
+                "-c".to_owned(),
                 format!("test -r {}", shell_quote(GITHUB_CLI_TOKEN_TARGET)),
             ],
             user: Some("root".to_owned()),
@@ -315,14 +376,12 @@ async fn github_token_file_accessible(
     matches!(output, Ok(output) if output.exit_code == 0)
 }
 
-async fn github_cli_available(
+async fn resolve_github_cli_path(
     client: &crate::docker::client::DockerClient,
     container: &str,
     remote_user: &ResolvedRemoteUser,
-) -> bool {
-    let Some(remote_home) = remote_user.home.as_deref() else {
-        return false;
-    };
+) -> Option<String> {
+    let remote_home = remote_user.home.as_deref()?;
 
     let output = exec_capture_output(
         client,
@@ -331,7 +390,7 @@ async fn github_cli_available(
             command: vec![
                 "/bin/sh".to_owned(),
                 "-lc".to_owned(),
-                "command -v gh >/dev/null 2>&1".to_owned(),
+                "command -v gh".to_owned(),
             ],
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
@@ -341,18 +400,42 @@ async fn github_cli_available(
     )
     .await;
 
-    matches!(output, Ok(output) if output.exit_code == 0)
+    let output = match output {
+        Ok(output) if output.exit_code == 0 => output,
+        _ => return None,
+    };
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let path = stdout.lines().next()?.trim();
+    if path.starts_with('/') {
+        Some(path.to_owned())
+    } else {
+        None
+    }
 }
 
-fn github_cli_setup_script(credentials: &ResolvedGithubCredentials) -> String {
+fn github_cli_auth_login_script(credentials: &ResolvedGithubCredentials, gh_path: &str) -> String {
     if !github_cli_credentials_enabled(credentials) {
         return String::new();
     }
 
     format!(
-        "set -e\ntoken_file={config_token_file}\ncleanup() {{ rm -f \"$token_file\"; }}\ntrap cleanup EXIT\nGH_CONFIG_DIR={config_dir} gh auth login --with-token < \"$token_file\"\nGH_CONFIG_DIR={config_dir} gh auth setup-git\n",
+        "set -e\ntoken_file={token_file}\nGH_CONFIG_DIR={config_dir} {gh_path} auth login --with-token < \"$token_file\"\nchown -R {config_owner} {config_dir}\nchmod 700 {config_dir}\n",
         config_dir = shell_quote(GITHUB_CLI_CONFIG_TARGET),
-        config_token_file = shell_quote(GITHUB_CLI_CONFIG_TOKEN_TARGET),
+        token_file = shell_quote(GITHUB_CLI_TOKEN_TARGET),
+        gh_path = shell_quote(gh_path),
+        config_owner = "${DECUNE_GH_CONFIG_OWNER:?}",
+    )
+}
+
+fn github_cli_setup_git_script(credentials: &ResolvedGithubCredentials, gh_path: &str) -> String {
+    if !github_cli_credentials_enabled(credentials) {
+        return String::new();
+    }
+
+    format!(
+        "set -e\nGH_CONFIG_DIR={config_dir} {gh_path} auth setup-git\n",
+        config_dir = shell_quote(GITHUB_CLI_CONFIG_TARGET),
+        gh_path = shell_quote(gh_path),
     )
 }
 
@@ -435,7 +518,7 @@ mod tests {
     use super::*;
     use crate::{
         config::{resolved::ResolvedConfig, types::GithubCredentialsMode},
-        host::credentials::runtime::{GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET},
+        host::credentials::runtime::{GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_TARGET},
     };
 
     #[test]
@@ -484,7 +567,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(mode(&runtime_dir), 0o700);
-        assert_eq!(mode(&runtime_dir.join("gh-token")), 0o700);
+        assert_eq!(mode(&runtime_dir.join("secrets")), 0o700);
         assert_eq!(mode(runtime.token_file().unwrap()), 0o600);
         assert_eq!(
             fs::read_to_string(runtime.token_file().unwrap()).unwrap(),
@@ -495,7 +578,9 @@ mod tests {
             runtime
                 .mounts()
                 .iter()
-                .any(|mount| mount.target == GITHUB_CLI_TOKEN_DIR_TARGET && mount.read_only)
+                .any(|mount| mount.target == GITHUB_CLI_TOKEN_TARGET
+                    && mount.mount_type == MountType::Bind
+                    && mount.read_only)
         );
         assert!(
             runtime
@@ -528,7 +613,7 @@ mod tests {
     }
 
     #[test]
-    fn github_runtime_removes_token_file_on_drop() {
+    fn github_runtime_scrubs_token_file_on_drop() {
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
         let token_path;
@@ -543,11 +628,13 @@ mod tests {
             assert!(token_path.exists());
         }
 
-        assert!(!token_path.exists());
+        assert!(token_path.exists());
+        assert_eq!(fs::read_to_string(&token_path).unwrap(), "");
+        assert_eq!(mode(&token_path), 0o600);
     }
 
     #[test]
-    fn github_runtime_keeps_stable_token_mount_dir_for_refresh() {
+    fn github_runtime_keeps_stable_token_mount_file_for_refresh() {
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
         let first_source;
@@ -562,14 +649,15 @@ mod tests {
             first_source = runtime
                 .mounts()
                 .iter()
-                .find(|mount| mount.target == GITHUB_CLI_TOKEN_DIR_TARGET)
+                .find(|mount| mount.target == GITHUB_CLI_TOKEN_TARGET)
                 .and_then(|mount| mount.source.clone())
                 .unwrap();
             first_token_path = runtime.token_file().unwrap().to_owned();
         }
 
-        assert!(!first_token_path.exists());
-        assert!(Path::new(&first_source).is_dir());
+        assert!(first_token_path.exists());
+        assert_eq!(fs::read_to_string(&first_token_path).unwrap(), "");
+        assert!(Path::new(&first_source).parent().unwrap().is_dir());
 
         let runtime = prepare_github_cli_runtime_with_token(
             &ResolvedConfig::default(),
@@ -580,7 +668,7 @@ mod tests {
         let second_source = runtime
             .mounts()
             .iter()
-            .find(|mount| mount.target == GITHUB_CLI_TOKEN_DIR_TARGET)
+            .find(|mount| mount.target == GITHUB_CLI_TOKEN_TARGET)
             .and_then(|mount| mount.source.as_deref())
             .unwrap();
 
@@ -592,20 +680,39 @@ mod tests {
     }
 
     #[test]
-    fn github_token_cleanup_removes_only_token_file_and_keeps_token_directory() {
+    fn github_token_cleanup_removes_only_token_file_and_keeps_secret_directory() {
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
-        let token_dir = runtime_dir.join("gh-token");
-        fs::create_dir_all(&token_dir).unwrap();
-        fs::write(token_dir.join("token"), "test-secret\n").unwrap();
-        fs::write(token_dir.join("metadata"), "keep\n").unwrap();
+        let secret_dir = runtime_dir.join("secrets");
+        fs::create_dir_all(&secret_dir).unwrap();
+        fs::write(secret_dir.join("github-token"), "test-secret\n").unwrap();
+        fs::write(secret_dir.join("metadata"), "keep\n").unwrap();
 
         remove_github_cli_token_file(&runtime_dir).unwrap();
 
-        assert!(token_dir.is_dir());
-        assert!(!token_dir.join("token").exists());
+        assert!(secret_dir.is_dir());
+        assert!(!secret_dir.join("github-token").exists());
         assert_eq!(
-            fs::read_to_string(token_dir.join("metadata")).unwrap(),
+            fs::read_to_string(secret_dir.join("metadata")).unwrap(),
+            "keep\n"
+        );
+    }
+
+    #[test]
+    fn github_token_cleanup_removes_legacy_token_file() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let legacy_dir = runtime_dir.join("gh-token");
+        fs::create_dir_all(&legacy_dir).unwrap();
+        fs::write(legacy_dir.join("token"), "test-secret\n").unwrap();
+        fs::write(legacy_dir.join("metadata"), "keep\n").unwrap();
+
+        remove_github_cli_token_file(&runtime_dir).unwrap();
+
+        assert!(legacy_dir.is_dir());
+        assert!(!legacy_dir.join("token").exists());
+        assert_eq!(
+            fs::read_to_string(legacy_dir.join("metadata")).unwrap(),
             "keep\n"
         );
     }
@@ -614,12 +721,12 @@ mod tests {
     fn github_token_cleanup_ignores_missing_token_file() {
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
-        let token_dir = runtime_dir.join("gh-token");
-        fs::create_dir_all(&token_dir).unwrap();
+        let secret_dir = runtime_dir.join("secrets");
+        fs::create_dir_all(&secret_dir).unwrap();
 
         remove_github_cli_token_file(&runtime_dir).unwrap();
 
-        assert!(token_dir.is_dir());
+        assert!(secret_dir.is_dir());
     }
 
     #[test]
@@ -724,23 +831,44 @@ mod tests {
     }
 
     #[test]
-    fn github_setup_script_uses_token_file_without_embedding_token() {
-        let script = github_cli_setup_script(&ResolvedConfig::default().credentials.github);
+    fn github_auth_login_script_uses_secret_token_file_without_embedding_token() {
+        let script = github_cli_auth_login_script(
+            &ResolvedConfig::default().credentials.github,
+            "/opt/github cli/bin/gh",
+        );
 
         assert!(script.contains("GH_CONFIG_DIR='/run/decune/gh'"));
-        assert!(script.contains("token_file='/run/decune/gh/.decune-token'"));
-        assert!(script.contains("gh auth login --with-token < \"$token_file\""));
-        assert!(script.contains("gh auth setup-git"));
-        assert!(script.contains("rm -f \"$token_file\""));
-        assert!(!script.contains("/run/decune/gh-token/token"));
+        assert!(script.contains("token_file='/run/decune/secrets/github-token'"));
+        assert!(
+            script.contains("'/opt/github cli/bin/gh' auth login --with-token < \"$token_file\"")
+        );
+        assert!(!script.contains("gh auth setup-git"));
+        assert!(!script.contains(".decune-token"));
         assert!(!script.contains("test-secret"));
     }
 
     #[test]
-    fn github_setup_script_leaves_config_dir_permissions_to_root_preparation() {
-        let script = github_cli_setup_script(&ResolvedConfig::default().credentials.github);
+    fn github_auth_login_script_does_not_copy_token_into_config_dir() {
+        let script = github_cli_auth_login_script(
+            &ResolvedConfig::default().credentials.github,
+            "/opt/github cli/bin/gh",
+        );
 
-        assert!(!script.contains("chmod 700"));
+        assert!(!script.contains("cp "));
+        assert!(!script.contains(".decune-token"));
+    }
+
+    #[test]
+    fn github_setup_git_script_uses_config_dir_without_token_file() {
+        let script = github_cli_setup_git_script(
+            &ResolvedConfig::default().credentials.github,
+            "/opt/github cli/bin/gh",
+        );
+
+        assert!(script.contains("GH_CONFIG_DIR='/run/decune/gh'"));
+        assert!(script.contains("'/opt/github cli/bin/gh' auth setup-git"));
+        assert!(!script.contains("github-token"));
+        assert!(!script.contains("test-secret"));
     }
 
     fn mode(path: &Path) -> u32 {
@@ -748,9 +876,9 @@ mod tests {
     }
 
     fn seed_stale_github_token_file(runtime_dir: &Path) -> (PathBuf, PathBuf) {
-        let token_dir = runtime_dir.join("gh-token");
+        let token_dir = runtime_dir.join("secrets");
         fs::create_dir_all(&token_dir).unwrap();
-        let token_file = token_dir.join("token");
+        let token_file = token_dir.join("github-token");
         let marker_file = token_dir.join("marker");
         fs::write(&token_file, "stale-secret\n").unwrap();
         fs::write(&marker_file, "keep\n").unwrap();

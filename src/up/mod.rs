@@ -131,7 +131,8 @@ mod tests {
         current_host_user_ids, resolve_effective_users,
     };
     use crate::host::credentials::{
-        GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET, SSH_AGENT_SOCKET_TARGET,
+        GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_LEGACY_TOKEN_DIR_TARGET, GITHUB_CLI_TOKEN_TARGET,
+        SSH_AGENT_SOCKET_TARGET,
     };
     use crate::workspace::Workspace;
 
@@ -387,7 +388,7 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container],
+            &[container.clone()],
             "hash123",
             &mount_policy(&[mount_summary_with_type(
                 None,
@@ -415,8 +416,8 @@ mod tests {
             image_id: None,
             config_hash: Some("hash123".to_owned()),
             mounts: Some(vec![mount_summary_with_type_and_read_only(
-                Some("/tmp/gh-token"),
-                "/run/decune/gh-token",
+                Some("/tmp/secrets/github-token"),
+                GITHUB_CLI_TOKEN_TARGET,
                 MountType::Bind,
                 false,
             )]),
@@ -427,8 +428,8 @@ mod tests {
             &[container.clone()],
             "hash123",
             &mount_policy(&[mount_summary_with_type_and_read_only(
-                Some("/tmp/gh-token"),
-                "/run/decune/gh-token",
+                Some("/tmp/secrets/github-token"),
+                GITHUB_CLI_TOKEN_TARGET,
                 MountType::Bind,
                 true,
             )]),
@@ -445,15 +446,15 @@ mod tests {
     }
 
     #[test]
-    fn existing_container_decision_reuses_when_required_read_only_mount_matches() {
+    fn existing_container_decision_reuses_running_container_when_github_token_file_mount_matches() {
         let container = UpContainerSummary {
             id: "container-id".to_owned(),
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
             mounts: Some(vec![mount_summary_with_type_and_read_only(
-                Some("/tmp/gh-token"),
-                "/run/decune/gh-token",
+                Some("/tmp/secrets/github-token"),
+                GITHUB_CLI_TOKEN_TARGET,
                 MountType::Bind,
                 true,
             )]),
@@ -461,11 +462,11 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container],
+            &[container.clone()],
             "hash123",
             &mount_policy(&[mount_summary_with_type_and_read_only(
-                Some("/tmp/gh-token"),
-                "/run/decune/gh-token",
+                Some("/tmp/secrets/github-token"),
+                GITHUB_CLI_TOKEN_TARGET,
                 MountType::Bind,
                 true,
             )]),
@@ -518,7 +519,7 @@ mod tests {
             mounts: Some(vec![
                 mount_summary_with_type_and_read_only(
                     Some("/tmp/gh-token"),
-                    GITHUB_CLI_TOKEN_DIR_TARGET,
+                    GITHUB_CLI_LEGACY_TOKEN_DIR_TARGET,
                     MountType::Bind,
                     true,
                 ),
@@ -548,8 +549,8 @@ mod tests {
             mounts: Some(vec![
                 MountPoint {
                     typ: Some("bind".to_owned()),
-                    source: Some("/tmp/gh-token".to_owned()),
-                    destination: Some("/run/decune/gh-token".to_owned()),
+                    source: Some("/tmp/secrets/github-token".to_owned()),
+                    destination: Some(GITHUB_CLI_TOKEN_TARGET.to_owned()),
                     rw: Some(false),
                     ..MountPoint::default()
                 },
@@ -622,7 +623,7 @@ mod tests {
     }
 
     #[test]
-    fn credential_runtime_mounts_add_github_token_dir_without_hashing_token_or_env() {
+    fn credential_runtime_mounts_add_github_token_file_without_hashing_token_or_env() {
         let temp = tempfile::tempdir().unwrap();
         let runtime_dir = temp.path().join("runtime");
         let mut config = ResolvedConfig::default();
@@ -662,11 +663,11 @@ mod tests {
                 .all(|value| !value.contains("first-secret"))
         );
         assert!(plan_a.mounts.iter().any(|mount| {
-            mount.target == "/run/decune/gh-token"
+            mount.target == GITHUB_CLI_TOKEN_TARGET
                 && mount
                     .source
                     .as_deref()
-                    .is_some_and(|source| source.ends_with("gh-token"))
+                    .is_some_and(|source| source.ends_with("secrets/github-token"))
                 && mount.read_only
         }));
         assert_eq!(

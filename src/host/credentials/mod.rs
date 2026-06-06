@@ -17,9 +17,9 @@ pub(crate) use github::{
     setup_github_cli_credentials,
 };
 pub(crate) use runtime::{
-    DECUNE_RUNTIME_TARGET, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_DIR_TARGET,
-    GitCredentialRuntime, GithubCliRuntime, SSH_AGENT_SOCKET_TARGET, SshAgentRuntime,
-    install_staged_host_gitconfig, remove_staged_host_gitconfig,
+    DECUNE_RUNTIME_TARGET, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_LEGACY_TOKEN_DIR_TARGET,
+    GITHUB_CLI_TOKEN_TARGET, GitCredentialRuntime, GithubCliRuntime, SSH_AGENT_SOCKET_TARGET,
+    SshAgentRuntime, install_staged_host_gitconfig, remove_staged_host_gitconfig,
 };
 pub(crate) use ssh::prepare_ssh_agent_runtime;
 #[cfg(test)]
