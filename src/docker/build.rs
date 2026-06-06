@@ -475,7 +475,16 @@ if [ -n "$conflict_user" ]; then
 fi
 
 if [ -f /etc/group ]; then
-    target_group="$(awk -F: -v gid="$old_gid" '$3 == gid {{ print $1; exit }}' /etc/group)"
+    target_group_count="$(awk -F: -v gid="$old_gid" '$3 == gid {{ count++ }} END {{ print count + 0 }}' /etc/group)"
+    if [ "$target_group_count" -gt 1 ]; then
+        echo "UID/GID sync target GID matches multiple groups: $old_gid" >&2
+        exit 1
+    fi
+    if [ "$target_group_count" -eq 1 ]; then
+        target_group="$(awk -F: -v gid="$old_gid" '$3 == gid {{ print $1; exit }}' /etc/group)"
+    else
+        target_group=""
+    fi
     conflict_group="$(awk -F: -v gid="$new_gid" -v group="$target_group" '$3 == gid && (group == "" || $1 != group) {{ print $1; exit }}' /etc/group)"
     if [ -n "$conflict_group" ]; then
         echo "UID/GID sync target GID conflicts with existing group: $conflict_group ($new_gid)" >&2
@@ -1410,13 +1419,16 @@ mod tests {
         assert!(script.contains("target_user='vscode'"));
         assert!(script.contains("UID/GID sync target UID conflicts"));
         assert!(script.contains("UID/GID sync target GID conflicts"));
+        assert!(script.contains("UID/GID sync target GID matches multiple groups"));
         assert!(script.contains("cat \"$tmp_passwd\" >/etc/passwd"));
         assert!(script.contains("cat \"$tmp_group\" >/etc/group"));
         assert!(script.contains("chown -R \"$new_uid:$new_gid\" \"$target_home\""));
         let uid_conflict_check = script.find("conflict_user=").unwrap();
+        let ambiguous_gid_check = script.find("target_group_count=").unwrap();
         let gid_conflict_check = script.find("conflict_group=").unwrap();
         let no_change_exit = script.find("exit 0").unwrap();
         assert!(uid_conflict_check < no_change_exit);
+        assert!(ambiguous_gid_check < no_change_exit);
         assert!(gid_conflict_check < no_change_exit);
     }
 
