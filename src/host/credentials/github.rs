@@ -245,7 +245,7 @@ pub(crate) async fn setup_github_cli_credentials(
         &ExecCommandSpec {
             command: vec![
                 "/bin/sh".to_owned(),
-                "-lc".to_owned(),
+                "-c".to_owned(),
                 github_cli_auth_login_script(&config.credentials.github),
             ],
             user: Some("root".to_owned()),
@@ -313,7 +313,7 @@ async fn prepare_github_cli_config_dir(
         client,
         container,
         &ExecCommandSpec {
-            command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
+            command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
             user: Some("root".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
@@ -341,7 +341,7 @@ async fn clear_github_cli_config_dir(
         client,
         container,
         &ExecCommandSpec {
-            command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
+            command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
             user: Some("root".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
@@ -361,7 +361,7 @@ async fn github_token_file_accessible(
         &ExecCommandSpec {
             command: vec![
                 "/bin/sh".to_owned(),
-                "-lc".to_owned(),
+                "-c".to_owned(),
                 format!("test -r {}", shell_quote(GITHUB_CLI_TOKEN_TARGET)),
             ],
             user: Some("root".to_owned()),
@@ -390,7 +390,7 @@ async fn github_cli_available(
         &ExecCommandSpec {
             command: vec![
                 "/bin/sh".to_owned(),
-                "-lc".to_owned(),
+                "-c".to_owned(),
                 "command -v gh >/dev/null 2>&1".to_owned(),
             ],
             user: Some("root".to_owned()),
