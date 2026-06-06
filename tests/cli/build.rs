@@ -1,6 +1,94 @@
 use crate::harness::*;
 
 #[test]
+fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basename() {
+    let parent = tempfile::tempdir().unwrap();
+    let workspace_root = parent.path().join("APP__Name...v2");
+    fs::create_dir_all(workspace_root.join(".devcontainer")).unwrap();
+    fs::write(
+        workspace_root.join(".devcontainer/devcontainer.json"),
+        r#"
+        {
+          "build": {
+            "dockerfile": "Dockerfile"
+          },
+          "postStartCommand": "test \"$PWD\" = '/workspaces/APP__Name...v2' && test -f resource-name-marker.txt"
+        }
+        "#,
+    )
+    .unwrap();
+    fs::write(
+        workspace_root.join(".devcontainer/Dockerfile"),
+        r#"
+        FROM alpine:3.20
+        RUN true
+        "#,
+    )
+    .unwrap();
+    fs::write(workspace_root.join("resource-name-marker.txt"), "ok\n").unwrap();
+    let workspace_root = workspace_root.canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let safe_slug = safe_workspace_slug(
+        workspace_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap(),
+    );
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Building Docker image"))
+            .stderr(predicate::str::contains(format!(
+                "Started dev container: decune-{safe_slug}-{workspace_id}"
+            )));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            let expected_name = format!("/decune-{safe_slug}-{workspace_id}");
+            assert_eq!(inspect.name.as_deref(), Some(expected_name.as_str()));
+            assert!(inspect_has_mount_target(
+                &inspect,
+                "/workspaces/APP__Name...v2"
+            ));
+
+            let images = workspace_images(&workspace_root).await.unwrap();
+            assert_eq!(images.len(), 1);
+            assert!(
+                images[0].starts_with(&format!("decune/{safe_slug}-{workspace_id}:")),
+                "{}",
+                images[0]
+            );
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_builds_dockerfile_container_and_honors_dockerignore() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();

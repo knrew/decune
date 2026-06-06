@@ -836,10 +836,13 @@ mod tests {
     }
 
     #[test]
-    fn default_workspace_folder_uses_workspace_basename() {
-        let workspace = test_workspace("project");
+    fn default_workspace_folder_uses_real_workspace_basename() {
+        let workspace = test_workspace("Project Name!");
 
-        assert_eq!(default_workspace_folder(&workspace), "/workspaces/project");
+        assert_eq!(
+            default_workspace_folder(&workspace),
+            "/workspaces/Project Name!"
+        );
     }
 
     #[test]
@@ -4964,6 +4967,7 @@ user = "root"
             resources: DockerResources {
                 container_name: "decune-test".to_owned(),
                 image_tag: "decune/test:stable-hash".to_owned(),
+                workspace_volume_name: "decune-test-workspace".to_owned(),
                 labels: BTreeMap::new(),
                 config_hash: "stable-hash".to_owned(),
             },
@@ -5001,6 +5005,7 @@ user = "root"
         DockerResources {
             container_name: "decune-test".to_owned(),
             image_tag: format!("decune/test:{config_hash}"),
+            workspace_volume_name: "decune-test-workspace".to_owned(),
             labels: BTreeMap::from([
                 ("decune.workspace_id".to_owned(), "workspace-id".to_owned()),
                 ("decune.config_hash".to_owned(), config_hash.to_owned()),

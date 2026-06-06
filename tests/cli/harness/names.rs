@@ -20,33 +20,46 @@ pub(crate) fn workspace_image_repository(root: &Path) -> String {
 
     format!(
         "decune/{}-{}",
-        docker_name_segment(basename),
+        safe_workspace_slug(basename),
         workspace_id(root)
     )
 }
 
-fn docker_name_segment(value: &str) -> String {
+pub(crate) fn safe_workspace_slug(value: &str) -> String {
     let mut output = String::new();
-    let mut previous_was_separator = true;
+    let mut previous_was_hyphen = false;
 
-    for character in value.chars().flat_map(char::to_lowercase) {
+    for character in value.chars() {
+        let character = character.to_ascii_lowercase();
+
         if character.is_ascii_alphanumeric() {
             output.push(character);
-            previous_was_separator = false;
-        } else if !previous_was_separator {
+            previous_was_hyphen = false;
+        } else if !output.is_empty() && !previous_was_hyphen {
             output.push('-');
-            previous_was_separator = true;
+            previous_was_hyphen = true;
         }
     }
 
-    while output.ends_with('-') {
-        output.pop();
-    }
+    trim_slug_separators(&mut output);
+    output.truncate(48);
+    trim_slug_separators(&mut output);
 
     if output.is_empty() {
         "workspace".to_owned()
     } else {
         output
+    }
+}
+
+fn trim_slug_separators(output: &mut String) {
+    while output.ends_with('-') {
+        output.pop();
+    }
+
+    let trim_start = output.bytes().take_while(|byte| *byte == b'-').count();
+    if trim_start > 0 {
+        output.drain(..trim_start);
     }
 }
 

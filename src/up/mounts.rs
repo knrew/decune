@@ -231,13 +231,16 @@ mod tests {
     use crate::{config::types::MountType, docker::mounts::DockerMountSpec, workspace::Workspace};
 
     #[test]
-    fn default_workspace_folder_uses_workspace_basename() {
+    fn default_workspace_folder_uses_real_workspace_basename() {
         let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("project");
+        let root = temp.path().join("Project Name!");
         std::fs::create_dir(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
 
-        assert_eq!(default_workspace_folder(&workspace), "/workspaces/project");
+        assert_eq!(
+            default_workspace_folder(&workspace),
+            "/workspaces/Project Name!"
+        );
     }
 
     #[test]
