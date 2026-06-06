@@ -16,7 +16,7 @@ use futures_util::StreamExt;
 
 use crate::{
     config::{canonical::sha256_hex, hash::BuildHashInput, layer::LayerDevcontainerBuild},
-    docker::{client::DockerClient, image::validate_image_name},
+    docker::{client::DockerClient, image::validate_image_name, lock::DockerResourceLock},
     ui,
 };
 
@@ -91,6 +91,7 @@ pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) 
 
     let tar = create_build_context_tar(&input.context)?;
     let options = build_image_options(&input);
+    let _lock = DockerResourceLock::acquire_shared_from_env()?;
     let mut stream = client
         .raw()
         .build_image(options, None, Some(body_full(tar.into())));

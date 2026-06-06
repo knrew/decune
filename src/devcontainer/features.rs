@@ -5,10 +5,12 @@ use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
     env,
     fs::{self, OpenOptions},
-    io::{ErrorKind, Read, Seek, SeekFrom, Write},
+    io::{self, ErrorKind, Read, Seek, SeekFrom, Write},
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
-    process::{Command as HostCommand, Stdio},
+    process::{Child, Command as HostCommand, Stdio},
+    thread,
+    time::Duration,
 };
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -36,6 +38,8 @@ const DOCKER_HUB_REGISTRY_HOST: &str = "registry-1.docker.io";
 const DOCKER_HUB_INDEX_HOST: &str = "index.docker.io";
 const DOCKER_HUB_INDEX_AUTH_KEY: &str = "index.docker.io/v1";
 const DOCKER_HUB_CREDENTIAL_HELPER_SERVER: &str = "https://index.docker.io/v1/";
+const DOCKER_CREDENTIAL_HELPER_SPAWN_RETRIES: usize = 5;
+const DOCKER_CREDENTIAL_HELPER_SPAWN_RETRY_DELAY: Duration = Duration::from_millis(20);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum FeatureRef {
@@ -2935,18 +2939,7 @@ fn run_docker_credential_helper_get(
     binary: &Path,
     registry: &str,
 ) -> Result<Option<DockerCredentialHelperGetResponse>> {
-    let mut child = HostCommand::new(binary)
-        .arg("get")
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .with_context(|| {
-            format!(
-                "Failed to spawn Docker credential helper: {}",
-                binary.display()
-            )
-        })?;
+    let mut child = spawn_docker_credential_helper_get(binary)?;
     child
         .stdin
         .as_mut()
@@ -2983,6 +2976,53 @@ fn run_docker_credential_helper_get(
                 binary.display()
             )
         })
+}
+
+fn spawn_docker_credential_helper_get(binary: &Path) -> Result<Child> {
+    let mut last_error = None;
+    for attempt in 0..=DOCKER_CREDENTIAL_HELPER_SPAWN_RETRIES {
+        match docker_credential_helper_get_command(binary).spawn() {
+            Ok(child) => return Ok(child),
+            Err(error)
+                if is_text_file_busy(&error)
+                    && attempt < DOCKER_CREDENTIAL_HELPER_SPAWN_RETRIES =>
+            {
+                last_error = Some(error);
+                thread::sleep(DOCKER_CREDENTIAL_HELPER_SPAWN_RETRY_DELAY);
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to spawn Docker credential helper: {}",
+                        binary.display()
+                    )
+                });
+            }
+        }
+    }
+
+    Err(last_error
+        .unwrap_or_else(|| io::Error::other("Docker credential helper spawn retry exhausted")))
+    .with_context(|| {
+        format!(
+            "Failed to spawn Docker credential helper: {}",
+            binary.display()
+        )
+    })
+}
+
+fn docker_credential_helper_get_command(binary: &Path) -> HostCommand {
+    let mut command = HostCommand::new(binary);
+    command
+        .arg("get")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    command
+}
+
+fn is_text_file_busy(error: &io::Error) -> bool {
+    error.raw_os_error() == Some(libc::ETXTBSY)
 }
 
 fn docker_credential_helper_error_message(output: &std::process::Output) -> String {
@@ -3025,6 +3065,21 @@ mod tests {
 
     const MANIFEST_DIGEST_HEX: &str =
         "1111111111111111111111111111111111111111111111111111111111111111";
+
+    fn write_credential_helper(path: &Path, contents: &str) {
+        let staged = path.with_extension(format!("tmp-{}", std::process::id()));
+        let mut file = std::fs::OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&staged)
+            .unwrap();
+        file.write_all(contents.as_bytes()).unwrap();
+        file.flush().unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).unwrap();
+        fs::rename(&staged, path).unwrap();
+    }
 
     #[test]
     fn parses_tagged_oci_feature_ref() {
@@ -5038,7 +5093,7 @@ mod tests {
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
         let helper = helper_dir.join("docker-credential-fake");
-        fs::write(
+        write_credential_helper(
             &helper,
             r#"#!/bin/sh
 set -eu
@@ -5047,9 +5102,7 @@ server="$(cat)"
 test "$server" = ghcr.io
 printf '{"Username":"helper-user","Secret":"helper-token"}'
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let config = temp.path().join("config.json");
         fs::write(
             &config,
@@ -5085,7 +5138,7 @@ printf '{"Username":"helper-user","Secret":"helper-token"}'
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
         let helper = helper_dir.join("docker-credential-store");
-        fs::write(
+        write_credential_helper(
             &helper,
             r#"#!/bin/sh
 set -eu
@@ -5094,9 +5147,7 @@ server="$(cat)"
 test "$server" = https://index.docker.io/v1/
 printf '{"Username":"hub-user","Secret":"hub-token"}'
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let config = temp.path().join("config.json");
         fs::write(
             &config,
@@ -5125,7 +5176,7 @@ printf '{"Username":"hub-user","Secret":"hub-token"}'
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
         let helper = helper_dir.join("docker-credential-hub");
-        fs::write(
+        write_credential_helper(
             &helper,
             r#"#!/bin/sh
 set -eu
@@ -5134,9 +5185,7 @@ server="$(cat)"
 test "$server" = https://index.docker.io/v1/
 printf '{"Username":"hub-user","Secret":"hub-token"}'
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let config = temp.path().join("config.json");
         fs::write(
             &config,
@@ -5167,7 +5216,7 @@ printf '{"Username":"hub-user","Secret":"hub-token"}'
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
         let helper = helper_dir.join("docker-credential-fake");
-        fs::write(
+        write_credential_helper(
             &helper,
             r#"#!/bin/sh
 set -eu
@@ -5177,9 +5226,7 @@ test "$server" = ghcr.io
 printf 'credentials not found in native keychain'
 exit 1
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let config = temp.path().join("config.json");
         fs::write(
             &config,
@@ -5209,7 +5256,7 @@ exit 1
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
         let helper = helper_dir.join("docker-credential-fake");
-        fs::write(
+        write_credential_helper(
             &helper,
             r#"#!/bin/sh
 set -eu
@@ -5219,11 +5266,9 @@ test "$server" = ghcr.io
 printf 'credentials not found in native keychain'
 exit 1
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let store_helper = helper_dir.join("docker-credential-store");
-        fs::write(
+        write_credential_helper(
             &store_helper,
             r#"#!/bin/sh
 set -eu
@@ -5232,9 +5277,7 @@ server="$(cat)"
 test "$server" = ghcr.io
 printf '{"Username":"store-user","Secret":"store-token"}'
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&store_helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let config = temp.path().join("config.json");
         fs::write(
             &config,
@@ -5260,7 +5303,7 @@ printf '{"Username":"store-user","Secret":"store-token"}'
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
         let helper = helper_dir.join("docker-credential-fake");
-        fs::write(
+        write_credential_helper(
             &helper,
             r#"#!/bin/sh
 set -eu
@@ -5270,9 +5313,7 @@ test "$server" = ghcr.io
 printf 'credentials not found in native keychain'
 exit 1
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let config = temp.path().join("config.json");
         fs::write(
             &config,
@@ -5333,7 +5374,7 @@ exit 1
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
         let helper = helper_dir.join("docker-credential-fake");
-        fs::write(
+        write_credential_helper(
             &helper,
             r#"#!/bin/sh
 set -eu
@@ -5343,9 +5384,7 @@ test "$server" = ghcr.io
 printf 'credentials not found in native keychain'
 exit 1
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let config = temp.path().join("config.json");
         fs::write(
             &config,
@@ -5368,7 +5407,7 @@ exit 1
         let helper_dir = temp.path().join("bin");
         fs::create_dir_all(&helper_dir).unwrap();
         let helper = helper_dir.join("docker-credential-store");
-        fs::write(
+        write_credential_helper(
             &helper,
             r#"#!/bin/sh
 set -eu
@@ -5377,9 +5416,7 @@ server="$(cat)"
 test "$server" = ghcr.io
 printf '{"Username":"store-user","Secret":"store-token"}'
 "#,
-        )
-        .unwrap();
-        fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).unwrap();
+        );
         let config = temp.path().join("config.json");
         fs::write(
             &config,

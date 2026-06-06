@@ -1,3 +1,4 @@
+use anyhow::Context;
 use assert_cmd::Command;
 pub(crate) use bollard::Docker;
 use bollard::{
@@ -17,7 +18,13 @@ use flate2::{Compression, write::GzEncoder};
 use futures_util::TryStreamExt;
 pub(crate) use predicates::prelude::*;
 use sha2::{Digest, Sha256};
-use std::{collections::HashMap, io::Write, path::Path};
+use std::{
+    collections::HashMap,
+    fs::File,
+    io::{self, Write},
+    os::fd::AsRawFd,
+    path::{Path, PathBuf},
+};
 pub(crate) use std::{
     fs,
     os::unix::{fs::PermissionsExt, net::UnixListener},
@@ -25,6 +32,8 @@ pub(crate) use std::{
 use tar::{Builder, Header};
 
 pub(crate) use crate::support;
+
+const DECUNE_DOCKER_RESOURCE_LOCK_ENV: &str = "DECUNE_DOCKER_RESOURCE_LOCK";
 
 pub(crate) fn decune() -> Command {
     let gh_config_dir =
@@ -34,11 +43,64 @@ pub(crate) fn decune() -> Command {
     let mut command = Command::cargo_bin("decune").unwrap();
     command
         .env("GH_CONFIG_DIR", gh_config_dir)
+        .env(DECUNE_DOCKER_RESOURCE_LOCK_ENV, docker_resource_lock_path())
         .env_remove("GH_TOKEN")
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_ENTERPRISE_TOKEN")
         .env_remove("GITHUB_ENTERPRISE_TOKEN");
     command
+}
+
+struct DockerResourceLock {
+    file: File,
+}
+
+impl Drop for DockerResourceLock {
+    fn drop(&mut self) {
+        let _ = flock(self.file.as_raw_fd(), libc::LOCK_UN);
+    }
+}
+
+fn acquire_shared_docker_resource_lock() -> anyhow::Result<DockerResourceLock> {
+    acquire_docker_resource_lock(libc::LOCK_SH)
+}
+
+fn acquire_exclusive_docker_resource_lock() -> anyhow::Result<DockerResourceLock> {
+    acquire_docker_resource_lock(libc::LOCK_EX)
+}
+
+fn acquire_docker_resource_lock(operation: i32) -> anyhow::Result<DockerResourceLock> {
+    let path = docker_resource_lock_path();
+    let file = fs::OpenOptions::new()
+        .create(true)
+        .read(true)
+        .write(true)
+        .truncate(false)
+        .open(&path)
+        .with_context(|| format!("Failed to open Docker resource lock: {}", path.display()))?;
+    flock(file.as_raw_fd(), operation)
+        .with_context(|| format!("Failed to lock Docker resource lock: {}", path.display()))?;
+
+    Ok(DockerResourceLock { file })
+}
+
+fn docker_resource_lock_path() -> PathBuf {
+    std::env::temp_dir().join("decune-cli-test-docker-resource.lock")
+}
+
+fn flock(fd: i32, operation: i32) -> io::Result<()> {
+    loop {
+        let status = unsafe { libc::flock(fd, operation) };
+        if status == 0 {
+            return Ok(());
+        }
+
+        let error = io::Error::last_os_error();
+        if error.kind() == io::ErrorKind::Interrupted {
+            continue;
+        }
+        return Err(error);
+    }
 }
 
 pub(crate) async fn workspace_containers(
@@ -237,6 +299,7 @@ pub(crate) async fn cleanup_workspace_images(workspace_root: &Path) -> anyhow::R
         .force(true)
         .noprune(true)
         .build();
+    let _lock = acquire_exclusive_docker_resource_lock()?;
 
     for image in workspace_images(workspace_root).await? {
         docker
@@ -260,6 +323,7 @@ pub(crate) async fn create_workspace_image_tag(
         .tag(tag)
         .build();
 
+    let _lock = acquire_shared_docker_resource_lock()?;
     docker.tag_image("alpine:3.20", Some(options)).await?;
 
     Ok(format!("{image_repository}:{tag}"))
@@ -284,6 +348,7 @@ pub(crate) async fn create_image_with_cmd(image_tag: &str, cmd: Vec<&str>) -> an
             .tag(tag)
             .build();
 
+        let _lock = acquire_shared_docker_resource_lock()?;
         docker.tag_image("alpine:3.20", Some(options)).await?;
         return Ok(());
     }
@@ -376,9 +441,12 @@ pub(crate) async fn create_image_with_github_cli(image_tag: &str) -> anyhow::Res
         .pause(false)
         .build();
 
-    docker
-        .commit_container(commit_options, ContainerConfig::default())
-        .await?;
+    {
+        let _lock = acquire_shared_docker_resource_lock()?;
+        docker
+            .commit_container(commit_options, ContainerConfig::default())
+            .await?;
+    }
     docker
         .remove_container(&container_name, Some(remove_options))
         .await?;
@@ -508,7 +576,10 @@ async fn commit_alpine_image_from_script(
         .pause(false)
         .build();
 
-    docker.commit_container(commit_options, config).await?;
+    {
+        let _lock = acquire_shared_docker_resource_lock()?;
+        docker.commit_container(commit_options, config).await?;
+    }
     docker
         .remove_container(&container_name, Some(remove_options))
         .await?;
@@ -526,6 +597,7 @@ pub(crate) async fn tag_image(source: &str, target: &str) -> anyhow::Result<()> 
         .tag(tag)
         .build();
 
+    let _lock = acquire_shared_docker_resource_lock()?;
     docker.tag_image(source, Some(options)).await?;
 
     Ok(())
@@ -619,7 +691,10 @@ EOF
         ..Default::default()
     };
 
-    docker.commit_container(commit_options, config).await?;
+    {
+        let _lock = acquire_shared_docker_resource_lock()?;
+        docker.commit_container(commit_options, config).await?;
+    }
     docker
         .remove_container(&container_name, Some(remove_options))
         .await?;
@@ -692,9 +767,12 @@ pub(crate) async fn create_image_with_nonstandard_home_user(
         .pause(false)
         .build();
 
-    docker
-        .commit_container(commit_options, ContainerConfig::default())
-        .await?;
+    {
+        let _lock = acquire_shared_docker_resource_lock()?;
+        docker
+            .commit_container(commit_options, ContainerConfig::default())
+            .await?;
+    }
     docker
         .remove_container(&container_name, Some(remove_options))
         .await?;
@@ -704,6 +782,7 @@ pub(crate) async fn create_image_with_nonstandard_home_user(
 
 pub(crate) async fn remove_image_if_exists(image: &str) -> anyhow::Result<()> {
     let docker = Docker::connect_with_defaults()?;
+    let _lock = acquire_exclusive_docker_resource_lock()?;
 
     if docker.inspect_image(image).await.is_err() {
         return Ok(());
