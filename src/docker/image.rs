@@ -14,8 +14,9 @@ use serde_json::Value;
 
 use crate::ui;
 use crate::{
-    config::ConfigLayer, devcontainer::metadata::parse_image_metadata_layer,
-    docker::client::DockerClient,
+    config::ConfigLayer,
+    devcontainer::metadata::parse_image_metadata_layer,
+    docker::{client::DockerClient, lock::DockerResourceLock},
 };
 
 pub(crate) const DEVCONTAINER_METADATA_LABEL: &str = "devcontainer.metadata";
@@ -98,6 +99,7 @@ pub(crate) async fn workspace_image_tags(
 
 pub(crate) async fn remove_image(client: &DockerClient, image: &str, force: bool) -> Result<()> {
     let options = remove_image_options(force);
+    let _lock = DockerResourceLock::acquire_exclusive_from_env()?;
 
     match client.raw().remove_image(image, Some(options), None).await {
         Ok(_) => Ok(()),
@@ -121,6 +123,7 @@ pub(crate) async fn tag_image(client: &DockerClient, source: &str, target: &str)
         .repo(repo)
         .tag(tag)
         .build();
+    let _lock = DockerResourceLock::acquire_shared_from_env()?;
 
     client
         .raw()

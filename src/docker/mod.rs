@@ -4,6 +4,7 @@ pub(crate) mod container;
 pub(crate) mod dotfiles;
 pub(crate) mod exec;
 pub(crate) mod image;
+pub(crate) mod lock;
 pub(crate) mod mounts;
 pub(crate) mod ports;
 pub(crate) mod resource;

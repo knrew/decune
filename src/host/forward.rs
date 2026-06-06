@@ -288,7 +288,9 @@ where
             Err(error)
                 if matches!(
                     error.kind(),
-                    io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+                    io::ErrorKind::NotFound
+                        | io::ErrorKind::ConnectionRefused
+                        | io::ErrorKind::PermissionDenied
                 ) =>
             {
                 if let Some(error) = forward_agent_start_error(runtime_dir, agent_status().await?)?
@@ -1332,6 +1334,41 @@ mod tests {
 
             assert!(message.contains("Unsupported port forwarding agent container architecture"));
             assert!(!message.contains("Timed out waiting"));
+        });
+    }
+
+    #[test]
+    fn wait_for_forward_agent_retries_socket_permission_denied() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let socket_path = temp.path().join(FORWARD_AGENT_SOCKET_NAME);
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o000)).unwrap();
+            let chmod_task = tokio::spawn({
+                let socket_path = socket_path.clone();
+                async move {
+                    sleep(Duration::from_millis(100)).await;
+                    fs::set_permissions(&socket_path, fs::Permissions::from_mode(0o666)).unwrap();
+                }
+            });
+            let accept_task = tokio::spawn(async move {
+                let _ = listener.accept().await.unwrap();
+            });
+
+            let ready = wait_for_forward_agent_with_status(temp.path(), || async {
+                Ok(ForwardAgentStatus::Running)
+            })
+            .await
+            .unwrap();
+
+            assert_eq!(ready, socket_path);
+            chmod_task.await.unwrap();
+            accept_task.await.unwrap();
         });
     }
 
