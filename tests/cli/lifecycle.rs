@@ -141,6 +141,160 @@ fn up_detach_rejects_missing_state_for_existing_container_lifecycle() {
 }
 
 #[test]
+fn up_detach_rejects_missing_state_for_stopped_container_without_starting_it() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "onCreateCommand": "printf x >> /tmp/decune-on-create-count"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let state_home = path_roots.path().join("state");
+    let state_file = state_home
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("state.toml");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        decune()
+            .arg("down")
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Stopped dev container"));
+
+        fs::remove_file(&state_file).unwrap();
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Cannot safely reuse existing dev container without matching lifecycle state",
+            ));
+
+        let inspect = runtime
+            .block_on(async { inspect_single_workspace_container(&workspace_root).await })
+            .unwrap();
+        assert_eq!(inspect.state.and_then(|state| state.running), Some(false));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_rejects_corrupt_state_for_stopped_container_without_starting_it() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let path_roots = tempfile::tempdir().unwrap();
+    let state_home = path_roots.path().join("state");
+    let state_file = state_home
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("state.toml");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        decune()
+            .arg("down")
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Stopped dev container"));
+
+        fs::write(&state_file, "version = [").unwrap();
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Invalid decune state file"))
+            .stderr(predicate::str::contains(state_file.display().to_string()));
+
+        let inspect = runtime
+            .block_on(async { inspect_single_workspace_container(&workspace_root).await })
+            .unwrap();
+        assert_eq!(inspect.state.and_then(|state| state.running), Some(false));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_persists_initial_lifecycle_state_before_on_create() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();

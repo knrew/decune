@@ -130,7 +130,27 @@ fn started_up_container(
 ) -> Result<StartedUpContainer> {
     let state = sync_started_state(&workspace, &plan, &outcome, lifecycle_path)?;
 
-    Ok(StartedUpContainer {
+    Ok(started_up_container_with_state(
+        client,
+        workspace,
+        plan,
+        outcome,
+        lifecycle_path,
+        credentials,
+        state,
+    ))
+}
+
+fn started_up_container_with_state(
+    client: DockerClient,
+    workspace: Workspace,
+    plan: UpPlan,
+    outcome: UpOutcome,
+    lifecycle_path: LifecycleRunPath,
+    credentials: CredentialRuntime,
+    state: WorkspaceState,
+) -> StartedUpContainer {
+    StartedUpContainer {
         client,
         workspace,
         plan,
@@ -138,7 +158,7 @@ fn started_up_container(
         lifecycle_path,
         state: RefCell::new(state),
         _credentials: credentials,
-    })
+    }
 }
 
 fn sync_started_state(
@@ -160,25 +180,42 @@ fn sync_started_state(
             LifecycleState::default(),
         ),
         LifecycleRunPath::Started | LifecycleRunPath::Running => {
-            let state_file = state::state_file_path(workspace.paths().state_dir());
-            let existing = state::load_state_file(workspace.paths().state_dir())?;
-            let Some(existing) =
-                existing.filter(|state| state_matches_container_snapshot(state, &container))
-            else {
-                bail!(
-                    "Cannot safely reuse existing dev container without matching lifecycle state: {}. Run decune rebuild to recreate it.",
-                    state_file.display()
-                );
-            };
-            state::write_state_for_container(
-                workspace.paths().state_dir(),
-                workspace.root(),
-                container,
-                existing.lifecycle,
-                Some(existing.created_at),
-            )
+            let existing = reusable_lifecycle_state(workspace, &container)?;
+            write_reused_started_state(workspace, container, existing)
         }
     }
+}
+
+fn reusable_lifecycle_state(
+    workspace: &Workspace,
+    container: &StateContainerSnapshot,
+) -> Result<WorkspaceState> {
+    let state_file = state::state_file_path(workspace.paths().state_dir());
+    let existing = state::load_state_file(workspace.paths().state_dir())?;
+    let Some(existing) =
+        existing.filter(|state| state_matches_container_snapshot(state, container))
+    else {
+        bail!(
+            "Cannot safely reuse existing dev container without matching lifecycle state: {}. Run decune rebuild to recreate it.",
+            state_file.display()
+        );
+    };
+
+    Ok(existing)
+}
+
+fn write_reused_started_state(
+    workspace: &Workspace,
+    container: StateContainerSnapshot,
+    existing: WorkspaceState,
+) -> Result<WorkspaceState> {
+    state::write_state_for_container(
+        workspace.paths().state_dir(),
+        workspace.root(),
+        container,
+        existing.lifecycle,
+        Some(existing.created_at),
+    )
 }
 
 fn state_matches_container_snapshot(
@@ -270,25 +307,18 @@ pub(in crate::up) async fn ensure_container_started(
             }
             ExistingContainerDecision::StartStopped { id, name } => {
                 warn_about_deferred_features(&existing_plan.config);
-                start_container_and_verify_running(
-                    &client,
-                    &name,
-                    startup_verification_for_plan(&existing_plan),
-                )
-                .await?;
-                let outcome = UpOutcome {
-                    container_id: id,
-                    container_name: name,
-                    reused: true,
-                };
-                return started_up_container(
+                let (outcome, state) =
+                    start_stopped_existing_container(&client, &workspace, &existing_plan, id, name)
+                        .await?;
+                return Ok(started_up_container_with_state(
                     client,
                     workspace,
                     existing_plan,
                     outcome,
                     LifecycleRunPath::Started,
                     credentials,
-                );
+                    state,
+                ));
             }
             ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
         }
@@ -380,27 +410,51 @@ pub(in crate::up) async fn ensure_container_started(
             )
         }
         ExistingContainerDecision::StartStopped { id, name } => {
-            start_container_and_verify_running(
-                &client,
-                &name,
-                startup_verification_for_plan(&plan),
-            )
-            .await?;
-            let outcome = UpOutcome {
-                container_id: id,
-                container_name: name,
-                reused: true,
-            };
-            started_up_container(
+            let (outcome, state) =
+                start_stopped_existing_container(&client, &workspace, &plan, id, name).await?;
+            Ok(started_up_container_with_state(
                 client,
                 workspace,
                 plan,
                 outcome,
                 LifecycleRunPath::Started,
                 credentials,
-            )
+                state,
+            ))
         }
     }
+}
+
+async fn start_stopped_existing_container(
+    client: &DockerClient,
+    workspace: &Workspace,
+    plan: &UpPlan,
+    container_id: String,
+    container_name: String,
+) -> Result<(UpOutcome, WorkspaceState)> {
+    let container = StateContainerSnapshot {
+        container_id: container_id.clone(),
+        image: plan.image.clone(),
+        config_hash: plan.resources.config_hash.clone(),
+    };
+    let existing_state = reusable_lifecycle_state(workspace, &container)?;
+
+    start_container_and_verify_running(
+        client,
+        &container_name,
+        startup_verification_for_plan(plan),
+    )
+    .await?;
+
+    let state = write_reused_started_state(workspace, container, existing_state)?;
+    Ok((
+        UpOutcome {
+            container_id,
+            container_name,
+            reused: true,
+        },
+        state,
+    ))
 }
 
 fn add_credential_runtime_mounts(
