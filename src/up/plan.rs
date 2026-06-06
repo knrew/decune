@@ -396,13 +396,13 @@ mod tests {
 
         assert_eq!(plan.image, "alpine:3.20");
         assert_eq!(plan.base_image, "alpine:3.20");
-        assert_eq!(plan.workspace_folder, "/workspaces/image-plan");
+        assert_eq!(plan.workspace_folder, "/workspaces/Image Plan!");
         assert_eq!(plan.mounts.len(), 1);
         assert_eq!(
             plan.mounts[0].source.as_deref(),
             Some(root.to_str().unwrap())
         );
-        assert_eq!(plan.mounts[0].target, "/workspaces/image-plan");
+        assert_eq!(plan.mounts[0].target, "/workspaces/Image Plan!");
         assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
         assert!(!plan.mounts[0].read_only);
     }

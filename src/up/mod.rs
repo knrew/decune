@@ -836,12 +836,12 @@ mod tests {
     }
 
     #[test]
-    fn default_workspace_folder_uses_safe_workspace_slug() {
+    fn default_workspace_folder_uses_real_workspace_basename() {
         let workspace = test_workspace("Project Name!");
 
         assert_eq!(
             default_workspace_folder(&workspace),
-            "/workspaces/project-name"
+            "/workspaces/Project Name!"
         );
     }
 

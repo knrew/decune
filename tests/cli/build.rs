@@ -12,7 +12,7 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
           "build": {
             "dockerfile": "Dockerfile"
           },
-          "postStartCommand": "test \"$PWD\" = /workspaces/my-project && test -f resource-name-marker.txt"
+          "postStartCommand": "test \"$PWD\" = '/workspaces/My Project 日本語 !!!' && test -f resource-name-marker.txt"
         }
         "#,
     )
@@ -64,7 +64,7 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
             assert_eq!(inspect.name.as_deref(), Some(expected_name.as_str()));
             assert!(inspect_has_mount_target(
                 &inspect,
-                &format!("/workspaces/{safe_slug}")
+                "/workspaces/My Project 日本語 !!!"
             ));
 
             let images = workspace_images(&workspace_root).await.unwrap();
