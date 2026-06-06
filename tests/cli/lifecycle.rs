@@ -950,6 +950,178 @@ fn up_detach_expands_remote_env_from_container_env() {
 }
 
 #[test]
+fn up_detach_expands_remote_env_from_actual_container_env() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            ENV DECUNE_FROM_IMAGE=from-image
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteEnv": {
+                "PATH": "${containerEnv:PATH}:/image-extra",
+                "DECUNE_IMAGE_ENV": "${containerEnv:DECUNE_FROM_IMAGE}"
+              },
+              "userEnvProbe": "none",
+              "postStartCommand": [
+                "/bin/sh",
+                "-c",
+                "test \"$PATH\" = \"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/image-extra\" && test \"$DECUNE_IMAGE_ENV\" = from-image && printf \"%s|%s\" \"$PATH\" \"$DECUNE_IMAGE_ENV\" >/tmp/decune-actual-container-env-expansion"
+              ]
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let output = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/tmp/decune-actual-container-env-expansion"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(
+            output,
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/image-extra|from-image"
+        );
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_attached_expands_remote_env_from_actual_container_env() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            ENV DECUNE_FROM_IMAGE=from-image
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'test "$PATH" = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/attach-extra" || exit 11' \
+              'test "$DECUNE_IMAGE_ENV" = "from-image" || exit 12' \
+              'printf "%s|%s" "$PATH" "$DECUNE_IMAGE_ENV" >/tmp/decune-attached-container-env-expansion' \
+              'exit 0' \
+              >/usr/local/bin/decune-check-attached-env \
+              && chmod +x /usr/local/bin/decune-check-attached-env
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteEnv": {
+                "PATH": "${containerEnv:PATH}:/attach-extra",
+                "DECUNE_IMAGE_ENV": "${containerEnv:DECUNE_FROM_IMAGE}"
+              },
+              "userEnvProbe": "none"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-check-attached-env"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("up")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let output = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/tmp/decune-attached-container-env-expansion"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(
+            output,
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/attach-extra|from-image"
+        );
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_rejects_container_env_self_reference() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();

@@ -145,6 +145,23 @@ pub(crate) async fn start_container(client: &DockerClient, container: &str) -> R
     }
 }
 
+pub(crate) async fn inspect_container_env(
+    client: &DockerClient,
+    container: &str,
+) -> Result<BTreeMap<String, String>> {
+    let inspect = client
+        .raw()
+        .inspect_container(container, None)
+        .await
+        .with_context(|| format!("Failed to inspect Docker container environment: {container}"))?;
+    let entries = inspect
+        .config
+        .and_then(|config| config.env)
+        .unwrap_or_default();
+
+    Ok(container_env_from_entries(entries))
+}
+
 pub(crate) async fn stop_container(
     client: &DockerClient,
     container: &str,
@@ -251,6 +268,16 @@ fn host_config_from_resolved(config: &ResolvedConfig) -> ContainerHostConfig {
 fn env_entries(env: &BTreeMap<String, String>) -> Vec<String> {
     env.iter()
         .map(|(key, value)| format!("{key}={value}"))
+        .collect()
+}
+
+fn container_env_from_entries(entries: Vec<String>) -> BTreeMap<String, String> {
+    entries
+        .into_iter()
+        .filter_map(|entry| {
+            let (key, value) = entry.split_once('=')?;
+            Some((key.to_owned(), value.to_owned()))
+        })
         .collect()
 }
 
@@ -361,10 +388,27 @@ mod tests {
     use super::workspace_container_list_options;
     use super::{
         ContainerCreateInput, ContainerCreateSpec, ContainerHostConfig, create_container,
-        create_container_body, devcontainer_keepalive_command, is_container_already_started,
-        is_container_already_stopped, is_container_not_found, is_container_wait_exit_status,
-        remove_container, start_container, stop_container,
+        create_container_body, devcontainer_keepalive_command, inspect_container_env,
+        is_container_already_started, is_container_already_stopped, is_container_not_found,
+        is_container_wait_exit_status, remove_container, start_container, stop_container,
     };
+
+    #[test]
+    fn container_env_from_entries_preserves_values_with_equals_and_last_value_wins() {
+        let env = super::container_env_from_entries(vec![
+            "PATH=/usr/bin".to_owned(),
+            "TOKEN=prefix=value".to_owned(),
+            "NO_EQUALS".to_owned(),
+            "PATH=/usr/local/bin:/usr/bin".to_owned(),
+        ]);
+
+        assert_eq!(
+            env.get("PATH").map(String::as_str),
+            Some("/usr/local/bin:/usr/bin")
+        );
+        assert_eq!(env.get("TOKEN").map(String::as_str), Some("prefix=value"));
+        assert!(!env.contains_key("NO_EQUALS"));
+    }
 
     #[test]
     fn workspace_container_list_options_searches_only_managed_workspace_containers() {
@@ -943,6 +987,12 @@ mod tests {
 
                 create_container(&client, &spec).await?;
                 start_container(&client, &name).await?;
+
+                let container_env = inspect_container_env(&client, &name).await?;
+                assert_eq!(
+                    container_env.get("PATH").map(String::as_str),
+                    Some("/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin")
+                );
 
                 let read_output = exec_capture(
                     &client,

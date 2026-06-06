@@ -4,6 +4,7 @@ use crate::{
     config::variables::expand_remote_env,
     docker::{
         client::DockerClient,
+        container::inspect_container_env,
         exec::{ExecCommandSpec, exec_attach, resolve_exec_env, run_attached_exec_stdio},
         user::resolve_remote_user,
     },
@@ -28,13 +29,14 @@ pub(in crate::up) async fn attach_shell(
         &plan.uid_gid_sync_plan,
     )
     .await?;
+    let container_env = inspect_container_env(client, container_name).await?;
     let remote_env_variables = mount_variable_context(
         workspace,
         &plan.workspace_folder,
         remote_user.user.clone(),
         remote_user.home.clone(),
     )
-    .with_container_env(plan.config.devcontainer.container_env.clone());
+    .with_container_env(container_env);
     let remote_env = expand_remote_env(&plan.config.devcontainer.remote_env, &remote_env_variables)
         .with_context(|| format!("Failed to expand remoteEnv for container: {container_name}"))?;
     let env = resolve_exec_env(

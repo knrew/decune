@@ -17,6 +17,7 @@ use crate::{
     devcontainer::metadata::LifecycleProperty,
     docker::{
         client::DockerClient,
+        container::inspect_container_env,
         dotfiles::setup_dotfiles,
         exec::{ExecCommandSpec, ExecOutput, exec_capture_output, resolve_exec_env},
         user::ResolvedRemoteUser,
@@ -388,12 +389,18 @@ pub(crate) async fn prepare_container_lifecycle(
         &context.remote_user,
     )
     .await?;
-    let remote_env_variables = dotfile_variable_context(&context)
-        .with_container_env(context.config.devcontainer.container_env.clone());
+    let container_env = inspect_container_env(context.client, context.container).await?;
+    let remote_env_variables = dotfile_variable_context(&context).with_container_env(container_env);
     let remote_env = expand_remote_env(
         &context.config.devcontainer.remote_env,
         &remote_env_variables,
-    )?;
+    )
+    .with_context(|| {
+        format!(
+            "Failed to expand remoteEnv for container: {}",
+            context.container
+        )
+    })?;
     let remote_process_env = resolve_exec_env(
         context.client,
         context.container,
