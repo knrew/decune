@@ -6082,6 +6082,77 @@ type = "bind"
 
     #[cfg(unix)]
     #[test]
+    fn up_detach_fails_uid_gid_sync_when_host_ids_already_match_but_duplicates_exist() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-duplicate-matching-ids");
+            let image = format!(
+                "decune-test/uid-gid-sync-duplicate-matching-ids-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_duplicate_matching_host_ids_image(&client, &image, host.uid, host.gid)
+                    .await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
+                assert!(
+                    message.contains("Failed to build Docker image")
+                        && message.contains("Docker stream error"),
+                    "{message}"
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn up_detach_fails_uid_gid_sync_gid_conflict_without_target_group_entry() {
         if HostPlatform::current() != HostPlatform::Linux {
             return;
@@ -7398,6 +7469,41 @@ user = "root"
             &dockerfile_path,
             format!(
                 "FROM alpine:3.20\nRUN addgroup -g {conflict_gid} conflictuser && adduser -D -u {conflict_uid} -G conflictuser -h /home/conflictuser conflictuser && addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser\nUSER syncuser\n"
+            ),
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_duplicate_matching_host_ids_image(
+        client: &DockerClient,
+        image: &str,
+        host_uid: u32,
+        host_gid: u32,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-duplicate-matching-ids-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            format!(
+                "FROM alpine:3.20\nRUN addgroup -g {host_gid} syncgroup && adduser -D -u {host_uid} -G syncgroup -h /home/syncuser syncuser && echo 'other:x:{host_uid}:{host_gid}::/home/other:/bin/sh' >> /etc/passwd && echo 'othergroup:x:{host_gid}:' >> /etc/group\nUSER syncuser\n"
             ),
         )
         .unwrap();
