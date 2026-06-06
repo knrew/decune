@@ -89,8 +89,19 @@ impl GithubCliRuntime {
 impl Drop for GithubCliRuntime {
     fn drop(&mut self) {
         if let Some(path) = &self.token_file {
-            let _ = fs::remove_file(path);
+            cleanup_github_cli_token_file_best_effort(path);
         }
+    }
+}
+
+pub(super) fn cleanup_github_cli_token_file_best_effort(path: &Path) {
+    match fs::remove_file(path) {
+        Ok(()) => {}
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => ui::warn(&format!(
+            "Failed to remove GitHub CLI token file: {}. Remove it manually: {error}",
+            path.display()
+        )),
     }
 }
 

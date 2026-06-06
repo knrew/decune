@@ -13,7 +13,7 @@ pub(crate) use git::{
 #[cfg(test)]
 pub(crate) use github::prepare_github_cli_runtime_with_token;
 pub(crate) use github::{
-    host_github_auth_token_available, prepare_github_cli_runtime, remove_github_cli_token_file,
+    cleanup_github_cli_token_file, host_github_auth_token_available, prepare_github_cli_runtime,
     setup_github_cli_credentials,
 };
 pub(crate) use runtime::{

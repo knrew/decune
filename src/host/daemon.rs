@@ -15,7 +15,10 @@ use tokio::{
 use crate::host::{
     credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
     protocol::{HostDaemonResponse, handle_host_daemon_request},
-    runtime::set_private_runtime_parent,
+    runtime::{
+        create_runtime_dir, set_private_runtime_parent, set_runtime_dir_mode,
+        validate_runtime_dir_mode,
+    },
 };
 
 const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
@@ -148,28 +151,15 @@ impl Drop for HostDaemon {
         if let Some(task) = self.task.take() {
             task.abort();
         }
-        let _ = fs::remove_file(&self.socket_path);
+        cleanup_host_daemon_socket_file(&self.socket_path);
     }
 }
 
 fn prepare_runtime_dir(runtime_dir: &Path, access: HostDaemonAccess) -> Result<()> {
-    fs::create_dir_all(runtime_dir).with_context(|| {
-        format!(
-            "Failed to create host daemon runtime directory: {}",
-            runtime_dir.display()
-        )
-    })?;
+    create_runtime_dir(runtime_dir, "host daemon")?;
     set_private_runtime_parent(runtime_dir)?;
-    fs::set_permissions(
-        runtime_dir,
-        fs::Permissions::from_mode(access.runtime_dir_mode),
-    )
-    .with_context(|| {
-        format!(
-            "Failed to set host daemon runtime directory permissions: {}",
-            runtime_dir.display()
-        )
-    })
+    set_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")?;
+    validate_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")
 }
 
 #[cfg(unix)]
@@ -271,6 +261,26 @@ fn remove_socket_if_present(socket_path: &Path) -> Result<()> {
     })
 }
 
+pub(crate) async fn cleanup_host_daemon_socket(runtime_dir: &Path) {
+    let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
+    if let Err(error) = remove_stale_socket(&socket_path).await {
+        crate::ui::warn(&format!(
+            "Failed to remove stale host daemon socket: {}. Remove it manually if no decune process is running: {error:#}",
+            socket_path.display()
+        ));
+    }
+}
+
+fn cleanup_host_daemon_socket_file(socket_path: &Path) {
+    match remove_socket_file(socket_path) {
+        Ok(()) => {}
+        Err(error) => crate::ui::warn(&format!(
+            "Failed to remove host daemon socket: {}. Remove it manually if no decune process is running: {error}",
+            socket_path.display()
+        )),
+    }
+}
+
 fn remove_socket_file(socket_path: &Path) -> io::Result<()> {
     match fs::remove_file(socket_path) {
         Ok(()) => Ok(()),
@@ -345,8 +355,8 @@ mod tests {
     };
 
     use super::{
-        HostDaemon, HostDaemonAccess, MAX_HOST_DAEMON_REQUEST_BYTES, current_gid, current_uid,
-        peer_uid_is_allowed,
+        HostDaemon, HostDaemonAccess, MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket,
+        current_gid, current_uid, peer_uid_is_allowed,
     };
     use crate::host::credentials::{GitCredentialCommand, GitCredentialExecutor};
 
@@ -680,6 +690,28 @@ mod tests {
             assert_eq!(mode(&socket_path), 0o600);
 
             daemon.stop().await.unwrap();
+            assert!(!socket_path.exists());
+        });
+    }
+
+    #[test]
+    fn cleanup_removes_stale_socket_file() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let runtime_dir = temp.path().join("runtime");
+            fs::create_dir_all(&runtime_dir).unwrap();
+            let socket_path = runtime_dir.join("host-daemon.sock");
+            let stale_listener = UnixListener::bind(&socket_path).unwrap();
+            drop(stale_listener);
+            assert!(socket_path.exists());
+
+            cleanup_host_daemon_socket(&runtime_dir).await;
+
             assert!(!socket_path.exists());
         });
     }

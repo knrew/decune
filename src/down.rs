@@ -14,7 +14,7 @@ use crate::{
         resource::DockerResources,
         volume::{remove_volume, workspace_volumes},
     },
-    host::credentials::remove_github_cli_token_file,
+    host::{credentials::cleanup_github_cli_token_file, daemon::cleanup_host_daemon_socket},
     state::remove_state_runtime_dirs,
     ui,
     workspace::Workspace,
@@ -44,7 +44,8 @@ struct ManagedContainer {
 pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
     let timeout_seconds = stop_timeout_seconds(options.timeout_seconds)?;
     let workspace = Workspace::resolve(&options.workspace)?;
-    remove_github_cli_token_file(workspace.paths().runtime_dir())?;
+    cleanup_github_cli_token_file(workspace.paths().runtime_dir());
+    cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
     let client = DockerClient::connect_from_env()?;
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
@@ -67,7 +68,8 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     }
 
     let workspace = Workspace::resolve(&options.workspace)?;
-    remove_github_cli_token_file(workspace.paths().runtime_dir())?;
+    cleanup_github_cli_token_file(workspace.paths().runtime_dir());
+    cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
     let client = DockerClient::connect_from_env()?;
     let containers = list_managed_containers(&client, workspace.id()).await?;
 

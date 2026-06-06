@@ -32,6 +32,7 @@ use forwarding::{ForwardAgentStartDecision, decide_forward_agent_start};
 #[cfg(test)]
 use metadata::{
     add_github_cli_feature_to_plan, finalize_up_plan_mounts, should_auto_add_github_cli_feature,
+    untrusted_repository_warnings,
 };
 #[cfg(test)]
 use mounts::default_workspace_folder;
@@ -144,7 +145,7 @@ mod tests {
         feature_layer_image, finalize_up_plan_mounts, first_successful_shell_candidate,
         list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
         shell_command_candidates, should_auto_add_github_cli_feature, uid_gid_sync_base_image,
-        uid_gid_sync_warning,
+        uid_gid_sync_warning, untrusted_repository_warnings,
     };
 
     #[test]
@@ -1091,6 +1092,69 @@ digest = "sha256:locked"
             forwarding.resources.config_hash,
             published.resources.config_hash
         );
+    }
+
+    #[test]
+    fn untrusted_repository_warnings_are_empty_for_default_plan_security_surface() {
+        let warnings = untrusted_repository_warnings(&ResolvedConfig::default());
+
+        assert!(warnings.is_empty());
+    }
+
+    #[test]
+    fn untrusted_repository_warnings_report_risky_container_settings() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.privileged = true;
+        config.devcontainer.cap_add = vec!["SYS_PTRACE".to_owned()];
+        config.devcontainer.security_opt = vec!["seccomp=unconfined".to_owned()];
+        config.devcontainer.publish_ports = vec![ResolvedPublishPort {
+            container: 8080,
+            host: None,
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        }];
+        config.devcontainer.mounts = vec![crate::config::layer::LayerDevcontainerMount::String(
+            "type=bind,source=/tmp,target=/host-tmp".to_owned(),
+        )];
+
+        let warnings = untrusted_repository_warnings(&config);
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("privileged"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("SYS_PTRACE"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("seccomp=unconfined"))
+        );
+        assert!(warnings.iter().any(|warning| warning.contains("appPort")));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("additional mounts"))
+        );
+    }
+
+    #[test]
+    fn untrusted_repository_warnings_skip_localhost_only_app_port() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.publish_ports = vec![ResolvedPublishPort {
+            container: 8080,
+            host: Some(18080),
+            host_ip: Some("127.0.0.1".to_owned()),
+            protocol: PortProtocol::Tcp,
+        }];
+
+        let warnings = untrusted_repository_warnings(&config);
+
+        assert!(!warnings.iter().any(|warning| warning.contains("appPort")));
     }
 
     #[test]

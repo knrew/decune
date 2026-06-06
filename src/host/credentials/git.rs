@@ -30,7 +30,7 @@ use crate::{
             DECUNE_RUNTIME_TARGET, GIT_CREDENTIAL_HELPER_NAME, GIT_CREDENTIAL_HELPER_TARGET,
             GitCredentialRuntime, HOST_DAEMON_SOCKET_TARGET, HOST_GITCONFIG_NAME, shell_quote,
         },
-        runtime::set_private_runtime_parent,
+        runtime::prepare_private_runtime_dir,
     },
     ui,
 };
@@ -151,19 +151,7 @@ pub(super) fn prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
         return Ok(GitCredentialRuntime::empty());
     }
 
-    fs::create_dir_all(runtime_dir).with_context(|| {
-        format!(
-            "Failed to create Git credential runtime directory: {}",
-            runtime_dir.display()
-        )
-    })?;
-    set_private_runtime_parent(runtime_dir)?;
-    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
-        format!(
-            "Failed to set Git credential runtime directory permissions: {}",
-            runtime_dir.display()
-        )
-    })?;
+    prepare_private_runtime_dir(runtime_dir, "Git credential")?;
 
     let mut cleanup_paths = Vec::new();
     if helper_enabled {
