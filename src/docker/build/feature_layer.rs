@@ -328,9 +328,19 @@ fn copy_directory(source: &Path, destination: &Path) -> Result<()> {
 }
 
 fn make_executable(path: &Path) -> Result<()> {
-    let mut permissions = fs::metadata(path)
-        .with_context(|| format!("Failed to inspect file permissions: {}", path.display()))?
-        .permissions();
+    let metadata = fs::symlink_metadata(path)
+        .with_context(|| format!("Failed to inspect file permissions: {}", path.display()))?;
+    if metadata.file_type().is_symlink() {
+        return Ok(());
+    }
+    if !metadata.is_file() {
+        bail!(
+            "Failed to make staged Feature install script executable: not a regular file: {}",
+            path.display()
+        );
+    }
+
+    let mut permissions = metadata.permissions();
     permissions.set_mode(permissions.mode() | 0o111);
     fs::set_permissions(path, permissions)
         .with_context(|| format!("Failed to update file permissions: {}", path.display()))?;
@@ -339,7 +349,11 @@ fn make_executable(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, os::unix::fs::PermissionsExt};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+    };
 
     use tempfile::TempDir;
 
@@ -431,6 +445,54 @@ mod tests {
             )
             .unwrap(),
             "VERSION='1.2'\"'\"'$(echo unsafe)'\n_CONTAINER_USER='root'\n_CONTAINER_USER_HOME='/root'\n_REMOTE_USER='vscode'\n_REMOTE_USER_HOME='/home/vscode'\n"
+        );
+    }
+
+    #[test]
+    fn feature_layer_build_context_does_not_chmod_symlinked_install_script_target() {
+        let temp = tempdir("feature-layer-build-context-symlink-install");
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        let external_install = temp.path().join("external-install.sh");
+        fs::write(&external_install, "#!/bin/sh\n").unwrap();
+        fs::set_permissions(&external_install, fs::Permissions::from_mode(0o644)).unwrap();
+        symlink(&external_install, source.join("install.sh")).unwrap();
+        fs::write(
+            source.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
+        )
+        .unwrap();
+        let context_dir = temp.path().join("context");
+        let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
+            base_image: "alpine:3.20".to_owned(),
+            devcontainer_id: "workspace-id".to_owned(),
+            final_user: "root".to_owned(),
+            entrypoints: Vec::new(),
+            install_env: BTreeMap::new(),
+            context_dir,
+            features: vec![FeatureLayerBuildFeature {
+                id: "ghcr.io/example/features/tool".to_owned(),
+                source_dir: source,
+                option_env: BTreeMap::new(),
+                container_env: BTreeMap::new(),
+            }],
+        })
+        .unwrap();
+
+        let external_mode = fs::metadata(&external_install)
+            .unwrap()
+            .permissions()
+            .mode();
+        let staged_install = context
+            .context_dir
+            .join("000-ghcr-io-example-features-tool/install.sh");
+
+        assert_eq!(external_mode & 0o777, 0o644);
+        assert!(
+            fs::symlink_metadata(staged_install)
+                .unwrap()
+                .file_type()
+                .is_symlink()
         );
     }
 
