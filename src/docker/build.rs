@@ -468,32 +468,11 @@ old_gid={old_gid}
 new_uid={new_uid}
 new_gid={new_gid}
 
-if [ "$old_uid" = "$new_uid" ] && [ "$old_gid" = "$new_gid" ]; then
-    exit 0
-fi
-
 conflict_user="$(awk -F: -v uid="$new_uid" -v user="$target_user" '$3 == uid && $1 != user {{ print $1; exit }}' /etc/passwd)"
 if [ -n "$conflict_user" ]; then
     echo "UID/GID sync target UID conflicts with existing user: $conflict_user ($new_uid)" >&2
     exit 1
 fi
-
-target_home="$(awk -F: -v user="$target_user" '$1 == user {{ print $6; exit }}' /etc/passwd)"
-tmp_passwd="$(mktemp)"
-status=0
-awk -F: -v OFS=: -v user="$target_user" -v uid="$new_uid" -v gid="$new_gid" '
-    $1 == user {{ $3 = uid; $4 = gid; found = 1 }}
-    {{ print }}
-    END {{ if (!found) exit 42 }}
-' /etc/passwd > "$tmp_passwd" || status=$?
-if [ "$status" -eq 42 ]; then
-    echo "UID/GID sync target user is missing: $target_user" >&2
-    exit 1
-elif [ "$status" -ne 0 ]; then
-    exit "$status"
-fi
-cat "$tmp_passwd" >/etc/passwd
-rm -f "$tmp_passwd"
 
 if [ -f /etc/group ]; then
     target_group="$(awk -F: -v gid="$old_gid" '$3 == gid {{ print $1; exit }}' /etc/group)"
@@ -512,6 +491,27 @@ if [ -f /etc/group ]; then
         rm -f "$tmp_group"
     fi
 fi
+
+if [ "$old_uid" = "$new_uid" ] && [ "$old_gid" = "$new_gid" ]; then
+    exit 0
+fi
+
+target_home="$(awk -F: -v user="$target_user" '$1 == user {{ print $6; exit }}' /etc/passwd)"
+tmp_passwd="$(mktemp)"
+status=0
+awk -F: -v OFS=: -v user="$target_user" -v uid="$new_uid" -v gid="$new_gid" '
+    $1 == user {{ $3 = uid; $4 = gid; found = 1 }}
+    {{ print }}
+    END {{ if (!found) exit 42 }}
+' /etc/passwd > "$tmp_passwd" || status=$?
+if [ "$status" -eq 42 ]; then
+    echo "UID/GID sync target user is missing: $target_user" >&2
+    exit 1
+elif [ "$status" -ne 0 ]; then
+    exit "$status"
+fi
+cat "$tmp_passwd" >/etc/passwd
+rm -f "$tmp_passwd"
 
 if [ -n "$target_home" ] && [ -d "$target_home" ]; then
     chown -R "$new_uid:$new_gid" "$target_home"
@@ -1413,6 +1413,11 @@ mod tests {
         assert!(script.contains("cat \"$tmp_passwd\" >/etc/passwd"));
         assert!(script.contains("cat \"$tmp_group\" >/etc/group"));
         assert!(script.contains("chown -R \"$new_uid:$new_gid\" \"$target_home\""));
+        let uid_conflict_check = script.find("conflict_user=").unwrap();
+        let gid_conflict_check = script.find("conflict_group=").unwrap();
+        let no_change_exit = script.find("exit 0").unwrap();
+        assert!(uid_conflict_check < no_change_exit);
+        assert!(gid_conflict_check < no_change_exit);
     }
 
     #[test]
