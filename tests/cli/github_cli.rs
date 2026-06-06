@@ -6,6 +6,7 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
     let host_tools = support::TempWorkspace::new().unwrap();
     let path_roots = tempfile::tempdir().unwrap();
     let runtime_home = path_roots.path().join("runtime");
+    let state_home = path_roots.path().join("state");
     workspace.create_dir(".devcontainer").unwrap();
     workspace
         .write_file(
@@ -46,6 +47,10 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
     let workspace_root = workspace.path().canonicalize().unwrap();
     let workspace_id = workspace_id(&workspace_root);
     let runtime_dir = runtime_home.join("decune").join(&workspace_id);
+    let state_file = state_home
+        .join("decune")
+        .join(&workspace_id)
+        .join("state.toml");
     let github_token_file = runtime_dir.join("gh-token").join("token");
     let host_daemon_socket = runtime_dir.join("host-daemon.sock");
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -61,6 +66,7 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
         decune()
             .env("PATH", &fake_path)
             .env("XDG_RUNTIME_DIR", &runtime_home)
+            .env("XDG_STATE_HOME", &state_home)
             .args(["up", "--detach"])
             .arg(&workspace_root)
             .assert()
@@ -92,6 +98,11 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
 
         assert!(!github_token_file.exists());
         assert!(!host_daemon_socket.exists());
+        assert!(
+            !fs::read_to_string(&state_file)
+                .unwrap()
+                .contains("github-test-secret")
+        );
     });
 
     runtime.block_on(async {

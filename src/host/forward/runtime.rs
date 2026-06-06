@@ -16,7 +16,7 @@ use crate::{
             ContainerTool, stage_container_tool_variants, stage_container_tool_variants_from_dirs,
         },
         credentials::DECUNE_RUNTIME_TARGET,
-        runtime::set_private_runtime_parent,
+        runtime::prepare_private_runtime_dir,
     },
 };
 
@@ -56,19 +56,7 @@ fn prepare_forward_runtime_with_tool_dirs(
     runtime_dir: &Path,
     tool_source_dirs: Option<Vec<PathBuf>>,
 ) -> Result<ForwardRuntime> {
-    fs::create_dir_all(runtime_dir).with_context(|| {
-        format!(
-            "Failed to create port forwarding runtime directory: {}",
-            runtime_dir.display()
-        )
-    })?;
-    set_private_runtime_parent(runtime_dir)?;
-    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
-        format!(
-            "Failed to set port forwarding runtime directory permissions: {}",
-            runtime_dir.display()
-        )
-    })?;
+    prepare_private_runtime_dir(runtime_dir, "port forwarding")?;
     let agent_path = runtime_dir.join(FORWARD_AGENT_NAME);
     fs::write(&agent_path, forward_agent_launcher()).with_context(|| {
         format!(

@@ -805,7 +805,49 @@ pub(in crate::up) async fn existing_remote_user_image_for_decision<'a>(
 }
 
 pub(in crate::up) fn warn_about_deferred_features(config: &ResolvedConfig) {
-    let _ = config;
+    for warning in untrusted_repository_warnings(config) {
+        ui::warn(&warning);
+    }
+}
+
+pub(in crate::up) fn untrusted_repository_warnings(config: &ResolvedConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if config.devcontainer.privileged {
+        warnings.push(
+            "This dev container requests privileged mode; review untrusted repositories before running it."
+                .to_owned(),
+        );
+    }
+    if !config.devcontainer.cap_add.is_empty() {
+        warnings.push(format!(
+            "This dev container adds Linux capabilities ({}); review untrusted repositories before running it.",
+            config.devcontainer.cap_add.join(", ")
+        ));
+    }
+    if !config.devcontainer.security_opt.is_empty() {
+        warnings.push(format!(
+            "This dev container sets Docker security options ({}); review untrusted repositories before running it.",
+            config.devcontainer.security_opt.join(", ")
+        ));
+    }
+    if config.devcontainer.publish_ports.iter().any(|port| {
+        port.host_ip
+            .as_deref()
+            .is_none_or(|host_ip| host_ip != "127.0.0.1")
+    }) {
+        warnings.push(
+            "This dev container publishes appPort outside decune localhost forwarding; use forwardPorts for untrusted repositories."
+                .to_owned(),
+        );
+    }
+    if !config.devcontainer.mounts.is_empty() {
+        warnings.push(
+            "This dev container declares additional mounts; review host paths before running untrusted repositories."
+                .to_owned(),
+        );
+    }
+    warnings
 }
 
 pub(in crate::up) async fn warn_about_unsupported_dockerfile_image_metadata(

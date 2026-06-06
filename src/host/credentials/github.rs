@@ -23,9 +23,9 @@ use crate::{
         credentials::runtime::{
             GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_CONFIG_TOKEN_TARGET, GITHUB_CLI_TOKEN_DIR_NAME,
             GITHUB_CLI_TOKEN_DIR_TARGET, GITHUB_CLI_TOKEN_FILE_NAME, GITHUB_CLI_TOKEN_TARGET,
-            GithubCliRuntime, shell_quote,
+            GithubCliRuntime, cleanup_github_cli_token_file_best_effort, shell_quote,
         },
-        runtime::set_private_runtime_parent,
+        runtime::prepare_private_runtime_dir,
     },
     ui,
 };
@@ -63,20 +63,11 @@ pub(crate) fn prepare_github_cli_runtime_with_token(
     let Some(token) = normalize_github_token(token) else {
         return Ok(GithubCliRuntime::empty());
     };
+    ui::warn(
+        "GitHub credential forwarding is enabled; disable [credentials.github] for untrusted repositories.",
+    );
 
-    fs::create_dir_all(runtime_dir).with_context(|| {
-        format!(
-            "Failed to create GitHub CLI runtime directory: {}",
-            runtime_dir.display()
-        )
-    })?;
-    set_private_runtime_parent(runtime_dir)?;
-    fs::set_permissions(runtime_dir, fs::Permissions::from_mode(0o700)).with_context(|| {
-        format!(
-            "Failed to set GitHub CLI runtime directory permissions: {}",
-            runtime_dir.display()
-        )
-    })?;
+    prepare_private_runtime_dir(runtime_dir, "GitHub CLI")?;
 
     let token_dir = runtime_dir.join(GITHUB_CLI_TOKEN_DIR_NAME);
     fs::create_dir_all(&token_dir).with_context(|| {
@@ -167,6 +158,13 @@ pub(crate) fn remove_github_cli_token_file(runtime_dir: &Path) -> Result<()> {
             )
         }),
     }
+}
+
+pub(crate) fn cleanup_github_cli_token_file(runtime_dir: &Path) {
+    let token_file = runtime_dir
+        .join(GITHUB_CLI_TOKEN_DIR_NAME)
+        .join(GITHUB_CLI_TOKEN_FILE_NAME);
+    cleanup_github_cli_token_file_best_effort(&token_file);
 }
 
 pub(crate) async fn setup_github_cli_credentials(
@@ -428,7 +426,7 @@ fn normalize_github_token(token: &str) -> Option<String> {
 mod tests {
     use std::{
         fs,
-        os::unix::fs::PermissionsExt,
+        os::unix::{fs::PermissionsExt, fs::symlink},
         path::{Path, PathBuf},
     };
 
@@ -486,6 +484,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(mode(&runtime_dir), 0o700);
+        assert_eq!(mode(&runtime_dir.join("gh-token")), 0o700);
         assert_eq!(mode(runtime.token_file().unwrap()), 0o600);
         assert_eq!(
             fs::read_to_string(runtime.token_file().unwrap()).unwrap(),
@@ -503,6 +502,28 @@ mod tests {
                 .mounts()
                 .iter()
                 .any(|mount| mount.target == GITHUB_CLI_CONFIG_TARGET && !mount.read_only)
+        );
+    }
+
+    #[test]
+    fn github_runtime_rejects_symlink_runtime_dir() {
+        let temp = TempDir::new().unwrap();
+        let target = temp.path().join("target");
+        let runtime_dir = temp.path().join("runtime");
+        fs::create_dir(&target).unwrap();
+        symlink(&target, &runtime_dir).unwrap();
+
+        let error = prepare_github_cli_runtime_with_token(
+            &ResolvedConfig::default(),
+            &runtime_dir,
+            Some("test-secret\n"),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("runtime directory must not be a symlink")
         );
     }
 
