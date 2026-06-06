@@ -12,7 +12,7 @@ use crate::{
     config::{
         resolved::{ResolvedConfig, ResolvedHook},
         types::{Command, HookLocation},
-        variables::VariableContext,
+        variables::{VariableContext, expand_remote_env},
     },
     devcontainer::metadata::LifecycleProperty,
     docker::{
@@ -222,6 +222,7 @@ pub(crate) struct PreparedLifecycleRunContext<'a> {
     workspace_root: &'a Path,
     workspace_folder: &'a str,
     remote_user: ResolvedRemoteUser,
+    remote_env: BTreeMap<String, String>,
     remote_process_env: BTreeMap<String, String>,
 }
 
@@ -387,16 +388,25 @@ pub(crate) async fn prepare_container_lifecycle(
         &context.remote_user,
     )
     .await?;
+    let remote_env_variables = dotfile_variable_context(&context)
+        .with_container_env(context.config.devcontainer.container_env.clone());
+    let remote_env = expand_remote_env(
+        &context.config.devcontainer.remote_env,
+        &remote_env_variables,
+    )?;
+    let remote_process_env = resolve_exec_env(
+        context.client,
+        context.container,
+        &context.remote_user.user,
+        context.remote_user.shell.as_deref(),
+        &remote_env,
+        context.config.devcontainer.user_env_probe,
+    )
+    .await?;
+
     Ok(PreparedLifecycleRunContext {
-        remote_process_env: resolve_exec_env(
-            context.client,
-            context.container,
-            &context.remote_user.user,
-            context.remote_user.shell.as_deref(),
-            &context.config.devcontainer.remote_env,
-            context.config.devcontainer.user_env_probe,
-        )
-        .await?,
+        remote_env,
+        remote_process_env,
         client: context.client,
         container: context.container,
         config: context.config,
@@ -829,7 +839,7 @@ fn lifecycle_process_env(
         return context.remote_process_env.clone();
     }
 
-    context.config.devcontainer.remote_env.clone()
+    context.remote_env.clone()
 }
 
 fn same_container_user(left: &str, right: &str) -> bool {

@@ -1,19 +1,23 @@
 use anyhow::{Context, Result};
 
 use crate::{
+    config::variables::expand_remote_env,
     docker::{
         client::DockerClient,
         exec::{ExecCommandSpec, exec_attach, resolve_exec_env, run_attached_exec_stdio},
         user::resolve_remote_user,
     },
     up::{
+        mounts::mount_variable_context,
         shell::{first_successful_shell_candidate, shell_command_candidates},
         types::UpPlan,
     },
+    workspace::Workspace,
 };
 
 pub(in crate::up) async fn attach_shell(
     client: &DockerClient,
+    workspace: &Workspace,
     plan: &UpPlan,
     container_name: &str,
 ) -> Result<i64> {
@@ -24,12 +28,21 @@ pub(in crate::up) async fn attach_shell(
         &plan.uid_gid_sync_plan,
     )
     .await?;
+    let remote_env_variables = mount_variable_context(
+        workspace,
+        &plan.workspace_folder,
+        remote_user.user.clone(),
+        remote_user.home.clone(),
+    )
+    .with_container_env(plan.config.devcontainer.container_env.clone());
+    let remote_env = expand_remote_env(&plan.config.devcontainer.remote_env, &remote_env_variables)
+        .with_context(|| format!("Failed to expand remoteEnv for container: {container_name}"))?;
     let env = resolve_exec_env(
         client,
         container_name,
         &remote_user.user,
         remote_user.shell.as_deref(),
-        &plan.config.devcontainer.remote_env,
+        &remote_env,
         plan.config.devcontainer.user_env_probe,
     )
     .await?;

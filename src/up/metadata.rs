@@ -10,7 +10,7 @@ use crate::{
     config::{
         ConfigHashInput, ConfigLayer, StartupCommandHashInput, config_hash, layer::LayerFeature,
         resolve_config, resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource,
-        types::GithubCredentialsMode,
+        types::GithubCredentialsMode, variables::expand_container_env,
     },
     devcontainer::features::{prepare_feature_install_plan, remove_feature_lock_file},
     docker::{
@@ -377,6 +377,8 @@ async fn finalize_mounts_and_resources_for_plan(
         remote_user_name,
         remote_user_home,
     );
+    plan.config.devcontainer.container_env =
+        expand_container_env(&plan.config.devcontainer.container_env, &mount_variables)?;
     let mounts = workspace_mounts_from_resolved(
         workspace_location.workspace_mount,
         workspace.root(),

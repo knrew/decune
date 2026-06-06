@@ -868,6 +868,296 @@ fn up_attached_shell_receives_user_env_probe() {
 }
 
 #[test]
+fn up_detach_expands_remote_env_from_container_env() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'test "$PATH" = "/usr/bin:/bin:/extra" || exit 11' \
+              'test "$DECUNE_DEFAULT_ENV" = "fallback" || exit 12' \
+              'printf "%s|%s" "$PATH" "$DECUNE_DEFAULT_ENV" >/tmp/decune-container-env-expansion' \
+              >/usr/local/bin/decune-check-expanded-env \
+              && chmod +x /usr/local/bin/decune-check-expanded-env
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "containerEnv": {
+                "PATH": "/usr/bin:/bin"
+              },
+              "remoteEnv": {
+                "PATH": "${containerEnv:PATH}:/extra",
+                "DECUNE_DEFAULT_ENV": "${containerEnv:DECUNE_MISSING:fallback}"
+              },
+              "userEnvProbe": "none",
+              "postStartCommand": ["/usr/local/bin/decune-check-expanded-env"]
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let output = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/tmp/decune-container-env-expansion"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(output, "/usr/bin:/bin:/extra|fallback");
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_rejects_container_env_self_reference() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "containerEnv": {
+                "PATH": "${containerEnv:PATH}:/extra"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "containerEnv value must not reference containerEnv",
+            ));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_warns_and_continues_when_user_env_probe_fails() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN adduser -D -s /bin/false decune
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteUser": "decune",
+              "userEnvProbe": "loginShell",
+              "remoteEnv": {
+                "DECUNE_REMOTE_ENV_AFTER_FAILED_PROBE": "ok"
+              },
+              "postStartCommand": "test \"$DECUNE_REMOTE_ENV_AFTER_FAILED_PROBE\" = \"ok\" && printf ok >/tmp/decune-probe-fallback"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Warning: User environment probe failed",
+            ))
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let output = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/tmp/decune-probe-fallback"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(output, "ok");
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_applies_probe_env_to_remote_process_not_container_env() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'export DECUNE_PROBED_REMOTE_ONLY=from-probe' \
+              'exec /bin/sh "$@"' \
+              >/usr/local/bin/decune-probe-shell \
+              && chmod +x /usr/local/bin/decune-probe-shell \
+              && adduser -D -s /usr/local/bin/decune-probe-shell decune
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "remoteUser": "decune",
+              "userEnvProbe": "loginShell",
+              "postStartCommand": "test \"$DECUNE_PROBED_REMOTE_ONLY\" = \"from-probe\" && printf '%s' \"$DECUNE_PROBED_REMOTE_ONLY\" >/tmp/decune-probe-remote-only"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let output = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/tmp/decune-probe-remote-only"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(output, "from-probe");
+
+        let inspect = runtime
+            .block_on(async { inspect_single_workspace_container(&workspace_root).await })
+            .unwrap();
+        assert!(!inspect_has_env(
+            &inspect,
+            "DECUNE_PROBED_REMOTE_ONLY=from-probe"
+        ));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_config_shell_failure_does_not_fallback() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
