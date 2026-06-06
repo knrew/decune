@@ -361,7 +361,7 @@ impl FeatureResolver<'_> {
         });
 
         if let Some(source) = self.sources.get(&source_key) {
-            let instance_key = feature_instance_key(&feature, source, local_instance);
+            let instance_key = feature_instance_key(&feature, &reference, source, local_instance);
             return Ok(FeatureInstallInput {
                 feature,
                 reference,
@@ -373,7 +373,7 @@ impl FeatureResolver<'_> {
 
         let source = self.resolve_source(&reference)?;
         let metadata = source.metadata.clone();
-        let instance_key = feature_instance_key(&feature, &source, local_instance);
+        let instance_key = feature_instance_key(&feature, &reference, &source, local_instance);
         self.sources.insert(source_key.clone(), source);
 
         Ok(FeatureInstallInput {
@@ -401,21 +401,30 @@ impl FeatureResolver<'_> {
         })?;
         let source_dir = reference.path.canonicalize().with_context(|| {
             format!(
-                "Failed to resolve local Feature directory: {}",
+                "Failed to resolve local Feature directory for `{}`: {}",
+                reference.original,
                 reference.path.display()
             )
         })?;
         if !source_dir.starts_with(&devcontainer_dir) {
             bail!(
-                "Local Feature path must stay inside devcontainer directory {}: {}",
+                "Invalid local Feature `{}`: canonical path must stay inside devcontainer directory {} but resolved to {}",
+                reference.original,
                 devcontainer_dir.display(),
                 source_dir.display()
             );
         }
-        ensure_feature_files(&source_dir)?;
+        ensure_feature_files(&source_dir, &reference.original)?;
         let document =
-            read_feature_metadata_document(&source_dir.join("devcontainer-feature.json"))?;
-        validate_local_feature_directory_name(&source_dir, &document.metadata.id)?;
+            read_feature_metadata_document(&source_dir.join("devcontainer-feature.json"))
+                .with_context(|| {
+                    format!("Failed to read local Feature `{}`", reference.original)
+                })?;
+        validate_local_feature_directory_name(
+            &source_dir,
+            &document.metadata.id,
+            &reference.original,
+        )?;
         let digest = local_feature_content_digest(&source_dir)?;
         let container_env = feature_layer_container_env(&document.layer);
 
@@ -488,6 +497,7 @@ fn feature_source_key(reference: &FeatureRef) -> String {
 
 fn feature_instance_key(
     feature: &ResolvedFeature,
+    reference: &FeatureRef,
     source: &FeatureSource,
     local_instance: Option<usize>,
 ) -> String {
@@ -497,10 +507,16 @@ fn feature_instance_key(
         .collect::<Vec<_>>()
         .join("\x1f");
     match local_instance {
-        Some(instance) => format!(
-            "local\x1e{}\x1e{}\x1e{options}\x1e{instance}",
-            feature.canonical_id, source.digest
-        ),
+        Some(instance) => {
+            let canonical_id = match reference {
+                FeatureRef::Local(reference) => &reference.canonical_id,
+                FeatureRef::Oci(_) => &feature.canonical_id,
+            };
+            format!(
+                "local\x1e{}\x1e{}\x1e{options}\x1e{instance}",
+                canonical_id, source.digest
+            )
+        }
         None => format!(
             "oci\x1e{}\x1e{}\x1e{options}",
             feature.canonical_id, source.digest
@@ -816,7 +832,7 @@ fn feature_canonical_sort_name(input: &FeatureInstallInput) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, io::Write, path::Path};
+    use std::{collections::BTreeMap, fs, io::Write, os::unix::fs::PermissionsExt, path::Path};
 
     use flate2::{Compression, write::GzEncoder};
     use sha2::{Digest, Sha256};
@@ -827,9 +843,6 @@ mod tests {
         FeatureCacheMetadata, feature_cache_archive_path, write_cache_archive,
     };
     use crate::devcontainer::features::hex_lower;
-
-    const MANIFEST_DIGEST_HEX: &str =
-        "1111111111111111111111111111111111111111111111111111111111111111";
 
     #[test]
     fn local_feature_metadata_id_must_match_directory_name() {
@@ -843,6 +856,81 @@ mod tests {
         fs::write(
             feature_dir.join("devcontainer-feature.json"),
             r#"{"id":"different-tool","version":"1.0.0","name":"Different Tool"}"#,
+        )
+        .unwrap();
+        write_local_feature_install_script(&feature_dir);
+        let features = vec![ResolvedFeature {
+            id: "./features/tool".to_owned(),
+            canonical_id: "local:features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let error = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &cache_root.join("extracted"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains("local Feature directory name"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("tool"), "{error:#}");
+        assert!(error.to_string().contains("different-tool"), "{error:#}");
+    }
+
+    #[test]
+    fn local_feature_missing_install_script_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_dir = devcontainer_dir.join("features/tool");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
+        )
+        .unwrap();
+        let features = vec![ResolvedFeature {
+            id: "./features/tool".to_owned(),
+            canonical_id: "local:features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let error = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &cache_root.join("extracted"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("./features/tool"), "{error:#}");
+        assert!(error.to_string().contains("install.sh"), "{error:#}");
+    }
+
+    #[test]
+    fn local_feature_non_executable_install_script_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_dir = devcontainer_dir.join("features/tool");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
         )
         .unwrap();
         fs::write(feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
@@ -863,12 +951,132 @@ mod tests {
         )
         .unwrap_err();
 
+        assert!(error.to_string().contains("./features/tool"), "{error:#}");
+        assert!(error.to_string().contains("executable"), "{error:#}");
+    }
+
+    #[test]
+    fn local_feature_missing_metadata_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_dir = devcontainer_dir.join("features/tool");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        write_local_feature_install_script(&feature_dir);
+        let features = vec![ResolvedFeature {
+            id: "./features/tool".to_owned(),
+            canonical_id: "local:features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let error = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &cache_root.join("extracted"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("./features/tool"), "{error:#}");
         assert!(
-            error.to_string().contains("Local Feature directory name"),
+            error.to_string().contains("devcontainer-feature.json"),
             "{error:#}"
         );
-        assert!(error.to_string().contains("tool"), "{error:#}");
-        assert!(error.to_string().contains("different-tool"), "{error:#}");
+    }
+
+    #[test]
+    fn local_feature_symlink_escape_is_rejected() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_parent = devcontainer_dir.join("features");
+        let outside_dir = workspace_root.join("outside-tool");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&feature_parent).unwrap();
+        fs::create_dir_all(&outside_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            outside_dir.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
+        )
+        .unwrap();
+        write_local_feature_install_script(&outside_dir);
+        std::os::unix::fs::symlink(&outside_dir, feature_parent.join("tool")).unwrap();
+        let features = vec![ResolvedFeature {
+            id: "./features/tool".to_owned(),
+            canonical_id: "local:features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let error = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &cache_root.join("extracted"),
+            &[],
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("./features/tool"), "{error:#}");
+        assert!(error.to_string().contains("outside"), "{error:#}");
+    }
+
+    #[test]
+    fn valid_local_feature_validation_succeeds() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_dir = devcontainer_dir.join("features/tool");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
+        )
+        .unwrap();
+        write_local_feature_install_script(&feature_dir);
+        let features = vec![ResolvedFeature {
+            id: "./features/./tool".to_owned(),
+            canonical_id: "./features/./tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let plan = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &cache_root.join("extracted"),
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(plan.entries.len(), 1);
+        assert_eq!(
+            plan.entries[0].source_dir,
+            feature_dir.canonicalize().unwrap()
+        );
+        assert_eq!(plan.lock_entries.len(), 1);
+        assert!(
+            plan.lock_entries[0]
+                .feature_id
+                .contains("local:features/tool")
+        );
+        assert!(
+            !plan.lock_entries[0]
+                .feature_id
+                .contains("./features/./tool")
+        );
     }
 
     #[test]
@@ -890,6 +1098,7 @@ mod tests {
             "#!/bin/sh\ncat helper.txt\n",
         )
         .unwrap();
+        mark_executable(&feature_dir.join("install.sh"));
         fs::write(feature_dir.join("helper.txt"), "first\n").unwrap();
         let features = vec![ResolvedFeature {
             id: "./features/local".to_owned(),
@@ -961,13 +1170,13 @@ mod tests {
             }"#,
         )
         .unwrap();
-        fs::write(tool_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        write_local_feature_install_script(&tool_dir);
         fs::write(
             base_dir.join("devcontainer-feature.json"),
             r#"{"id":"base","version":"1.0.0","name":"Base"}"#,
         )
         .unwrap();
-        fs::write(base_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        write_local_feature_install_script(&base_dir);
         let features = vec![ResolvedFeature {
             id: "./features/tool".to_owned(),
             canonical_id: "./features/tool".to_owned(),
@@ -1016,7 +1225,7 @@ mod tests {
             r#"{"id":"outside-feature","version":"1.0.0","name":"Outside Feature"}"#,
         )
         .unwrap();
-        fs::write(feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        write_local_feature_install_script(&feature_dir);
         let features = vec![ResolvedFeature {
             id: "./../outside-feature".to_owned(),
             canonical_id: "local:../outside-feature".to_owned(),
@@ -1034,7 +1243,9 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains(".devcontainer"), "{error:#}");
+        let message = format!("{error:#}");
+        assert!(message.contains("./../outside-feature"), "{error:#}");
+        assert!(message.contains(".. traversal"), "{error:#}");
     }
 
     #[test]
@@ -1082,7 +1293,7 @@ mod tests {
         let lock_path = workspace_root.join(".decune/features.lock.toml");
         fs::create_dir_all(&local_feature_dir).unwrap();
         fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
-        fs::write(local_feature_dir.join("install.sh"), "#!/bin/sh\n").unwrap();
+        write_local_feature_install_script(&local_feature_dir);
         fs::write(
             local_feature_dir.join("devcontainer-feature.json"),
             r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
@@ -1821,6 +2032,18 @@ mod tests {
         let message = error.to_string();
         assert!(message.contains("alpha"), "{error:#}");
         assert!(message.contains("beta"), "{error:#}");
+    }
+
+    fn write_local_feature_install_script(feature_dir: &Path) {
+        let script = feature_dir.join("install.sh");
+        fs::write(&script, "#!/bin/sh\n").unwrap();
+        mark_executable(&script);
+    }
+
+    fn mark_executable(path: &Path) {
+        let mut permissions = fs::metadata(path).unwrap().permissions();
+        permissions.set_mode(permissions.mode() | 0o111);
+        fs::set_permissions(path, permissions).unwrap();
     }
 
     fn write_feature_archive(path: &Path, entries: &[(&str, &[u8])]) {
