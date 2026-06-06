@@ -1,13 +1,10 @@
-// M10-T02 exposes OCI pull/cache primitives that M10-T04 wires into image build.
 #![allow(dead_code)]
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},
-    env,
-    fs::{self, OpenOptions},
-    io::{self, ErrorKind, Read, Seek, SeekFrom, Write},
-    os::unix::fs::PermissionsExt,
-    path::{Component, Path, PathBuf},
+    env, fs,
+    io::{self, Write},
+    path::{Path, PathBuf},
     process::{Child, Command as HostCommand, Stdio},
     thread,
     time::Duration,
@@ -15,23 +12,43 @@ use std::{
 
 use anyhow::{Context, Result, anyhow, bail};
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
-use flate2::read::GzDecoder;
 use reqwest::{
     StatusCode,
     blocking::{Client as HttpClient, RequestBuilder, Response},
     header::{ACCEPT, AUTHORIZATION, HeaderMap, HeaderValue, WWW_AUTHENTICATE},
 };
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
-use tar::{Archive, EntryType};
 
-use crate::{
-    config::{FeatureLockHashEntry, layer::ConfigLayer, resolved::ResolvedFeature},
-    devcontainer::metadata::parse_metadata_layer,
+use crate::config::{FeatureLockHashEntry, layer::ConfigLayer, resolved::ResolvedFeature};
+
+mod archive;
+mod local;
+mod lock;
+mod metadata;
+mod reference;
+
+pub(crate) use archive::extract_feature_archive;
+use archive::find_required_feature_file;
+use local::{
+    ensure_feature_files, local_feature_content_digest, validate_local_feature_directory_name,
 };
+pub(crate) use lock::{
+    FEATURE_LOCK_VERSION, FeatureLockEntry, FeatureLockFile, read_feature_lock_file,
+    remove_feature_lock_file, resolve_locked_feature_ref, write_feature_lock_file,
+};
+use metadata::validate_feature_option_schema;
+pub(crate) use metadata::{FeatureMetadata, FeatureOptionSchema, read_feature_metadata_document};
+#[allow(unused_imports)]
+pub(crate) use metadata::{FeatureMetadataDocument, read_feature_metadata};
+#[cfg(test)]
+use reference::parse_oci_feature_ref;
+pub(crate) use reference::{
+    FeatureRef, LocalFeatureRef, OciFeatureRef, parse_feature_ref,
+    parse_feature_ref_from_devcontainer_dir,
+};
+use reference::{split_digest, split_tag, validate_oci_digest};
 
-pub(crate) const FEATURE_LOCK_VERSION: u32 = 1;
 const DEVCONTAINER_FEATURE_LAYER_MEDIA_TYPE: &str = "application/vnd.devcontainers.layer.v1+tar";
 const DOCKER_HUB_CANONICAL_HOST: &str = "docker.io";
 const DOCKER_HUB_REGISTRY_HOST: &str = "registry-1.docker.io";
@@ -40,91 +57,6 @@ const DOCKER_HUB_INDEX_AUTH_KEY: &str = "index.docker.io/v1";
 const DOCKER_HUB_CREDENTIAL_HELPER_SERVER: &str = "https://index.docker.io/v1/";
 const DOCKER_CREDENTIAL_HELPER_SPAWN_RETRIES: usize = 5;
 const DOCKER_CREDENTIAL_HELPER_SPAWN_RETRY_DELAY: Duration = Duration::from_millis(20);
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum FeatureRef {
-    Oci(OciFeatureRef),
-    Local(LocalFeatureRef),
-}
-
-impl FeatureRef {
-    pub(crate) fn canonical_id(&self) -> &str {
-        match self {
-            Self::Oci(reference) => &reference.canonical_id,
-            Self::Local(reference) => &reference.canonical_id,
-        }
-    }
-
-    pub(crate) fn original(&self) -> &str {
-        match self {
-            Self::Oci(reference) => &reference.original,
-            Self::Local(reference) => &reference.original,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct OciFeatureRef {
-    pub(crate) original: String,
-    pub(crate) registry: String,
-    pub(crate) repository: String,
-    pub(crate) feature_id: String,
-    pub(crate) tag: Option<String>,
-    pub(crate) digest: Option<String>,
-    pub(crate) canonical_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct LocalFeatureRef {
-    pub(crate) original: String,
-    pub(crate) path: PathBuf,
-    pub(crate) canonical_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FeatureLockFile {
-    pub(crate) version: u32,
-    #[serde(default)]
-    pub(crate) features: Vec<FeatureLockEntry>,
-}
-
-impl FeatureLockFile {
-    pub(crate) fn empty() -> Self {
-        Self {
-            version: FEATURE_LOCK_VERSION,
-            features: Vec::new(),
-        }
-    }
-
-    pub(crate) fn sorted(&self) -> Self {
-        let mut sorted = self.clone();
-        sorted.features.sort_by(|left, right| {
-            left.id
-                .cmp(&right.id)
-                .then_with(|| left.reference.cmp(&right.reference))
-                .then_with(|| left.digest.cmp(&right.digest))
-        });
-        sorted
-    }
-
-    pub(crate) fn digest_for_reference(&self, reference: &OciFeatureRef) -> Option<&str> {
-        self.features
-            .iter()
-            .find(|entry| {
-                crate::config::layer::canonical_feature_id(&entry.id) == reference.canonical_id
-                    && feature_lock_reference_matches(&entry.reference, reference)
-            })
-            .map(|entry| entry.digest.as_str())
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub(crate) struct FeatureLockEntry {
-    pub(crate) id: String,
-    #[serde(rename = "ref")]
-    pub(crate) reference: String,
-    pub(crate) digest: String,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 struct FeatureCacheMetadata {
@@ -153,42 +85,6 @@ pub(crate) struct OciLayerDescriptor {
     pub(crate) digest: String,
     pub(crate) media_type: String,
     pub(crate) size: u64,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
-pub(crate) struct FeatureMetadata {
-    pub(crate) id: String,
-    pub(crate) version: String,
-    pub(crate) name: String,
-    #[serde(default, rename = "legacyIds")]
-    pub(crate) legacy_ids: Vec<String>,
-    #[serde(default, rename = "dependsOn")]
-    pub(crate) depends_on: BTreeMap<String, serde_json::Value>,
-    #[serde(default, rename = "installsAfter")]
-    pub(crate) installs_after: Vec<String>,
-    #[serde(default)]
-    pub(crate) options: BTreeMap<String, FeatureOptionSchema>,
-}
-
-#[derive(Debug, Clone, PartialEq, Default, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct FeatureOptionSchema {
-    #[serde(default, rename = "type")]
-    pub(crate) option_type: Option<String>,
-    #[serde(default)]
-    pub(crate) default: Option<serde_json::Value>,
-    #[serde(default, rename = "enum")]
-    pub(crate) enum_values: Vec<String>,
-    #[serde(default)]
-    pub(crate) proposals: Vec<String>,
-    #[serde(default)]
-    pub(crate) description: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) struct FeatureMetadataDocument {
-    pub(crate) metadata: FeatureMetadata,
-    pub(crate) layer: ConfigLayer,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -582,124 +478,6 @@ impl DockerConfigAuthStore {
     }
 }
 
-pub(crate) fn parse_feature_ref(value: &str) -> Result<FeatureRef> {
-    parse_oci_feature_ref(value).map(FeatureRef::Oci)
-}
-
-pub(crate) fn parse_feature_ref_from_devcontainer_dir(
-    value: &str,
-    devcontainer_dir: &Path,
-) -> Result<FeatureRef> {
-    if value.starts_with("./") {
-        return Ok(FeatureRef::Local(parse_local_feature_ref(
-            value,
-            devcontainer_dir,
-        )?));
-    }
-
-    parse_feature_ref(value)
-}
-
-pub(crate) fn read_feature_lock_file(path: &Path) -> Result<FeatureLockFile> {
-    let content = match fs::read_to_string(path) {
-        Ok(content) => content,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(FeatureLockFile::empty()),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("Failed to read feature lock file: {}", path.display()));
-        }
-    };
-
-    let lock: FeatureLockFile = toml::from_str(&content)
-        .with_context(|| format!("Failed to parse feature lock file: {}", path.display()))?;
-    if lock.version != FEATURE_LOCK_VERSION {
-        bail!(
-            "Unsupported feature lock version {} in {}",
-            lock.version,
-            path.display()
-        );
-    }
-
-    Ok(lock.sorted())
-}
-
-#[allow(dead_code)]
-pub(crate) fn write_feature_lock_file(path: &Path, lock: &FeatureLockFile) -> Result<()> {
-    let parent = path
-        .parent()
-        .ok_or_else(|| anyhow!("Feature lock path has no parent: {}", path.display()))?;
-    fs::create_dir_all(parent).with_context(|| {
-        format!(
-            "Failed to create feature lock directory: {}",
-            parent.display()
-        )
-    })?;
-
-    let sorted = lock.sorted();
-    let content = toml::to_string(&sorted)
-        .with_context(|| format!("Failed to serialize feature lock file: {}", path.display()))?;
-    let temp_path = create_temp_lock_file(path, content.as_bytes())?;
-    fs::rename(&temp_path, path).with_context(|| {
-        format!(
-            "Failed to replace feature lock file {} with {}",
-            path.display(),
-            temp_path.display()
-        )
-    })?;
-
-    Ok(())
-}
-
-pub(crate) fn remove_feature_lock_file(path: &Path) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error)
-            .with_context(|| format!("Failed to remove feature lock file: {}", path.display())),
-    }
-}
-
-pub(crate) fn resolve_locked_feature_ref(
-    feature: &FeatureRef,
-    lock: &FeatureLockFile,
-    update_features: bool,
-) -> String {
-    if update_features {
-        return feature.original().to_owned();
-    }
-
-    match feature {
-        FeatureRef::Oci(reference) => {
-            if let Some(digest) = lock.digest_for_reference(reference) {
-                format!("{}@{}", reference.canonical_id, digest)
-            } else {
-                reference.original.clone()
-            }
-        }
-        FeatureRef::Local(reference) => reference.path.display().to_string(),
-    }
-}
-
-fn feature_lock_reference_matches(locked: &str, requested: &OciFeatureRef) -> bool {
-    let Ok(FeatureRef::Oci(locked)) = parse_feature_ref(locked) else {
-        return false;
-    };
-
-    oci_feature_ref_lock_key(&locked) == oci_feature_ref_lock_key(requested)
-}
-
-fn oci_feature_ref_lock_key(reference: &OciFeatureRef) -> String {
-    if let Some(digest) = &reference.digest {
-        format!("{}@{digest}", reference.canonical_id)
-    } else {
-        format!(
-            "{}:{}",
-            reference.canonical_id,
-            reference.tag.as_deref().unwrap_or("latest")
-        )
-    }
-}
-
 pub(crate) fn pull_oci_feature_with_client(
     reference: &OciFeatureRef,
     cache_root: &Path,
@@ -791,208 +569,6 @@ pub(crate) fn pull_oci_feature_with_client(
         extract_root,
         false,
     )
-}
-
-pub(crate) fn extract_feature_archive(archive_path: &Path, destination: &Path) -> Result<()> {
-    if destination.exists() {
-        fs::remove_dir_all(destination).with_context(|| {
-            format!(
-                "Failed to remove existing feature extraction directory: {}",
-                destination.display()
-            )
-        })?;
-    }
-    fs::create_dir_all(destination).with_context(|| {
-        format!(
-            "Failed to create feature extraction directory: {}",
-            destination.display()
-        )
-    })?;
-
-    let mut file = fs::File::open(archive_path)
-        .with_context(|| format!("Failed to open feature archive: {}", archive_path.display()))?;
-    let mut magic = [0; 2];
-    let read = file
-        .read(&mut magic)
-        .with_context(|| format!("Failed to read feature archive: {}", archive_path.display()))?;
-    file.seek(SeekFrom::Start(0)).with_context(|| {
-        format!(
-            "Failed to rewind feature archive: {}",
-            archive_path.display()
-        )
-    })?;
-
-    if read == magic.len() && magic == [0x1f, 0x8b] {
-        extract_tar_archive(archive_path, destination, GzDecoder::new(file))
-    } else {
-        extract_tar_archive(archive_path, destination, file)
-    }
-}
-
-fn extract_tar_archive<R: Read>(archive_path: &Path, destination: &Path, reader: R) -> Result<()> {
-    let mut archive = Archive::new(reader);
-
-    for entry in archive.entries().with_context(|| {
-        format!(
-            "Failed to read feature archive entries: {}",
-            archive_path.display()
-        )
-    })? {
-        let mut entry = entry.with_context(|| {
-            format!(
-                "Failed to read feature archive entry: {}",
-                archive_path.display()
-            )
-        })?;
-        let path = entry.path().with_context(|| {
-            format!(
-                "Failed to read feature archive entry path: {}",
-                archive_path.display()
-            )
-        })?;
-        let path = path.into_owned();
-        validate_archive_entry_path(&path)?;
-        validate_archive_entry_type(entry.header().entry_type(), &path)?;
-        entry.unpack_in(destination).with_context(|| {
-            format!(
-                "Failed to extract feature archive entry {} from {}",
-                path.display(),
-                archive_path.display()
-            )
-        })?;
-    }
-
-    Ok(())
-}
-
-pub(crate) fn read_feature_metadata(path: &Path) -> Result<FeatureMetadata> {
-    read_feature_metadata_document(path).map(|document| document.metadata)
-}
-
-pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetadataDocument> {
-    let content = fs::read_to_string(path)
-        .with_context(|| format!("Failed to read Feature metadata: {}", path.display()))?;
-    let raw: JsonValue = serde_json::from_str(&content)
-        .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))?;
-    validate_feature_metadata_document(&raw)?;
-    let metadata = serde_json::from_value(raw.clone())
-        .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))?;
-    validate_feature_metadata_schema(&metadata)?;
-    let layer = parse_metadata_layer(raw.clone())
-        .and_then(|metadata| metadata.to_config_layer_without_forward_ports())
-        .with_context(|| {
-            format!(
-                "Failed to convert Feature metadata to devcontainer metadata layer: {}",
-                path.display()
-            )
-        })?;
-
-    Ok(FeatureMetadataDocument { metadata, layer })
-}
-
-fn validate_feature_metadata_document(raw: &JsonValue) -> Result<()> {
-    let Some(object) = raw.as_object() else {
-        bail!("Feature metadata must be a JSON object");
-    };
-
-    for required in ["id", "version", "name"] {
-        if !object.contains_key(required) {
-            bail!("Feature metadata must specify {required}");
-        }
-    }
-
-    for property in object.keys() {
-        if !feature_metadata_property_is_supported(property) {
-            bail!("Unsupported Feature metadata property: {property}");
-        }
-    }
-
-    if let Some(customizations) = object.get("customizations")
-        && !customizations.is_object()
-    {
-        bail!("Feature metadata customizations must be an object");
-    }
-    for property in [
-        "id",
-        "version",
-        "name",
-        "description",
-        "documentationURL",
-        "licenseURL",
-    ] {
-        if let Some(value) = object.get(property)
-            && !value.is_string()
-        {
-            bail!("Feature metadata {property} must be a string");
-        }
-    }
-    for property in ["keywords", "legacyIds"] {
-        if let Some(value) = object.get(property)
-            && !json_array_is_strings(value)
-        {
-            bail!("Feature metadata {property} must be an array of strings");
-        }
-    }
-    if let Some(deprecated) = object.get("deprecated")
-        && !deprecated.is_boolean()
-    {
-        bail!("Feature metadata deprecated must be a boolean");
-    }
-
-    Ok(())
-}
-
-fn json_array_is_strings(value: &JsonValue) -> bool {
-    value
-        .as_array()
-        .is_some_and(|values| values.iter().all(JsonValue::is_string))
-}
-
-fn feature_metadata_property_is_supported(property: &str) -> bool {
-    matches!(
-        property,
-        "id" | "version"
-            | "name"
-            | "description"
-            | "documentationURL"
-            | "licenseURL"
-            | "keywords"
-            | "legacyIds"
-            | "deprecated"
-            | "options"
-            | "dependsOn"
-            | "installsAfter"
-            | "containerEnv"
-            | "customizations"
-            | "entrypoint"
-            | "init"
-            | "privileged"
-            | "capAdd"
-            | "securityOpt"
-            | "mounts"
-            | "onCreateCommand"
-            | "updateContentCommand"
-            | "postCreateCommand"
-            | "postStartCommand"
-            | "postAttachCommand"
-    )
-}
-
-fn validate_feature_metadata_schema(metadata: &FeatureMetadata) -> Result<()> {
-    if metadata.id.trim().is_empty() {
-        bail!("Feature metadata id must not be empty");
-    }
-    if metadata.version.trim().is_empty() {
-        bail!("Feature metadata version must not be empty");
-    }
-    if metadata.name.trim().is_empty() {
-        bail!("Feature metadata name must not be empty");
-    }
-    for (option, schema) in &metadata.options {
-        validate_feature_option_schema(&metadata.id, option, schema)?;
-    }
-
-    Ok(())
 }
 
 pub(crate) fn prepare_feature_install_plan(
@@ -1316,295 +892,6 @@ fn insert_feature_option_env(
     Ok(())
 }
 
-fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
-    if value.starts_with("http://") || value.starts_with("https://") {
-        return Err(invalid_feature_ref(
-            value,
-            "direct HTTPS Feature tarballs are not supported in decune v0.1",
-        ));
-    }
-
-    let (without_digest, digest) = split_digest(value)?;
-    let (without_tag, tag) = split_tag(without_digest);
-    let (registry, path) = without_tag
-        .split_once('/')
-        .ok_or_else(|| invalid_feature_ref(value, "missing registry or repository"))?;
-    let last_slash = path
-        .rfind('/')
-        .ok_or_else(|| invalid_feature_ref(value, "missing repository or feature id"))?;
-    let repository = &path[..last_slash];
-    let feature_id = &path[last_slash + 1..];
-
-    if registry.is_empty()
-        || repository.is_empty()
-        || feature_id.is_empty()
-        || tag.is_some_and(str::is_empty)
-    {
-        return Err(invalid_feature_ref(
-            value,
-            "expected <registry>/<repository>/<feature-id>:<tag> or @<digest>",
-        ));
-    }
-
-    validate_oci_feature_registry(value, registry)?;
-    validate_oci_feature_path(value, repository, "repository")?;
-    validate_oci_feature_path_component(value, feature_id, "feature id")?;
-    if let Some(tag) = tag {
-        validate_oci_feature_tag(value, tag)?;
-    }
-
-    let registry = registry.to_ascii_lowercase();
-    let repository = repository.to_ascii_lowercase();
-    let feature_id = feature_id.to_ascii_lowercase();
-    let canonical_id = format!("{registry}/{repository}/{feature_id}");
-    let digest = digest
-        .map(|digest| {
-            validate_oci_digest(digest)
-                .map(|()| digest.to_owned())
-                .map_err(|error| invalid_feature_ref(value, &format!("invalid digest: {error}")))
-        })
-        .transpose()?;
-
-    Ok(OciFeatureRef {
-        original: value.to_owned(),
-        registry,
-        repository,
-        feature_id,
-        tag: tag
-            .or_else(|| digest.is_none().then_some("latest"))
-            .map(str::to_owned),
-        digest,
-        canonical_id,
-    })
-}
-
-impl OciFeatureRef {
-    fn canonical_repository(&self) -> String {
-        format!("{}/{}", self.registry, self.repository)
-    }
-
-    fn repository_path(&self) -> String {
-        format!("{}/{}", self.repository, self.feature_id)
-    }
-
-    fn normalized_reference(&self) -> String {
-        if let Some(digest) = &self.digest {
-            format!("{}@{digest}", self.canonical_id)
-        } else {
-            format!(
-                "{}:{}",
-                self.canonical_id,
-                self.tag.as_deref().unwrap_or("latest")
-            )
-        }
-    }
-}
-
-fn parse_local_feature_ref(value: &str, devcontainer_dir: &Path) -> Result<LocalFeatureRef> {
-    let relative = value
-        .strip_prefix("./")
-        .filter(|path| !path.is_empty())
-        .ok_or_else(|| invalid_feature_ref(value, "local feature path is empty"))?;
-
-    Ok(LocalFeatureRef {
-        original: value.to_owned(),
-        path: devcontainer_dir.join(relative),
-        canonical_id: format!("local:{relative}"),
-    })
-}
-
-fn validate_oci_feature_registry(value: &str, registry: &str) -> Result<()> {
-    if registry.contains("://")
-        || registry.contains('/')
-        || registry.bytes().any(|byte| byte.is_ascii_whitespace())
-        || registry.chars().any(char::is_control)
-    {
-        return Err(invalid_feature_ref(
-            value,
-            "registry must be a host or host:port without a URL scheme",
-        ));
-    }
-
-    if registry.starts_with('[') {
-        return validate_oci_feature_ipv6_registry(value, registry);
-    }
-
-    let (host, port) = match registry.rsplit_once(':') {
-        Some((host, port)) => (host, Some(port)),
-        None => (registry, None),
-    };
-    if host.is_empty() {
-        return Err(invalid_feature_ref(value, "registry host is empty"));
-    }
-    if let Some(port) = port
-        && (port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()))
-    {
-        return Err(invalid_feature_ref(
-            value,
-            "registry port must contain only digits",
-        ));
-    }
-    for component in host.split('.') {
-        if component.is_empty()
-            || component.starts_with('-')
-            || component.ends_with('-')
-            || !component
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
-            return Err(invalid_feature_ref(
-                value,
-                "registry host contains an invalid component",
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_oci_feature_ipv6_registry(value: &str, registry: &str) -> Result<()> {
-    let Some(bracket_end) = registry.find(']') else {
-        return Err(invalid_feature_ref(
-            value,
-            "registry IPv6 host must be enclosed in brackets",
-        ));
-    };
-    let host = &registry[1..bracket_end];
-    if host.is_empty() {
-        return Err(invalid_feature_ref(value, "registry host is empty"));
-    }
-    if host.contains('%') || host.parse::<std::net::Ipv6Addr>().is_err() {
-        return Err(invalid_feature_ref(value, "registry IPv6 host is invalid"));
-    }
-
-    let rest = &registry[bracket_end + 1..];
-    if rest.is_empty() {
-        return Ok(());
-    }
-
-    let Some(port) = rest.strip_prefix(':') else {
-        return Err(invalid_feature_ref(
-            value,
-            "registry must be a host or host:port without a URL scheme",
-        ));
-    };
-    if port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
-        return Err(invalid_feature_ref(
-            value,
-            "registry port must contain only digits",
-        ));
-    }
-
-    Ok(())
-}
-
-fn validate_oci_feature_path(value: &str, path: &str, label: &str) -> Result<()> {
-    for component in path.split('/') {
-        validate_oci_feature_path_component(value, component, label)?;
-    }
-
-    Ok(())
-}
-
-fn validate_oci_feature_path_component(value: &str, component: &str, label: &str) -> Result<()> {
-    if component.is_empty() {
-        return Err(invalid_feature_ref(
-            value,
-            &format!("{label} contains an empty path component"),
-        ));
-    }
-
-    let mut chars = component.chars().peekable();
-    let Some(first) = chars.next() else {
-        return Err(invalid_feature_ref(value, &format!("{label} is empty")));
-    };
-    if !first.is_ascii_alphanumeric() {
-        return Err(invalid_feature_ref(
-            value,
-            &format!("{label} component must start with an alphanumeric character"),
-        ));
-    }
-
-    while let Some(ch) = chars.next() {
-        if ch.is_ascii_alphanumeric() {
-            continue;
-        }
-        if ch == '-' {
-            while chars.peek().is_some_and(|next| *next == '-') {
-                chars.next();
-            }
-        } else if ch == '_' {
-            if chars.peek().is_some_and(|next| *next == '_') {
-                chars.next();
-            }
-        } else if ch != '.' {
-            return Err(invalid_feature_ref(
-                value,
-                &format!("{label} contains an invalid character"),
-            ));
-        }
-
-        if !chars
-            .peek()
-            .is_some_and(|next| next.is_ascii_alphanumeric())
-        {
-            return Err(invalid_feature_ref(
-                value,
-                &format!("{label} separator must be followed by an alphanumeric character"),
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_oci_feature_tag(value: &str, tag: &str) -> Result<()> {
-    let mut bytes = tag.bytes();
-    let Some(first) = bytes.next() else {
-        return Err(invalid_feature_ref(value, "tag is empty"));
-    };
-    if !first.is_ascii_alphanumeric() && first != b'_' {
-        return Err(invalid_feature_ref(
-            value,
-            "tag must start with an alphanumeric character or underscore",
-        ));
-    }
-    if tag.len() > 128
-        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'.' | b'-'))
-    {
-        return Err(invalid_feature_ref(
-            value,
-            "tag contains invalid characters",
-        ));
-    }
-
-    Ok(())
-}
-
-fn split_digest(value: &str) -> Result<(&str, Option<&str>)> {
-    match value.split_once('@') {
-        Some((base, digest)) if !base.is_empty() && !digest.is_empty() => Ok((base, Some(digest))),
-        Some(_) => Err(invalid_feature_ref(value, "invalid digest")),
-        None => Ok((value, None)),
-    }
-}
-
-fn split_tag(value: &str) -> (&str, Option<&str>) {
-    let last_slash = value.rfind('/');
-    let last_colon = value.rfind(':');
-
-    match (last_slash, last_colon) {
-        (_, Some(colon)) if last_slash.is_none_or(|slash| colon > slash) => {
-            (&value[..colon], Some(&value[colon + 1..]))
-        }
-        _ => (value, None),
-    }
-}
-
-fn invalid_feature_ref(value: &str, reason: &str) -> anyhow::Error {
-    anyhow!("Invalid feature ref `{value}`: {reason}")
-}
-
 fn extract_cached_feature(
     reference: &OciFeatureRef,
     digest: &str,
@@ -1764,42 +1051,6 @@ impl FeatureResolver<'_> {
     }
 }
 
-fn ensure_feature_files(source_dir: &Path) -> Result<()> {
-    for name in ["install.sh", "devcontainer-feature.json"] {
-        let path = source_dir.join(name);
-        if !path.is_file() {
-            bail!(
-                "Feature directory must contain {name}: {}",
-                source_dir.display()
-            );
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_local_feature_directory_name(source_dir: &Path, metadata_id: &str) -> Result<()> {
-    let directory_name = source_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            anyhow!(
-                "Failed to resolve local Feature directory name: {}",
-                source_dir.display()
-            )
-        })?;
-    if directory_name != metadata_id {
-        bail!(
-            "Local Feature directory name must match Feature metadata id: {} has directory name `{}` but metadata id `{}`",
-            source_dir.display(),
-            directory_name,
-            metadata_id
-        );
-    }
-
-    Ok(())
-}
-
 fn feature_layer_container_env(layer: &ConfigLayer) -> BTreeMap<String, String> {
     layer
         .devcontainer
@@ -1847,93 +1098,6 @@ fn feature_install_input_instance_key(input: &FeatureInstallInput) -> String {
         "test\x1e{}\x1e{}\x1e{options}",
         input.feature.canonical_id, input.feature.id
     )
-}
-
-fn local_feature_content_digest(source_dir: &Path) -> Result<String> {
-    let mut hasher = Sha256::new();
-    hash_local_feature_directory(source_dir, source_dir, &mut hasher)?;
-    let digest = hasher.finalize();
-
-    Ok(format!("sha256:{}", hex_lower(&digest)))
-}
-
-fn hash_local_feature_directory(root: &Path, directory: &Path, hasher: &mut Sha256) -> Result<()> {
-    let mut entries = fs::read_dir(directory)
-        .with_context(|| {
-            format!(
-                "Failed to read local Feature directory: {}",
-                directory.display()
-            )
-        })?
-        .collect::<std::result::Result<Vec<_>, _>>()
-        .with_context(|| {
-            format!(
-                "Failed to enumerate local Feature directory: {}",
-                directory.display()
-            )
-        })?;
-    entries.sort_by_key(|entry| entry.path());
-
-    for entry in entries {
-        let path = entry.path();
-        let relative_path = path.strip_prefix(root).with_context(|| {
-            format!(
-                "Failed to relativize local Feature path: {}",
-                path.display()
-            )
-        })?;
-        let metadata = fs::symlink_metadata(&path)
-            .with_context(|| format!("Failed to inspect local Feature path: {}", path.display()))?;
-        hash_local_feature_entry_header(
-            hasher,
-            relative_path,
-            local_feature_entry_kind(&metadata),
-            metadata.permissions().mode(),
-        );
-
-        if metadata.is_dir() {
-            hash_local_feature_directory(root, &path, hasher)?;
-        } else if metadata.file_type().is_symlink() {
-            let target = fs::read_link(&path).with_context(|| {
-                format!("Failed to read local Feature symlink: {}", path.display())
-            })?;
-            hasher.update(target.as_os_str().as_encoded_bytes());
-            hasher.update([0]);
-        } else if metadata.is_file() {
-            let contents = fs::read(&path).with_context(|| {
-                format!("Failed to read local Feature file: {}", path.display())
-            })?;
-            hasher.update(contents.len().to_be_bytes());
-            hasher.update(contents);
-        }
-    }
-
-    Ok(())
-}
-
-fn hash_local_feature_entry_header(
-    hasher: &mut Sha256,
-    relative_path: &Path,
-    kind: &'static [u8],
-    mode: u32,
-) {
-    hasher.update(kind);
-    hasher.update([0]);
-    hasher.update(relative_path.as_os_str().as_encoded_bytes());
-    hasher.update([0]);
-    hasher.update((mode & 0o7777).to_be_bytes());
-}
-
-fn local_feature_entry_kind(metadata: &fs::Metadata) -> &'static [u8] {
-    if metadata.is_dir() {
-        b"dir"
-    } else if metadata.file_type().is_symlink() {
-        b"symlink"
-    } else if metadata.is_file() {
-        b"file"
-    } else {
-        b"other"
-    }
 }
 
 struct FeatureDependencyTarget {
@@ -2167,42 +1331,6 @@ fn verify_digest(content: &[u8], digest: &str) -> Result<()> {
     Ok(())
 }
 
-fn find_required_feature_file(root: &Path, name: &str) -> Result<PathBuf> {
-    let path = root.join(name);
-    if !path.is_file() {
-        bail!("Feature archive must contain {name} at its root");
-    }
-
-    Ok(path)
-}
-
-fn validate_archive_entry_path(path: &Path) -> Result<()> {
-    if path.as_os_str().is_empty() {
-        bail!("Unsafe feature archive path: empty path");
-    }
-    for component in path.components() {
-        match component {
-            Component::Normal(_) | Component::CurDir => {}
-            Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
-                bail!("Unsafe feature archive path: {}", path.display());
-            }
-        }
-    }
-
-    Ok(())
-}
-
-fn validate_archive_entry_type(entry_type: EntryType, path: &Path) -> Result<()> {
-    if entry_type.is_file() || entry_type.is_dir() {
-        return Ok(());
-    }
-
-    bail!(
-        "Unsupported feature archive entry type for {}",
-        path.display()
-    )
-}
-
 fn canonical_feature_dependency_id(value: &str) -> String {
     crate::config::layer::canonical_feature_id(value)
 }
@@ -2418,48 +1546,6 @@ fn feature_option_sort_value(value: &toml::Value) -> String {
     }
 }
 
-fn validate_feature_option_schema(
-    feature_id: &str,
-    option: &str,
-    schema: &FeatureOptionSchema,
-) -> Result<()> {
-    let Some(option_type) = schema.option_type.as_deref() else {
-        bail!("Feature option {feature_id}.{option} must specify type");
-    };
-
-    match option_type {
-        "string" => {
-            let default = schema.default.as_ref().ok_or_else(|| {
-                anyhow!("Feature option {feature_id}.{option} must specify default")
-            })?;
-            if !default.is_string() {
-                bail!("Feature option default {feature_id}.{option} must be a string");
-            }
-            if !schema.enum_values.is_empty() && !schema.proposals.is_empty() {
-                bail!(
-                    "Feature option {feature_id}.{option} must not declare both enum and proposals"
-                );
-            }
-            Ok(())
-        }
-        "boolean" => {
-            let default = schema.default.as_ref().ok_or_else(|| {
-                anyhow!("Feature option {feature_id}.{option} must specify default")
-            })?;
-            if !default.is_boolean() {
-                bail!("Feature option default {feature_id}.{option} must be a boolean");
-            }
-            if !schema.enum_values.is_empty() || !schema.proposals.is_empty() {
-                bail!(
-                    "Feature option {feature_id}.{option} boolean schema must not declare enum or proposals"
-                );
-            }
-            Ok(())
-        }
-        _ => bail!("Unsupported Feature option type for {feature_id}.{option}: {option_type}"),
-    }
-}
-
 fn feature_option_toml_value(
     feature_id: &str,
     option: &str,
@@ -2654,23 +1740,6 @@ fn parse_registry_manifest_response_body(
     Ok(OciManifestResponse { digest, layers })
 }
 
-fn validate_oci_digest(digest: &str) -> Result<()> {
-    let Some(expected) = digest.strip_prefix("sha256:") else {
-        bail!("Unsupported OCI digest algorithm: {digest}");
-    };
-    if expected.len() != 64 || !expected.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-        bail!("Invalid OCI sha256 digest: {digest}");
-    }
-    if !expected
-        .bytes()
-        .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit())
-    {
-        bail!("OCI sha256 digest must use lowercase hex: {digest}");
-    }
-
-    Ok(())
-}
-
 fn normalize_registry_auth_key(registry: &str) -> String {
     registry
         .strip_prefix("https://")
@@ -2791,46 +1860,6 @@ fn hex_lower(bytes: &[u8]) -> String {
         let _ = write!(output, "{byte:02x}");
     }
     output
-}
-
-fn create_temp_lock_file(path: &Path, content: &[u8]) -> Result<PathBuf> {
-    for attempt in 0..100 {
-        let temp_path = path.with_extension(format!("lock.tmp.{}.{}", std::process::id(), attempt));
-        let mut file = match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&temp_path)
-        {
-            Ok(file) => file,
-            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
-            Err(error) => {
-                return Err(error).with_context(|| {
-                    format!(
-                        "Failed to create temporary lock file: {}",
-                        temp_path.display()
-                    )
-                });
-            }
-        };
-        std::io::Write::write_all(&mut file, content).with_context(|| {
-            format!(
-                "Failed to write temporary lock file: {}",
-                temp_path.display()
-            )
-        })?;
-        file.sync_all().with_context(|| {
-            format!(
-                "Failed to sync temporary lock file: {}",
-                temp_path.display()
-            )
-        })?;
-        return Ok(temp_path);
-    }
-
-    bail!(
-        "Failed to create temporary feature lock file for {}",
-        path.display()
-    )
 }
 
 #[derive(Debug, Deserialize)]
@@ -3056,7 +2085,9 @@ struct BearerTokenResponse {
 
 #[cfg(test)]
 mod tests {
-    use std::{cell::Cell, collections::BTreeMap, fs, io::Write, path::Path};
+    use std::{
+        cell::Cell, collections::BTreeMap, fs, io::Write, os::unix::fs::PermissionsExt, path::Path,
+    };
 
     use flate2::{Compression, write::GzEncoder};
     use tar::{Builder, Header};
@@ -3079,183 +2110,6 @@ mod tests {
         drop(file);
         fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).unwrap();
         fs::rename(&staged, path).unwrap();
-    }
-
-    #[test]
-    fn parses_tagged_oci_feature_ref() {
-        let reference = parse_feature_ref("ghcr.io/devcontainers/features/go:1").unwrap();
-
-        assert_eq!(
-            reference,
-            FeatureRef::Oci(OciFeatureRef {
-                original: "ghcr.io/devcontainers/features/go:1".to_owned(),
-                registry: "ghcr.io".to_owned(),
-                repository: "devcontainers/features".to_owned(),
-                feature_id: "go".to_owned(),
-                tag: Some("1".to_owned()),
-                digest: None,
-                canonical_id: "ghcr.io/devcontainers/features/go".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn parses_oci_feature_ref_case_insensitively() {
-        let reference = parse_feature_ref("GHCR.IO/DevContainers/Features/GitHub-CLI:1").unwrap();
-
-        assert_eq!(
-            reference,
-            FeatureRef::Oci(OciFeatureRef {
-                original: "GHCR.IO/DevContainers/Features/GitHub-CLI:1".to_owned(),
-                registry: "ghcr.io".to_owned(),
-                repository: "devcontainers/features".to_owned(),
-                feature_id: "github-cli".to_owned(),
-                tag: Some("1".to_owned()),
-                digest: None,
-                canonical_id: "ghcr.io/devcontainers/features/github-cli".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn parses_digest_oci_feature_ref_with_registry_port() {
-        let digest = sha256_digest(MANIFEST_DIGEST_HEX);
-        let reference = parse_feature_ref(&format!(
-            "localhost:5000/devcontainers/features/tool@{digest}"
-        ))
-        .unwrap();
-
-        assert_eq!(
-            reference,
-            FeatureRef::Oci(OciFeatureRef {
-                original: format!("localhost:5000/devcontainers/features/tool@{digest}"),
-                registry: "localhost:5000".to_owned(),
-                repository: "devcontainers/features".to_owned(),
-                feature_id: "tool".to_owned(),
-                tag: None,
-                digest: Some(digest),
-                canonical_id: "localhost:5000/devcontainers/features/tool".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn parses_oci_feature_ref_with_bracketed_ipv6_registry() {
-        let reference = parse_feature_ref("[2001:db8::1]:5000/example/features/tool:1").unwrap();
-
-        assert_eq!(
-            reference,
-            FeatureRef::Oci(OciFeatureRef {
-                original: "[2001:db8::1]:5000/example/features/tool:1".to_owned(),
-                registry: "[2001:db8::1]:5000".to_owned(),
-                repository: "example/features".to_owned(),
-                feature_id: "tool".to_owned(),
-                tag: Some("1".to_owned()),
-                digest: None,
-                canonical_id: "[2001:db8::1]:5000/example/features/tool".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn bracketed_ipv6_oci_feature_ref_without_tag_defaults_to_latest() {
-        let reference = parse_feature_ref("[2001:db8::1]/example/features/tool").unwrap();
-
-        assert_eq!(
-            reference,
-            FeatureRef::Oci(OciFeatureRef {
-                original: "[2001:db8::1]/example/features/tool".to_owned(),
-                registry: "[2001:db8::1]".to_owned(),
-                repository: "example/features".to_owned(),
-                feature_id: "tool".to_owned(),
-                tag: Some("latest".to_owned()),
-                digest: None,
-                canonical_id: "[2001:db8::1]/example/features/tool".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn oci_feature_ref_without_tag_defaults_to_latest() {
-        let reference = parse_feature_ref("ghcr.io/devcontainers/features/go").unwrap();
-
-        assert_eq!(
-            reference,
-            FeatureRef::Oci(OciFeatureRef {
-                original: "ghcr.io/devcontainers/features/go".to_owned(),
-                registry: "ghcr.io".to_owned(),
-                repository: "devcontainers/features".to_owned(),
-                feature_id: "go".to_owned(),
-                tag: Some("latest".to_owned()),
-                digest: None,
-                canonical_id: "ghcr.io/devcontainers/features/go".to_owned(),
-            })
-        );
-    }
-
-    #[test]
-    fn invalid_feature_ref_error_includes_ref() {
-        let error = parse_feature_ref("ghcr.io/features").unwrap_err();
-
-        assert!(error.to_string().contains("ghcr.io/features"), "{error:#}");
-
-        let error = parse_feature_ref("ghcr.io/example/features/tool:").unwrap_err();
-
-        assert!(
-            error.to_string().contains("ghcr.io/example/features/tool:"),
-            "{error:#}"
-        );
-    }
-
-    #[test]
-    fn oci_feature_ref_rejects_unsupported_https_tarballs_and_malformed_names() {
-        for reference in [
-            "https://github.com/owner/repo/releases/devcontainer-feature-tool.tgz",
-            "http://example.com/devcontainer-feature-tool.tgz",
-            "ghcr.io//features/tool",
-            "ghcr.io/example/features/tool with space:1",
-            "ghcr.io/example/features/tool:bad tag",
-            "ghcr.io/example/features/tool:bad\tnew",
-            "ghcr.io/example/feat\nures/tool:1",
-            "2001:db8::1/example/features/tool:1",
-            "[2001:db8::1:5000/example/features/tool:1",
-            "[2001:db8::1]:bad/example/features/tool:1",
-            "[fe80::1%eth0]/example/features/tool:1",
-        ] {
-            let error = parse_feature_ref(reference).unwrap_err();
-
-            assert!(error.to_string().contains(reference), "{error:#}");
-        }
-    }
-
-    #[test]
-    fn oci_feature_ref_rejects_invalid_digest_values() {
-        for reference in [
-            "ghcr.io/example/features/tool@../../x",
-            "ghcr.io/example/features/tool@sha256:abcd",
-            "ghcr.io/example/features/tool@sha512:1111111111111111111111111111111111111111111111111111111111111111",
-        ] {
-            let error = parse_feature_ref(reference).unwrap_err();
-
-            assert!(error.to_string().contains(reference), "{error:#}");
-            assert!(error.to_string().contains("digest"), "{error:#}");
-        }
-    }
-
-    #[test]
-    fn local_feature_path_is_resolved_from_devcontainer_dir() {
-        let devcontainer_dir = Path::new("/workspace/.devcontainer");
-        let reference =
-            parse_feature_ref_from_devcontainer_dir("./features/local", devcontainer_dir).unwrap();
-
-        assert_eq!(
-            reference,
-            FeatureRef::Local(LocalFeatureRef {
-                original: "./features/local".to_owned(),
-                path: devcontainer_dir.join("features/local"),
-                canonical_id: "local:features/local".to_owned(),
-            })
-        );
     }
 
     #[test]
@@ -3465,112 +2319,6 @@ mod tests {
     }
 
     #[test]
-    fn feature_metadata_rejects_initialize_command_and_wait_for() {
-        let temp = tempfile::tempdir().unwrap();
-        let metadata_path = temp.path().join("devcontainer-feature.json");
-
-        for (property, content) in [
-            (
-                "initializeCommand",
-                r#"{"id":"tool","version":"1.0.0","name":"Tool","initializeCommand":"echo host"}"#,
-            ),
-            (
-                "waitFor",
-                r#"{"id":"tool","version":"1.0.0","name":"Tool","waitFor":"postCreateCommand"}"#,
-            ),
-        ] {
-            fs::write(&metadata_path, content).unwrap();
-            let error = read_feature_metadata_document(&metadata_path).unwrap_err();
-
-            assert!(error.to_string().contains(property), "{error:#}");
-        }
-    }
-
-    #[test]
-    fn feature_metadata_rejects_properties_outside_feature_schema() {
-        let temp = tempfile::tempdir().unwrap();
-        let metadata_path = temp.path().join("devcontainer-feature.json");
-
-        for (property, content) in [
-            (
-                "remoteUser",
-                r#"{"id":"tool","version":"1.0.0","name":"Tool","remoteUser":"vscode"}"#,
-            ),
-            (
-                "workspaceFolder",
-                r#"{"id":"tool","version":"1.0.0","name":"Tool","workspaceFolder":"/workspace"}"#,
-            ),
-            (
-                "runArgs",
-                r#"{"id":"tool","version":"1.0.0","name":"Tool","runArgs":["--init"]}"#,
-            ),
-            (
-                "image",
-                r#"{"id":"tool","version":"1.0.0","name":"Tool","image":"alpine:3.20"}"#,
-            ),
-            (
-                "x-extra",
-                r#"{"id":"tool","version":"1.0.0","name":"Tool","x-extra":true}"#,
-            ),
-        ] {
-            fs::write(&metadata_path, content).unwrap();
-            let error = read_feature_metadata_document(&metadata_path).unwrap_err();
-
-            assert!(error.to_string().contains(property), "{error:#}");
-        }
-    }
-
-    #[test]
-    fn feature_metadata_requires_id_version_name_and_option_defaults() {
-        let temp = tempfile::tempdir().unwrap();
-        let metadata_path = temp.path().join("devcontainer-feature.json");
-
-        for (expected, content) in [
-            ("id", r#"{"version":"1.0.0","name":"Tool"}"#),
-            ("version", r#"{"id":"tool","name":"Tool"}"#),
-            ("name", r#"{"id":"tool","version":"1.0.0"}"#),
-            (
-                "default",
-                r#"{"id":"tool","version":"1.0.0","name":"Tool","options":{"version":{"type":"string"}}}"#,
-            ),
-        ] {
-            fs::write(&metadata_path, content).unwrap();
-            let error = read_feature_metadata_document(&metadata_path).unwrap_err();
-
-            assert!(error.to_string().contains(expected), "{error:#}");
-        }
-    }
-
-    #[test]
-    fn lock_file_round_trip_is_deterministic() {
-        let temp = tempfile::tempdir().unwrap();
-        let path = temp.path().join(".decune/features.lock.toml");
-        let lock = FeatureLockFile {
-            version: FEATURE_LOCK_VERSION,
-            features: vec![
-                FeatureLockEntry {
-                    id: "ghcr.io/example/features/b".to_owned(),
-                    reference: "ghcr.io/example/features/b:1".to_owned(),
-                    digest: "sha256:bbbb".to_owned(),
-                },
-                FeatureLockEntry {
-                    id: "ghcr.io/example/features/a".to_owned(),
-                    reference: "ghcr.io/example/features/a:1".to_owned(),
-                    digest: "sha256:aaaa".to_owned(),
-                },
-            ],
-        };
-
-        write_feature_lock_file(&path, &lock).unwrap();
-        let first = fs::read_to_string(&path).unwrap();
-        write_feature_lock_file(&path, &lock).unwrap();
-        let second = fs::read_to_string(&path).unwrap();
-
-        assert_eq!(first, second);
-        assert_eq!(read_feature_lock_file(&path).unwrap(), lock.sorted());
-    }
-
-    #[test]
     fn prepared_plan_removes_stale_lock_file_when_feature_graph_is_empty() {
         let temp = tempfile::tempdir().unwrap();
         let workspace_root = temp.path().join("workspace");
@@ -3704,58 +2452,6 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![first_digest, second_digest]
         );
-    }
-
-    #[test]
-    fn lock_digest_takes_precedence_unless_features_are_updated() {
-        let feature = parse_feature_ref("ghcr.io/example/features/tool:1").unwrap();
-        let lock = FeatureLockFile {
-            version: FEATURE_LOCK_VERSION,
-            features: vec![FeatureLockEntry {
-                id: "ghcr.io/example/features/tool".to_owned(),
-                reference: "ghcr.io/example/features/tool:1".to_owned(),
-                digest: "sha256:locked".to_owned(),
-            }],
-        };
-
-        assert_eq!(
-            resolve_locked_feature_ref(&feature, &lock, false),
-            "ghcr.io/example/features/tool@sha256:locked"
-        );
-        assert_eq!(
-            resolve_locked_feature_ref(&feature, &lock, true),
-            "ghcr.io/example/features/tool:1"
-        );
-    }
-
-    #[test]
-    fn lock_digest_is_ignored_when_reference_changed() {
-        let feature = parse_feature_ref("ghcr.io/example/features/tool:2").unwrap();
-        let lock = FeatureLockFile {
-            version: FEATURE_LOCK_VERSION,
-            features: vec![FeatureLockEntry {
-                id: "ghcr.io/example/features/tool".to_owned(),
-                reference: "ghcr.io/example/features/tool:1".to_owned(),
-                digest: "sha256:locked".to_owned(),
-            }],
-        };
-
-        assert_eq!(
-            resolve_locked_feature_ref(&feature, &lock, false),
-            "ghcr.io/example/features/tool:2"
-        );
-    }
-
-    #[test]
-    fn feature_archive_rejects_path_traversal_entries() {
-        let temp = tempfile::tempdir().unwrap();
-        let archive = temp.path().join("feature.tgz");
-        write_malicious_feature_archive(&archive, "../escape", b"owned");
-
-        let error = extract_feature_archive(&archive, &temp.path().join("out")).unwrap_err();
-
-        assert!(error.to_string().contains("Unsafe feature archive path"));
-        assert!(!temp.path().join("escape").exists());
     }
 
     #[test]
@@ -5539,44 +4235,6 @@ printf '{"Username":"store-user","Secret":"store-token"}'
 
     fn sha256_digest(hex: &str) -> String {
         format!("sha256:{hex}")
-    }
-
-    fn write_malicious_feature_archive(path: &Path, entry_path: &str, content: &[u8]) {
-        let file = fs::File::create(path).unwrap();
-        let mut encoder = GzEncoder::new(file, Compression::default());
-        let mut header = [0u8; 512];
-        header[..entry_path.len()].copy_from_slice(entry_path.as_bytes());
-        write_octal(&mut header[100..108], 0o755);
-        write_octal(&mut header[108..116], 0);
-        write_octal(&mut header[116..124], 0);
-        write_octal(&mut header[124..136], content.len() as u64);
-        write_octal(&mut header[136..148], 0);
-        for byte in &mut header[148..156] {
-            *byte = b' ';
-        }
-        header[156] = b'0';
-        header[257..263].copy_from_slice(b"ustar\0");
-        header[263..265].copy_from_slice(b"00");
-        let checksum = header.iter().map(|byte| u32::from(*byte)).sum::<u32>() as u64;
-        write_checksum(&mut header[148..156], checksum);
-
-        encoder.write_all(&header).unwrap();
-        encoder.write_all(content).unwrap();
-        let padding = (512 - (content.len() % 512)) % 512;
-        encoder.write_all(&vec![0; padding]).unwrap();
-        encoder.write_all(&[0; 1024]).unwrap();
-        let mut file = encoder.finish().unwrap();
-        file.flush().unwrap();
-    }
-
-    fn write_octal(field: &mut [u8], value: u64) {
-        let value = format!("{value:0width$o}\0", width = field.len() - 1);
-        field.copy_from_slice(value.as_bytes());
-    }
-
-    fn write_checksum(field: &mut [u8], value: u64) {
-        let value = format!("{value:06o}\0 ",);
-        field.copy_from_slice(value.as_bytes());
     }
 
     fn feature_install_input(id: &str, metadata: FeatureMetadata) -> FeatureInstallInput {
