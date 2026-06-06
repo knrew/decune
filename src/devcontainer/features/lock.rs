@@ -79,7 +79,6 @@ pub(crate) fn read_feature_lock_file(path: &Path) -> Result<FeatureLockFile> {
     Ok(lock.sorted())
 }
 
-#[allow(dead_code)]
 pub(crate) fn write_feature_lock_file(path: &Path, lock: &FeatureLockFile) -> Result<()> {
     let parent = path
         .parent()

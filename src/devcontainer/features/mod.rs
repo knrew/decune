@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 mod archive;
 mod auth;
 mod cache;
@@ -30,7 +28,6 @@ pub(crate) use lock::{
 pub(crate) use metadata::{FeatureMetadata, FeatureOptionSchema, read_feature_metadata_document};
 #[allow(unused_imports)]
 pub(crate) use metadata::{FeatureMetadataDocument, read_feature_metadata};
-#[allow(unused_imports)]
 pub(crate) use options::feature_option_env;
 pub(crate) use reference::{
     FeatureRef, LocalFeatureRef, OciFeatureRef, parse_feature_ref,

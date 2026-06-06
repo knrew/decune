@@ -42,6 +42,7 @@ pub(crate) struct FeatureMetadataDocument {
     pub(crate) layer: ConfigLayer,
 }
 
+#[allow(dead_code)]
 pub(crate) fn read_feature_metadata(path: &Path) -> Result<FeatureMetadata> {
     read_feature_metadata_document(path).map(|document| document.metadata)
 }

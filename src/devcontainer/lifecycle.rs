@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -29,6 +27,7 @@ use crate::{
     },
 };
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LifecycleCommand {
     Shell(String),
@@ -43,6 +42,7 @@ pub(crate) struct LifecycleDefinition {
 }
 
 impl LifecycleDefinition {
+    #[allow(dead_code)]
     pub(crate) fn command(&self, stage: LifecycleStage) -> Option<&LifecycleCommand> {
         self.commands
             .get(&stage)
@@ -105,6 +105,7 @@ pub(crate) enum LifecycleStage {
 }
 
 impl LifecycleStage {
+    #[allow(dead_code)]
     pub(crate) fn execution_location(self) -> LifecycleExecutionLocation {
         match self {
             Self::Initialize => LifecycleExecutionLocation::Host,
@@ -186,6 +187,7 @@ impl HookStage {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LifecycleStep {
     Hooks(HookStage),
@@ -222,12 +224,14 @@ pub(crate) struct PreparedLifecycleRunContext<'a> {
     remote_process_env: BTreeMap<String, String>,
 }
 
+#[allow(dead_code)]
 pub(crate) fn lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
     let mut plan = container_start_lifecycle_plan(path);
     plan.extend(attach_lifecycle_plan());
     plan
 }
 
+#[allow(dead_code)]
 pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
     match path {
         LifecycleRunPath::New => vec![
@@ -273,6 +277,7 @@ pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<Life
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn attach_lifecycle_plan() -> Vec<LifecycleStep> {
     vec![
         LifecycleStep::PortForwardingStart,
@@ -853,6 +858,7 @@ impl TryFrom<LifecycleProperty> for LifecycleStage {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum LifecycleExecutionLocation {
     Host,
     Container,
@@ -883,6 +889,7 @@ pub(crate) fn parse_lifecycle_command(
     }
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_lifecycle_definition(
     values: &BTreeMap<LifecycleProperty, Value>,
 ) -> Result<LifecycleDefinition> {

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::collections::BTreeMap;
 
 use crate::workspace::Workspace;
@@ -70,6 +68,7 @@ pub(crate) fn managed_workspace_label_filters(workspace_id: &str) -> BTreeMap<St
     filters
 }
 
+#[allow(dead_code)]
 pub(crate) fn is_managed_workspace_container(
     labels: &BTreeMap<String, String>,
     workspace_id: &str,
@@ -82,6 +81,7 @@ pub(crate) fn is_managed_workspace_container(
             .is_some_and(|value| value == workspace_id)
 }
 
+#[allow(dead_code)]
 pub(crate) fn has_config_hash(labels: &BTreeMap<String, String>, config_hash: &str) -> bool {
     labels
         .get(CONFIG_HASH_LABEL)

@@ -26,9 +26,11 @@ pub(crate) enum RegistryAuth {
     Bearer(String),
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub(crate) struct DockerConfigAuth;
 
+#[allow(dead_code)]
 impl DockerConfigAuth {
     pub(crate) fn from_config_file(path: &Path, registry: &str) -> Result<Option<RegistryAuth>> {
         DockerConfigAuthStore::from_config_file(path)?.get(registry)
