@@ -405,7 +405,7 @@ async fn resize_exec_to_terminal(docker: &Docker, exec_id: &str) -> Result<()> {
         return Ok(());
     };
 
-    docker
+    match docker
         .resize_exec(
             exec_id,
             ResizeExecOptionsBuilder::default()
@@ -414,7 +414,24 @@ async fn resize_exec_to_terminal(docker: &Docker, exec_id: &str) -> Result<()> {
                 .build(),
         )
         .await
-        .context("Failed to resize Docker exec TTY")
+    {
+        Ok(()) => Ok(()),
+        Err(_) if exec_has_finished(docker, exec_id).await.unwrap_or(false) => Ok(()),
+        Err(error) => Err(error).context("Failed to resize Docker exec TTY"),
+    }
+}
+
+async fn exec_has_finished(docker: &Docker, exec_id: &str) -> Result<bool> {
+    let inspect = docker
+        .inspect_exec(exec_id)
+        .await
+        .context("Failed to inspect Docker exec after TTY resize failure")?;
+
+    Ok(exec_inspect_has_finished(&inspect))
+}
+
+fn exec_inspect_has_finished(inspect: &ExecInspectResponse) -> bool {
+    matches!(inspect.running, Some(false)) || inspect.exit_code.is_some()
 }
 
 fn spawn_resize_loop(docker: Docker, exec_id: String) -> tokio::task::JoinHandle<()> {
@@ -578,8 +595,8 @@ mod tests {
 
     use super::{
         ExecAttachMode, ExecCommandSpec, ExecOutput, create_exec_options, ensure_success_exit,
-        exec_attach, exec_capture, exec_capture_output, merge_probe_env, parse_env_probe_output,
-        start_exec_options, user_env_probe_command,
+        exec_attach, exec_capture, exec_capture_output, exec_inspect_has_finished, merge_probe_env,
+        parse_env_probe_output, start_exec_options, user_env_probe_command,
     };
     use crate::config::resolved::ResolvedUserEnvProbe;
     use crate::docker::{
@@ -646,6 +663,29 @@ mod tests {
         assert!(!options.detach);
         assert!(options.tty);
         assert_eq!(options.output_capacity, None);
+    }
+
+    #[test]
+    fn exec_inspect_has_finished_when_not_running_or_exit_code_is_available() {
+        let stopped_without_exit_code = ExecInspectResponse {
+            running: Some(false),
+            exit_code: None,
+            ..Default::default()
+        };
+        let exited_without_running_state = ExecInspectResponse {
+            running: None,
+            exit_code: Some(0),
+            ..Default::default()
+        };
+        let running = ExecInspectResponse {
+            running: Some(true),
+            exit_code: None,
+            ..Default::default()
+        };
+
+        assert!(exec_inspect_has_finished(&stopped_without_exit_code));
+        assert!(exec_inspect_has_finished(&exited_without_running_state));
+        assert!(!exec_inspect_has_finished(&running));
     }
 
     #[test]
