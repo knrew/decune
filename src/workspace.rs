@@ -245,7 +245,7 @@ fn safe_workspace_slug(basename: &str) -> String {
     for character in basename.chars() {
         let character = character.to_ascii_lowercase();
 
-        if character.is_ascii_alphanumeric() || character == '.' || character == '_' {
+        if character.is_ascii_alphanumeric() {
             output.push(character);
             previous_was_hyphen = false;
         } else {
@@ -276,18 +276,11 @@ fn truncate_safe_workspace_slug(output: &mut String) {
 }
 
 fn trim_safe_slug_separators(output: &mut String) {
-    while output
-        .as_bytes()
-        .last()
-        .is_some_and(|byte| matches!(byte, b'.' | b'_' | b'-'))
-    {
+    while output.ends_with('-') {
         output.pop();
     }
 
-    let trim_start = output
-        .bytes()
-        .take_while(|byte| matches!(byte, b'.' | b'_' | b'-'))
-        .count();
+    let trim_start = output.bytes().take_while(|byte| *byte == b'-').count();
     if trim_start > 0 {
         output.drain(..trim_start);
     }
@@ -588,8 +581,8 @@ mod tests {
         assert_eq!(safe_workspace_slug("Project Name"), "project-name");
         assert_eq!(safe_workspace_slug("日本語"), "workspace");
         assert_eq!(safe_workspace_slug("!!!"), "workspace");
-        assert_eq!(safe_workspace_slug("APP__Name...v2"), "app__name...v2");
-        assert_eq!(safe_workspace_slug(" - Project__Name.. "), "project__name");
+        assert_eq!(safe_workspace_slug("APP__Name...v2"), "app-name-v2");
+        assert_eq!(safe_workspace_slug(" - Project__Name.. "), "project-name");
     }
 
     #[test]

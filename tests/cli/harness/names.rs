@@ -32,7 +32,7 @@ pub(crate) fn safe_workspace_slug(value: &str) -> String {
     for character in value.chars() {
         let character = character.to_ascii_lowercase();
 
-        if character.is_ascii_alphanumeric() || character == '.' || character == '_' {
+        if character.is_ascii_alphanumeric() {
             output.push(character);
             previous_was_hyphen = false;
         } else if !output.is_empty() && !previous_was_hyphen {
@@ -53,18 +53,11 @@ pub(crate) fn safe_workspace_slug(value: &str) -> String {
 }
 
 fn trim_slug_separators(output: &mut String) {
-    while output
-        .as_bytes()
-        .last()
-        .is_some_and(|byte| matches!(byte, b'.' | b'_' | b'-'))
-    {
+    while output.ends_with('-') {
         output.pop();
     }
 
-    let trim_start = output
-        .bytes()
-        .take_while(|byte| matches!(byte, b'.' | b'_' | b'-'))
-        .count();
+    let trim_start = output.bytes().take_while(|byte| *byte == b'-').count();
     if trim_start > 0 {
         output.drain(..trim_start);
     }

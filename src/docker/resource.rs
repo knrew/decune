@@ -221,6 +221,28 @@ mod tests {
     }
 
     #[test]
+    fn resource_names_do_not_keep_invalid_image_repository_separator_runs() {
+        let root = fixture_root("APP__Name...v2");
+        let workspace = Workspace::resolve(&root).unwrap();
+
+        let resources = DockerResources::from_workspace(
+            &workspace,
+            "abc123",
+            "/workspace/.devcontainer/devcontainer.json",
+        );
+
+        assert_eq!(workspace.safe_slug(), "app-name-v2");
+        assert_eq!(
+            resources.container_name,
+            format!("decune-app-name-v2-{}", workspace.id())
+        );
+        assert_eq!(
+            resources.image_tag,
+            format!("decune/app-name-v2-{}:abc123", workspace.id())
+        );
+    }
+
+    #[test]
     fn resource_names_truncate_safe_workspace_slug_to_48_chars() {
         let basename = "a".repeat(249);
         let root = fixture_root(&basename);

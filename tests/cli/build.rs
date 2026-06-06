@@ -3,7 +3,7 @@ use crate::harness::*;
 #[test]
 fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basename() {
     let parent = tempfile::tempdir().unwrap();
-    let workspace_root = parent.path().join("My Project 日本語 !!!");
+    let workspace_root = parent.path().join("APP__Name...v2");
     fs::create_dir_all(workspace_root.join(".devcontainer")).unwrap();
     fs::write(
         workspace_root.join(".devcontainer/devcontainer.json"),
@@ -12,7 +12,7 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
           "build": {
             "dockerfile": "Dockerfile"
           },
-          "postStartCommand": "test \"$PWD\" = '/workspaces/My Project 日本語 !!!' && test -f resource-name-marker.txt"
+          "postStartCommand": "test \"$PWD\" = '/workspaces/APP__Name...v2' && test -f resource-name-marker.txt"
         }
         "#,
     )
@@ -64,7 +64,7 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
             assert_eq!(inspect.name.as_deref(), Some(expected_name.as_str()));
             assert!(inspect_has_mount_target(
                 &inspect,
-                "/workspaces/My Project 日本語 !!!"
+                "/workspaces/APP__Name...v2"
             ));
 
             let images = workspace_images(&workspace_root).await.unwrap();
