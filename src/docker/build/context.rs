@@ -1,4 +1,5 @@
 use std::{
+    ffi::OsString,
     fs,
     path::{Path, PathBuf},
 };
@@ -43,12 +44,7 @@ pub(crate) fn resolve_build_context(
             )
         })?
         .to_path_buf();
-    let dockerignore = context_dir.join(".dockerignore");
-    let dockerignore_path = if dockerignore.is_file() {
-        Some(dockerignore)
-    } else {
-        None
-    };
+    let dockerignore_path = dockerignore_path(&context_dir, &dockerfile_path);
 
     Ok(ResolvedBuildContext {
         context_dir,
@@ -165,6 +161,24 @@ fn resolve_path(base: &Path, value: &str) -> PathBuf {
     }
 }
 
+fn dockerignore_path(context_dir: &Path, dockerfile_path: &Path) -> Option<PathBuf> {
+    let dockerfile_specific = dockerfile_path.with_file_name(dockerfile_specific_ignore_name(
+        dockerfile_path.file_name()?,
+    ));
+    if dockerfile_specific.is_file() {
+        return Some(dockerfile_specific);
+    }
+
+    let default = context_dir.join(".dockerignore");
+    default.is_file().then_some(default)
+}
+
+fn dockerfile_specific_ignore_name(dockerfile_name: &std::ffi::OsStr) -> OsString {
+    let mut name = OsString::from(dockerfile_name);
+    name.push(".dockerignore");
+    name
+}
+
 #[cfg(test)]
 mod tests {
     use std::{fs, path::Path};
@@ -230,6 +244,32 @@ mod tests {
             context.dockerfile_in_context,
             Path::new("docker/Dockerfile")
         );
+    }
+
+    #[test]
+    fn dockerfile_specific_ignore_file_takes_precedence() {
+        let temp = tempdir("dockerfile-specific-ignore");
+        let root = temp.path();
+        let devcontainer_file = root.join(".devcontainer/devcontainer.json");
+        let context_dir = root.join(".devcontainer");
+        fs::create_dir_all(&context_dir).unwrap();
+        let dockerfile = context_dir.join("Dockerfile");
+        let dockerfile_ignore = context_dir.join("Dockerfile.dockerignore");
+        let root_ignore = context_dir.join(".dockerignore");
+        fs::write(&dockerfile, "FROM alpine\n").unwrap();
+        fs::write(&dockerfile_ignore, "specific-secret\n").unwrap();
+        fs::write(root_ignore, "root-secret\n").unwrap();
+        let build = LayerDevcontainerBuild {
+            dockerfile: "Dockerfile".to_owned(),
+            context: None,
+            args: Default::default(),
+            target: None,
+            cache_from: Vec::new(),
+        };
+
+        let context = resolve_build_context(root, &devcontainer_file, &build).unwrap();
+
+        assert_eq!(context.dockerignore_path, Some(dockerfile_ignore));
     }
 
     #[test]
