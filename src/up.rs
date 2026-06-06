@@ -6221,6 +6221,76 @@ type = "bind"
         });
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn up_detach_fails_uid_gid_sync_when_old_gid_matches_multiple_groups() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 || host.gid == 2001 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-duplicate-old-gid");
+            let image = format!(
+                "decune-test/uid-gid-sync-duplicate-old-gid-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_duplicate_old_gid_image(&client, &image).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await
+                .unwrap_err();
+                let message = format!("{error:#}");
+                assert!(
+                    message.contains("Failed to build Docker image")
+                        && message.contains("Docker stream error"),
+                    "{message}"
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
     #[test]
     fn up_detach_stops_lifecycle_after_failure() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -7539,6 +7609,37 @@ user = "root"
             format!(
                 "FROM alpine:3.20\nRUN addgroup -g {conflict_gid} conflictgroup && addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser && awk -F: '$3 != 2001 {{ print }}' /etc/group >/tmp/group && cat /tmp/group >/etc/group\nUSER syncuser\n"
             ),
+        )
+        .unwrap();
+        build_image(
+            client,
+            DockerBuildInput {
+                image_tag: image.to_owned(),
+                labels: std::collections::HashMap::new(),
+                context: ResolvedBuildContext {
+                    context_dir: context.path().to_path_buf(),
+                    dockerfile_path,
+                    dockerfile_in_context: "Dockerfile".into(),
+                    dockerignore_path: None,
+                },
+                options: DockerBuildOptions::default(),
+            },
+        )
+        .await
+    }
+
+    async fn build_duplicate_old_gid_image(
+        client: &DockerClient,
+        image: &str,
+    ) -> anyhow::Result<()> {
+        let context = tempfile::Builder::new()
+            .prefix("decune-up-duplicate-old-gid-image-")
+            .tempdir()
+            .unwrap();
+        let dockerfile_path = context.path().join("Dockerfile");
+        fs::write(
+            &dockerfile_path,
+            "FROM alpine:3.20\nRUN addgroup -g 2001 syncgroup && adduser -D -u 2001 -G syncgroup -h /home/syncuser syncuser && { echo 'othergroup:x:2001:'; cat /etc/group; } >/tmp/group && cat /tmp/group >/etc/group\nUSER syncuser\n",
         )
         .unwrap();
         build_image(
