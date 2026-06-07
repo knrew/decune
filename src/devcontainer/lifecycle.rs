@@ -55,6 +55,10 @@ impl LifecycleDefinition {
         self.commands.get(&stage).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    pub(crate) fn has_commands(&self) -> bool {
+        self.commands.values().any(|commands| !commands.is_empty())
+    }
+
     pub(crate) fn wait_for(&self) -> WaitFor {
         self.wait_for
     }

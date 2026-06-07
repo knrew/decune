@@ -110,11 +110,15 @@ mod tests {
         MountBindOptionsPropagationEnum, MountPoint, MountVolumeOptions,
     };
 
-    use crate::config::layer::{LayerDevcontainerMetadata, LayerDevcontainerSource};
+    use crate::config::layer::{
+        LayerDevcontainerMetadata, LayerDevcontainerSource, LayerUserEnvProbe,
+    };
     use crate::config::resolved::{
         ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes, ResolvedPublishPort,
     };
-    use crate::config::types::{GitHttpsMode, GithubCredentialsMode, MountType, PortProtocol};
+    use crate::config::types::{
+        GitHttpsMode, GithubCredentialsMode, MountType, PortProtocol, SshAgentMode,
+    };
     use crate::config::{ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash};
     use crate::docker::build::{
         DockerBuildInput, DockerBuildOptions, ResolvedBuildContext, build_image,
@@ -1101,7 +1105,10 @@ digest = "sha256:locked"
 
     #[test]
     fn untrusted_repository_warnings_are_empty_for_default_plan_security_surface() {
-        let warnings = untrusted_repository_warnings(&ResolvedConfig::default());
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        let warnings = untrusted_repository_warnings(&config);
 
         assert!(warnings.is_empty());
     }
@@ -1109,6 +1116,8 @@ digest = "sha256:locked"
     #[test]
     fn untrusted_repository_warnings_report_risky_container_settings() {
         let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
         config.devcontainer.privileged = true;
         config.devcontainer.cap_add = vec!["SYS_PTRACE".to_owned()];
         config.devcontainer.security_opt = vec!["seccomp=unconfined".to_owned()];
@@ -1143,7 +1152,96 @@ digest = "sha256:locked"
         assert!(
             warnings
                 .iter()
-                .any(|warning| warning.contains("additional mounts"))
+                .any(|warning| warning.contains("additional bind mounts"))
+        );
+        assert!(warnings.iter().all(|warning| !warning.contains("/tmp")));
+    }
+
+    #[test]
+    fn untrusted_repository_warnings_report_code_execution_surfaces() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.features = vec![crate::config::resolved::ResolvedFeature {
+            id: "tool".to_owned(),
+            canonical_id: "ghcr.io/example/features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+        config.devcontainer.source = Some(ResolvedDevcontainerSource::Dockerfile(
+            crate::config::layer::LayerDevcontainerBuild {
+                dockerfile: "Dockerfile".to_owned(),
+                context: None,
+                args: BTreeMap::new(),
+                target: None,
+                cache_from: Vec::new(),
+            },
+        ));
+        config.devcontainer.entrypoints = vec!["/usr/local/bin/start".to_owned()];
+        config.devcontainer.lifecycle = Some(
+            crate::devcontainer::lifecycle::parse_lifecycle_definition(&BTreeMap::from([(
+                crate::devcontainer::metadata::LifecycleProperty::PostStartCommand,
+                serde_json::json!("make setup"),
+            )]))
+            .unwrap(),
+        );
+        config.devcontainer.user_env_probe = Some(LayerUserEnvProbe::LoginShell);
+
+        let warnings = untrusted_repository_warnings(&config);
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("Dockerfile"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("install.sh"))
+        );
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("entrypoint"))
+        );
+        assert!(warnings.iter().any(|warning| warning.contains("lifecycle")));
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("userEnvProbe") && warning.contains("userEnvProbe to \"none\"")
+        }));
+    }
+
+    #[test]
+    fn untrusted_repository_warnings_report_enabled_credentials() {
+        let warnings = untrusted_repository_warnings(&ResolvedConfig::default());
+
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("Git credential forwarding")
+                && warning.contains("[credentials.git].enabled = false")
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("SSH agent forwarding") && warning.contains("ssh_agent = \"off\"")
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("GitHub credential forwarding")
+                && warning.contains("[credentials.github].enabled = false")
+        }));
+
+        let mut disabled = ResolvedConfig::default();
+        disabled.credentials.git.enabled = false;
+        disabled.credentials.github.enabled = false;
+        let disabled_warnings = untrusted_repository_warnings(&disabled);
+        assert!(
+            disabled_warnings
+                .iter()
+                .all(|warning| !warning.contains("credential forwarding"))
+        );
+
+        let mut ssh_off = ResolvedConfig::default();
+        ssh_off.credentials.git.ssh_agent = SshAgentMode::Off;
+        let ssh_off_warnings = untrusted_repository_warnings(&ssh_off);
+        assert!(
+            ssh_off_warnings
+                .iter()
+                .all(|warning| !warning.contains("SSH agent forwarding"))
         );
     }
 

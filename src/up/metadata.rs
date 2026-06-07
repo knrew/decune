@@ -12,7 +12,7 @@ use crate::{
         layer::LayerFeature,
         resolve_config,
         resolved::{ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes},
-        types::GithubCredentialsMode,
+        types::{GitHttpsMode, GithubCredentialsMode, MountType, SshAgentMode},
         variables::expand_container_env,
     },
     devcontainer::features::{prepare_feature_install_plan, remove_feature_lock_file},
@@ -810,21 +810,63 @@ pub(in crate::up) fn warn_about_deferred_features(config: &ResolvedConfig) {
 pub(in crate::up) fn untrusted_repository_warnings(config: &ResolvedConfig) -> Vec<String> {
     let mut warnings = Vec::new();
 
+    if matches!(
+        config.devcontainer.source,
+        Some(ResolvedDevcontainerSource::Dockerfile(_))
+    ) {
+        warnings.push(
+            "This dev container builds a workspace Dockerfile, which can execute arbitrary build steps. Review Dockerfile contents before running untrusted repositories."
+                .to_owned(),
+        );
+    }
+    if !config.features.is_empty() {
+        warnings.push(
+            "This dev container installs Features, whose install.sh scripts execute during image build. Review Feature sources and lock digests before running untrusted repositories."
+                .to_owned(),
+        );
+    }
+    if !config.devcontainer.entrypoints.is_empty() {
+        warnings.push(
+            "This dev container configures entrypoint commands that execute when the container starts. Review entrypoint scripts before running untrusted repositories."
+                .to_owned(),
+        );
+    }
+    if config
+        .devcontainer
+        .lifecycle
+        .as_ref()
+        .is_some_and(|lifecycle| lifecycle.has_commands())
+    {
+        warnings.push(
+            "This dev container defines lifecycle commands that execute on the host or in the container. Review lifecycle commands before running untrusted repositories."
+                .to_owned(),
+        );
+    }
+    if config
+        .devcontainer
+        .user_env_probe
+        .is_some_and(|probe| probe != crate::config::layer::LayerUserEnvProbe::None)
+    {
+        warnings.push(
+            "This dev container enables userEnvProbe, which can run shell startup files in the container. Set userEnvProbe to \"none\" for untrusted repositories."
+                .to_owned(),
+        );
+    }
     if config.devcontainer.privileged {
         warnings.push(
-            "This dev container requests privileged mode; review untrusted repositories before running it."
+            "This dev container requests privileged mode, which grants broad container privileges. Remove privileged=true before running untrusted repositories."
                 .to_owned(),
         );
     }
     if !config.devcontainer.cap_add.is_empty() {
         warnings.push(format!(
-            "This dev container adds Linux capabilities ({}); review untrusted repositories before running it.",
+            "This dev container adds Linux capabilities ({}), which can weaken container isolation. Remove capAdd entries before running untrusted repositories.",
             config.devcontainer.cap_add.join(", ")
         ));
     }
     if !config.devcontainer.security_opt.is_empty() {
         warnings.push(format!(
-            "This dev container sets Docker security options ({}); review untrusted repositories before running it.",
+            "This dev container sets Docker security options ({}), which can weaken container isolation. Remove securityOpt entries before running untrusted repositories.",
             config.devcontainer.security_opt.join(", ")
         ));
     }
@@ -839,13 +881,46 @@ pub(in crate::up) fn untrusted_repository_warnings(config: &ResolvedConfig) -> V
         );
     }
     warnings.extend(unsupported_port_attribute_warnings(config));
-    if !config.devcontainer.mounts.is_empty() {
+    if has_extra_bind_mounts(config) {
         warnings.push(
-            "This dev container declares additional mounts; review host paths before running untrusted repositories."
+            "This dev container declares additional bind mounts that can expose host files. Review mount sources or remove extra bind mounts before running untrusted repositories."
+                .to_owned(),
+        );
+    }
+    if config.credentials.git.enabled
+        && (config.credentials.git.copy_user
+            || config.credentials.git.copy_global_config
+            || config.credentials.git.https == GitHttpsMode::HostHelper)
+    {
+        warnings.push(
+            "Git credential forwarding is enabled; set [credentials.git].enabled = false before running untrusted repositories."
+                .to_owned(),
+        );
+    }
+    if config.credentials.git.enabled && config.credentials.git.ssh_agent != SshAgentMode::Off {
+        warnings.push(
+            "SSH agent forwarding is enabled; set [credentials.git].enabled = false or ssh_agent = \"off\" before running untrusted repositories."
+                .to_owned(),
+        );
+    }
+    if config.credentials.github.enabled
+        && config.credentials.github.mode != GithubCredentialsMode::Off
+    {
+        warnings.push(
+            "GitHub credential forwarding is enabled; set [credentials.github].enabled = false before running untrusted repositories."
                 .to_owned(),
         );
     }
     warnings
+}
+
+fn has_extra_bind_mounts(config: &ResolvedConfig) -> bool {
+    config
+        .mounts
+        .iter()
+        .any(|mount| mount.mount_type == MountType::Bind)
+        || !config.devcontainer.mounts.is_empty()
+        || config.devcontainer.workspace_mount.is_some()
 }
 
 fn unsupported_port_attribute_warnings(config: &ResolvedConfig) -> Vec<String> {
