@@ -420,7 +420,8 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
             .stdout(predicate::str::is_empty())
             .stderr(
                 predicate::str::contains("Port forwarding is ignored in detached mode")
-                    .and(predicate::str::contains("Started dev container")),
+                    .and(predicate::str::contains("Started dev container"))
+                    .and(predicate::str::contains("publishes appPort through Docker").not()),
             );
 
         if let Err(error) = wait_for_forwarded_http_response(host_port) {
@@ -432,6 +433,59 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
         let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
         let image_cleanup = cleanup_workspace_images(&workspace_root).await;
         container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_warns_when_app_port_has_no_host_ip() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_port = available_host_port();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            &format!(
+                r#"
+            {{
+              "image": "alpine:3.20",
+              "appPort": ["{host_port}:4321"]
+            }}
+            "#
+            ),
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach", "--no-auto-forward"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(
+                predicate::str::contains("publishes appPort through Docker")
+                    .and(predicate::str::contains("forwardPorts"))
+                    .and(predicate::str::contains("[[ports]]"))
+                    .and(predicate::str::contains("localhost-only"))
+                    .and(predicate::str::contains("Started dev container")),
+            );
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
     });
 
     if let Err(payload) = result {

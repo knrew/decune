@@ -25,6 +25,10 @@ pub(crate) struct DevcontainerPortAttributes {
     pub(crate) label: Option<String>,
     pub(crate) on_auto_forward: Option<OnAutoForward>,
     pub(crate) require_local_port: Option<bool>,
+    #[serde(rename = "protocol")]
+    pub(crate) unsupported_protocol: Option<String>,
+    #[serde(rename = "elevateIfNeeded")]
+    pub(crate) unsupported_elevate_if_needed: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -81,6 +85,8 @@ pub(crate) fn port_attributes_to_layer(
             .as_ref()
             .map(on_auto_forward_to_config),
         require_local_port: attributes.require_local_port,
+        unsupported_protocol: attributes.unsupported_protocol.clone(),
+        unsupported_elevate_if_needed: attributes.unsupported_elevate_if_needed,
     }
 }
 
@@ -279,6 +285,20 @@ mod tests {
 
             assert_eq!(layer.on_auto_forward, Some(expected));
         }
+    }
+
+    #[test]
+    fn unsupported_port_attribute_fields_are_parsed_for_warnings() {
+        let attributes: DevcontainerPortAttributes = serde_json::from_value(json!({
+            "label": "web",
+            "protocol": "https",
+            "elevateIfNeeded": true
+        }))
+        .unwrap();
+
+        assert_eq!(attributes.label.as_deref(), Some("web"));
+        assert_eq!(attributes.unsupported_protocol.as_deref(), Some("https"));
+        assert_eq!(attributes.unsupported_elevate_if_needed, Some(true));
     }
 
     #[test]

@@ -1247,6 +1247,18 @@ mod tests {
 
         assert_eq!(config.ports.entries.len(), 1);
         assert_eq!(
+            config.ports.entries[0],
+            LayerPort {
+                enabled: true,
+                container: 3000,
+                host: None,
+                host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                protocol: PortProtocol::Tcp,
+                require_local: false,
+                label: None,
+            }
+        );
+        assert_eq!(
             config.devcontainer.publish_ports,
             vec![
                 ResolvedPublishPort {

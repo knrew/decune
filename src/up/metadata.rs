@@ -8,9 +8,12 @@ use anyhow::{Context, Result};
 
 use crate::{
     config::{
-        ConfigHashInput, ConfigLayer, StartupCommandHashInput, config_hash, layer::LayerFeature,
-        resolve_config, resolved::ResolvedConfig, resolved::ResolvedDevcontainerSource,
-        types::GithubCredentialsMode, variables::expand_container_env,
+        ConfigHashInput, ConfigLayer, StartupCommandHashInput, config_hash,
+        layer::LayerFeature,
+        resolve_config,
+        resolved::{ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes},
+        types::GithubCredentialsMode,
+        variables::expand_container_env,
     },
     devcontainer::features::{prepare_feature_install_plan, remove_feature_lock_file},
     docker::{
@@ -831,16 +834,56 @@ pub(in crate::up) fn untrusted_repository_warnings(config: &ResolvedConfig) -> V
             .is_none_or(|host_ip| host_ip != "127.0.0.1")
     }) {
         warnings.push(
-            "This dev container publishes appPort outside decune localhost forwarding; use forwardPorts for untrusted repositories."
+            "This dev container publishes appPort through Docker, which may bind outside localhost when no host IP is specified. Use forwardPorts, decune [[ports]], or CLI -p for localhost-only access."
                 .to_owned(),
         );
     }
+    warnings.extend(unsupported_port_attribute_warnings(config));
     if !config.devcontainer.mounts.is_empty() {
         warnings.push(
             "This dev container declares additional mounts; review host paths before running untrusted repositories."
                 .to_owned(),
         );
     }
+    warnings
+}
+
+fn unsupported_port_attribute_warnings(config: &ResolvedConfig) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    for (key, attributes) in &config.devcontainer.port_attributes {
+        warnings.extend(unsupported_single_port_attribute_warnings(
+            &format!("portsAttributes.{key}"),
+            attributes,
+        ));
+    }
+    if let Some(attributes) = &config.devcontainer.other_ports_attributes {
+        warnings.extend(unsupported_single_port_attribute_warnings(
+            "otherPortsAttributes",
+            attributes,
+        ));
+    }
+
+    warnings
+}
+
+fn unsupported_single_port_attribute_warnings(
+    path: &str,
+    attributes: &ResolvedPortAttributes,
+) -> Vec<String> {
+    let mut warnings = Vec::new();
+
+    if let Some(protocol) = &attributes.unsupported_protocol {
+        warnings.push(format!(
+            "{path}.protocol is ignored in decune v0.1 (value: {protocol}); raw TCP forwarding only supports label, onAutoForward, and requireLocalPort."
+        ));
+    }
+    if attributes.unsupported_elevate_if_needed.is_some() {
+        warnings.push(format!(
+            "{path}.elevateIfNeeded is ignored in decune v0.1; low-port privilege elevation is not supported."
+        ));
+    }
+
     warnings
 }
 

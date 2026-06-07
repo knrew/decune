@@ -112,7 +112,7 @@ mod tests {
 
     use crate::config::layer::{LayerDevcontainerMetadata, LayerDevcontainerSource};
     use crate::config::resolved::{
-        ResolvedConfig, ResolvedDevcontainerSource, ResolvedPublishPort,
+        ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes, ResolvedPublishPort,
     };
     use crate::config::types::{GitHttpsMode, GithubCredentialsMode, MountType, PortProtocol};
     use crate::config::{ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash};
@@ -1148,6 +1148,27 @@ digest = "sha256:locked"
     }
 
     #[test]
+    fn untrusted_repository_warnings_report_app_port_without_explicit_host_ip() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.publish_ports = vec![ResolvedPublishPort {
+            container: 8080,
+            host: Some(18080),
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        }];
+
+        let warnings = untrusted_repository_warnings(&config);
+        let warning = warnings
+            .iter()
+            .find(|warning| warning.contains("appPort"))
+            .expect("expected appPort warning");
+
+        assert!(warning.contains("forwardPorts"));
+        assert!(warning.contains("[[ports]]"));
+        assert!(warning.contains("localhost-only"));
+    }
+
+    #[test]
     fn untrusted_repository_warnings_skip_localhost_only_app_port() {
         let mut config = ResolvedConfig::default();
         config.devcontainer.publish_ports = vec![ResolvedPublishPort {
@@ -1160,6 +1181,44 @@ digest = "sha256:locked"
         let warnings = untrusted_repository_warnings(&config);
 
         assert!(!warnings.iter().any(|warning| warning.contains("appPort")));
+    }
+
+    #[test]
+    fn untrusted_repository_warnings_report_unsupported_port_attributes() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.port_attributes.insert(
+            "3000".to_owned(),
+            ResolvedPortAttributes {
+                label: Some("web".to_owned()),
+                on_auto_forward: None,
+                require_local_port: Some(true),
+                unsupported_protocol: Some("https".to_owned()),
+                unsupported_elevate_if_needed: Some(true),
+                ..ResolvedPortAttributes::default()
+            },
+        );
+        config.devcontainer.other_ports_attributes = Some(ResolvedPortAttributes {
+            label: None,
+            on_auto_forward: None,
+            require_local_port: None,
+            unsupported_protocol: Some("http".to_owned()),
+            unsupported_elevate_if_needed: None,
+            ..ResolvedPortAttributes::default()
+        });
+
+        let warnings = untrusted_repository_warnings(&config);
+
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("portsAttributes.3000.protocol")
+                && warning.contains("ignored")
+                && warning.contains("label")
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("portsAttributes.3000.elevateIfNeeded") && warning.contains("ignored")
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("otherPortsAttributes.protocol") && warning.contains("ignored")
+        }));
     }
 
     #[test]
