@@ -13,8 +13,18 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
             ".devcontainer/devcontainer.json",
             r#"
             {
-              "image": "alpine:3.20"
+              "build": {
+                "dockerfile": "Dockerfile"
+              }
             }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
             "#,
         )
         .unwrap();
@@ -60,6 +70,7 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
 
     runtime.block_on(async {
         cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -73,8 +84,15 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains(
+                "GitHub credential forwarding is enabled",
+            ))
+            .stderr(predicate::str::contains(
+                "[credentials.github].enabled = false",
+            ))
+            .stderr(predicate::str::contains(
                 "GitHub CLI token forwarding is unavailable",
             ))
+            .stderr(predicate::str::contains("Building Docker image"))
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("github-test-secret").not());
 
@@ -94,6 +112,30 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
                     .values()
                     .all(|value| !value.contains("github-test-secret"))
             );
+            assert!(
+                labels
+                    .get("decune.config_hash")
+                    .is_some_and(|hash| !hash.contains("github-test-secret"))
+            );
+            let logs = workspace_container_logs(&workspace_root).await.unwrap();
+            assert!(!logs.contains("github-test-secret"));
+            let images = workspace_images(&workspace_root).await.unwrap();
+            assert!(
+                images
+                    .iter()
+                    .all(|image| !image.contains("github-test-secret"))
+            );
+            let docker = Docker::connect_with_defaults().unwrap();
+            for image in images {
+                let inspect = docker.inspect_image(&image).await.unwrap();
+                let labels = inspect.config.and_then(|config| config.labels);
+                assert!(
+                    labels
+                        .unwrap_or_default()
+                        .values()
+                        .all(|value| !value.contains("github-test-secret"))
+                );
+            }
         });
 
         assert_eq!(fs::read_to_string(&github_token_file).unwrap(), "");
@@ -114,7 +156,9 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
     });
 
     if let Err(payload) = result {

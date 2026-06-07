@@ -4,8 +4,9 @@ use bollard::{
     models::{ContainerCreateBody, ContainerSummary, HostConfig, VolumeCreateRequest},
     query_parameters::{
         CreateContainerOptionsBuilder, CreateImageOptionsBuilder, ListContainersOptionsBuilder,
-        ListImagesOptionsBuilder, ListVolumesOptionsBuilder, RemoveContainerOptionsBuilder,
-        RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder, StartContainerOptionsBuilder,
+        ListImagesOptionsBuilder, ListVolumesOptionsBuilder, LogsOptionsBuilder,
+        RemoveContainerOptionsBuilder, RemoveImageOptionsBuilder, RemoveVolumeOptionsBuilder,
+        StartContainerOptionsBuilder,
     },
 };
 use futures_util::TryStreamExt;
@@ -75,6 +76,34 @@ pub(crate) async fn inspect_single_workspace_container(
         .ok_or_else(|| anyhow::anyhow!("workspace container did not include an id"))?;
 
     Ok(docker.inspect_container(id, None).await?)
+}
+
+pub(crate) async fn workspace_container_logs(workspace_root: &Path) -> anyhow::Result<String> {
+    let docker = Docker::connect_with_defaults()?;
+    let containers = workspace_containers(workspace_root).await?;
+
+    anyhow::ensure!(containers.len() == 1, "expected one workspace container");
+
+    let id = containers[0]
+        .id
+        .as_deref()
+        .ok_or_else(|| anyhow::anyhow!("workspace container did not include an id"))?;
+    let options = LogsOptionsBuilder::default()
+        .stdout(true)
+        .stderr(true)
+        .build();
+    let mut output = docker.logs(id, Some(options));
+    let mut logs = Vec::new();
+    while let Some(chunk) = output.try_next().await? {
+        match chunk {
+            LogOutput::StdOut { message }
+            | LogOutput::StdErr { message }
+            | LogOutput::Console { message } => logs.extend_from_slice(&message),
+            LogOutput::StdIn { .. } => {}
+        }
+    }
+
+    Ok(String::from_utf8_lossy(&logs).into_owned())
 }
 
 pub(crate) fn inspect_has_env(
