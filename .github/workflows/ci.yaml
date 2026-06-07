@@ -135,23 +135,11 @@ jobs:
           DECUNE_CONTAINER_TOOLS_BUNDLE: required
         run: cargo test ${{ matrix.release_flag }} --workspace --all-features --no-fail-fast --verbose
 
-  release-dry-run:
-    name: release-dry-run
-    runs-on: ubuntu-24.04
+  package-dist:
+    name: package-dist
     permissions:
       contents: read
-    steps:
-      - uses: actions/checkout@v6
-        with:
-          persist-credentials: false
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
-      - name: Install Linux musl linker
-        run: sudo apt-get update && sudo apt-get install -y musl-tools
-      - name: Build container tools bundle
-        run: cargo run -p xtask -- build-container-tools --out assets/container-tools --locked
-      - name: Check container tools bundle
-        run: cargo run -p xtask -- check-container-tools --dir assets/container-tools
-      - name: Build dist archive
-        run: cargo run -p xtask -- dist --target x86_64-unknown-linux-musl --version 0.0.0-dev --locked
+    uses: ./.github/workflows/package-dist-reusable.yaml
+    with:
+      artifact-name: dist-assets
+      version: 0.0.0-dev

@@ -433,11 +433,10 @@ fn release_preflight(workspace: &Path, tag: &str, version: &str) -> Result<()> {
     if tag != format!("v{version}") {
         bail!("Release tag and version mismatch: tag {tag}, version {version}");
     }
-    if !version
-        .split('.')
-        .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
-    {
-        bail!("Release version must be numeric dot-separated semver core: {version}");
+    if !is_release_version(version) {
+        bail!(
+            "Release version must be numeric semver core with optional prerelease suffix: {version}"
+        );
     }
     let cargo_toml = fs::read_to_string(workspace.join("Cargo.toml"))
         .context("Failed to read Cargo.toml for release preflight")?;
@@ -461,6 +460,46 @@ fn release_preflight(workspace: &Path, tag: &str, version: &str) -> Result<()> {
         bail!("Release preflight requires a clean working tree");
     }
     Ok(())
+}
+
+fn is_release_version(version: &str) -> bool {
+    let (core, prerelease) = match version.split_once('-') {
+        Some((core, prerelease)) => (core, Some(prerelease)),
+        None => (version, None),
+    };
+    if !is_semver_core(core) {
+        return false;
+    }
+    prerelease.is_none_or(is_prerelease_suffix)
+}
+
+fn is_semver_core(core: &str) -> bool {
+    let mut parts = core.split('.');
+    let Some(major) = parts.next() else {
+        return false;
+    };
+    let Some(minor) = parts.next() else {
+        return false;
+    };
+    let Some(patch) = parts.next() else {
+        return false;
+    };
+    if parts.next().is_some() {
+        return false;
+    }
+    [major, minor, patch]
+        .into_iter()
+        .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+}
+
+fn is_prerelease_suffix(suffix: &str) -> bool {
+    !suffix.is_empty()
+        && suffix.split('.').all(|part| match part.chars().next() {
+            Some(first) if first.is_ascii_alphanumeric() => part
+                .chars()
+                .all(|ch| ch.is_ascii_alphanumeric() || ch == '-'),
+            _ => false,
+        })
 }
 
 fn write_manifest_and_sums(dir: &Path, entries: Vec<ManifestEntry>) -> Result<()> {
@@ -715,5 +754,34 @@ mod tests {
         assert!(validate_manifest_path(Path::new("../tool")).is_err());
         assert!(validate_manifest_path(Path::new("/tmp/tool")).is_err());
         assert!(validate_manifest_path(Path::new("linux-amd64/tool")).is_ok());
+    }
+
+    #[test]
+    fn release_version_allows_semver_core_and_prerelease_suffix() {
+        for version in [
+            "0.1.0",
+            "1.20.300",
+            "0.1.0-alpha",
+            "0.1.0-alpha.1",
+            "0.1.0-rc-1",
+        ] {
+            assert!(is_release_version(version), "{version}");
+        }
+    }
+
+    #[test]
+    fn release_version_rejects_invalid_semver_shapes() {
+        for version in [
+            "0.1",
+            "0.1.0.1",
+            "0.1.x",
+            "0.1.0-",
+            "0.1.0-alpha.",
+            "0.1.0-.alpha",
+            "0.1.0--alpha",
+            "0.1.0+build",
+        ] {
+            assert!(!is_release_version(version), "{version}");
+        }
     }
 }
