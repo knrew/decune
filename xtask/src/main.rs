@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env, fs, io,
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
@@ -67,6 +67,8 @@ enum XtaskCommand {
     Checksum {
         #[arg(long)]
         dist_dir: Option<PathBuf>,
+        #[arg(long)]
+        version: Option<String>,
     },
     ReleaseManifest {
         #[arg(long)]
@@ -99,9 +101,10 @@ fn main() -> Result<()> {
             locked,
             dist_dir,
         } => dist(&workspace, &target, &version, locked, dist_dir.as_deref()),
-        XtaskCommand::Checksum { dist_dir } => {
-            checksum(&resolve_dist_dir(&workspace, dist_dir.as_deref())?)
-        }
+        XtaskCommand::Checksum { dist_dir, version } => checksum(
+            &resolve_dist_dir(&workspace, dist_dir.as_deref())?,
+            version.as_deref(),
+        ),
         XtaskCommand::ReleaseManifest { dist_dir, version } => release_manifest(
             &resolve_dist_dir(&workspace, dist_dir.as_deref())?,
             &version,
@@ -251,9 +254,36 @@ fn check_container_tools(dir: &Path) -> Result<Manifest> {
         );
     }
 
-    let mut coverage = BTreeSet::new();
+    let expected = expected_container_tool_set();
+    let mut seen = BTreeSet::new();
+    let mut manifest_sums = BTreeMap::new();
     for entry in &manifest.tools {
+        let key = (entry.name.clone(), entry.platform.clone());
+        if !expected.contains(&key) {
+            bail!(
+                "Unexpected container tool artifact in manifest: {} for {}",
+                entry.name,
+                entry.platform
+            );
+        }
+        if !seen.insert(key) {
+            bail!(
+                "Duplicate container tool artifact in manifest: {} for {}",
+                entry.name,
+                entry.platform
+            );
+        }
         validate_manifest_path(Path::new(&entry.path))?;
+        validate_sha256_string(&entry.sha256)?;
+        if manifest_sums
+            .insert(entry.path.clone(), entry.sha256.clone())
+            .is_some()
+        {
+            bail!(
+                "Duplicate container tool artifact path in manifest: {}",
+                entry.path
+            );
+        }
         let path = dir.join(&entry.path);
         if !path.is_file() {
             bail!(
@@ -279,20 +309,13 @@ fn check_container_tools(dir: &Path) -> Result<Manifest> {
                 path.display()
             );
         }
-        coverage.insert((entry.name.clone(), entry.platform.clone()));
     }
 
-    for platform in PLATFORMS {
-        for tool in TOOLS {
-            if !coverage.contains(&(tool.name.to_owned(), platform.id.to_owned())) {
-                bail!(
-                    "Missing required container tool artifact: {} for {}",
-                    tool.name,
-                    platform.id
-                );
-            }
-        }
+    if seen != expected {
+        let missing = expected.difference(&seen).cloned().collect::<Vec<_>>();
+        bail!("Missing required container tool artifacts: {missing:?}");
     }
+    check_sha256sums(dir, &manifest_sums)?;
     Ok(manifest)
 }
 
@@ -379,8 +402,8 @@ fn dist(
     Ok(())
 }
 
-fn checksum(dist_dir: &Path) -> Result<()> {
-    let mut archives = dist_archives(dist_dir)?;
+fn checksum(dist_dir: &Path, version: Option<&str>) -> Result<()> {
+    let mut archives = dist_archives_for_version(dist_dir, version)?;
     archives.sort();
     let mut sums = String::new();
     for archive in archives {
@@ -395,7 +418,7 @@ fn checksum(dist_dir: &Path) -> Result<()> {
 }
 
 fn release_manifest(dist_dir: &Path, version: &str) -> Result<()> {
-    let mut archives = dist_archives(dist_dir)?;
+    let mut archives = dist_archives_for_version(dist_dir, Some(version))?;
     archives.sort();
     let mut artifacts = Vec::new();
     for archive in archives {
@@ -440,10 +463,11 @@ fn release_preflight(workspace: &Path, tag: &str, version: &str) -> Result<()> {
     }
     let cargo_toml = fs::read_to_string(workspace.join("Cargo.toml"))
         .context("Failed to read Cargo.toml for release preflight")?;
-    if !cargo_toml.contains(&format!("version     = \"{version}\""))
-        && !cargo_toml.contains(&format!("version = \"{version}\""))
-    {
-        bail!("Cargo.toml package version does not match release version: {version}");
+    let actual = package_version_from_toml(&cargo_toml)?;
+    if actual != version {
+        bail!(
+            "Cargo.toml package version does not match release version: expected {version}, got {actual}"
+        );
     }
     if !workspace.join("LICENSE").is_file() {
         bail!("LICENSE is required for release archives");
@@ -570,7 +594,8 @@ fn validate_archive_paths(archive: &Path, archive_root: &str) -> Result<()> {
     Ok(())
 }
 
-fn dist_archives(dist_dir: &Path) -> Result<Vec<PathBuf>> {
+fn dist_archives_for_version(dist_dir: &Path, version: Option<&str>) -> Result<Vec<PathBuf>> {
+    let expected_prefix = version.map(|version| format!("decune-v{version}-"));
     let mut archives = Vec::new();
     for entry in fs::read_dir(dist_dir)
         .with_context(|| format!("Failed to read dist directory: {}", dist_dir.display()))?
@@ -582,13 +607,19 @@ fn dist_archives(dist_dir: &Path) -> Result<Vec<PathBuf>> {
             )
         })?;
         let path = entry.path();
-        if path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(".tar.gz"))
-        {
-            archives.push(path);
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        if !name.ends_with(".tar.gz") {
+            continue;
         }
+        if expected_prefix
+            .as_deref()
+            .is_some_and(|prefix| !name.starts_with(prefix))
+        {
+            continue;
+        }
+        archives.push(path);
     }
     if archives.is_empty() {
         bail!(
@@ -641,6 +672,55 @@ fn validate_manifest_path(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn validate_sha256_string(value: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+    {
+        bail!("Invalid sha256 value in container tools manifest: {value}");
+    }
+    Ok(())
+}
+
+fn expected_container_tool_set() -> BTreeSet<(String, String)> {
+    PLATFORMS
+        .iter()
+        .flat_map(|platform| {
+            TOOLS
+                .iter()
+                .map(move |tool| (tool.name.to_owned(), platform.id.to_owned()))
+        })
+        .collect()
+}
+
+fn check_sha256sums(dir: &Path, manifest_sums: &BTreeMap<String, String>) -> Result<()> {
+    let sums_path = dir.join("SHA256SUMS");
+    let sums = fs::read_to_string(&sums_path)
+        .with_context(|| format!("Failed to read {}", sums_path.display()))?;
+    let mut parsed = BTreeMap::new();
+    for (index, line) in sums.lines().enumerate() {
+        if line.is_empty() {
+            bail!("Invalid SHA256SUMS line {}: empty line", index + 1);
+        }
+        let Some((sha256, path)) = line.split_once("  ") else {
+            bail!(
+                "Invalid SHA256SUMS line {}: expected '<sha256><two spaces><path>'",
+                index + 1
+            );
+        };
+        validate_sha256_string(sha256)?;
+        validate_manifest_path(Path::new(path))?;
+        if parsed.insert(path.to_owned(), sha256.to_owned()).is_some() {
+            bail!("Duplicate path in SHA256SUMS: {path}");
+        }
+    }
+    if &parsed != manifest_sums {
+        bail!("SHA256SUMS does not match container tools manifest");
+    }
+    Ok(())
+}
+
 fn run_command(mut command: Command, context: &str) -> Result<()> {
     let output = command
         .output()
@@ -683,9 +763,18 @@ fn workspace_relative(workspace: &Path, path: &Path) -> Result<PathBuf> {
 }
 
 fn target_dir(workspace: &Path) -> PathBuf {
-    env::var_os("CARGO_TARGET_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| workspace.join("target"))
+    target_dir_from_env_value(
+        workspace,
+        env::var_os("CARGO_TARGET_DIR").map(PathBuf::from),
+    )
+}
+
+fn target_dir_from_env_value(workspace: &Path, value: Option<PathBuf>) -> PathBuf {
+    match value {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => workspace.join(path),
+        None => workspace.join("target"),
+    }
 }
 
 fn resolve_dist_dir(workspace: &Path, path: Option<&Path>) -> Result<PathBuf> {
@@ -693,6 +782,17 @@ fn resolve_dist_dir(workspace: &Path, path: Option<&Path>) -> Result<PathBuf> {
         Some(path) => workspace_relative(workspace, path),
         None => Ok(target_dir(workspace).join("dist")),
     }
+}
+
+fn package_version_from_toml(source: &str) -> Result<String> {
+    let parsed: toml::Value =
+        toml::from_str(source).context("Failed to parse Cargo.toml for release preflight")?;
+    parsed
+        .get("package")
+        .and_then(|package| package.get("version"))
+        .and_then(|version| version.as_str())
+        .map(str::to_owned)
+        .context("Cargo.toml package.version is missing or not a string")
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -714,7 +814,7 @@ struct Manifest {
     tools: Vec<ManifestEntry>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ManifestEntry {
     name: String,
     platform: String,
@@ -740,6 +840,9 @@ struct ReleaseArtifact {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    use tempfile::TempDir;
 
     #[test]
     fn required_platform_mapping_is_stable() {
@@ -754,6 +857,214 @@ mod tests {
         assert!(validate_manifest_path(Path::new("../tool")).is_err());
         assert!(validate_manifest_path(Path::new("/tmp/tool")).is_err());
         assert!(validate_manifest_path(Path::new("linux-amd64/tool")).is_ok());
+    }
+
+    #[test]
+    fn target_dir_resolves_relative_cargo_target_dir_against_workspace() {
+        let workspace = Path::new("/workspace/decune");
+        assert_eq!(
+            target_dir_from_env_value(workspace, Some(PathBuf::from("target-custom"))),
+            PathBuf::from("/workspace/decune/target-custom"),
+        );
+    }
+
+    #[test]
+    fn target_dir_preserves_absolute_cargo_target_dir() {
+        let workspace = Path::new("/workspace/decune");
+        assert_eq!(
+            target_dir_from_env_value(workspace, Some(PathBuf::from("/tmp/target-custom"))),
+            PathBuf::from("/tmp/target-custom"),
+        );
+    }
+
+    #[test]
+    fn target_dir_defaults_to_workspace_target() {
+        let workspace = Path::new("/workspace/decune");
+        assert_eq!(
+            target_dir_from_env_value(workspace, None),
+            PathBuf::from("/workspace/decune/target"),
+        );
+    }
+
+    #[test]
+    fn check_container_tools_accepts_valid_bundle() {
+        let temp = TempDir::new().unwrap();
+        let entries = create_container_tool_files(temp.path());
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+
+        check_container_tools(temp.path()).unwrap();
+    }
+
+    #[test]
+    fn check_container_tools_rejects_unknown_tool() {
+        let temp = TempDir::new().unwrap();
+        let mut entries = create_container_tool_files(temp.path());
+        entries[0].name = "unknown-tool".to_owned();
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Unexpected container tool artifact in manifest")
+        );
+    }
+
+    #[test]
+    fn check_container_tools_rejects_unknown_platform() {
+        let temp = TempDir::new().unwrap();
+        let mut entries = create_container_tool_files(temp.path());
+        entries[0].platform = "linux-s390x".to_owned();
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Unexpected container tool artifact in manifest")
+        );
+    }
+
+    #[test]
+    fn check_container_tools_rejects_duplicate_entry() {
+        let temp = TempDir::new().unwrap();
+        let mut entries = create_container_tool_files(temp.path());
+        entries[1].name = entries[0].name.clone();
+        entries[1].platform = entries[0].platform.clone();
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Duplicate container tool artifact in manifest")
+        );
+    }
+
+    #[test]
+    fn check_container_tools_rejects_missing_required_entry() {
+        let temp = TempDir::new().unwrap();
+        let mut entries = create_container_tool_files(temp.path());
+        entries.pop();
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Missing required container tool artifacts")
+        );
+    }
+
+    #[test]
+    fn check_container_tools_rejects_invalid_sha256_format() {
+        let temp = TempDir::new().unwrap();
+        let mut entries = create_container_tool_files(temp.path());
+        entries[0].sha256 = "NOT-A-SHA256".to_owned();
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Invalid sha256 value in container tools manifest")
+        );
+    }
+
+    #[test]
+    fn check_container_tools_rejects_sha256sums_mismatch() {
+        let temp = TempDir::new().unwrap();
+        let entries = create_container_tool_files(temp.path());
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+        fs::write(
+            temp.path().join("SHA256SUMS"),
+            "0000000000000000000000000000000000000000000000000000000000000000  linux-amd64/git-credential-decune\n",
+        )
+        .unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("SHA256SUMS does not match container tools manifest")
+        );
+    }
+
+    #[test]
+    fn check_container_tools_rejects_missing_sha256sums() {
+        let temp = TempDir::new().unwrap();
+        let entries = create_container_tool_files(temp.path());
+        let manifest = Manifest {
+            schema_version: SCHEMA_VERSION,
+            protocol_version: PROTOCOL_VERSION,
+            tools: entries,
+        };
+        fs::write(
+            temp.path().join("manifest.json"),
+            format!("{}\n", serde_json::to_string_pretty(&manifest).unwrap()),
+        )
+        .unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(error.to_string().contains("Failed to read"));
+    }
+
+    #[test]
+    fn dist_archives_filters_by_version() {
+        let temp = TempDir::new().unwrap();
+        for name in [
+            "decune-v0.1.0-x86_64-unknown-linux-musl.tar.gz",
+            "decune-v0.2.0-x86_64-unknown-linux-musl.tar.gz",
+            "notes.txt",
+        ] {
+            fs::write(temp.path().join(name), b"archive").unwrap();
+        }
+
+        let archives = dist_archives_for_version(temp.path(), Some("0.1.0")).unwrap();
+
+        assert_eq!(archives.len(), 1);
+        assert_eq!(
+            archives[0].file_name().and_then(|name| name.to_str()),
+            Some("decune-v0.1.0-x86_64-unknown-linux-musl.tar.gz")
+        );
+    }
+
+    #[test]
+    fn package_version_from_toml_reads_package_version() {
+        let version = package_version_from_toml(
+            r#"
+            [package]
+            name = "decune"
+            version     = "0.1.0"
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(version, "0.1.0");
+    }
+
+    #[test]
+    fn package_version_from_toml_rejects_missing_package_version() {
+        let error = package_version_from_toml(
+            r#"
+            [package]
+            name = "decune"
+            "#,
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Cargo.toml package.version is missing")
+        );
     }
 
     #[test]
@@ -783,5 +1094,29 @@ mod tests {
         ] {
             assert!(!is_release_version(version), "{version}");
         }
+    }
+
+    fn create_container_tool_files(dir: &Path) -> Vec<ManifestEntry> {
+        let mut entries = Vec::new();
+        for platform in PLATFORMS {
+            fs::create_dir_all(dir.join(platform.id)).unwrap();
+            for tool in TOOLS {
+                let relative_path = PathBuf::from(platform.id).join(tool.name);
+                let path = dir.join(&relative_path);
+                fs::write(
+                    &path,
+                    format!("{} for {}", tool.name, platform.id).as_bytes(),
+                )
+                .unwrap();
+                fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+                entries.push(ManifestEntry {
+                    name: tool.name.to_owned(),
+                    platform: platform.id.to_owned(),
+                    path: relative_path.to_string_lossy().into_owned(),
+                    sha256: sha256_file(&path).unwrap(),
+                });
+            }
+        }
+        entries
     }
 }

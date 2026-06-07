@@ -35,9 +35,9 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
       - name: Build container tools bundle
-        run: cargo run -p xtask -- build-container-tools --out target/decune-dist/container-tools-bundle --locked
+        run: cargo run --locked -p xtask -- build-container-tools --out target/decune-dist/container-tools-bundle --locked
       - name: Check container tools bundle
-        run: cargo run -p xtask -- check-container-tools --dir target/decune-dist/container-tools-bundle
+        run: cargo run --locked -p xtask -- check-container-tools --dir target/decune-dist/container-tools-bundle
       - name: Pack container tools bundle
         run: tar -C target/decune-dist -czf target/decune-dist/container-tools-bundle.tar.gz container-tools-bundle
       - uses: actions/upload-artifact@v6
@@ -86,10 +86,22 @@ jobs:
           DECUNE_CONTAINER_TOOLS_BUNDLE: required
           DECUNE_CONTAINER_TOOLS_BUNDLE_DIR: ${{ github.workspace }}/target/decune-dist/container-tools-bundle
         run: |
-          cargo run -p xtask -- dist \
+          cargo run --locked -p xtask -- dist \
             --target "${{ matrix.target }}" \
             --version "${{ inputs.version }}" \
             --locked
+      - name: Smoke test release archive
+        shell: bash
+        run: |
+          archive="target/dist/decune-v${{ inputs.version }}-${{ matrix.target }}.tar.gz"
+          root="decune-v${{ inputs.version }}-${{ matrix.target }}"
+          rm -rf target/smoke
+          mkdir -p target/smoke
+          test -f "$archive"
+          tar -xzf "$archive" -C target/smoke
+          test -x "target/smoke/$root/decune"
+          "target/smoke/$root/decune" --help
+          "target/smoke/$root/decune" --version
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error
@@ -117,10 +129,14 @@ jobs:
         run: |
           mkdir -p target/dist
           find target/dist-parts -maxdepth 2 -type f -print -exec cp '{}' target/dist/ ';'
-          cargo run -p xtask -- checksum --dist-dir target/dist
-          cargo run -p xtask -- release-manifest \
+          cargo run --locked -p xtask -- checksum \
             --dist-dir target/dist \
             --version "${{ inputs.version }}"
+          cargo run --locked -p xtask -- release-manifest \
+            --dist-dir target/dist \
+            --version "${{ inputs.version }}"
+          cd target/dist
+          sha256sum -c SHA256SUMS
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error

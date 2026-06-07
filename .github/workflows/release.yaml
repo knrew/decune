@@ -49,7 +49,7 @@ jobs:
             tag="${GITHUB_REF_NAME}"
           fi
           version="${tag#v}"
-          cargo run -p xtask -- release-preflight --tag "$tag" --version "$version"
+          cargo run --locked -p xtask -- release-preflight --tag "$tag" --version "$version"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
 

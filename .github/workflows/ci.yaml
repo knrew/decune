@@ -127,9 +127,9 @@ jobs:
       - name: Check Docker daemon
         run: docker version
       - name: Build embedded container tools bundle
-        run: cargo run -p xtask -- build-container-tools --out assets/container-tools --locked
+        run: cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
       - name: Check embedded container tools bundle
-        run: cargo run -p xtask -- check-container-tools --dir assets/container-tools
+        run: cargo run --locked -p xtask -- check-container-tools --dir assets/container-tools
       - name: Cargo test
         env:
           DECUNE_CONTAINER_TOOLS_BUNDLE: required

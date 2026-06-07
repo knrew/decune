@@ -26,11 +26,7 @@ fn main() -> Result<()> {
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").context("OUT_DIR is not set")?);
     let generated_path = out_dir.join("container_tools_bundle.rs");
     let mode = env::var("DECUNE_CONTAINER_TOOLS_BUNDLE").unwrap_or_else(|_| "auto".to_owned());
-    let bundle_dir = env::var_os("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| {
-            Path::new(&env::var("CARGO_MANIFEST_DIR").unwrap()).join("assets/container-tools")
-        });
+    let bundle_dir = resolve_bundle_dir()?;
 
     match mode.as_str() {
         "off" => write_empty_bundle(&generated_path),
@@ -49,6 +45,19 @@ fn main() -> Result<()> {
         other => bail!(
             "Unsupported DECUNE_CONTAINER_TOOLS_BUNDLE value: {other}. Expected auto, required, or off."
         ),
+    }
+}
+
+fn resolve_bundle_dir() -> Result<PathBuf> {
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR is not set")?);
+    let bundle_dir = env::var_os("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| manifest_dir.join("assets/container-tools"));
+    if bundle_dir.is_absolute() {
+        Ok(bundle_dir)
+    } else {
+        Ok(manifest_dir.join(bundle_dir))
     }
 }
 
@@ -90,6 +99,12 @@ fn write_bundle(path: &Path, entries: &[ValidatedEntry]) -> Result<()> {
 }
 
 fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
+    let bundle_dir = fs::canonicalize(bundle_dir).with_context(|| {
+        format!(
+            "Failed to canonicalize container tools bundle dir: {}",
+            bundle_dir.display()
+        )
+    })?;
     let manifest_path = bundle_dir.join("manifest.json");
     let manifest_bytes = fs::read(&manifest_path).with_context(|| {
         format!(
@@ -116,10 +131,27 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
         );
     }
 
-    let mut coverage = BTreeSet::new();
+    let expected = expected_container_tool_set();
+    let mut seen = BTreeSet::new();
     let mut entries = Vec::new();
     for entry in manifest.tools {
+        let key = (entry.name.clone(), entry.platform.clone());
+        if !expected.contains(&key) {
+            bail!(
+                "Unexpected container tool artifact in manifest: {} for {}",
+                entry.name,
+                entry.platform
+            );
+        }
+        if !seen.insert(key) {
+            bail!(
+                "Duplicate container tool artifact in manifest: {} for {}",
+                entry.name,
+                entry.platform
+            );
+        }
         validate_manifest_path(&entry.path)?;
+        validate_sha256_string(&entry.sha256)?;
         let absolute_path = bundle_dir.join(&entry.path);
         if !absolute_path.is_file() {
             bail!(
@@ -127,6 +159,7 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
                 absolute_path.display()
             );
         }
+        validate_executable(&absolute_path)?;
         let bytes = fs::read(&absolute_path).with_context(|| {
             format!(
                 "Failed to read container tool artifact for checksum: {}",
@@ -140,7 +173,6 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
                 absolute_path.display()
             );
         }
-        coverage.insert((entry.name.clone(), entry.platform.clone()));
         entries.push(ValidatedEntry {
             name: entry.name,
             platform: entry.platform,
@@ -149,12 +181,9 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
         });
     }
 
-    for platform in PLATFORMS {
-        for tool in TOOLS {
-            if !coverage.contains(&(tool.to_owned(), platform.to_owned())) {
-                bail!("Missing required container tool artifact: {tool} for {platform}");
-            }
-        }
+    if seen != expected {
+        let missing = expected.difference(&seen).cloned().collect::<Vec<_>>();
+        bail!("Missing required container tool artifacts: {missing:?}");
     }
 
     entries.sort_by(|left, right| {
@@ -163,6 +192,17 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
             .then_with(|| left.name.cmp(&right.name))
     });
     Ok(entries)
+}
+
+fn expected_container_tool_set() -> BTreeSet<(String, String)> {
+    PLATFORMS
+        .iter()
+        .flat_map(|platform| {
+            TOOLS
+                .iter()
+                .map(move |tool| ((*tool).to_owned(), (*platform).to_owned()))
+        })
+        .collect()
 }
 
 fn validate_manifest_path(path: &Path) -> Result<()> {
@@ -181,6 +221,40 @@ fn validate_manifest_path(path: &Path) -> Result<()> {
             ),
         }
     }
+    Ok(())
+}
+
+fn validate_sha256_string(value: &str) -> Result<()> {
+    if value.len() != 64
+        || !value
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+    {
+        bail!("Invalid sha256 value in container tools manifest: {value}");
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn validate_executable(path: &Path) -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = fs::metadata(path)
+        .with_context(|| format!("Failed to stat container tool artifact: {}", path.display()))?
+        .permissions()
+        .mode()
+        & 0o777;
+    if mode & 0o111 == 0 {
+        bail!(
+            "Container tool artifact is not executable: {}",
+            path.display()
+        );
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn validate_executable(_path: &Path) -> Result<()> {
     Ok(())
 }
 

@@ -161,11 +161,21 @@ fn resolve_external_container_tool(
     source_dir: &Path,
 ) -> Result<Option<PathBuf>> {
     match resolve_container_tool_from_manifest(tool, platform, source_dir)? {
-        ManifestLookup::Found(path) => return Ok(Some(path)),
-        ManifestLookup::MissingEntry | ManifestLookup::NoManifest => {}
+        ManifestLookup::Found(path) => Ok(Some(path)),
+        ManifestLookup::MissingEntry => {
+            bail!(
+                "DECUNE_CONTAINER_TOOLS_DIR bundle is missing required decune container tool artifact: {} for {}",
+                tool.file_name(),
+                platform.id()
+            );
+        }
+        ManifestLookup::NoManifest => {
+            bail!(
+                "DECUNE_CONTAINER_TOOLS_DIR must point to a decune container tools bundle with manifest.json: {}",
+                source_dir.display()
+            );
+        }
     }
-    let candidate = source_dir.join(platform.id()).join(tool.file_name());
-    Ok(candidate.is_file().then_some(candidate))
 }
 
 fn resolve_container_tool_from_manifest(
@@ -352,7 +362,7 @@ mod tests {
     }
 
     #[test]
-    fn external_override_precedes_embedded_bundle() {
+    fn external_manifest_override_precedes_embedded_bundle() {
         static EMBEDDED: &[EmbeddedContainerToolArtifact] = &[EmbeddedContainerToolArtifact {
             name: "decune-forward-agent",
             platform: "linux-amd64",
@@ -366,6 +376,11 @@ mod tests {
         fs::create_dir_all(source.join("linux-amd64")).unwrap();
         fs::create_dir_all(&runtime).unwrap();
         fs::write(source.join("linux-amd64/decune-forward-agent"), b"external").unwrap();
+        fs::write(
+            source.join("manifest.json"),
+            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"3c4623849a49a53911c4a3e48d8cead8a1858960bccdea7a1b978d73ec2f06d7"}]}"#,
+        )
+        .unwrap();
 
         let staged = stage_container_tool_with_embedded(
             ContainerTool::ForwardAgent,
@@ -380,6 +395,59 @@ mod tests {
         assert_eq!(
             fs::read(runtime.join("decune-forward-agent")).unwrap(),
             b"external"
+        );
+    }
+
+    #[test]
+    fn rejects_external_override_without_manifest() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let runtime = temp.path().join("runtime");
+        fs::create_dir_all(source.join("linux-amd64")).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(source.join("linux-amd64/decune-forward-agent"), b"external").unwrap();
+
+        let error = stage_container_tool_from_dirs(
+            ContainerTool::ForwardAgent,
+            ContainerToolPlatform::LinuxAmd64,
+            &runtime,
+            vec![source],
+        )
+        .unwrap_err();
+
+        assert!(
+            error.to_string().contains(
+                "DECUNE_CONTAINER_TOOLS_DIR must point to a decune container tools bundle"
+            )
+        );
+    }
+
+    #[test]
+    fn rejects_external_override_missing_requested_entry() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let runtime = temp.path().join("runtime");
+        fs::create_dir_all(source.join("linux-amd64")).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(source.join("linux-amd64/git-credential-decune"), b"helper").unwrap();
+        fs::write(
+            source.join("manifest.json"),
+            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
+        )
+        .unwrap();
+
+        let error = stage_container_tool_from_dirs(
+            ContainerTool::ForwardAgent,
+            ContainerToolPlatform::LinuxAmd64,
+            &runtime,
+            vec![source],
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("bundle is missing required decune container tool artifact")
         );
     }
 
