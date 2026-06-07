@@ -1,1 +1,5 @@
 /target
+/dist
+/assets/container-tools/**
+!/assets/container-tools/
+!/assets/container-tools/.gitkeep

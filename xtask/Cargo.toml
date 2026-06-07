@@ -1,0 +1,15 @@
+[package]
+edition = "2024"
+name    = "xtask"
+publish = false
+version = "0.0.0"
+
+[dependencies]
+anyhow     = "1.0.102"
+clap       = {features = ["derive"], version = "4.6.1"}
+flate2     = "1.1.5"
+serde      = {features = ["derive"], version = "1.0.228"}
+serde_json = "1.0.150"
+sha2       = "0.11.0"
+tar        = "0.4.46"
+tempfile   = "3.27.0"

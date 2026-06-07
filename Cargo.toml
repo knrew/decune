@@ -5,6 +5,7 @@ edition     = "2024"
 license     = "MIT"
 name        = "decune"
 publish     = false
+repository  = "https://github.com/knrew/decune"
 version     = "0.1.0"
 
 [workspace]
@@ -12,8 +13,15 @@ members = [
   ".",
   "crates/decune-container-protocol",
   "crates/decune-container-tools",
+  "xtask",
 ]
 resolver = "3"
+
+[profile.dist]
+codegen-units = 1
+inherits       = "release"
+lto            = "thin"
+strip          = "symbols"
 
 [dependencies]
 anyhow = "1.0.102"
@@ -48,3 +56,9 @@ predicates = "3.1.4"
 proptest   = "1.11.0"
 rstest     = "0.26.1"
 tempfile   = "3.27.0"
+
+[build-dependencies]
+anyhow     = "1.0.102"
+serde      = {features = ["derive"], version = "1.0.228"}
+serde_json = "1.0.150"
+sha2       = "0.11.0"

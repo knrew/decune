@@ -1,7 +1,7 @@
 use std::{
-    env, fs, io,
+    env, fs,
     os::unix::fs::PermissionsExt,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
@@ -23,13 +23,6 @@ impl ContainerTool {
             Self::ForwardAgent => "decune-forward-agent",
         }
     }
-
-    fn display_name(self) -> &'static str {
-        match self {
-            Self::GitCredentialHelper => "Git credential helper",
-            Self::ForwardAgent => "port forwarding agent",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
@@ -40,92 +33,139 @@ pub(crate) enum ContainerToolPlatform {
 }
 
 impl ContainerToolPlatform {
-    pub(crate) const ALL: [Self; 2] = [Self::LinuxAmd64, Self::LinuxArm64];
-
     pub(crate) fn id(self) -> &'static str {
         match self {
             Self::LinuxAmd64 => "linux-amd64",
             Self::LinuxArm64 => "linux-arm64",
         }
     }
+
+    pub(crate) fn from_docker_os_arch(os: &str, arch: &str) -> Result<Self> {
+        match (os, arch) {
+            ("linux", "amd64" | "x86_64") => Ok(Self::LinuxAmd64),
+            ("linux", "arm64" | "aarch64") => Ok(Self::LinuxArm64),
+            _ => bail!("Unsupported container platform for decune container tools: {os}/{arch}"),
+        }
+    }
 }
 
-pub(crate) fn staged_tool_name(tool: ContainerTool, platform: ContainerToolPlatform) -> String {
-    format!("{}-{}", tool.file_name(), platform.id())
+pub(crate) struct EmbeddedContainerToolArtifact {
+    pub(crate) name: &'static str,
+    pub(crate) platform: &'static str,
+    pub(crate) sha256: &'static str,
+    pub(crate) bytes: &'static [u8],
 }
 
-pub(crate) fn stage_container_tool_variants(
+include!(concat!(env!("OUT_DIR"), "/container_tools_bundle.rs"));
+
+pub(crate) fn stage_container_tool(
     tool: ContainerTool,
+    platform: ContainerToolPlatform,
     runtime_dir: &Path,
-) -> Result<Vec<PathBuf>> {
-    stage_container_tool_variants_from_dirs(tool, runtime_dir, container_tool_source_dirs())
+) -> Result<PathBuf> {
+    stage_container_tool_from_sources(
+        tool,
+        platform,
+        runtime_dir,
+        &container_tool_override_dirs(),
+        EMBEDDED_CONTAINER_TOOLS,
+    )
 }
 
-pub(crate) fn stage_container_tool_variants_from_dirs(
+pub(crate) fn stage_container_tool_from_dirs(
     tool: ContainerTool,
+    platform: ContainerToolPlatform,
     runtime_dir: &Path,
     source_dirs: Vec<PathBuf>,
-) -> Result<Vec<PathBuf>> {
-    let mut staged = Vec::new();
-    for platform in ContainerToolPlatform::ALL {
-        let target = runtime_dir.join(staged_tool_name(tool, platform));
-        let Some(source) = resolve_container_tool(tool, platform, &source_dirs)? else {
-            remove_stale_container_tool(&target, tool)?;
-            continue;
-        };
-        fs::copy(&source, &target).with_context(|| {
-            format!(
-                "Failed to stage {} artifact: {} -> {}",
-                tool.display_name(),
-                source.display(),
-                target.display()
-            )
-        })?;
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).with_context(|| {
-            format!(
-                "Failed to set {} artifact permissions: {}",
-                tool.display_name(),
-                target.display()
-            )
-        })?;
-        staged.push(target);
-    }
-
-    Ok(staged)
+) -> Result<PathBuf> {
+    stage_container_tool_from_sources(tool, platform, runtime_dir, &source_dirs, &[])
 }
 
-fn remove_stale_container_tool(path: &Path, tool: ContainerTool) -> Result<()> {
-    match fs::remove_file(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error).with_context(|| {
-            format!(
-                "Failed to remove stale {} artifact: {}",
-                tool.display_name(),
-                path.display()
-            )
-        }),
+#[cfg(test)]
+fn stage_container_tool_with_embedded(
+    tool: ContainerTool,
+    platform: ContainerToolPlatform,
+    runtime_dir: &Path,
+    source_dirs: &[PathBuf],
+    embedded: &'static [EmbeddedContainerToolArtifact],
+) -> Result<PathBuf> {
+    stage_container_tool_from_sources(tool, platform, runtime_dir, source_dirs, embedded)
+}
+
+fn stage_container_tool_from_sources(
+    tool: ContainerTool,
+    platform: ContainerToolPlatform,
+    runtime_dir: &Path,
+    source_dirs: &[PathBuf],
+    embedded: &'static [EmbeddedContainerToolArtifact],
+) -> Result<PathBuf> {
+    let target = runtime_dir.join(tool.file_name());
+    match resolve_container_tool(tool, platform, source_dirs, embedded)? {
+        ResolvedContainerTool::ExternalFile(source) => {
+            fs::copy(&source, &target).with_context(|| {
+                format!(
+                    "Failed to stage decune container tool artifact: {} -> {}",
+                    source.display(),
+                    target.display()
+                )
+            })?;
+        }
+        ResolvedContainerTool::Embedded(artifact) => {
+            fs::write(&target, artifact.bytes).with_context(|| {
+                format!(
+                    "Failed to stage embedded decune container tool artifact: {}",
+                    target.display()
+                )
+            })?;
+        }
     }
+    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).with_context(|| {
+        format!(
+            "Failed to set decune container tool artifact permissions: {}",
+            target.display()
+        )
+    })?;
+    Ok(target)
 }
 
 fn resolve_container_tool(
     tool: ContainerTool,
     platform: ContainerToolPlatform,
     source_dirs: &[PathBuf],
-) -> Result<Option<PathBuf>> {
+    embedded: &'static [EmbeddedContainerToolArtifact],
+) -> Result<ResolvedContainerTool<'static>> {
     for source_dir in source_dirs {
-        match resolve_container_tool_from_manifest(tool, platform, source_dir)? {
-            ManifestLookup::Found(path) => return Ok(Some(path)),
-            ManifestLookup::MissingEntry => continue,
-            ManifestLookup::NoManifest => {}
-        }
-        let candidate = source_dir.join(platform.id()).join(tool.file_name());
-        if candidate.is_file() {
-            return Ok(Some(candidate));
+        if let Some(path) = resolve_external_container_tool(tool, platform, source_dir)? {
+            return Ok(ResolvedContainerTool::ExternalFile(path));
         }
     }
 
-    Ok(None)
+    if let Some(artifact) = embedded
+        .iter()
+        .find(|artifact| artifact.name == tool.file_name() && artifact.platform == platform.id())
+    {
+        verify_embedded_sha256(artifact)?;
+        return Ok(ResolvedContainerTool::Embedded(artifact));
+    }
+
+    bail!(
+        "Missing decune container tool artifact: {} for {}.\nThis decune binary was built without embedded container tools, or DECUNE_CONTAINER_TOOLS_DIR points to an incomplete bundle.\nInstall an official release binary or set DECUNE_CONTAINER_TOOLS_DIR to a valid bundle.",
+        tool.file_name(),
+        platform.id()
+    )
+}
+
+fn resolve_external_container_tool(
+    tool: ContainerTool,
+    platform: ContainerToolPlatform,
+    source_dir: &Path,
+) -> Result<Option<PathBuf>> {
+    match resolve_container_tool_from_manifest(tool, platform, source_dir)? {
+        ManifestLookup::Found(path) => return Ok(Some(path)),
+        ManifestLookup::MissingEntry | ManifestLookup::NoManifest => {}
+    }
+    let candidate = source_dir.join(platform.id()).join(tool.file_name());
+    Ok(candidate.is_file().then_some(candidate))
 }
 
 fn resolve_container_tool_from_manifest(
@@ -136,7 +176,7 @@ fn resolve_container_tool_from_manifest(
     let manifest_path = source_dir.join("manifest.json");
     let manifest = match fs::read_to_string(&manifest_path) {
         Ok(manifest) => manifest,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             return Ok(ManifestLookup::NoManifest);
         }
         Err(error) => {
@@ -154,6 +194,18 @@ fn resolve_container_tool_from_manifest(
             manifest_path.display()
         )
     })?;
+    if manifest.schema_version != 1 {
+        bail!(
+            "Unsupported container tools manifest schemaVersion: {}",
+            manifest.schema_version
+        );
+    }
+    if manifest.protocol_version != 1 {
+        bail!(
+            "Unsupported container tools protocolVersion: {}",
+            manifest.protocol_version
+        );
+    }
     let Some(entry) = manifest
         .tools
         .iter()
@@ -161,6 +213,7 @@ fn resolve_container_tool_from_manifest(
     else {
         return Ok(ManifestLookup::MissingEntry);
     };
+    validate_manifest_path(&entry.path)?;
     let path = source_dir.join(&entry.path);
     if !path.is_file() {
         bail!(
@@ -168,8 +221,68 @@ fn resolve_container_tool_from_manifest(
             path.display()
         );
     }
-    verify_sha256(&path, &entry.sha256)?;
+    verify_file_sha256(&path, &entry.sha256)?;
     Ok(ManifestLookup::Found(path))
+}
+
+fn validate_manifest_path(path: &Path) -> Result<()> {
+    if path.is_absolute() {
+        bail!(
+            "Container tools manifest path must be relative: {}",
+            path.display()
+        );
+    }
+    for component in path.components() {
+        match component {
+            Component::Normal(_) => {}
+            _ => bail!(
+                "Container tools manifest path must not escape the bundle: {}",
+                path.display()
+            ),
+        }
+    }
+    Ok(())
+}
+
+fn verify_file_sha256(path: &Path, expected: &str) -> Result<()> {
+    let bytes = fs::read(path).with_context(|| {
+        format!(
+            "Failed to read container tool artifact for checksum: {}",
+            path.display()
+        )
+    })?;
+    verify_sha256(&bytes, expected, || path.display().to_string())
+}
+
+fn verify_embedded_sha256(artifact: &EmbeddedContainerToolArtifact) -> Result<()> {
+    verify_sha256(artifact.bytes, artifact.sha256, || {
+        format!("embedded {} for {}", artifact.name, artifact.platform)
+    })
+}
+
+fn verify_sha256(bytes: &[u8], expected: &str, display: impl FnOnce() -> String) -> Result<()> {
+    let actual = hex_lower(&Sha256::digest(bytes));
+    if actual != expected {
+        bail!("Container tool artifact checksum mismatch: {}", display());
+    }
+    Ok(())
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn container_tool_override_dirs() -> Vec<PathBuf> {
+    env::var_os(CONTAINER_TOOLS_ENV)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .into_iter()
+        .collect()
+}
+
+enum ResolvedContainerTool<'a> {
+    ExternalFile(PathBuf),
+    Embedded(&'a EmbeddedContainerToolArtifact),
 }
 
 #[derive(Debug)]
@@ -179,66 +292,11 @@ enum ManifestLookup {
     Found(PathBuf),
 }
 
-fn verify_sha256(path: &Path, expected: &str) -> Result<()> {
-    let bytes = fs::read(path).with_context(|| {
-        format!(
-            "Failed to read container tool artifact for checksum: {}",
-            path.display()
-        )
-    })?;
-    let actual = hex_lower(Sha256::digest(&bytes).as_slice());
-    if actual != expected {
-        bail!(
-            "Container tool artifact checksum mismatch: {}",
-            path.display()
-        );
-    }
-    Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-}
-
-fn container_tool_source_dirs() -> Vec<PathBuf> {
-    let mut dirs = Vec::new();
-    if let Some(path) = env::var_os(CONTAINER_TOOLS_ENV).filter(|value| !value.is_empty()) {
-        dirs.push(PathBuf::from(path));
-    }
-    if let Some(path) = installed_container_tools_dir() {
-        dirs.push(path);
-    }
-    dirs.push(Path::new(env!("CARGO_MANIFEST_DIR")).join("target/container-tools"));
-    dedupe_paths(dirs)
-}
-
-fn installed_container_tools_dir() -> Option<PathBuf> {
-    let exe = env::current_exe().ok()?;
-    let bin_dir = exe.parent()?;
-    if bin_dir.file_name().and_then(|name| name.to_str()) != Some("bin") {
-        return None;
-    }
-    Some(
-        bin_dir
-            .parent()?
-            .join("libexec")
-            .join("decune")
-            .join("container-tools"),
-    )
-}
-
-fn dedupe_paths(paths: Vec<PathBuf>) -> Vec<PathBuf> {
-    let mut deduped = Vec::new();
-    for path in paths {
-        if !deduped.iter().any(|existing| existing == &path) {
-            deduped.push(path);
-        }
-    }
-    deduped
-}
-
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct ContainerToolsManifest {
+    schema_version: u32,
+    protocol_version: u32,
     tools: Vec<ContainerToolsManifestEntry>,
 }
 
@@ -257,84 +315,100 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        ContainerTool, ContainerToolPlatform, stage_container_tool_variants_from_dirs,
-        staged_tool_name,
+        ContainerTool, ContainerToolPlatform, EmbeddedContainerToolArtifact,
+        stage_container_tool_from_dirs, stage_container_tool_with_embedded,
     };
 
     #[test]
-    fn stages_available_container_tool_variants_from_manifest() {
+    fn stages_selected_container_tool_from_manifest() {
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("source");
         let runtime = temp.path().join("runtime");
         fs::create_dir_all(source.join("linux-amd64")).unwrap();
+        fs::create_dir_all(source.join("linux-arm64")).unwrap();
         fs::create_dir_all(&runtime).unwrap();
         fs::write(source.join("linux-amd64/git-credential-decune"), b"helper").unwrap();
+        fs::write(source.join("linux-arm64/git-credential-decune"), b"other").unwrap();
         fs::write(
             source.join("manifest.json"),
-            r#"{"tools":[{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
+            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"},{"name":"git-credential-decune","platform":"linux-arm64","path":"linux-arm64/git-credential-decune","sha256":"d9298a10d1b073fe878bf79259c4b97b86767c27e853ca856b9cdf34f1581d90"}]}"#,
         )
         .unwrap();
 
-        let staged = stage_container_tool_variants_from_dirs(
+        let staged = stage_container_tool_from_dirs(
             ContainerTool::GitCredentialHelper,
+            ContainerToolPlatform::LinuxAmd64,
             &runtime,
             vec![source],
         )
         .unwrap();
 
+        assert_eq!(staged, runtime.join("git-credential-decune"));
         assert_eq!(
-            staged,
-            vec![runtime.join("git-credential-decune-linux-amd64")]
-        );
-        assert_eq!(
-            fs::read(runtime.join("git-credential-decune-linux-amd64")).unwrap(),
+            fs::read(runtime.join("git-credential-decune")).unwrap(),
             b"helper"
         );
+        assert_eq!(fs::read_dir(&runtime).unwrap().count(), 1);
     }
 
     #[test]
-    fn stage_name_uses_stable_platform_suffix() {
-        assert_eq!(
-            staged_tool_name(
-                ContainerTool::ForwardAgent,
-                ContainerToolPlatform::LinuxArm64
-            ),
-            "decune-forward-agent-linux-arm64"
-        );
-    }
+    fn external_override_precedes_embedded_bundle() {
+        static EMBEDDED: &[EmbeddedContainerToolArtifact] = &[EmbeddedContainerToolArtifact {
+            name: "decune-forward-agent",
+            platform: "linux-amd64",
+            sha256: "9289140b1ac28dbda1437b283e6ca608e33186654e7d3a995da268c35906cd4c",
+            bytes: b"embedded",
+        }];
 
-    #[test]
-    fn removes_stale_container_tool_variant_when_source_is_missing() {
         let temp = TempDir::new().unwrap();
         let source = temp.path().join("source");
         let runtime = temp.path().join("runtime");
         fs::create_dir_all(source.join("linux-amd64")).unwrap();
         fs::create_dir_all(&runtime).unwrap();
-        fs::write(source.join("linux-amd64/decune-forward-agent"), b"agent").unwrap();
-        fs::write(
-            runtime.join("decune-forward-agent-linux-arm64"),
-            b"stale agent",
-        )
-        .unwrap();
-        fs::write(runtime.join("unrelated"), b"keep").unwrap();
+        fs::write(source.join("linux-amd64/decune-forward-agent"), b"external").unwrap();
 
-        let staged = stage_container_tool_variants_from_dirs(
+        let staged = stage_container_tool_with_embedded(
             ContainerTool::ForwardAgent,
+            ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            vec![source],
+            &[source],
+            EMBEDDED,
         )
         .unwrap();
 
+        assert_eq!(staged, runtime.join("decune-forward-agent"));
         assert_eq!(
-            staged,
-            vec![runtime.join("decune-forward-agent-linux-amd64")]
+            fs::read(runtime.join("decune-forward-agent")).unwrap(),
+            b"external"
         );
+    }
+
+    #[test]
+    fn stages_selected_container_tool_from_embedded_bundle() {
+        static EMBEDDED: &[EmbeddedContainerToolArtifact] = &[EmbeddedContainerToolArtifact {
+            name: "decune-forward-agent",
+            platform: "linux-arm64",
+            sha256: "9289140b1ac28dbda1437b283e6ca608e33186654e7d3a995da268c35906cd4c",
+            bytes: b"embedded",
+        }];
+        let temp = TempDir::new().unwrap();
+        let runtime = temp.path().join("runtime");
+        fs::create_dir_all(&runtime).unwrap();
+
+        let staged = stage_container_tool_with_embedded(
+            ContainerTool::ForwardAgent,
+            ContainerToolPlatform::LinuxArm64,
+            &runtime,
+            &[],
+            EMBEDDED,
+        )
+        .unwrap();
+
+        assert_eq!(staged, runtime.join("decune-forward-agent"));
         assert_eq!(
-            fs::read(runtime.join("decune-forward-agent-linux-amd64")).unwrap(),
-            b"agent"
+            fs::read(runtime.join("decune-forward-agent")).unwrap(),
+            b"embedded"
         );
-        assert!(!runtime.join("decune-forward-agent-linux-arm64").exists());
-        assert_eq!(fs::read(runtime.join("unrelated")).unwrap(), b"keep");
     }
 
     #[test]
@@ -347,12 +421,13 @@ mod tests {
         fs::write(source.join("linux-amd64/decune-forward-agent"), b"agent").unwrap();
         fs::write(
             source.join("manifest.json"),
-            r#"{"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}"#,
+            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"0000000000000000000000000000000000000000000000000000000000000000"}]}"#,
         )
         .unwrap();
 
-        let error = stage_container_tool_variants_from_dirs(
+        let error = stage_container_tool_from_dirs(
             ContainerTool::ForwardAgent,
+            ContainerToolPlatform::LinuxAmd64,
             &runtime,
             vec![source],
         )
@@ -363,5 +438,18 @@ mod tests {
                 .to_string()
                 .contains("Container tool artifact checksum mismatch")
         );
+    }
+
+    #[test]
+    fn resolves_supported_docker_platforms() {
+        assert_eq!(
+            ContainerToolPlatform::from_docker_os_arch("linux", "amd64").unwrap(),
+            ContainerToolPlatform::LinuxAmd64
+        );
+        assert_eq!(
+            ContainerToolPlatform::from_docker_os_arch("linux", "aarch64").unwrap(),
+            ContainerToolPlatform::LinuxArm64
+        );
+        assert!(ContainerToolPlatform::from_docker_os_arch("linux", "arm").is_err());
     }
 }
