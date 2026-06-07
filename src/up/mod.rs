@@ -38,10 +38,13 @@ use metadata::{
 use mounts::default_workspace_folder;
 pub(crate) use mounts::mount_hash_inputs;
 pub(in crate::up) use mounts::{
-    resolve_workspace_location, static_mount_variable_context, workspace_mounts_from_resolved,
+    WorkspaceLocationValidation, resolve_workspace_location, static_mount_variable_context,
+    workspace_mounts_from_resolved,
 };
 #[cfg(test)]
-use plan::build_up_plan_with_forwarding_resolution;
+use plan::{
+    build_preliminary_up_plan_with_forwarding_resolution, build_up_plan_with_forwarding_resolution,
+};
 #[cfg(test)]
 use plan::{build_up_plan, build_up_plan_with_image_metadata, build_up_plan_with_update_features};
 #[cfg(test)]
@@ -145,13 +148,14 @@ mod tests {
         CredentialRuntimeMountPolicy, DECUNE_RUNTIME_TARGET, ExistingContainerDecision,
         ForwardingResolution, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
         add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-        add_github_cli_feature_to_plan, build_up_plan, build_up_plan_with_forwarding_resolution,
-        build_up_plan_with_image_metadata, build_up_plan_with_update_features, container_summary,
-        create_and_start_container, decide_existing_container, default_workspace_folder,
-        feature_layer_image, finalize_up_plan_mounts, first_successful_shell_candidate,
-        list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
-        shell_command_candidates, should_auto_add_github_cli_feature, uid_gid_sync_base_image,
-        uid_gid_sync_warning, untrusted_repository_warnings,
+        add_github_cli_feature_to_plan, build_preliminary_up_plan_with_forwarding_resolution,
+        build_up_plan, build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
+        build_up_plan_with_update_features, container_summary, create_and_start_container,
+        decide_existing_container, default_workspace_folder, feature_layer_image,
+        finalize_up_plan_mounts, first_successful_shell_candidate, list_workspace_containers,
+        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
+        should_auto_add_github_cli_feature, uid_gid_sync_base_image, uid_gid_sync_warning,
+        untrusted_repository_warnings,
     };
 
     #[test]
@@ -1479,7 +1483,7 @@ require_local = true
     }
 
     #[test]
-    fn build_up_plan_uses_workspace_mount_target_as_default_workspace_folder() {
+    fn build_up_plan_rejects_workspace_mount_without_workspace_folder() {
         let workspace = test_workspace("workspace-mount-plan");
         write_devcontainer(
             &workspace,
@@ -1487,6 +1491,54 @@ require_local = true
             {
               "image": "alpine:3.20",
               "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "workspaceFolder is required when workspaceMount is specified"
+        );
+    }
+
+    #[test]
+    fn preliminary_up_plan_defers_workspace_mount_without_workspace_folder() {
+        let workspace = test_workspace("preliminary-workspace-mount-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+            }
+            "#,
+        );
+
+        let plan = build_preliminary_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::Resolve,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(plan.workspace_folder, "/workspace");
+        assert_eq!(plan.mounts[0].target, "/workspace");
+    }
+
+    #[test]
+    fn build_up_plan_uses_explicit_workspace_folder_for_workspace_mount_variables() {
+        let workspace = test_workspace("workspace-mount-variable-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=${containerWorkspaceFolder},type=bind",
+              "workspaceFolder": "/workspace"
             }
             "#,
         );
@@ -1499,36 +1551,49 @@ require_local = true
             plan.mounts[0].source.as_deref(),
             Some(workspace.root().to_str().unwrap())
         );
-        assert_eq!(plan.mounts[0].target, "/workspace");
+        assert_eq!(plan.mounts[0].target, plan.workspace_folder);
         assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
     }
 
     #[test]
-    fn build_up_plan_does_not_expand_workspace_mount_target_twice_when_used_as_workspace_folder() {
-        let workspace = test_workspace("workspace-mount-variable-plan");
+    fn build_up_plan_defers_workspace_folder_mount_target_check_until_runtime() {
+        let workspace = test_workspace("workspace-folder-outside-mount-plan");
         write_devcontainer(
             &workspace,
             r#"
             {
               "image": "alpine:3.20",
-              "workspaceMount": "source=${localWorkspaceFolder},target=${containerWorkspaceFolder}/src,type=bind"
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+              "workspaceFolder": "/other"
             }
             "#,
         );
 
         let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
-        assert_eq!(
-            plan.workspace_folder,
-            "/workspaces/workspace-mount-variable-plan/src"
+        assert_eq!(plan.workspace_folder, "/other");
+        assert_eq!(plan.mounts[0].target, "/workspace");
+    }
+
+    #[test]
+    fn build_up_plan_rejects_relative_workspace_folder() {
+        let workspace = test_workspace("relative-workspace-folder-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceFolder": "workspace"
+            }
+            "#,
         );
-        assert_eq!(plan.mounts.len(), 1);
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
         assert_eq!(
-            plan.mounts[0].source.as_deref(),
-            Some(workspace.root().to_str().unwrap())
+            error.to_string(),
+            "workspaceFolder must be an absolute container path: workspace"
         );
-        assert_eq!(plan.mounts[0].target, plan.workspace_folder);
-        assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
     }
 
     #[test]
@@ -1647,7 +1712,8 @@ type = "volume"
             r#"
             {
               "image": "alpine:3.20",
-              "workspaceMount": "source=${localWorkspaceFolder},target=/run/decune/workspace,type=bind"
+              "workspaceMount": "source=${localWorkspaceFolder},target=/run/decune/workspace,type=bind",
+              "workspaceFolder": "/run/decune/workspace"
             }
             "#,
         );
@@ -1914,6 +1980,8 @@ type = "volume"
 
         let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
+        assert_eq!(plan.workspace_folder, "/src");
+        assert_eq!(plan.mounts[0].target, default_workspace_folder(&workspace));
         assert_eq!(plan.mounts[1].target, "/opt/src");
     }
 
