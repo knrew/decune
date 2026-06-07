@@ -38,10 +38,13 @@ use metadata::{
 use mounts::default_workspace_folder;
 pub(crate) use mounts::mount_hash_inputs;
 pub(in crate::up) use mounts::{
-    resolve_workspace_location, static_mount_variable_context, workspace_mounts_from_resolved,
+    WorkspaceLocationValidation, resolve_workspace_location, static_mount_variable_context,
+    workspace_mounts_from_resolved,
 };
 #[cfg(test)]
-use plan::build_up_plan_with_forwarding_resolution;
+use plan::{
+    build_preliminary_up_plan_with_forwarding_resolution, build_up_plan_with_forwarding_resolution,
+};
 #[cfg(test)]
 use plan::{build_up_plan, build_up_plan_with_image_metadata, build_up_plan_with_update_features};
 #[cfg(test)]
@@ -145,13 +148,14 @@ mod tests {
         CredentialRuntimeMountPolicy, DECUNE_RUNTIME_TARGET, ExistingContainerDecision,
         ForwardingResolution, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
         add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-        add_github_cli_feature_to_plan, build_up_plan, build_up_plan_with_forwarding_resolution,
-        build_up_plan_with_image_metadata, build_up_plan_with_update_features, container_summary,
-        create_and_start_container, decide_existing_container, default_workspace_folder,
-        feature_layer_image, finalize_up_plan_mounts, first_successful_shell_candidate,
-        list_workspace_containers, mount_hash_inputs, run_attached_up, run_detached_up,
-        shell_command_candidates, should_auto_add_github_cli_feature, uid_gid_sync_base_image,
-        uid_gid_sync_warning, untrusted_repository_warnings,
+        add_github_cli_feature_to_plan, build_preliminary_up_plan_with_forwarding_resolution,
+        build_up_plan, build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
+        build_up_plan_with_update_features, container_summary, create_and_start_container,
+        decide_existing_container, default_workspace_folder, feature_layer_image,
+        finalize_up_plan_mounts, first_successful_shell_candidate, list_workspace_containers,
+        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
+        should_auto_add_github_cli_feature, uid_gid_sync_base_image, uid_gid_sync_warning,
+        untrusted_repository_warnings,
     };
 
     #[test]
@@ -1500,6 +1504,32 @@ require_local = true
     }
 
     #[test]
+    fn preliminary_up_plan_defers_workspace_mount_without_workspace_folder() {
+        let workspace = test_workspace("preliminary-workspace-mount-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+            }
+            "#,
+        );
+
+        let plan = build_preliminary_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::Resolve,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(plan.workspace_folder, "/workspace");
+        assert_eq!(plan.mounts[0].target, "/workspace");
+    }
+
+    #[test]
     fn build_up_plan_uses_explicit_workspace_folder_for_workspace_mount_variables() {
         let workspace = test_workspace("workspace-mount-variable-plan");
         write_devcontainer(
@@ -1526,7 +1556,7 @@ require_local = true
     }
 
     #[test]
-    fn build_up_plan_rejects_workspace_folder_outside_workspace_mount_target() {
+    fn build_up_plan_defers_workspace_folder_mount_target_check_until_runtime() {
         let workspace = test_workspace("workspace-folder-outside-mount-plan");
         write_devcontainer(
             &workspace,
@@ -1539,13 +1569,10 @@ require_local = true
             "#,
         );
 
-        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("workspaceFolder must be under the workspaceMount target")
-        );
+        assert_eq!(plan.workspace_folder, "/other");
+        assert_eq!(plan.mounts[0].target, "/workspace");
     }
 
     #[test]

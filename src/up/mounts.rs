@@ -20,6 +20,27 @@ use crate::{
 
 use super::{MountResolution, WorkspaceLocation};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::up) enum WorkspaceLocationValidation {
+    Preliminary,
+    ConfigResolved,
+    RuntimeResolved,
+}
+
+impl WorkspaceLocationValidation {
+    fn require_explicit_workspace_folder(self) -> bool {
+        matches!(
+            self,
+            WorkspaceLocationValidation::ConfigResolved
+                | WorkspaceLocationValidation::RuntimeResolved
+        )
+    }
+
+    fn validate_workspace_folder_under_mount(self) -> bool {
+        matches!(self, WorkspaceLocationValidation::RuntimeResolved)
+    }
+}
+
 pub(crate) fn default_workspace_folder(workspace: &Workspace) -> String {
     format!("/workspaces/{}", workspace.basename())
 }
@@ -64,6 +85,7 @@ fn reject_workspace_mount_target_conflicts(
 pub(super) fn resolve_workspace_location<F>(
     workspace: &Workspace,
     config: &ResolvedConfig,
+    validation: WorkspaceLocationValidation,
     variables_for_workspace_folder: F,
 ) -> Result<WorkspaceLocation>
 where
@@ -75,7 +97,10 @@ where
         .clone()
         .unwrap_or_else(|| default_workspace_folder(workspace));
     let explicit_workspace_folder = config.devcontainer.workspace_folder.as_deref();
-    if config.devcontainer.workspace_mount.is_some() && explicit_workspace_folder.is_none() {
+    if config.devcontainer.workspace_mount.is_some()
+        && explicit_workspace_folder.is_none()
+        && validation.require_explicit_workspace_folder()
+    {
         bail!("workspaceFolder is required when workspaceMount is specified");
     }
 
@@ -88,7 +113,9 @@ where
         workspace_mount.target.clone()
     };
 
-    if config.devcontainer.workspace_mount.is_some() {
+    if config.devcontainer.workspace_mount.is_some()
+        && validation.validate_workspace_folder_under_mount()
+    {
         validate_workspace_folder_under_mount(&workspace_folder, &workspace_mount.target)?;
     }
 

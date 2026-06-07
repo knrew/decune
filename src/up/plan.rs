@@ -29,9 +29,9 @@ use crate::{
 };
 
 use super::{
-    ForwardingResolution, MountResolution, UpPlan, UpPlanResolution, mount_hash_inputs,
-    resolve_workspace_location, static_mount_variable_context, static_uid_gid_sync_hash_input,
-    workspace_mounts_from_resolved,
+    ForwardingResolution, MountResolution, UpPlan, UpPlanResolution, WorkspaceLocationValidation,
+    mount_hash_inputs, resolve_workspace_location, static_mount_variable_context,
+    static_uid_gid_sync_hash_input, workspace_mounts_from_resolved,
 };
 
 const FEATURE_ENTRYPOINT_SHIM_HASH_VERSION: &str = "2";
@@ -179,9 +179,16 @@ fn build_up_plan_inner(
     let config = resolve_config(config_layers.clone());
     let (build_context, build_options) =
         dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
-    let workspace_location = resolve_workspace_location(workspace, &config, |workspace_folder| {
-        static_mount_variable_context(workspace, workspace_folder, &config)
-    })?;
+    let workspace_validation = match mount_resolution {
+        MountResolution::Resolve => WorkspaceLocationValidation::ConfigResolved,
+        MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
+    };
+    let workspace_location = resolve_workspace_location(
+        workspace,
+        &config,
+        workspace_validation,
+        |workspace_folder| static_mount_variable_context(workspace, workspace_folder, &config),
+    )?;
     let mount_variables =
         static_mount_variable_context(workspace, &workspace_location.workspace_folder, &config);
     let mounts = workspace_mounts_from_resolved(

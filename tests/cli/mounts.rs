@@ -258,6 +258,136 @@ fn up_detach_uses_explicit_workspace_folder_with_workspace_mount() {
 }
 
 #[test]
+fn up_detach_rejects_workspace_folder_outside_workspace_mount_target() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+              "workspaceFolder": "/other"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "workspaceFolder must be under the workspaceMount target",
+            ));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_resolves_remote_user_home_workspace_mount_target_before_validation() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.write_file("marker.txt", "workspace\n").unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let image_tag = format!(
+        "decune-test/remote-user-home-workspace-mount-{}:latest",
+        workspace_id(&workspace_root)
+    );
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            format!(
+                r#"
+                {{
+                  "image": "{image_tag}",
+                  "remoteUser": "node",
+                  "workspaceMount": "source=${{localWorkspaceFolder}},target=${{remoteUserHome}}/src,type=bind",
+                  "workspaceFolder": "/usr/local/share/node/src",
+                  "postStartCommand": "test \"$(pwd)\" = \"/usr/local/share/node/src\" && test -f marker.txt"
+                }}
+                "#
+            ),
+        )
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        remove_image_if_exists(&image_tag).await.unwrap();
+        create_image_with_nonstandard_home_user(&workspace_root, &image_tag)
+            .await
+            .unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        runtime.block_on(async {
+            let inspect = inspect_single_workspace_container(&workspace_root)
+                .await
+                .unwrap();
+            let host_config = inspect
+                .host_config
+                .expect("container host config should exist");
+            let mounts = host_config.mounts.unwrap_or_default();
+
+            assert!(
+                mounts
+                    .iter()
+                    .any(|mount| mount.target.as_deref() == Some("/usr/local/share/node/src")),
+                "expected workspace mount target to use the actual remote user home"
+            );
+            assert!(
+                mounts
+                    .iter()
+                    .all(|mount| mount.target.as_deref() != Some("/root/src")),
+                "workspaceMount target must not use preliminary root home"
+            );
+        });
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_resolves_remote_user_home_mount_target() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();

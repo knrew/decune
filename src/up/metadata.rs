@@ -43,7 +43,8 @@ use crate::{
             prepare_base_image_for_plan,
         },
         mounts::{
-            mount_variable_context, resolve_workspace_location, workspace_mounts_from_resolved,
+            WorkspaceLocationValidation, mount_variable_context, resolve_workspace_location,
+            workspace_mounts_from_resolved,
         },
         plan::{
             add_internal_hash_versions, base_image_source,
@@ -366,15 +367,19 @@ async fn finalize_mounts_and_resources_for_plan(
     }
     let remote_user_name = remote_user.user.clone();
     let remote_user_home = remote_user.home.clone();
-    let workspace_location =
-        resolve_workspace_location(workspace, &plan.config, |workspace_folder| {
+    let workspace_location = resolve_workspace_location(
+        workspace,
+        &plan.config,
+        WorkspaceLocationValidation::RuntimeResolved,
+        |workspace_folder| {
             mount_variable_context(
                 workspace,
                 workspace_folder,
                 remote_user_name.clone(),
                 remote_user_home.clone(),
             )
-        })?;
+        },
+    )?;
     let mount_variables = mount_variable_context(
         workspace,
         &workspace_location.workspace_folder,
@@ -681,15 +686,19 @@ async fn command_probe_container_env(
     let remote_user = resolve_remote_user_from_image(client, image, &effective_users).await?;
     let remote_user_name = remote_user.user.clone();
     let remote_user_home = remote_user.home.clone();
-    let workspace_location =
-        resolve_workspace_location(workspace, &plan.config, |workspace_folder| {
+    let workspace_location = resolve_workspace_location(
+        workspace,
+        &plan.config,
+        WorkspaceLocationValidation::RuntimeResolved,
+        |workspace_folder| {
             mount_variable_context(
                 workspace,
                 workspace_folder,
                 remote_user_name.clone(),
                 remote_user_home.clone(),
             )
-        })?;
+        },
+    )?;
     let mount_variables = mount_variable_context(
         workspace,
         &workspace_location.workspace_folder,
