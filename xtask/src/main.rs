@@ -61,14 +61,16 @@ enum XtaskCommand {
         version: String,
         #[arg(long)]
         locked: bool,
+        #[arg(long)]
+        dist_dir: Option<PathBuf>,
     },
     Checksum {
-        #[arg(long, default_value = "dist")]
-        dist_dir: PathBuf,
+        #[arg(long)]
+        dist_dir: Option<PathBuf>,
     },
     ReleaseManifest {
-        #[arg(long, default_value = "dist")]
-        dist_dir: PathBuf,
+        #[arg(long)]
+        dist_dir: Option<PathBuf>,
         #[arg(long)]
         version: String,
     },
@@ -95,13 +97,15 @@ fn main() -> Result<()> {
             target,
             version,
             locked,
-        } => dist(&workspace, &target, &version, locked),
+            dist_dir,
+        } => dist(&workspace, &target, &version, locked, dist_dir.as_deref()),
         XtaskCommand::Checksum { dist_dir } => {
-            checksum(&workspace_relative(&workspace, &dist_dir)?)
+            checksum(&resolve_dist_dir(&workspace, dist_dir.as_deref())?)
         }
-        XtaskCommand::ReleaseManifest { dist_dir, version } => {
-            release_manifest(&workspace_relative(&workspace, &dist_dir)?, &version)
-        }
+        XtaskCommand::ReleaseManifest { dist_dir, version } => release_manifest(
+            &resolve_dist_dir(&workspace, dist_dir.as_deref())?,
+            &version,
+        ),
         XtaskCommand::ReleasePreflight { tag, version } => {
             release_preflight(&workspace, &tag, &version)
         }
@@ -292,7 +296,13 @@ fn check_container_tools(dir: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
-fn dist(workspace: &Path, target: &str, version: &str, locked: bool) -> Result<()> {
+fn dist(
+    workspace: &Path,
+    target: &str,
+    version: &str,
+    locked: bool,
+    dist_dir: Option<&Path>,
+) -> Result<()> {
     let bundle_dir = env::var_os("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join("assets/container-tools"));
@@ -324,7 +334,7 @@ fn dist(workspace: &Path, target: &str, version: &str, locked: bool) -> Result<(
         bail!("Missing decune release binary: {}", binary.display());
     }
 
-    let dist_dir = workspace.join("dist");
+    let dist_dir = resolve_dist_dir(workspace, dist_dir)?;
     fs::create_dir_all(&dist_dir)
         .with_context(|| format!("Failed to create dist directory: {}", dist_dir.display()))?;
     let archive_root = format!("decune-v{version}-{target}");
@@ -637,6 +647,13 @@ fn target_dir(workspace: &Path) -> PathBuf {
     env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
         .unwrap_or_else(|| workspace.join("target"))
+}
+
+fn resolve_dist_dir(workspace: &Path, path: Option<&Path>) -> Result<PathBuf> {
+    match path {
+        Some(path) => workspace_relative(workspace, path),
+        None => Ok(target_dir(workspace).join("dist")),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]

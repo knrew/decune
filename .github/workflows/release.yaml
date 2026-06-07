@@ -124,7 +124,7 @@ jobs:
         with:
           if-no-files-found: error
           name: dist-${{ matrix.target }}
-          path: dist/*
+          path: target/dist/*
 
   publish:
     needs:
@@ -142,22 +142,22 @@ jobs:
       - uses: actions/download-artifact@v8
         with:
           merge-multiple: true
-          path: dist-parts
+          path: target/dist-parts
           pattern: dist-*
       - uses: dtolnay/rust-toolchain@stable
       - name: Prepare release assets
         run: |
-          mkdir -p dist
-          find dist-parts -maxdepth 2 -type f -print -exec cp '{}' dist/ ';'
-          cargo run -p xtask -- checksum --dist-dir dist
+          mkdir -p target/dist
+          find target/dist-parts -maxdepth 2 -type f -print -exec cp '{}' target/dist/ ';'
+          cargo run -p xtask -- checksum --dist-dir target/dist
           cargo run -p xtask -- release-manifest \
-            --dist-dir dist \
+            --dist-dir target/dist \
             --version "${{ needs.preflight.outputs.version }}"
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ needs.preflight.outputs.tag }}" dist/* \
+          gh release create "${{ needs.preflight.outputs.tag }}" target/dist/* \
             --verify-tag \
             --title "${{ needs.preflight.outputs.tag }}" \
             --notes-from-tag

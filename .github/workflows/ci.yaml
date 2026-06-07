@@ -101,7 +101,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Cargo check
         env:
-          DECUNE_CONTAINER_TOOLS_BUNDLE: off
+          DECUNE_CONTAINER_TOOLS_BUNDLE: "off"
         run: cargo check ${{ matrix.release_flag }} --workspace --all-targets --all-features --verbose
 
   cargo-test:
