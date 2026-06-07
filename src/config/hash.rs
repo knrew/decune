@@ -981,12 +981,14 @@ on_auto_forward = "silent"
                             label: Some("web".to_owned()),
                             on_auto_forward: Some(OnAutoForward::Silent),
                             require_local_port: Some(true),
+                            ..LayerPortAttributes::default()
                         },
                     )]),
                     other_ports_attributes: Some(LayerPortAttributes {
                         label: Some("other".to_owned()),
                         on_auto_forward: Some(OnAutoForward::Ignore),
                         require_local_port: Some(false),
+                        ..LayerPortAttributes::default()
                     }),
                     ..LayerDevcontainerMetadata::default()
                 }),

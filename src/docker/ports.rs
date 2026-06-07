@@ -337,6 +337,7 @@ mod tests {
                 label: None,
                 on_auto_forward: Some(OnAutoForward::Ignore),
                 require_local_port: None,
+                ..ResolvedPortAttributes::default()
             },
         )]);
 
@@ -419,6 +420,7 @@ mod tests {
                 label: Some("web".to_owned()),
                 on_auto_forward: Some(OnAutoForward::Silent),
                 require_local_port: Some(false),
+                ..ResolvedPortAttributes::default()
             },
         )]);
 
@@ -453,6 +455,7 @@ mod tests {
             label: None,
             on_auto_forward: Some(OnAutoForward::Ignore),
             require_local_port: None,
+            ..ResolvedPortAttributes::default()
         };
 
         let resolved = resolve_auto_forward_ports_with(

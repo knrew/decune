@@ -565,6 +565,12 @@ fn merge_optional_port_attributes(
             if source.require_local_port.is_some() {
                 target.require_local_port = source.require_local_port;
             }
+            if source.unsupported_protocol.is_some() {
+                target.unsupported_protocol = source.unsupported_protocol;
+            }
+            if source.unsupported_elevate_if_needed.is_some() {
+                target.unsupported_elevate_if_needed = source.unsupported_elevate_if_needed;
+            }
         }
         None => *target = Some(source),
     }

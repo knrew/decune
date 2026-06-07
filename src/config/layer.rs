@@ -287,6 +287,8 @@ pub(crate) struct LayerPortAttributes {
     pub(crate) label: Option<String>,
     pub(crate) on_auto_forward: Option<OnAutoForward>,
     pub(crate) require_local_port: Option<bool>,
+    pub(crate) unsupported_protocol: Option<String>,
+    pub(crate) unsupported_elevate_if_needed: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
