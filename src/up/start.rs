@@ -26,11 +26,12 @@ use crate::{
             workspace_container_list_options,
         },
         exec::{ExecCommandSpec, exec_capture_output},
-        image::{PullPolicy, ensure_image, image_startup_command},
+        image::{PullPolicy, ensure_image, image_container_tool_platform, image_startup_command},
         mounts::{DockerMountSpec, normalize_container_path},
         user::uid_gid_sync_runtime_user,
     },
     host::{
+        container_tools::ContainerToolPlatform,
         credentials::{
             DECUNE_RUNTIME_TARGET, GitCredentialRuntime, GithubCliRuntime, SshAgentRuntime,
             prepare_git_credential_runtime, prepare_github_cli_runtime, prepare_ssh_agent_runtime,
@@ -280,8 +281,14 @@ pub(in crate::up) async fn ensure_container_started(
             options.update_features,
         )
         .await?;
-        let (existing_plan, credentials) =
-            add_credential_runtime_mounts(existing_plan, workspace.paths().runtime_dir())?;
+        let platform =
+            container_tool_platform_for_plan(&client, &existing_plan, existing_container_image)
+                .await?;
+        let (existing_plan, credentials) = add_credential_runtime_mounts(
+            existing_plan,
+            workspace.paths().runtime_dir(),
+            platform,
+        )?;
 
         match decide_existing_container(
             &containers,
@@ -344,9 +351,22 @@ pub(in crate::up) async fn ensure_container_started(
         options.update_features,
     )
     .await?;
-    let (plan, credentials) = add_credential_runtime_mounts(plan, workspace.paths().runtime_dir())?;
     let image_prepared =
         mount_image_prepared || (image_prepared && !plan_requires_final_image_layer(&plan));
+    if !image_prepared {
+        prepare_image_for_create(
+            &client,
+            &plan,
+            options.pull,
+            options.no_cache,
+            image_prepared,
+        )
+        .await?;
+    }
+    let image_prepared = true;
+    let platform = image_container_tool_platform(&client, &plan.image).await?;
+    let (plan, credentials) =
+        add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
     warn_about_deferred_features(&plan.config);
 
     match decide_existing_container(
@@ -457,14 +477,31 @@ async fn start_stopped_existing_container(
     ))
 }
 
+async fn container_tool_platform_for_plan(
+    client: &DockerClient,
+    plan: &UpPlan,
+    existing_container_image: Option<&str>,
+) -> Result<ContainerToolPlatform> {
+    let image = existing_container_image.unwrap_or(&plan.image);
+    image_container_tool_platform(client, image).await
+}
+
 fn add_credential_runtime_mounts(
     plan: UpPlan,
     runtime_dir: &Path,
+    platform: ContainerToolPlatform,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let ssh_agent = prepare_ssh_agent_runtime(&plan.config)?;
     let github_cli = prepare_github_cli_runtime(&plan.config, runtime_dir)?;
-    let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir)?;
-    add_prepared_credential_runtime_mounts(plan, runtime_dir, github_cli, ssh_agent, forward)
+    let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir, platform)?;
+    add_prepared_credential_runtime_mounts(
+        plan,
+        runtime_dir,
+        github_cli,
+        ssh_agent,
+        forward,
+        platform,
+    )
 }
 
 #[cfg(test)]
@@ -473,6 +510,7 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_ssh_socket(
     runtime_dir: &Path,
     ssh_auth_sock: Option<&Path>,
 ) -> Result<(UpPlan, CredentialRuntime)> {
+    let platform = ContainerToolPlatform::LinuxAmd64;
     let ssh_agent = crate::host::credentials::prepare_ssh_agent_runtime_with_socket(
         &plan.config,
         ssh_auth_sock,
@@ -482,8 +520,15 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_ssh_socket(
         runtime_dir,
         None,
     )?;
-    let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir)?;
-    add_prepared_credential_runtime_mounts(plan, runtime_dir, github_cli, ssh_agent, forward)
+    let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir, platform)?;
+    add_prepared_credential_runtime_mounts(
+        plan,
+        runtime_dir,
+        github_cli,
+        ssh_agent,
+        forward,
+        platform,
+    )
 }
 
 #[cfg(test)]
@@ -493,6 +538,7 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_inputs(
     ssh_auth_sock: Option<&Path>,
     github_token: Option<&str>,
 ) -> Result<(UpPlan, CredentialRuntime)> {
+    let platform = ContainerToolPlatform::LinuxAmd64;
     let ssh_agent = crate::host::credentials::prepare_ssh_agent_runtime_with_socket(
         &plan.config,
         ssh_auth_sock,
@@ -502,8 +548,15 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_inputs(
         runtime_dir,
         github_token,
     )?;
-    let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir)?;
-    add_prepared_credential_runtime_mounts(plan, runtime_dir, github_cli, ssh_agent, forward)
+    let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir, platform)?;
+    add_prepared_credential_runtime_mounts(
+        plan,
+        runtime_dir,
+        github_cli,
+        ssh_agent,
+        forward,
+        platform,
+    )
 }
 
 fn add_prepared_credential_runtime_mounts(
@@ -512,8 +565,9 @@ fn add_prepared_credential_runtime_mounts(
     github_cli: GithubCliRuntime,
     ssh_agent: SshAgentRuntime,
     forward: ForwardRuntime,
+    platform: ContainerToolPlatform,
 ) -> Result<(UpPlan, CredentialRuntime)> {
-    let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir)?;
+    let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir, platform)?;
     extend_runtime_mounts(&mut plan.mounts, git_credentials.mounts());
     extend_runtime_mounts(&mut plan.mounts, github_cli.mounts());
     extend_runtime_mounts(&mut plan.mounts, ssh_agent.mounts());
@@ -656,44 +710,7 @@ async fn create_and_start_container_inner(
     no_cache: bool,
     image_prepared: bool,
 ) -> Result<UpOutcome> {
-    if plan_requires_final_image_layer(plan) {
-        if !image_prepared {
-            prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
-            build_workspace_image_layers(client, plan, no_cache).await?;
-        }
-    } else if let Some(context) = plan.build_context.clone() {
-        if !image_prepared {
-            let mut build_options = plan.build_options.clone();
-            build_options.pull = pull;
-            build_options.no_cache = no_cache;
-            build_image(
-                client,
-                DockerBuildInput {
-                    image_tag: plan.base_image.clone(),
-                    labels: plan.resources.labels.clone().into_iter().collect(),
-                    context,
-                    options: build_options,
-                },
-            )
-            .await?;
-        }
-        crate::up::metadata::warn_about_unsupported_dockerfile_image_metadata(
-            client,
-            &plan.base_image,
-        )
-        .await?;
-    } else if !image_prepared {
-        ensure_image(
-            client,
-            &plan.base_image,
-            if pull {
-                PullPolicy::Always
-            } else {
-                PullPolicy::Missing
-            },
-        )
-        .await?;
-    }
+    prepare_image_for_create(client, plan, pull, no_cache, image_prepared).await?;
 
     let has_feature_entrypoints = !plan.config.devcontainer.entrypoints.is_empty();
     let (entrypoint, command) = if has_feature_entrypoints {
@@ -759,6 +776,54 @@ async fn create_and_start_container_inner(
         container_name: plan.resources.container_name.clone(),
         reused: false,
     })
+}
+
+async fn prepare_image_for_create(
+    client: &DockerClient,
+    plan: &UpPlan,
+    pull: bool,
+    no_cache: bool,
+    image_prepared: bool,
+) -> Result<()> {
+    if plan_requires_final_image_layer(plan) {
+        if !image_prepared {
+            prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
+            build_workspace_image_layers(client, plan, no_cache).await?;
+        }
+    } else if let Some(context) = plan.build_context.clone() {
+        if !image_prepared {
+            let mut build_options = plan.build_options.clone();
+            build_options.pull = pull;
+            build_options.no_cache = no_cache;
+            build_image(
+                client,
+                DockerBuildInput {
+                    image_tag: plan.base_image.clone(),
+                    labels: plan.resources.labels.clone().into_iter().collect(),
+                    context,
+                    options: build_options,
+                },
+            )
+            .await?;
+        }
+        crate::up::metadata::warn_about_unsupported_dockerfile_image_metadata(
+            client,
+            &plan.base_image,
+        )
+        .await?;
+    } else if !image_prepared {
+        ensure_image(
+            client,
+            &plan.base_image,
+            if pull {
+                PullPolicy::Always
+            } else {
+                PullPolicy::Missing
+            },
+        )
+        .await?;
+    }
+    Ok(())
 }
 
 fn persist_initial_container_state(

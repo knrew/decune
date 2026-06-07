@@ -23,9 +23,7 @@ use crate::{
         user::ResolvedRemoteUser,
     },
     host::{
-        container_tools::{
-            ContainerTool, stage_container_tool_variants, stage_container_tool_variants_from_dirs,
-        },
+        container_tools::{ContainerTool, ContainerToolPlatform, stage_container_tool},
         credentials::runtime::{
             DECUNE_RUNTIME_TARGET, GIT_CREDENTIAL_HELPER_NAME, GIT_CREDENTIAL_HELPER_TARGET,
             GitCredentialRuntime, HOST_DAEMON_SOCKET_TARGET, HOST_GITCONFIG_NAME, shell_quote,
@@ -116,10 +114,12 @@ pub(crate) fn handle_git_credential_request(
 pub(crate) fn prepare_git_credential_runtime(
     config: &ResolvedConfig,
     runtime_dir: &Path,
+    platform: ContainerToolPlatform,
 ) -> Result<GitCredentialRuntime> {
     prepare_git_credential_runtime_with_gitconfig(
         config,
         runtime_dir,
+        platform,
         host_gitconfig_path().as_deref(),
     )
 }
@@ -127,11 +127,13 @@ pub(crate) fn prepare_git_credential_runtime(
 pub(super) fn prepare_git_credential_runtime_with_gitconfig(
     config: &ResolvedConfig,
     runtime_dir: &Path,
+    platform: ContainerToolPlatform,
     host_gitconfig: Option<&Path>,
 ) -> Result<GitCredentialRuntime> {
     prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
         config,
         runtime_dir,
+        platform,
         host_gitconfig,
         None,
     )
@@ -140,6 +142,7 @@ pub(super) fn prepare_git_credential_runtime_with_gitconfig(
 pub(super) fn prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
     config: &ResolvedConfig,
     runtime_dir: &Path,
+    platform: ContainerToolPlatform,
     host_gitconfig: Option<&Path>,
     tool_source_dirs: Option<Vec<PathBuf>>,
 ) -> Result<GitCredentialRuntime> {
@@ -155,47 +158,18 @@ pub(super) fn prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
 
     let mut cleanup_paths = Vec::new();
     if helper_enabled {
-        let staged_helpers = match tool_source_dirs {
-            Some(source_dirs) => stage_container_tool_variants_from_dirs(
+        let helper_path = match tool_source_dirs {
+            Some(source_dirs) => crate::host::container_tools::stage_container_tool_from_dirs(
                 ContainerTool::GitCredentialHelper,
+                platform,
                 runtime_dir,
                 source_dirs,
             )?,
-            None => stage_container_tool_variants(ContainerTool::GitCredentialHelper, runtime_dir)?,
-        };
-        if staged_helpers.is_empty() {
-            ui::warn(
-                "Git credential forwarding is unavailable: no container Git credential helper artifact found",
-            );
-        } else {
-            let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
-            fs::write(&helper_path, git_credential_helper_launcher()).with_context(|| {
-                format!(
-                    "Failed to stage Git credential helper launcher: {}",
-                    helper_path.display()
-                )
-            })?;
-            fs::set_permissions(&helper_path, fs::Permissions::from_mode(0o755)).with_context(
-                || {
-                    format!(
-                        "Failed to set Git credential helper launcher permissions: {}",
-                        helper_path.display()
-                    )
-                },
-            )?;
-            cleanup_paths.push(helper_path);
-            for helper in staged_helpers {
-                fs::set_permissions(&helper, fs::Permissions::from_mode(0o755)).with_context(
-                    || {
-                        format!(
-                            "Failed to set Git credential helper artifact permissions: {}",
-                            helper.display()
-                        )
-                    },
-                )?;
-                cleanup_paths.push(helper);
+            None => {
+                stage_container_tool(ContainerTool::GitCredentialHelper, platform, runtime_dir)?
             }
-        }
+        };
+        cleanup_paths.push(helper_path);
     }
 
     if copy_global_config
@@ -311,16 +285,12 @@ fn warn_git_credential_setup_unavailable(container: &str, stderr: &[u8]) {
 }
 
 fn git_credential_setup_warning_detail(stderr: &[u8]) -> Option<String> {
-    const UNSUPPORTED_ARCH_PREFIX: &str =
-        "Unsupported Git credential helper container architecture:";
     const MISSING_TOOL_PREFIX: &str = "Missing Git credential helper container tool:";
 
     String::from_utf8_lossy(stderr)
         .lines()
         .map(str::trim)
-        .find(|line| {
-            line.starts_with(UNSUPPORTED_ARCH_PREFIX) || line.starts_with(MISSING_TOOL_PREFIX)
-        })
+        .find(|line| line.starts_with(MISSING_TOOL_PREFIX))
         .map(str::to_owned)
 }
 
@@ -374,9 +344,11 @@ fn git_credential_helper_setup_script(credentials: &ResolvedGitCredentials) -> S
         return String::new();
     }
     let mut script = String::from("set -e\n");
-    script.push_str(
-        "arch=\"$(uname -m 2>/dev/null || true)\"\ncase \"$arch\" in x86_64|amd64) helper=/run/decune/git-credential-decune-linux-amd64 ;; aarch64|arm64) helper=/run/decune/git-credential-decune-linux-arm64 ;; *) echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2; exit 1 ;; esac\nif [ ! -x \"$helper\" ]; then echo \"Missing Git credential helper container tool: $helper\" >&2; exit 1; fi\n",
-    );
+    script.push_str(&format!(
+        "test -x {} || {{ echo \"Missing Git credential helper container tool: {}\" >&2; exit 1; }}\n",
+        shell_quote(GIT_CREDENTIAL_HELPER_TARGET),
+        GIT_CREDENTIAL_HELPER_TARGET
+    ));
     script.push_str("git config --global --unset-all credential.helper >/dev/null 2>&1 || true\n");
     script.push_str("git config --global --add credential.helper ");
     script.push_str(&shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
@@ -605,30 +577,6 @@ fn host_gitconfig_path() -> Option<PathBuf> {
         .map(|home| home.join(".gitconfig"))
 }
 
-fn git_credential_helper_launcher() -> &'static [u8] {
-    b"#!/bin/sh
-set -eu
-arch=\"$(uname -m 2>/dev/null || true)\"
-case \"$arch\" in
-  x86_64|amd64)
-    helper=/run/decune/git-credential-decune-linux-amd64
-    ;;
-  aarch64|arm64)
-    helper=/run/decune/git-credential-decune-linux-arm64
-    ;;
-  *)
-    echo \"Unsupported Git credential helper container architecture: ${arch:-unknown}\" >&2
-    exit 1
-    ;;
-esac
-if [ ! -x \"$helper\" ]; then
-  echo \"Missing Git credential helper container tool: $helper\" >&2
-  exit 1
-fi
-exec \"$helper\" \"$@\"
-"
-}
-
 fn git_credential_action_from_args() -> Result<GitCredentialAction> {
     let mut args = env::args();
     let _program = args.next();
@@ -653,7 +601,10 @@ mod tests {
     use tempfile::TempDir;
 
     use super::*;
-    use crate::config::{resolved::ResolvedConfig, types::GitHttpsMode};
+    use crate::{
+        config::{resolved::ResolvedConfig, types::GitHttpsMode},
+        host::container_tools::ContainerToolPlatform,
+    };
 
     #[test]
     fn helper_request_json_preserves_git_protocol_input() {
@@ -711,16 +662,20 @@ mod tests {
     fn runtime_stages_container_helper_in_private_runtime_dir() {
         let temp = TempDir::new().unwrap();
         let source_dir = temp.path().join("tools");
-        write_container_tool(
+        crate::host::container_tools::write_test_container_tools_bundle(
             &source_dir,
-            "linux-amd64",
-            GIT_CREDENTIAL_HELPER_NAME,
-            b"helper",
-        );
+            &[crate::host::container_tools::TestContainerToolEntry {
+                tool: ContainerTool::GitCredentialHelper,
+                platform: ContainerToolPlatform::LinuxAmd64,
+                contents: b"helper",
+            }],
+        )
+        .unwrap();
         let runtime_dir = temp.path().join("runtime");
         let runtime = prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
             &ResolvedConfig::default(),
             &runtime_dir,
+            ContainerToolPlatform::LinuxAmd64,
             None,
             Some(vec![source_dir]),
         )
@@ -731,30 +686,30 @@ mod tests {
         assert_eq!(mode(&runtime_dir), 0o700);
         assert_eq!(mode(&helper_path), 0o755);
         assert_eq!(
-            fs::read(runtime_dir.join("git-credential-decune-linux-amd64")).unwrap(),
+            fs::read(runtime_dir.join("git-credential-decune")).unwrap(),
             b"helper"
         );
-        assert_ne!(
-            fs::read(&helper_path).unwrap(),
-            fs::read(current_exe()).unwrap()
-        );
+        assert_eq!(fs::read(&helper_path).unwrap(), b"helper");
     }
 
     #[test]
-    fn helper_setup_script_rejects_unsupported_container_architectures_before_configuring_helper() {
+    fn helper_setup_script_requires_staged_real_binary_before_configuring_helper() {
         let config = ResolvedConfig::default();
 
         let script = git_credential_helper_setup_script(&config.credentials.git);
 
-        let arch_guard = script
-            .find("Unsupported Git credential helper container architecture")
-            .unwrap();
+        let helper_guard_command = format!("test -x {}", shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
+        let helper_guard = script.find(&helper_guard_command).unwrap();
         let helper_config = script
             .find("git config --global --add credential.helper")
             .unwrap();
-        assert!(script.contains("x86_64|amd64)"));
-        assert!(script.contains("aarch64|arm64)"));
-        assert!(arch_guard < helper_config);
+        assert_eq!(
+            script
+                .matches("git config --global --add credential.helper")
+                .count(),
+            1
+        );
+        assert!(helper_guard < helper_config);
     }
 
     #[test]
@@ -768,36 +723,22 @@ mod tests {
             Some("octo@example.test"),
         );
 
-        assert!(helper_script.contains("Unsupported Git credential helper container architecture"));
+        assert!(helper_script.contains("Missing Git credential helper container tool"));
         assert!(user_script.contains("git config --global user.name 'Octo User'"));
         assert!(user_script.contains("git config --global user.email 'octo@example.test'"));
         assert!(!user_script.contains("credential.helper"));
-        assert!(!user_script.contains("Unsupported Git credential helper container architecture"));
-    }
-
-    #[test]
-    fn setup_warning_detail_preserves_unsupported_container_architecture() {
-        let detail = git_credential_setup_warning_detail(
-            b"Unsupported Git credential helper container architecture: riscv64\n",
-        );
-
-        assert_eq!(
-            detail.as_deref(),
-            Some("Unsupported Git credential helper container architecture: riscv64")
-        );
+        assert!(!user_script.contains("Missing Git credential helper container tool"));
     }
 
     #[test]
     fn setup_warning_detail_preserves_missing_container_tool() {
         let detail = git_credential_setup_warning_detail(
-            b"Missing Git credential helper container tool: /run/decune/git-credential-decune-linux-amd64\n",
+            b"Missing Git credential helper container tool: /run/decune/git-credential-decune\n",
         );
 
         assert_eq!(
             detail.as_deref(),
-            Some(
-                "Missing Git credential helper container tool: /run/decune/git-credential-decune-linux-amd64"
-            )
+            Some("Missing Git credential helper container tool: /run/decune/git-credential-decune")
         );
     }
 
@@ -809,11 +750,14 @@ mod tests {
         fs::write(home.join(".gitconfig"), "[user]\n\tname = Octo\n").unwrap();
         let runtime_dir = temp.path().join("runtime");
         let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::Off;
+        config.credentials.git.copy_user = false;
         config.credentials.git.copy_global_config = true;
 
         let _runtime = prepare_git_credential_runtime_with_gitconfig(
             &config,
             &runtime_dir,
+            ContainerToolPlatform::LinuxAmd64,
             Some(&home.join(".gitconfig")),
         )
         .unwrap();
@@ -836,6 +780,7 @@ mod tests {
         let runtime = prepare_git_credential_runtime_with_gitconfig(
             &config,
             &runtime_dir,
+            ContainerToolPlatform::LinuxAmd64,
             Some(&home.join(".gitconfig")),
         )
         .unwrap();
@@ -856,7 +801,7 @@ mod tests {
 
         assert!(script.is_empty());
         assert!(!script.contains("credential.helper"));
-        assert!(!script.contains("Unsupported Git credential helper container architecture"));
+        assert!(!script.contains("Missing Git credential helper container tool"));
     }
 
     #[test]
@@ -894,15 +839,5 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
-
-    fn current_exe() -> PathBuf {
-        std::env::current_exe().unwrap()
-    }
-
-    fn write_container_tool(source_dir: &Path, platform: &str, name: &str, contents: &[u8]) {
-        let platform_dir = source_dir.join(platform);
-        fs::create_dir_all(&platform_dir).unwrap();
-        fs::write(platform_dir.join(name), contents).unwrap();
     }
 }

@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::Path};
+use std::collections::BTreeMap;
 
 use anyhow::{Context, Result};
 
@@ -47,14 +47,6 @@ pub(in crate::up) async fn start_forwarding_for_up(
             decide_forward_agent_start(false, true, arch.as_deref())
         {
             ui::warn(&warning);
-            return Ok(None);
-        }
-        if let Some(arch) = arch.as_deref()
-            && !forward_agent_tool_exists_for_arch(started.workspace.paths().runtime_dir(), arch)
-        {
-            ui::warn(&format!(
-                "Automatic port forwarding is disabled because the port forwarding agent artifact is not available for the container architecture: {arch}"
-            ));
             return Ok(None);
         }
     }
@@ -139,15 +131,6 @@ pub(in crate::up) fn decide_forward_agent_start(
             "Automatic port forwarding is disabled because the container architecture could not be detected".to_owned(),
         ),
     }
-}
-
-fn forward_agent_tool_exists_for_arch(runtime_dir: &Path, arch: &str) -> bool {
-    let file_name = match arch.trim() {
-        "x86_64" | "amd64" => "decune-forward-agent-linux-amd64",
-        "aarch64" | "arm64" => "decune-forward-agent-linux-arm64",
-        _ => return false,
-    };
-    runtime_dir.join(file_name).is_file()
 }
 
 async fn detect_container_arch_for_forward_agent(

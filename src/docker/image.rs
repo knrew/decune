@@ -17,6 +17,7 @@ use crate::{
     config::ConfigLayer,
     devcontainer::metadata::parse_image_metadata_layer,
     docker::{client::DockerClient, lock::DockerResourceLock},
+    host::container_tools::ContainerToolPlatform,
 };
 
 pub(crate) const DEVCONTAINER_METADATA_LABEL: &str = "devcontainer.metadata";
@@ -147,6 +148,26 @@ pub(crate) async fn image_startup_command(
         entrypoint: config.entrypoint.unwrap_or_default(),
         command: config.cmd.unwrap_or_default(),
     })
+}
+
+pub(crate) async fn image_container_tool_platform(
+    client: &DockerClient,
+    image: &str,
+) -> Result<ContainerToolPlatform> {
+    let inspect = client
+        .raw()
+        .inspect_image(image)
+        .await
+        .with_context(|| format!("Failed to inspect Docker image platform: {image}"))?;
+    let os = inspect
+        .os
+        .as_deref()
+        .context("Docker image inspect did not include an OS")?;
+    let arch = inspect
+        .architecture
+        .as_deref()
+        .context("Docker image inspect did not include an architecture")?;
+    ContainerToolPlatform::from_docker_os_arch(os, arch)
 }
 
 pub(crate) fn image_tags_for_repository(

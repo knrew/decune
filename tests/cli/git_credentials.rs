@@ -120,7 +120,7 @@ fn up_detach_routes_git_credential_helper_actions_through_host_daemon() {
 }
 
 #[test]
-fn up_detach_warns_with_unsupported_git_credential_helper_container_architecture() {
+fn up_detach_uses_selected_git_credential_helper_independent_of_container_uname() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
         .write_file(
@@ -133,8 +133,9 @@ fn up_detach_warns_with_unsupported_git_credential_helper_container_architecture
               >/usr/local/bin/uname && chmod +x /usr/local/bin/uname && \
               printf '%s\n' \
               '#!/bin/sh' \
-              'touch /tmp/git-called' \
-              'echo "git setup should not run" >&2' \
+              'if [ "$1" = config ] && [ "$2" = --global ] && [ "$3" = --unset-all ]; then exit 0; fi' \
+              'if [ "$1" = config ] && [ "$2" = --global ] && [ "$3" = --add ]; then printf "%s\n" "$5" >/tmp/decune-git-helper; exit 0; fi' \
+              'echo "unexpected git command: $*" >&2' \
               'exit 41' \
               >/usr/local/bin/git && chmod +x /usr/local/bin/git
             "#,
@@ -148,7 +149,7 @@ fn up_detach_warns_with_unsupported_git_credential_helper_container_architecture
               "build": {
                 "dockerfile": "Dockerfile"
               },
-              "postStartCommand": "test ! -e /tmp/git-called"
+              "postStartCommand": "test \"$(cat /tmp/decune-git-helper)\" = /run/decune/git-credential-decune && test -x /run/decune/git-credential-decune"
             }
             "#,
         )
@@ -185,10 +186,7 @@ fn up_detach_warns_with_unsupported_git_credential_helper_container_architecture
             .assert()
             .success()
             .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("Started dev container"))
-            .stderr(predicate::str::contains(
-                "Unsupported Git credential helper container architecture: riscv64",
-            ));
+            .stderr(predicate::str::contains("Started dev container"));
     });
 
     runtime.block_on(async {
@@ -209,7 +207,7 @@ fn up_detach_runs_git_credential_helper_as_nonroot_alpine_remote_user() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -315,7 +313,7 @@ fn up_detach_sets_git_credential_home_for_nonroot_remote_user() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             ENV HOME=/root
@@ -428,7 +426,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM ubuntu:24.04
             RUN if getent group {gid} >/dev/null; then remote_group="$(getent group {gid} | cut -d: -f1)"; else groupadd -g {gid} decunegrp && remote_group=decunegrp; fi \
@@ -540,7 +538,7 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM ubuntu:24.04
             RUN groupadd -g {remote_gid} decunegrp \

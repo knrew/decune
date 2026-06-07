@@ -173,7 +173,7 @@ fn up_detach_does_not_run_remote_profile_as_root_during_github_cli_setup() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -294,7 +294,7 @@ fn up_detach_uses_remote_user_login_path_for_github_cli_setup() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -535,7 +535,7 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -666,7 +666,7 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {remote_gid} decunegrp \
@@ -1041,7 +1041,7 @@ fn up_detach_reuses_auto_added_github_cli_feature_container_when_source_tag_is_r
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
-            &format!(
+            format!(
                 r#"
             {{
               "image": "{source_image}"
@@ -1188,7 +1188,7 @@ fn up_detach_reuses_github_cli_source_container_when_source_tag_is_removed() {
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
-            &format!(
+            format!(
                 r#"
             {{
               "image": "{source_image}"

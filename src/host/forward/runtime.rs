@@ -2,7 +2,6 @@ use std::{
     collections::BTreeSet,
     fs,
     io::Read as _,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
 
@@ -12,17 +11,15 @@ use crate::{
     config::types::MountType,
     docker::ports::ResolvedForwardPort,
     host::{
-        container_tools::{
-            ContainerTool, stage_container_tool_variants, stage_container_tool_variants_from_dirs,
-        },
+        container_tools::{ContainerTool, ContainerToolPlatform, stage_container_tool},
         credentials::DECUNE_RUNTIME_TARGET,
         runtime::prepare_private_runtime_dir,
     },
 };
 
 use super::{
-    FORWARD_AGENT_ALLOWED_PORTS_ENV, FORWARD_AGENT_DIAGNOSTIC_NAME, FORWARD_AGENT_NAME,
-    FORWARD_AGENT_SECRET_ENV, FORWARD_AGENT_SOCKET_NAME, FORWARD_AGENT_TARGET, FORWARD_AGENT_USER,
+    FORWARD_AGENT_ALLOWED_PORTS_ENV, FORWARD_AGENT_DIAGNOSTIC_NAME, FORWARD_AGENT_SECRET_ENV,
+    FORWARD_AGENT_SOCKET_NAME, FORWARD_AGENT_TARGET, FORWARD_AGENT_USER,
 };
 
 #[derive(Debug)]
@@ -48,35 +45,25 @@ impl Drop for ForwardRuntime {
 pub(crate) fn prepare_forward_runtime(
     _forward_ports: &[ResolvedForwardPort],
     runtime_dir: &Path,
+    platform: ContainerToolPlatform,
 ) -> Result<ForwardRuntime> {
-    prepare_forward_runtime_with_tool_dirs(runtime_dir, None)
+    prepare_forward_runtime_with_tool_dirs(runtime_dir, platform, None)
 }
 
 fn prepare_forward_runtime_with_tool_dirs(
     runtime_dir: &Path,
+    platform: ContainerToolPlatform,
     tool_source_dirs: Option<Vec<PathBuf>>,
 ) -> Result<ForwardRuntime> {
     prepare_private_runtime_dir(runtime_dir, "port forwarding")?;
-    let agent_path = runtime_dir.join(FORWARD_AGENT_NAME);
-    fs::write(&agent_path, forward_agent_launcher()).with_context(|| {
-        format!(
-            "Failed to stage port forwarding agent: {}",
-            agent_path.display()
-        )
-    })?;
-    fs::set_permissions(&agent_path, fs::Permissions::from_mode(0o755)).with_context(|| {
-        format!(
-            "Failed to set port forwarding agent permissions: {}",
-            agent_path.display()
-        )
-    })?;
-    let staged_agents = match tool_source_dirs {
-        Some(source_dirs) => stage_container_tool_variants_from_dirs(
+    let agent_path = match tool_source_dirs {
+        Some(source_dirs) => crate::host::container_tools::stage_container_tool_from_dirs(
             ContainerTool::ForwardAgent,
+            platform,
             runtime_dir,
             source_dirs,
         )?,
-        None => stage_container_tool_variants(ContainerTool::ForwardAgent, runtime_dir)?,
+        None => stage_container_tool(ContainerTool::ForwardAgent, platform, runtime_dir)?,
     };
 
     Ok(ForwardRuntime {
@@ -90,7 +77,6 @@ fn prepare_forward_runtime_with_tool_dirs(
             volume_options: None,
         }],
         cleanup_paths: std::iter::once(agent_path)
-            .chain(staged_agents)
             .chain([
                 runtime_dir.join(FORWARD_AGENT_SOCKET_NAME),
                 runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
@@ -127,36 +113,6 @@ pub(crate) fn new_forward_agent_secret() -> Result<String> {
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn forward_agent_launcher() -> &'static [u8] {
-    b"#!/bin/sh
-set -eu
-diag=\"/run/decune/forward-agent.err\"
-: > \"$diag\" 2>/dev/null || true
-arch=\"$(uname -m 2>/dev/null || true)\"
-case \"$arch\" in
-  x86_64|amd64)
-    agent=/run/decune/decune-forward-agent-linux-amd64
-    ;;
-  aarch64|arm64)
-    agent=/run/decune/decune-forward-agent-linux-arm64
-    ;;
-  *)
-    message=\"Unsupported port forwarding agent container architecture: ${arch:-unknown}\"
-    echo \"$message\" >&2
-    echo \"$message\" >> \"$diag\" 2>/dev/null || true
-    exit 1
-    ;;
-esac
-if [ ! -x \"$agent\" ]; then
-    message=\"Missing port forwarding agent container tool: $agent\"
-    echo \"$message\" >&2
-    echo \"$message\" >> \"$diag\" 2>/dev/null || true
-    exit 1
-fi
-exec \"$agent\" \"$@\" 2>>\"$diag\"
-"
-}
-
 fn allowed_ports_env(forward_ports: &[ResolvedForwardPort]) -> String {
     forward_ports
         .iter()
@@ -170,36 +126,50 @@ fn allowed_ports_env(forward_ports: &[ResolvedForwardPort]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{env, fs, os::unix::fs::PermissionsExt, path::Path};
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 
     use tempfile::TempDir;
 
     use super::*;
-    use crate::host::credentials::DECUNE_RUNTIME_TARGET;
+    use crate::host::{
+        container_tools::{ContainerToolPlatform, TestContainerToolEntry},
+        credentials::DECUNE_RUNTIME_TARGET,
+    };
 
     #[test]
     fn runtime_stages_container_agent_even_without_forward_ports() {
         let temp = TempDir::new().unwrap();
         let source_dir = temp.path().join("tools");
-        write_container_tool(&source_dir, "linux-amd64", FORWARD_AGENT_NAME, b"agent");
+        crate::host::container_tools::write_test_container_tools_bundle(
+            &source_dir,
+            &[TestContainerToolEntry {
+                tool: ContainerTool::ForwardAgent,
+                platform: ContainerToolPlatform::LinuxAmd64,
+                contents: b"agent",
+            }],
+        )
+        .unwrap();
         let runtime_dir = temp.path().join("runtime");
 
-        let runtime =
-            prepare_forward_runtime_with_tool_dirs(&runtime_dir, Some(vec![source_dir])).unwrap();
+        let runtime = prepare_forward_runtime_with_tool_dirs(
+            &runtime_dir,
+            ContainerToolPlatform::LinuxAmd64,
+            Some(vec![source_dir]),
+        )
+        .unwrap();
 
         assert!(runtime_dir.join("decune-forward-agent").is_file());
-        assert!(
-            runtime_dir
-                .join("decune-forward-agent-linux-amd64")
-                .is_file()
+        assert_eq!(
+            fs::read_dir(&runtime_dir)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_type().unwrap().is_file())
+                .count(),
+            1
         );
         assert_eq!(
-            fs::read(runtime_dir.join("decune-forward-agent-linux-amd64")).unwrap(),
-            b"agent"
-        );
-        assert_ne!(
             fs::read(runtime_dir.join("decune-forward-agent")).unwrap(),
-            fs::read(current_exe().unwrap()).unwrap()
+            b"agent"
         );
         assert_eq!(mode(&runtime_dir), 0o700);
         assert!(runtime.mounts().iter().any(|mount| {
@@ -219,17 +189,7 @@ mod tests {
         assert_eq!(spec.user.as_deref(), Some("0"));
     }
 
-    fn current_exe() -> Result<PathBuf> {
-        env::current_exe().context("Failed to locate current decune executable")
-    }
-
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
-
-    fn write_container_tool(source_dir: &Path, platform: &str, name: &str, contents: &[u8]) {
-        let platform_dir = source_dir.join(platform);
-        fs::create_dir_all(&platform_dir).unwrap();
-        fs::write(platform_dir.join(name), contents).unwrap();
     }
 }

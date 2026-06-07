@@ -66,19 +66,13 @@ impl ForwardAgentAccess {
 }
 
 pub(crate) fn invoked_as_forward_agent() -> bool {
-    matches!(
-        env::args_os()
-            .next()
-            .as_deref()
-            .map(Path::new)
-            .and_then(Path::file_name)
-            .and_then(|value| value.to_str()),
-        Some(
-            FORWARD_AGENT_NAME
-                | "decune-forward-agent-linux-amd64"
-                | "decune-forward-agent-linux-arm64",
-        )
-    )
+    env::args_os()
+        .next()
+        .as_deref()
+        .map(Path::new)
+        .and_then(Path::file_name)
+        .and_then(|value| value.to_str())
+        == Some(FORWARD_AGENT_NAME)
 }
 
 pub(crate) async fn run_forward_agent() -> Result<()> {

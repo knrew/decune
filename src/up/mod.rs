@@ -297,7 +297,7 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container.clone()],
+            std::slice::from_ref(&container),
             "hash123",
             &mount_policy(&[mount_summary(None, "/run/decune")]),
             false,
@@ -327,7 +327,7 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container.clone()],
+            std::slice::from_ref(&container),
             "hash123",
             &mount_policy(&[mount_summary(
                 Some("/tmp/agent-b.sock"),
@@ -362,7 +362,7 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container.clone()],
+            std::slice::from_ref(&container),
             "hash123",
             &mount_policy(&[mount_summary_with_type(
                 None,
@@ -397,7 +397,7 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container.clone()],
+            std::slice::from_ref(&container),
             "hash123",
             &mount_policy(&[mount_summary_with_type(
                 None,
@@ -434,7 +434,7 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container.clone()],
+            std::slice::from_ref(&container),
             "hash123",
             &mount_policy(&[mount_summary_with_type_and_read_only(
                 Some("/tmp/secrets/github-token"),
@@ -471,7 +471,7 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container.clone()],
+            std::slice::from_ref(&container),
             "hash123",
             &mount_policy(&[mount_summary_with_type_and_read_only(
                 Some("/tmp/secrets/github-token"),
@@ -506,9 +506,13 @@ mod tests {
             running: true,
         };
 
-        let decision =
-            decide_existing_container(&[container.clone()], "hash123", &mount_policy(&[]), false)
-                .unwrap();
+        let decision = decide_existing_container(
+            std::slice::from_ref(&container),
+            "hash123",
+            &mount_policy(&[]),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(
             decision,
@@ -537,9 +541,13 @@ mod tests {
             running: true,
         };
 
-        let decision =
-            decide_existing_container(&[container.clone()], "hash123", &mount_policy(&[]), false)
-                .unwrap();
+        let decision = decide_existing_container(
+            std::slice::from_ref(&container),
+            "hash123",
+            &mount_policy(&[]),
+            false,
+        )
+        .unwrap();
 
         assert_eq!(
             decision,
@@ -832,9 +840,13 @@ mod tests {
             running: true,
         };
 
-        let decision =
-            decide_existing_container(&[container.clone()], "new-hash", &mount_policy(&[]), true)
-                .unwrap();
+        let decision = decide_existing_container(
+            std::slice::from_ref(&container),
+            "new-hash",
+            &mount_policy(&[]),
+            true,
+        )
+        .unwrap();
 
         assert_eq!(
             decision,
@@ -1343,7 +1355,6 @@ digest = "sha256:locked"
                 require_local_port: Some(true),
                 unsupported_protocol: Some("https".to_owned()),
                 unsupported_elevate_if_needed: Some(true),
-                ..ResolvedPortAttributes::default()
             },
         );
         config.devcontainer.other_ports_attributes = Some(ResolvedPortAttributes {
@@ -1352,7 +1363,6 @@ digest = "sha256:locked"
             require_local_port: None,
             unsupported_protocol: Some("http".to_owned()),
             unsupported_elevate_if_needed: None,
-            ..ResolvedPortAttributes::default()
         });
 
         let warnings = untrusted_repository_warnings(&config);

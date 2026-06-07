@@ -1,0 +1,90 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v[0-9]+.[0-9]+.[0-9]+
+      - v[0-9]+.[0-9]+.[0-9]+-[0-9A-Za-z]*
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to build
+        required: true
+        type: string
+      publish:
+        description: Create GitHub Release
+        required: true
+        default: false
+        type: boolean
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.meta.outputs.tag }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - id: meta
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            tag="${{ inputs.tag }}"
+            git fetch --tags origin "$tag"
+            git checkout "$tag"
+          else
+            tag="${GITHUB_REF_NAME}"
+          fi
+          version="${tag#v}"
+          cargo run --locked -p xtask -- release-preflight --tag "$tag" --version "$version"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+  package-dist:
+    needs: preflight
+    permissions:
+      contents: read
+    uses: ./.github/workflows/package-dist-reusable.yaml
+    with:
+      artifact-name: dist-assets
+      checkout-ref: ${{ needs.preflight.outputs.tag }}
+      version: ${{ needs.preflight.outputs.version }}
+
+  publish:
+    needs:
+      - preflight
+      - package-dist
+    if: github.event_name == 'push' || inputs.publish
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist-assets
+          path: target/dist
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ needs.preflight.outputs.tag }}" target/dist/* \
+            --verify-tag \
+            --title "${{ needs.preflight.outputs.tag }}" \
+            --generate-notes
