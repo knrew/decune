@@ -146,10 +146,59 @@ read_only = true
 }
 
 #[test]
-fn up_detach_uses_workspace_mount_as_workspace_folder() {
+fn up_detach_rejects_workspace_mount_without_workspace_folder() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
-    workspace.write_file("marker.txt", "workspace\n").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "workspaceFolder is required when workspaceMount is specified",
+            ));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_uses_explicit_workspace_folder_with_workspace_mount() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir("app").unwrap();
+    workspace
+        .write_file("app/marker.txt", "workspace\n")
+        .unwrap();
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
@@ -157,7 +206,8 @@ fn up_detach_uses_workspace_mount_as_workspace_folder() {
             {
               "image": "alpine:3.20",
               "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
-              "postStartCommand": "test \"$(pwd)\" = \"/workspace\" && test -f marker.txt"
+              "workspaceFolder": "/workspace/app",
+              "postStartCommand": "test \"$(pwd)\" = \"/workspace/app\" && test -f marker.txt"
             }
             "#,
         )

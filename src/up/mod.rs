@@ -1479,7 +1479,7 @@ require_local = true
     }
 
     #[test]
-    fn build_up_plan_uses_workspace_mount_target_as_default_workspace_folder() {
+    fn build_up_plan_rejects_workspace_mount_without_workspace_folder() {
         let workspace = test_workspace("workspace-mount-plan");
         write_devcontainer(
             &workspace,
@@ -1487,6 +1487,28 @@ require_local = true
             {
               "image": "alpine:3.20",
               "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "workspaceFolder is required when workspaceMount is specified"
+        );
+    }
+
+    #[test]
+    fn build_up_plan_uses_explicit_workspace_folder_for_workspace_mount_variables() {
+        let workspace = test_workspace("workspace-mount-variable-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceMount": "source=${localWorkspaceFolder},target=${containerWorkspaceFolder},type=bind",
+              "workspaceFolder": "/workspace"
             }
             "#,
         );
@@ -1499,36 +1521,52 @@ require_local = true
             plan.mounts[0].source.as_deref(),
             Some(workspace.root().to_str().unwrap())
         );
-        assert_eq!(plan.mounts[0].target, "/workspace");
+        assert_eq!(plan.mounts[0].target, plan.workspace_folder);
         assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
     }
 
     #[test]
-    fn build_up_plan_does_not_expand_workspace_mount_target_twice_when_used_as_workspace_folder() {
-        let workspace = test_workspace("workspace-mount-variable-plan");
+    fn build_up_plan_rejects_workspace_folder_outside_workspace_mount_target() {
+        let workspace = test_workspace("workspace-folder-outside-mount-plan");
         write_devcontainer(
             &workspace,
             r#"
             {
               "image": "alpine:3.20",
-              "workspaceMount": "source=${localWorkspaceFolder},target=${containerWorkspaceFolder}/src,type=bind"
+              "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+              "workspaceFolder": "/other"
             }
             "#,
         );
 
-        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("workspaceFolder must be under the workspaceMount target")
+        );
+    }
+
+    #[test]
+    fn build_up_plan_rejects_relative_workspace_folder() {
+        let workspace = test_workspace("relative-workspace-folder-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceFolder": "workspace"
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
 
         assert_eq!(
-            plan.workspace_folder,
-            "/workspaces/workspace-mount-variable-plan/src"
+            error.to_string(),
+            "workspaceFolder must be an absolute container path: workspace"
         );
-        assert_eq!(plan.mounts.len(), 1);
-        assert_eq!(
-            plan.mounts[0].source.as_deref(),
-            Some(workspace.root().to_str().unwrap())
-        );
-        assert_eq!(plan.mounts[0].target, plan.workspace_folder);
-        assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
     }
 
     #[test]
@@ -1647,7 +1685,8 @@ type = "volume"
             r#"
             {
               "image": "alpine:3.20",
-              "workspaceMount": "source=${localWorkspaceFolder},target=/run/decune/workspace,type=bind"
+              "workspaceMount": "source=${localWorkspaceFolder},target=/run/decune/workspace,type=bind",
+              "workspaceFolder": "/run/decune/workspace"
             }
             "#,
         );
@@ -1914,6 +1953,8 @@ type = "volume"
 
         let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
+        assert_eq!(plan.workspace_folder, "/src");
+        assert_eq!(plan.mounts[0].target, default_workspace_folder(&workspace));
         assert_eq!(plan.mounts[1].target, "/opt/src");
     }
 
