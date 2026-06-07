@@ -45,6 +45,7 @@ jobs:
           if-no-files-found: error
           name: container-tools-bundle
           path: target/decune-dist/container-tools-bundle.tar.gz
+          retention-days: 3
 
   build:
     needs: container-tools
@@ -94,6 +95,7 @@ jobs:
           if-no-files-found: error
           name: dist-${{ matrix.target }}
           path: target/dist/*
+          retention-days: 3
 
   assemble:
     needs: build
@@ -124,3 +126,4 @@ jobs:
           if-no-files-found: error
           name: ${{ inputs['artifact-name'] }}
           path: target/dist/*
+          retention-days: 3
