@@ -1158,6 +1158,53 @@ digest = "sha256:locked"
     }
 
     #[test]
+    fn untrusted_repository_warnings_skip_devcontainer_volume_mounts() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.devcontainer.mounts = vec![
+            crate::config::layer::LayerDevcontainerMount::String(
+                "type=volume,source=project-cache,target=/cache".to_owned(),
+            ),
+            crate::config::layer::LayerDevcontainerMount::Object(
+                [
+                    ("type".to_owned(), serde_json::json!("volume")),
+                    ("source".to_owned(), serde_json::json!("project-deps")),
+                    ("target".to_owned(), serde_json::json!("/deps")),
+                ]
+                .into(),
+            ),
+        ];
+        config.devcontainer.workspace_mount =
+            Some("type=volume,source=project-workspace,target=/workspace".to_owned());
+
+        let warnings = untrusted_repository_warnings(&config);
+
+        assert!(
+            warnings
+                .iter()
+                .all(|warning| !warning.contains("additional bind mounts"))
+        );
+    }
+
+    #[test]
+    fn untrusted_repository_warnings_report_devcontainer_workspace_bind_mount() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.devcontainer.workspace_mount =
+            Some("type=bind,source=${localWorkspaceFolder},target=/workspace".to_owned());
+
+        let warnings = untrusted_repository_warnings(&config);
+
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("additional bind mounts"))
+        );
+    }
+
+    #[test]
     fn untrusted_repository_warnings_report_code_execution_surfaces() {
         let mut config = ResolvedConfig::default();
         config.credentials.git.enabled = false;

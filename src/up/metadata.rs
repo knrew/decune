@@ -27,6 +27,7 @@ use crate::{
             image_has_devcontainer_metadata_label_if_present, image_startup_command,
             local_image_presence, remove_image, tag_image,
         },
+        mounts::devcontainer_mount_type,
         resource::DockerResources,
         user::{
             HostPlatform, current_host_user_ids, resolve_effective_users_from_image,
@@ -919,8 +920,29 @@ fn has_extra_bind_mounts(config: &ResolvedConfig) -> bool {
         .mounts
         .iter()
         .any(|mount| mount.mount_type == MountType::Bind)
-        || !config.devcontainer.mounts.is_empty()
-        || config.devcontainer.workspace_mount.is_some()
+        || config
+            .devcontainer
+            .mounts
+            .iter()
+            .any(devcontainer_mount_is_bind_or_unknown)
+        || config
+            .devcontainer
+            .workspace_mount
+            .as_ref()
+            .is_some_and(|mount| {
+                devcontainer_mount_is_bind_or_unknown(
+                    &crate::config::layer::LayerDevcontainerMount::String(mount.clone()),
+                )
+            })
+}
+
+fn devcontainer_mount_is_bind_or_unknown(
+    mount: &crate::config::layer::LayerDevcontainerMount,
+) -> bool {
+    match devcontainer_mount_type(mount) {
+        Ok(mount_type) => mount_type == MountType::Bind,
+        Err(_) => true,
+    }
 }
 
 fn unsupported_port_attribute_warnings(config: &ResolvedConfig) -> Vec<String> {

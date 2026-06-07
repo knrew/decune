@@ -213,6 +213,15 @@ pub(crate) fn devcontainer_mount_spec(
     }
 }
 
+pub(crate) fn devcontainer_mount_type(mount: &LayerDevcontainerMount) -> Result<MountType> {
+    let mut fields = match mount {
+        LayerDevcontainerMount::String(value) => docker_mount_string_fields(value)?,
+        LayerDevcontainerMount::Object(values) => devcontainer_mount_object_fields(values)?,
+    };
+
+    mount_type_field(&mut fields)
+}
+
 #[derive(Debug, Clone, PartialEq)]
 struct ParsedMount {
     source: Option<String>,
@@ -320,13 +329,7 @@ fn parse_devcontainer_mount_fields(
     mut fields: BTreeMap<String, MountFieldValue>,
     docker_options: bool,
 ) -> Result<ParsedMount> {
-    let mount_type = match string_field(&mut fields, "type")?.as_deref() {
-        Some("bind") => MountType::Bind,
-        Some("volume") => MountType::Volume,
-        Some("tmpfs") => MountType::Tmpfs,
-        Some(value) => bail!("Unsupported mount type: {value}"),
-        None => bail!("Mount type is required"),
-    };
+    let mount_type = mount_type_field(&mut fields)?;
     let target =
         string_field(&mut fields, "target")?.ok_or_else(|| anyhow!("Mount target is required"))?;
     let source = string_field(&mut fields, "source")?;
@@ -363,6 +366,16 @@ fn parse_devcontainer_mount_fields(
         bind_options,
         volume_options,
     })
+}
+
+fn mount_type_field(fields: &mut BTreeMap<String, MountFieldValue>) -> Result<MountType> {
+    match string_field(fields, "type")?.as_deref() {
+        Some("bind") => Ok(MountType::Bind),
+        Some("volume") => Ok(MountType::Volume),
+        Some("tmpfs") => Ok(MountType::Tmpfs),
+        Some(value) => bail!("Unsupported mount type: {value}"),
+        None => bail!("Mount type is required"),
+    }
 }
 
 fn consistency_field(fields: &mut BTreeMap<String, MountFieldValue>) -> Result<Option<String>> {
