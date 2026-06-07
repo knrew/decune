@@ -1,4 +1,4 @@
-use std::{env, path::PathBuf};
+use std::{collections::BTreeMap, env, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 
@@ -13,6 +13,7 @@ pub(crate) struct VariableContext {
     gid: u32,
     remote_user: String,
     remote_user_home: Option<String>,
+    container_env: BTreeMap<String, String>,
 }
 
 impl VariableContext {
@@ -38,7 +39,13 @@ impl VariableContext {
             gid,
             remote_user,
             remote_user_home,
+            container_env: BTreeMap::new(),
         }
+    }
+
+    pub(crate) fn with_container_env(mut self, container_env: BTreeMap<String, String>) -> Self {
+        self.container_env = container_env;
+        self
     }
 }
 
@@ -50,6 +57,37 @@ pub(crate) fn expand_variables(input: &str, context: &VariableContext) -> Result
             "Local environment variable is not valid Unicode: {name}"
         )),
     })
+}
+
+pub(crate) fn expand_remote_env(
+    remote_env: &BTreeMap<String, String>,
+    context: &VariableContext,
+) -> Result<BTreeMap<String, String>> {
+    expand_env_map(remote_env, context)
+}
+
+pub(crate) fn expand_container_env(
+    container_env: &BTreeMap<String, String>,
+    context: &VariableContext,
+) -> Result<BTreeMap<String, String>> {
+    reject_container_env_references(container_env)?;
+    expand_env_map(container_env, context)
+}
+
+fn expand_env_map(
+    values: &BTreeMap<String, String>,
+    context: &VariableContext,
+) -> Result<BTreeMap<String, String>> {
+    values
+        .iter()
+        .map(|(key, value)| {
+            expand_variables(value, context)
+                .map(|expanded| (key.clone(), expanded))
+                .map_err(|error| {
+                    error.context(format!("Failed to expand environment variable: {key}"))
+                })
+        })
+        .collect()
 }
 
 fn expand_variables_with<F>(
@@ -90,6 +128,9 @@ where
     if let Some(rest) = expression.strip_prefix("localEnv:") {
         return resolve_local_env(rest, local_env);
     }
+    if let Some(rest) = expression.strip_prefix("containerEnv:") {
+        return resolve_container_env(rest, context);
+    }
 
     match expression {
         "localWorkspaceFolder" => Ok(context
@@ -114,6 +155,23 @@ where
     }
 }
 
+fn resolve_container_env(expression: &str, context: &VariableContext) -> Result<String> {
+    let mut parts = expression.splitn(2, ':');
+    let name = parts.next().unwrap_or_default();
+    let default = parts.next();
+
+    if name.is_empty() {
+        return Err(anyhow!("containerEnv variable name must not be empty"));
+    }
+
+    match context.container_env.get(name) {
+        Some(value) => Ok(value.clone()),
+        None => default
+            .map(str::to_owned)
+            .ok_or_else(|| anyhow!("Container environment variable is not set: {name}")),
+    }
+}
+
 fn resolve_local_env<F>(expression: &str, local_env: &mut F) -> Result<String>
 where
     F: FnMut(&str) -> Result<Option<String>>,
@@ -132,6 +190,37 @@ where
             .map(str::to_owned)
             .ok_or_else(|| anyhow!("Local environment variable is not set: {name}")),
     }
+}
+
+fn reject_container_env_references(values: &BTreeMap<String, String>) -> Result<()> {
+    for (key, value) in values {
+        for expression in variable_expressions(value)? {
+            if expression.starts_with("containerEnv:") {
+                return Err(anyhow!(
+                    "containerEnv value must not reference containerEnv because it would create a circular environment dependency: {key}"
+                ));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn variable_expressions(input: &str) -> Result<Vec<&str>> {
+    let mut expressions = Vec::new();
+    let mut rest = input;
+
+    while let Some(start) = rest.find("${") {
+        let variable_start = start + 2;
+        let after_start = &rest[variable_start..];
+        let end = after_start
+            .find('}')
+            .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
+        expressions.push(&after_start[..end]);
+        rest = &after_start[end + 1..];
+    }
+
+    Ok(expressions)
 }
 
 #[cfg(test)]
@@ -163,6 +252,15 @@ mod tests {
             .collect::<BTreeMap<_, _>>();
 
         expand_variables_with(input, &context(), |name| Ok(values.get(name).cloned()))
+    }
+
+    fn context_with_container_env(values: &[(&str, &str)]) -> VariableContext {
+        context().with_container_env(
+            values
+                .iter()
+                .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+                .collect(),
+        )
     }
 
     fn context_without_remote_user_home() -> VariableContext {
@@ -232,6 +330,47 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
             expand_with_env("${localEnv:DECUNE_MISSING:fallback:with:colon}", &[]).unwrap();
 
         assert_eq!(expanded, "fallback:with:colon");
+    }
+
+    #[test]
+    fn expands_container_env_variable() {
+        let context = context_with_container_env(&[("PATH", "/usr/local/bin:/usr/bin")]);
+        let expanded = expand_variables("${containerEnv:PATH}:/extra", &context).unwrap();
+
+        assert_eq!(expanded, "/usr/local/bin:/usr/bin:/extra");
+    }
+
+    #[test]
+    fn container_env_default_is_used_when_missing() {
+        let context = context_with_container_env(&[]);
+        let expanded =
+            expand_variables("${containerEnv:MISSING:fallback:with:colon}", &context).unwrap();
+
+        assert_eq!(expanded, "fallback:with:colon");
+    }
+
+    #[test]
+    fn missing_container_env_without_default_is_rejected() {
+        let context = context_with_container_env(&[]);
+        let error = expand_variables("${containerEnv:MISSING}", &context).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Container environment variable is not set: MISSING"
+        );
+    }
+
+    #[test]
+    fn container_env_value_must_not_reference_container_env() {
+        let values =
+            BTreeMap::from([("PATH".to_owned(), "${containerEnv:PATH}:/extra".to_owned())]);
+        let error = expand_container_env(&values, &context()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("must not reference containerEnv")
+        );
     }
 
     #[test]

@@ -18,6 +18,7 @@ use crate::{
     config::resolved::ResolvedUserEnvProbe,
     docker::client::DockerClient,
     terminal::{self, RawTerminalGuard},
+    ui,
 };
 
 #[allow(dead_code)]
@@ -193,14 +194,13 @@ pub(crate) async fn resolve_exec_env(
     remote_env: &BTreeMap<String, String>,
     user_env_probe: Option<ResolvedUserEnvProbe>,
 ) -> Result<BTreeMap<String, String>> {
-    let Some(command) = user_env_probe_command(
-        user_env_probe.unwrap_or(ResolvedUserEnvProbe::None),
-        user_shell,
-    ) else {
+    let Some(command) =
+        user_env_probe_command(effective_user_env_probe(user_env_probe), user_shell)
+    else {
         return Ok(remote_env.clone());
     };
 
-    let output = exec_capture(
+    let output = match exec_capture(
         client,
         container,
         &ExecCommandSpec {
@@ -212,13 +212,41 @@ pub(crate) async fn resolve_exec_env(
         },
     )
     .await
-    .with_context(|| format!("Failed to probe user environment in container: {container}"))?;
-    let stdout = String::from_utf8(output.stdout).with_context(|| {
-        format!("User environment probe returned non-UTF-8 output in container: {container}")
-    })?;
-    let probe_env = parse_env_probe_output(&stdout)?;
+    {
+        Ok(output) => output,
+        Err(error) => {
+            ui::warn(&format!(
+                "User environment probe failed in container {container}; continuing without probed environment: {error:#}"
+            ));
+            return Ok(remote_env.clone());
+        }
+    };
+    let stdout = match String::from_utf8(output.stdout) {
+        Ok(stdout) => stdout,
+        Err(error) => {
+            ui::warn(&format!(
+                "User environment probe returned non-UTF-8 output in container {container}; continuing without probed environment: {error}"
+            ));
+            return Ok(remote_env.clone());
+        }
+    };
+    let probe_env = match parse_env_probe_output(&stdout) {
+        Ok(probe_env) => probe_env,
+        Err(error) => {
+            ui::warn(&format!(
+                "User environment probe output could not be parsed in container {container}; continuing without probed environment: {error:#}"
+            ));
+            return Ok(remote_env.clone());
+        }
+    };
 
     Ok(merge_probe_env(probe_env, remote_env))
+}
+
+pub(crate) fn effective_user_env_probe(
+    user_env_probe: Option<ResolvedUserEnvProbe>,
+) -> ResolvedUserEnvProbe {
+    user_env_probe.unwrap_or(ResolvedUserEnvProbe::LoginInteractiveShell)
 }
 
 pub(crate) fn create_exec_options(
@@ -599,9 +627,10 @@ mod tests {
     use futures_util::TryStreamExt;
 
     use super::{
-        ExecAttachMode, ExecCommandSpec, ExecOutput, create_exec_options, ensure_success_exit,
-        exec_attach, exec_capture, exec_capture_output, exec_inspect_has_finished, merge_probe_env,
-        parse_env_probe_output, start_exec_options, user_env_probe_command,
+        ExecAttachMode, ExecCommandSpec, ExecOutput, create_exec_options, effective_user_env_probe,
+        ensure_success_exit, exec_attach, exec_capture, exec_capture_output,
+        exec_inspect_has_finished, merge_probe_env, parse_env_probe_output, start_exec_options,
+        user_env_probe_command,
     };
     use crate::config::resolved::ResolvedUserEnvProbe;
     use crate::docker::{
@@ -704,6 +733,18 @@ mod tests {
         assert_eq!(
             user_env_probe_command(ResolvedUserEnvProbe::None, None),
             None
+        );
+    }
+
+    #[test]
+    fn missing_user_env_probe_defaults_to_login_interactive_shell() {
+        assert_eq!(
+            effective_user_env_probe(None),
+            ResolvedUserEnvProbe::LoginInteractiveShell
+        );
+        assert_eq!(
+            effective_user_env_probe(Some(ResolvedUserEnvProbe::None)),
+            ResolvedUserEnvProbe::None
         );
     }
 

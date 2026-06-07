@@ -12,11 +12,12 @@ use crate::{
     config::{
         resolved::{ResolvedConfig, ResolvedHook},
         types::{Command, HookLocation},
-        variables::VariableContext,
+        variables::{VariableContext, expand_remote_env},
     },
     devcontainer::metadata::LifecycleProperty,
     docker::{
         client::DockerClient,
+        container::inspect_container_env,
         dotfiles::setup_dotfiles,
         exec::{ExecCommandSpec, ExecOutput, exec_capture_output, resolve_exec_env},
         user::ResolvedRemoteUser,
@@ -222,6 +223,7 @@ pub(crate) struct PreparedLifecycleRunContext<'a> {
     workspace_root: &'a Path,
     workspace_folder: &'a str,
     remote_user: ResolvedRemoteUser,
+    remote_env: BTreeMap<String, String>,
     remote_process_env: BTreeMap<String, String>,
 }
 
@@ -387,16 +389,31 @@ pub(crate) async fn prepare_container_lifecycle(
         &context.remote_user,
     )
     .await?;
-    Ok(PreparedLifecycleRunContext {
-        remote_process_env: resolve_exec_env(
-            context.client,
-            context.container,
-            &context.remote_user.user,
-            context.remote_user.shell.as_deref(),
-            &context.config.devcontainer.remote_env,
-            context.config.devcontainer.user_env_probe,
+    let container_env = inspect_container_env(context.client, context.container).await?;
+    let remote_env_variables = dotfile_variable_context(&context).with_container_env(container_env);
+    let remote_env = expand_remote_env(
+        &context.config.devcontainer.remote_env,
+        &remote_env_variables,
+    )
+    .with_context(|| {
+        format!(
+            "Failed to expand remoteEnv for container: {}",
+            context.container
         )
-        .await?,
+    })?;
+    let remote_process_env = resolve_exec_env(
+        context.client,
+        context.container,
+        &context.remote_user.user,
+        context.remote_user.shell.as_deref(),
+        &remote_env,
+        context.config.devcontainer.user_env_probe,
+    )
+    .await?;
+
+    Ok(PreparedLifecycleRunContext {
+        remote_env,
+        remote_process_env,
         client: context.client,
         container: context.container,
         config: context.config,
@@ -829,7 +846,7 @@ fn lifecycle_process_env(
         return context.remote_process_env.clone();
     }
 
-    context.config.devcontainer.remote_env.clone()
+    context.remote_env.clone()
 }
 
 fn same_container_user(left: &str, right: &str) -> bool {

@@ -84,6 +84,7 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
 
         attach_shell(
             &started.client,
+            &started.workspace,
             &started.plan,
             &started.outcome.container_name,
         )
