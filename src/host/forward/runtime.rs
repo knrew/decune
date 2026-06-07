@@ -132,15 +132,23 @@ mod tests {
 
     use super::*;
     use crate::host::{
-        container_tools::ContainerToolPlatform, credentials::DECUNE_RUNTIME_TARGET,
-        forward::FORWARD_AGENT_NAME,
+        container_tools::{ContainerToolPlatform, TestContainerToolEntry},
+        credentials::DECUNE_RUNTIME_TARGET,
     };
 
     #[test]
     fn runtime_stages_container_agent_even_without_forward_ports() {
         let temp = TempDir::new().unwrap();
         let source_dir = temp.path().join("tools");
-        write_container_tool(&source_dir, "linux-amd64", FORWARD_AGENT_NAME, b"agent");
+        crate::host::container_tools::write_test_container_tools_bundle(
+            &source_dir,
+            &[TestContainerToolEntry {
+                tool: ContainerTool::ForwardAgent,
+                platform: ContainerToolPlatform::LinuxAmd64,
+                contents: b"agent",
+            }],
+        )
+        .unwrap();
         let runtime_dir = temp.path().join("runtime");
 
         let runtime = prepare_forward_runtime_with_tool_dirs(
@@ -183,11 +191,5 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
-
-    fn write_container_tool(source_dir: &Path, platform: &str, name: &str, contents: &[u8]) {
-        let platform_dir = source_dir.join(platform);
-        fs::create_dir_all(&platform_dir).unwrap();
-        fs::write(platform_dir.join(name), contents).unwrap();
     }
 }

@@ -92,6 +92,70 @@ fn stage_container_tool_with_embedded(
     stage_container_tool_from_sources(tool, platform, runtime_dir, source_dirs, embedded)
 }
 
+#[cfg(test)]
+pub(crate) struct TestContainerToolEntry<'a> {
+    pub(crate) tool: ContainerTool,
+    pub(crate) platform: ContainerToolPlatform,
+    pub(crate) contents: &'a [u8],
+}
+
+#[cfg(test)]
+pub(crate) fn write_test_container_tools_bundle(
+    source_dir: &Path,
+    entries: &[TestContainerToolEntry<'_>],
+) -> Result<()> {
+    fs::create_dir_all(source_dir).with_context(|| {
+        format!(
+            "Failed to create test container tools bundle dir: {}",
+            source_dir.display()
+        )
+    })?;
+
+    let mut manifest_entries = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let relative_path = PathBuf::from(entry.platform.id()).join(entry.tool.file_name());
+        let artifact_path = source_dir.join(&relative_path);
+        if let Some(parent) = artifact_path.parent() {
+            fs::create_dir_all(parent).with_context(|| {
+                format!(
+                    "Failed to create test container tools artifact dir: {}",
+                    parent.display()
+                )
+            })?;
+        }
+        fs::write(&artifact_path, entry.contents).with_context(|| {
+            format!(
+                "Failed to write test container tools artifact: {}",
+                artifact_path.display()
+            )
+        })?;
+        manifest_entries.push(serde_json::json!({
+            "name": entry.tool.file_name(),
+            "platform": entry.platform.id(),
+            "path": relative_path.display().to_string(),
+            "sha256": hex_lower(&Sha256::digest(entry.contents)),
+        }));
+    }
+
+    let manifest = serde_json::json!({
+        "schemaVersion": 1,
+        "protocolVersion": 1,
+        "tools": manifest_entries,
+    });
+    let manifest_json = serde_json::to_string(&manifest)
+        .context("Failed to serialize test container tools manifest")?;
+    fs::write(
+        source_dir.join("manifest.json"),
+        format!("{manifest_json}\n"),
+    )
+    .with_context(|| {
+        format!(
+            "Failed to write test container tools manifest: {}",
+            source_dir.join("manifest.json").display()
+        )
+    })
+}
+
 fn stage_container_tool_from_sources(
     tool: ContainerTool,
     platform: ContainerToolPlatform,

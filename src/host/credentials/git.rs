@@ -662,12 +662,15 @@ mod tests {
     fn runtime_stages_container_helper_in_private_runtime_dir() {
         let temp = TempDir::new().unwrap();
         let source_dir = temp.path().join("tools");
-        write_container_tool(
+        crate::host::container_tools::write_test_container_tools_bundle(
             &source_dir,
-            "linux-amd64",
-            GIT_CREDENTIAL_HELPER_NAME,
-            b"helper",
-        );
+            &[crate::host::container_tools::TestContainerToolEntry {
+                tool: ContainerTool::GitCredentialHelper,
+                platform: ContainerToolPlatform::LinuxAmd64,
+                contents: b"helper",
+            }],
+        )
+        .unwrap();
         let runtime_dir = temp.path().join("runtime");
         let runtime = prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
             &ResolvedConfig::default(),
@@ -695,13 +698,17 @@ mod tests {
 
         let script = git_credential_helper_setup_script(&config.credentials.git);
 
-        let helper_guard = script
-            .find("Missing Git credential helper container tool")
-            .unwrap();
+        let helper_guard_command = format!("test -x {}", shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
+        let helper_guard = script.find(&helper_guard_command).unwrap();
         let helper_config = script
             .find("git config --global --add credential.helper")
             .unwrap();
-        assert_eq!(script.matches(GIT_CREDENTIAL_HELPER_TARGET).count(), 2);
+        assert_eq!(
+            script
+                .matches("git config --global --add credential.helper")
+                .count(),
+            1
+        );
         assert!(helper_guard < helper_config);
     }
 
@@ -832,11 +839,5 @@ mod tests {
 
     fn mode(path: &Path) -> u32 {
         fs::metadata(path).unwrap().permissions().mode() & 0o777
-    }
-
-    fn write_container_tool(source_dir: &Path, platform: &str, name: &str, contents: &[u8]) {
-        let platform_dir = source_dir.join(platform);
-        fs::create_dir_all(&platform_dir).unwrap();
-        fs::write(platform_dir.join(name), contents).unwrap();
     }
 }
