@@ -513,7 +513,17 @@ fn is_semver_core(core: &str) -> bool {
     }
     [major, minor, patch]
         .into_iter()
-        .all(|part| !part.is_empty() && part.chars().all(|ch| ch.is_ascii_digit()))
+        .all(is_semver_numeric_identifier)
+}
+
+fn is_semver_numeric_identifier(part: &str) -> bool {
+    if part.is_empty() {
+        return false;
+    }
+    if part.len() > 1 && part.starts_with('0') {
+        return false;
+    }
+    part.chars().all(|ch| ch.is_ascii_digit())
 }
 
 fn is_prerelease_suffix(suffix: &str) -> bool {
@@ -1086,6 +1096,9 @@ mod tests {
             "0.1",
             "0.1.0.1",
             "0.1.x",
+            "01.2.3",
+            "1.02.3",
+            "1.2.03",
             "0.1.0-",
             "0.1.0-alpha.",
             "0.1.0-.alpha",
