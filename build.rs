@@ -27,6 +27,7 @@ fn main() -> Result<()> {
     let generated_path = out_dir.join("container_tools_bundle.rs");
     let mode = env::var("DECUNE_CONTAINER_TOOLS_BUNDLE").unwrap_or_else(|_| "auto".to_owned());
     let bundle_dir = resolve_bundle_dir()?;
+    println!("cargo:rerun-if-changed={}", bundle_dir.display());
 
     match mode.as_str() {
         "off" => write_empty_bundle(&generated_path),
