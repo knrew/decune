@@ -276,7 +276,7 @@ mod tests {
         };
 
         let decision = decide_existing_container(
-            &[container.clone()],
+            std::slice::from_ref(&container),
             "hash123",
             &mount_policy(&[mount_summary(
                 Some("/tmp/socket"),

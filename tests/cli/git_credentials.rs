@@ -207,7 +207,7 @@ fn up_detach_runs_git_credential_helper_as_nonroot_alpine_remote_user() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -313,7 +313,7 @@ fn up_detach_sets_git_credential_home_for_nonroot_remote_user() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             ENV HOME=/root
@@ -426,7 +426,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM ubuntu:24.04
             RUN if getent group {gid} >/dev/null; then remote_group="$(getent group {gid} | cut -d: -f1)"; else groupadd -g {gid} decunegrp && remote_group=decunegrp; fi \
@@ -538,7 +538,7 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM ubuntu:24.04
             RUN groupadd -g {remote_gid} decunegrp \

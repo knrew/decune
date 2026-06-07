@@ -7,7 +7,7 @@ fn up_detach_copies_host_git_user_config_when_https_is_off() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -114,7 +114,7 @@ fn up_detach_copies_host_git_user_config_when_helper_setup_fails() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -230,7 +230,7 @@ fn up_detach_copies_host_global_gitconfig_when_https_is_off_without_leaking_secr
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -337,7 +337,7 @@ fn up_detach_keeps_copied_host_gitconfig_after_dotfile_gitconfig_setup() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
@@ -451,7 +451,7 @@ fn up_detach_does_not_expose_host_gitconfig_when_remote_user_uid_differs_from_ho
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            &format!(
+            format!(
                 r#"
             FROM ubuntu:24.04
             RUN groupadd -g {remote_gid} decunegrp \

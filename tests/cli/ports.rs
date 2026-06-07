@@ -129,11 +129,11 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
         let _ = child.wait().unwrap();
     }));
 
-    if let Some(mut child) = child {
-        if child.try_wait().unwrap().is_none() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    if let Some(mut child) = child
+        && child.try_wait().unwrap().is_none()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
     }
     runtime.block_on(async {
         let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
@@ -240,11 +240,11 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
         let _ = child.wait().unwrap();
     }));
 
-    if let Some(mut child) = child {
-        if child.try_wait().unwrap().is_none() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    if let Some(mut child) = child
+        && child.try_wait().unwrap().is_none()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
     }
     runtime.block_on(async {
         let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
@@ -284,7 +284,7 @@ fn up_attached_auto_forwards_new_container_listen_port() {
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
-            &format!(
+            format!(
                 r#"
             {{
               "build": {{
@@ -346,11 +346,11 @@ fn up_attached_auto_forwards_new_container_listen_port() {
         let _ = child.wait().unwrap();
     }));
 
-    if let Some(mut child) = child {
-        if child.try_wait().unwrap().is_none() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
+    if let Some(mut child) = child
+        && child.try_wait().unwrap().is_none()
+    {
+        let _ = child.kill();
+        let _ = child.wait();
     }
     runtime.block_on(async {
         let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
@@ -384,7 +384,7 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
-            &format!(
+            format!(
                 r#"
             {{
               "build": {{
@@ -448,7 +448,7 @@ fn up_detach_warns_when_app_port_has_no_host_ip() {
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
-            &format!(
+            format!(
                 r#"
             {{
               "image": "alpine:3.20",

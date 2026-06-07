@@ -1452,7 +1452,7 @@ mod tests {
             &[],
             |request| match request.canonical_id.as_str() {
                 "ghcr.io/example/features/base" => Ok(feature_install_input(
-                    &request.dependency,
+                    request.dependency,
                     FeatureMetadata {
                         depends_on: BTreeMap::from([(
                             "ghcr.io/example/features/common:1".to_owned(),
@@ -1462,7 +1462,7 @@ mod tests {
                     },
                 )),
                 "ghcr.io/example/features/common" => Ok(feature_install_input(
-                    &request.dependency,
+                    request.dependency,
                     FeatureMetadata::default(),
                 )),
                 _ => bail!("unexpected dependency {}", request.dependency),
