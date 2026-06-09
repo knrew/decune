@@ -2,13 +2,14 @@
 
 `decune` は、VS Code や Node.js ベースの Dev Container CLI に依存せず、Rust 製の単一 CLI で devcontainer を起動・接続・停止・削除するためのツールです。
 
-Dev Containers Specification の image-based / Dockerfile-based 構成を読み込み、Docker Engine API 経由でコンテナを操作します。加えて、個人用・プロジェクト用の TOML 設定、Dev Container Features、dotfiles、Git/GitHub 認証、localhost port forwarding、UID/GID sync を扱います。
+Dev Containers Specification の image-based / Dockerfile-based / Docker Compose 構成を読み込み、コンテナ操作は原則 Docker Engine API 経由で行います。Compose mode では Docker Compose 固有 semantics を Docker Compose v2 CLI に委譲します。加えて、個人用・プロジェクト用の TOML 設定、Dev Container Features、dotfiles、Git/GitHub 認証、localhost port forwarding、UID/GID sync を扱います。
 
 ## 特徴
 
 - `decune up` で devcontainer を作成・起動し、remote user の shell に接続
 - `decune rebuild` / `decune down` / `decune clean` による明示的な lifecycle 管理
 - `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
+- Docker Compose mode の `dockerComposeFile` / `service` / `runServices`
 - `~/.config/decune/config.toml` と `<workspace>/.decune/config.toml` の重ね合わせ
 - OCI / local Dev Container Features、feature lock、Feature metadata merge
 - Git HTTPS credential helper、SSH agent、GitHub CLI token の forwarding
@@ -18,11 +19,10 @@ Dev Containers Specification の image-based / Dockerfile-based 構成を読み�
 
 ## 現在のスコープ
 
-v0.1 は単一コンテナの image-based / Dockerfile-based devcontainer を対象にします。
+v0.1 は image-based / Dockerfile-based devcontainer と Docker Compose mode を対象にします。Compose mode では `service` が指す primary service に接続し、`runServices` または既定の全 service を started services として Docker Compose v2 に起動させます。
 
 未対応または意図的に対象外の主な項目は以下です。
 
-- Docker Compose mode（`dockerComposeFile` / `service`）
 - VS Code 拡張機能のインストールと `customizations.vscode` の適用
 - GPG agent forwarding
 - コンテナから任意の host command を実行する API
@@ -36,6 +36,7 @@ v0.1 は単一コンテナの image-based / Dockerfile-based devcontainer を対
 - Linux または macOS host
 - Docker Engine API 互換 daemon（Docker または Podman 互換 endpoint）
 - Docker daemon へ接続できる権限
+- Docker Compose mode を使う場合: Docker Compose v2 CLI
 - Git 認証連携を使う場合: host 側の `git`、必要に応じて `SSH_AUTH_SOCK`
 - GitHub CLI 連携を使う場合: host 側の `gh` と `gh auth token` が成功する状態
 

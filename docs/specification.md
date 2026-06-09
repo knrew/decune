@@ -4,7 +4,7 @@
 
 ## 目的
 
-`decune` は、Dev Containers Specification の devcontainer を Rust 製の単一 CLI から起動、接続、停止、削除するためのツールである。VS Code や Node.js ベースの Dev Container CLI に依存せず、Docker Engine API 互換 daemon を bollard 経由で操作する。
+`decune` は、Dev Containers Specification の devcontainer を Rust 製の単一 CLI から起動、接続、停止、削除するためのツールである。VS Code や Node.js ベースの Dev Container CLI には依存しない。Docker Engine API 互換 daemon は原則 bollard 経由で操作し、Compose mode では Docker Compose 固有 semantics を Docker Compose v2 CLI に委譲する。
 
 個人設定と project 設定は TOML で重ねられる。VS Code Dev Containers が暗黙に提供する Git/GitHub 認証、dotfiles、port forwarding も decune の責務として明示的に扱う。
 
@@ -26,8 +26,9 @@
 ### 実装対象
 
 - Rust 製単一バイナリの CLI。
-- Docker Engine API 操作は bollard を使用する。
-- Dev Container の image-based と Dockerfile-based 構成。
+- Docker Engine API 操作は原則 bollard を使用する。
+- Dev Container の image-based、Dockerfile-based、Docker Compose mode 構成。
+- Compose mode では Docker Compose v2 CLI を専用 adapter から呼び出し、Compose file merge、variable interpolation、profiles、build、depends_on、healthcheck、network、volume などの Compose 固有 semantics は Docker Compose に委譲する。
 - JSONC としての `devcontainer.json` 読み込み。
 - TOML による global/project 設定。
 - Dev Container Features の OCI registry 取得、digest lock、local Feature、インストール、metadata merge。
@@ -41,7 +42,6 @@
 
 ### 対象外
 
-- Docker Compose mode の完全サポート。`dockerComposeFile` / `service` は v0.1 では明示エラー。
 - VS Code 拡張機能のインストールや `customizations.vscode` の適用。
 - GPG agent forwarding。
 - コンテナから任意の host command を実行する API。
@@ -172,11 +172,12 @@ workspace root から以下の順で検出する。
 | `build.args` | yes | string value のみ |
 | `build.target` | yes | multi-stage build target |
 | `build.cacheFrom` | partial | Docker API で扱える形式 |
-| `dockerComposeFile` | no | 明示エラー |
-| `service` | no | Compose mode 未対応 |
+| `dockerComposeFile` | yes | Compose mode。string または array。`devcontainer.json` からの相対 path |
+| `service` | yes | Compose mode の primary service |
+| `runServices` | yes | Compose mode の started services。未指定時は全 services。primary service は常に含める |
 | `features` | yes | OCI/local Feature |
 | `overrideFeatureInstallOrder` | yes | Feature install order に反映 |
-| `overrideCommand` | yes | image/Dockerfile mode の既定は true |
+| `overrideCommand` | yes | image/Dockerfile mode の既定は true。Compose mode の既定は false |
 | `mounts` | partial | bind/volume 対応。tmpfs は parse するが v0.1 では error |
 | `workspaceMount` | yes | image/Dockerfile mode |
 | `workspaceFolder` | yes | shell/lifecycle の working directory |
@@ -198,9 +199,23 @@ workspace root から以下の順で検出する。
 | lifecycle commands | yes | Feature metadata 由来 command は user command より前に実行 |
 | `waitFor` | partial | parse するが attached `up` は `postAttachCommand` まで同期実行 |
 | `name` | ignored | runtime behavior には使わない |
-| `shutdownAction` | ignored | 指定時 warning。CLI の `down` / `clean` が正 |
+| `shutdownAction` | partial | Compose mode の既定は `stopCompose`。`none`, `stopContainer`, `stopCompose` に対応 |
 | `hostRequirements` | ignored | warning |
 | `customizations` | ignored | preserve するが実行しない |
+
+### Docker Compose mode
+
+Compose mode は `devcontainer.json` に `dockerComposeFile` と `service` を指定した構成である。`service` が指す service を primary service と呼び、shell、lifecycle、Features、credential forwarding、port forwarding、UID/GID sync の対象にする。
+
+`runServices` は started services を指定する。未指定時は Docker Compose の既定に従い全 services を起動対象にする。primary service は接続対象なので、`runServices` に含まれていない場合も started services に含める。
+
+Compose project 名は decune が workspace identity から生成し、Docker Compose v2 CLI へ `--project-name` で明示する。ユーザー Compose file の top-level `name:` や directory basename には依存しない。
+
+Dev Container metadata から primary service に反映する container-level 設定は generated override として runtime directory に作成し、ユーザー指定 Compose file の最後の `-f` として Docker Compose v2 CLI に渡す。generated override には secret value、token value、env 展開済みの raw config を保存しない。
+
+Compose mode では `overrideCommand` の既定値を `false` とし、ユーザー Compose service の command を保持する。明示的に `overrideCommand = true` が指定された場合だけ、primary service に keepalive command を適用する。
+
+Compose mode では `shutdownAction` の既定値を `stopCompose` とする。明示値は `none`、`stopContainer`、`stopCompose` を扱う。`down` / `clean` は Compose project 単位の停止・削除を行う。
 
 ### JSONC
 
