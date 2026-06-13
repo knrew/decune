@@ -309,6 +309,7 @@ pub(in crate::up) async fn ensure_container_started(
             FinalizeUpPlanMountsOptions {
                 update_features: options.update_features,
                 compose_canonical_model: None,
+                compose_primary_service_user: None,
             },
         )
         .await?;
@@ -382,6 +383,7 @@ pub(in crate::up) async fn ensure_container_started(
         FinalizeUpPlanMountsOptions {
             update_features: options.update_features,
             compose_canonical_model: None,
+            compose_primary_service_user: None,
         },
     )
     .await?;
@@ -519,6 +521,9 @@ async fn start_compose_project(
         compose_project.project_name(),
         &compose.service,
     )?;
+    let compose_primary_service_user = user_model
+        .service(&compose.service)
+        .and_then(|service| service.user.as_deref());
     plan.base_image = compose_primary_image.clone();
 
     let client = DockerClient::connect_from_env()?;
@@ -575,11 +580,14 @@ async fn start_compose_project(
         &workspace,
         plan,
         existing_remote_user_image,
-        None,
+        existing_compose_containers
+            .first()
+            .and_then(existing::existing_container_config_hash),
         Some((false, options.no_cache)),
         FinalizeUpPlanMountsOptions {
             update_features: options.update_features,
             compose_canonical_model: Some(&user_config.canonical_model),
+            compose_primary_service_user,
         },
     )
     .await?;
@@ -763,7 +771,7 @@ async fn write_generated_compose_override(
     }
 
     let startup = compose_override_startup(client, plan).await?;
-    let content = generated_compose_override_content_with_startup(primary_service, plan, startup);
+    let content = generated_compose_override_content_with_startup(primary_service, plan, startup)?;
     fs::write(&path, content).with_context(|| {
         format!(
             "Failed to write Docker Compose generated override file: {}",
@@ -773,7 +781,7 @@ async fn write_generated_compose_override(
 }
 
 #[cfg(test)]
-fn generated_compose_override_content(primary_service: &str, plan: &UpPlan) -> String {
+fn generated_compose_override_content(primary_service: &str, plan: &UpPlan) -> Result<String> {
     let startup = if plan.config.devcontainer.override_command {
         let (entrypoint, command) = devcontainer_keepalive_command();
         Some(ComposeOverrideStartup {
@@ -829,7 +837,7 @@ fn generated_compose_override_content_with_startup(
     primary_service: &str,
     plan: &UpPlan,
     startup: Option<ComposeOverrideStartup>,
-) -> String {
+) -> Result<String> {
     let mut content = String::new();
     content.push_str("services:\n");
     content.push_str("  ");
@@ -846,8 +854,8 @@ fn generated_compose_override_content_with_startup(
         "environment",
         &plan.config.devcontainer.container_env,
     );
-    if let Some(user) = &plan.config.devcontainer.container_user {
-        append_yaml_scalar(&mut content, 4, "user", user);
+    if let Some(user) = compose_override_user(plan)? {
+        append_yaml_scalar(&mut content, 4, "user", &user);
     }
     if plan.config.devcontainer.init {
         append_yaml_bool(&mut content, 4, "init", true);
@@ -872,7 +880,34 @@ fn generated_compose_override_content_with_startup(
         append_yaml_string_list(&mut content, 4, "entrypoint", &startup.entrypoint);
         append_yaml_string_list(&mut content, 4, "command", &startup.command);
     }
-    content
+    Ok(content)
+}
+
+fn compose_override_user(plan: &UpPlan) -> Result<Option<String>> {
+    if plan.config.devcontainer.container_user.is_some() {
+        return uid_gid_sync_runtime_user(
+            &plan.effective_users.container_user.user,
+            &plan.uid_gid_sync_plan,
+        )
+        .map(Some);
+    }
+
+    if !matches!(
+        plan.effective_users.container_user.source,
+        crate::docker::user::RemoteUserSource::ComposeService
+    ) {
+        return Ok(None);
+    }
+
+    let runtime_user = uid_gid_sync_runtime_user(
+        &plan.effective_users.container_user.user,
+        &plan.uid_gid_sync_plan,
+    )?;
+    if runtime_user == plan.effective_users.container_user.user {
+        return Ok(None);
+    }
+
+    Ok(Some(runtime_user))
 }
 
 fn append_yaml_scalar(content: &mut String, indent: usize, key: &str, value: &str) {
@@ -1742,7 +1777,11 @@ mod tests {
             build::DockerBuildOptions,
             mounts::{DockerMountSpec, MountBindOptions, MountBindPropagation, MountVolumeOptions},
             resource::DockerResources,
-            user::{EffectiveUsers, UidGidSyncPlan},
+            user::{
+                EffectiveUserResolveInput, EffectiveUsers, HostUserIds, ResolvedUserIds,
+                UidGidSyncPlan, UidGidSyncTarget, UidGidSyncTargetKind, resolve_effective_users,
+                resolve_effective_users_with_compose_service_user,
+            },
         },
         up::UpPlan,
     };
@@ -1836,7 +1875,7 @@ mod tests {
             ignored_detached_forwarding: false,
         };
 
-        let content = generated_compose_override_content("app", &plan);
+        let content = generated_compose_override_content("app", &plan).unwrap();
 
         assert!(content.contains("'app':"));
         assert!(content.contains("image: 'decune/test:hash'"));
@@ -1853,10 +1892,65 @@ mod tests {
         plan.image = "alpine:3.20".to_owned();
         plan.base_image = "alpine:3.20".to_owned();
 
-        let content = generated_compose_override_content("app", &plan);
+        let content = generated_compose_override_content("app", &plan).unwrap();
 
         assert!(content.contains("image: 'alpine:3.20'"));
         assert!(!content.contains("pull_policy:"));
+    }
+
+    #[test]
+    fn generated_compose_override_writes_synced_container_user() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.config.devcontainer.container_user = Some("2001:2001".to_owned());
+        plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
+            devcontainer_remote_user: None,
+            devcontainer_container_user: Some("2001:2001"),
+            image_metadata_remote_user: None,
+            image_metadata_container_user: None,
+            image_config_user: None,
+        })
+        .unwrap();
+        plan.uid_gid_sync_plan = sync_plan();
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("user: 'syncuser:1000'"));
+        assert!(!content.contains("user: '2001:2001'"));
+    }
+
+    #[test]
+    fn generated_compose_override_writes_compose_service_user_only_when_sync_changes_it() {
+        let mut unchanged = generated_override_test_plan(Vec::new());
+        unchanged.effective_users = resolve_effective_users_with_compose_service_user(
+            EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: None,
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: None,
+            },
+            Some("syncuser"),
+        )
+        .unwrap();
+        let unchanged_content = generated_compose_override_content("app", &unchanged).unwrap();
+        assert!(!unchanged_content.contains("user:"));
+
+        let mut synced = unchanged;
+        synced.effective_users = resolve_effective_users_with_compose_service_user(
+            EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: None,
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: None,
+            },
+            Some("2001:2001"),
+        )
+        .unwrap();
+        synced.uid_gid_sync_plan = sync_plan();
+        let synced_content = generated_compose_override_content("app", &synced).unwrap();
+
+        assert!(synced_content.contains("user: 'syncuser:1000'"));
     }
 
     #[test]
@@ -1875,7 +1969,7 @@ mod tests {
             volume_options: None,
         }]);
 
-        let content = generated_compose_override_content("app", &plan);
+        let content = generated_compose_override_content("app", &plan).unwrap();
 
         assert!(content.contains("consistency: 'cached'"));
         assert!(content.contains("bind:\n"));
@@ -1895,7 +1989,7 @@ mod tests {
             volume_options: None,
         }]);
 
-        let content = generated_compose_override_content("app", &plan);
+        let content = generated_compose_override_content("app", &plan).unwrap();
 
         assert!(content.contains("bind:\n"));
         assert!(content.contains("create_host_path: false"));
@@ -1917,7 +2011,7 @@ mod tests {
             }),
         }]);
 
-        let content = generated_compose_override_content("app", &plan);
+        let content = generated_compose_override_content("app", &plan).unwrap();
 
         assert!(content.contains("volume:\n"));
         assert!(content.contains("nocopy: true"));
@@ -1954,6 +2048,24 @@ mod tests {
             mounts,
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
+        }
+    }
+
+    fn sync_plan() -> UidGidSyncPlan {
+        UidGidSyncPlan::Sync {
+            target: UidGidSyncTarget {
+                kind: UidGidSyncTargetKind::ContainerUser,
+                user: "2001:2001".to_owned(),
+                host: HostUserIds {
+                    uid: 1000,
+                    gid: 1000,
+                },
+            },
+            container: ResolvedUserIds {
+                name: "syncuser".to_owned(),
+                uid: 2001,
+                gid: 2001,
+            },
         }
     }
 
@@ -1999,7 +2111,8 @@ mod tests {
                 ],
                 command: vec!["/docker-entrypoint.sh".to_owned(), "server".to_owned()],
             }),
-        );
+        )
+        .unwrap();
 
         assert!(content.contains("entrypoint:"));
         assert!(content.contains("'/usr/local/share/decune/feature-entrypoint-wrapper.sh'"));
@@ -2049,7 +2162,8 @@ mod tests {
                     "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
                 ],
             }),
-        );
+        )
+        .unwrap();
 
         assert!(content.contains("\"trap 'exit 0' TERM\\nwhile sleep 1 & wait $!; do :; done\""));
         assert!(!content.contains("TERM\nwhile"));

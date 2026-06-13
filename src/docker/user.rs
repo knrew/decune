@@ -20,6 +20,7 @@ static REMOTE_USER_LOOKUP_CONTAINER_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 pub(crate) enum RemoteUserSource {
     Explicit,
     ImageMetadata,
+    ComposeService,
     ImageConfig,
     RootFallback,
 }
@@ -369,6 +370,13 @@ pub(crate) async fn remote_user_home(
 pub(crate) fn resolve_effective_users(
     input: EffectiveUserResolveInput<'_>,
 ) -> Result<EffectiveUsers> {
+    resolve_effective_users_with_compose_service_user(input, None)
+}
+
+pub(crate) fn resolve_effective_users_with_compose_service_user(
+    input: EffectiveUserResolveInput<'_>,
+    compose_service_user: Option<&str>,
+) -> Result<EffectiveUsers> {
     let image_config_user = parse_docker_image_config_user(input.image_config_user)?;
     let container_user = if let Some(user) = normalize_user(input.devcontainer_container_user) {
         EffectiveUser {
@@ -379,6 +387,11 @@ pub(crate) fn resolve_effective_users(
         EffectiveUser {
             user,
             source: RemoteUserSource::ImageMetadata,
+        }
+    } else if let Some(user) = normalize_user(compose_service_user) {
+        EffectiveUser {
+            user,
+            source: RemoteUserSource::ComposeService,
         }
     } else if let Some(user) = image_config_user {
         EffectiveUser {
@@ -442,7 +455,9 @@ pub(crate) fn decide_uid_gid_sync(
         EffectiveRemoteUserOrigin::Container
             if matches!(
                 users.container_user.source,
-                RemoteUserSource::Explicit | RemoteUserSource::ImageMetadata
+                RemoteUserSource::Explicit
+                    | RemoteUserSource::ImageMetadata
+                    | RemoteUserSource::ComposeService
             ) =>
         {
             Some(UidGidSyncTarget {
@@ -962,6 +977,28 @@ mod tests {
             EffectiveRemoteUserOrigin::Container
         );
 
+        let compose_service = resolve_effective_users_with_compose_service_user(
+            EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: None,
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: Some("image-user"),
+            },
+            Some("compose-user"),
+        )
+        .unwrap();
+        assert_eq!(compose_service.container_user.user, "compose-user");
+        assert_eq!(
+            compose_service.container_user.source,
+            RemoteUserSource::ComposeService
+        );
+        assert_eq!(compose_service.remote_user.user, "compose-user");
+        assert_eq!(
+            compose_service.remote_user.origin,
+            EffectiveRemoteUserOrigin::Container
+        );
+
         let root = resolve_effective_users(EffectiveUserResolveInput {
             devcontainer_remote_user: None,
             devcontainer_container_user: None,
@@ -1007,6 +1044,26 @@ mod tests {
             UidGidSyncDecision::Sync(UidGidSyncTarget {
                 kind: UidGidSyncTargetKind::ContainerUser,
                 user: "container".to_owned(),
+                host,
+            })
+        );
+
+        let compose_service_only = resolve_effective_users_with_compose_service_user(
+            EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: None,
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: None,
+            },
+            Some("compose-user"),
+        )
+        .unwrap();
+        assert_eq!(
+            decide_uid_gid_sync(&compose_service_only, true, HostPlatform::Linux, host),
+            UidGidSyncDecision::Sync(UidGidSyncTarget {
+                kind: UidGidSyncTargetKind::ContainerUser,
+                user: "compose-user".to_owned(),
                 host,
             })
         );

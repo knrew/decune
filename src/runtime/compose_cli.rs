@@ -299,6 +299,8 @@ pub(crate) struct ComposeConfigService {
     #[serde(default)]
     pub(crate) build: Option<serde_json::Value>,
     #[serde(default)]
+    pub(crate) user: Option<String>,
+    #[serde(default)]
     pub(crate) working_dir: Option<String>,
 }
 
@@ -897,6 +899,26 @@ mod tests {
                 "up",
                 "-d",
             ]
+        );
+    }
+
+    #[test]
+    fn compose_config_model_preserves_service_user() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "user": "1001:1002"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            model
+                .service("app")
+                .and_then(|service| service.user.as_deref()),
+            Some("1001:1002")
         );
     }
 

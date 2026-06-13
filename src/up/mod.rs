@@ -2948,6 +2948,7 @@ type = "bind"
                 FinalizeUpPlanMountsOptions {
                     update_features: false,
                     compose_canonical_model: None,
+                    compose_primary_service_user: None,
                 },
             )
             .await
@@ -3014,6 +3015,7 @@ type = "bind"
                     FinalizeUpPlanMountsOptions {
                         update_features: false,
                         compose_canonical_model: None,
+                        compose_primary_service_user: None,
                     },
                 )
                 .await?;
@@ -3093,6 +3095,7 @@ type = "bind"
                     FinalizeUpPlanMountsOptions {
                         update_features: false,
                         compose_canonical_model: None,
+                        compose_primary_service_user: None,
                     },
                 )
                 .await?;

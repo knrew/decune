@@ -31,7 +31,8 @@ use crate::{
         mounts::devcontainer_mount_type,
         resource::DockerResources,
         user::{
-            HostPlatform, current_host_user_ids, resolve_effective_users_from_image,
+            EffectiveUserResolveInput, HostPlatform, current_host_user_ids, image_config_user,
+            resolve_effective_users_from_image, resolve_effective_users_with_compose_service_user,
             resolve_remote_user_from_image, resolve_uid_gid_sync_plan_from_image,
         },
     },
@@ -239,6 +240,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
 ) -> Result<(UpPlan, bool)> {
     let update_features = options.update_features;
     let compose_canonical_model = options.compose_canonical_model;
+    let compose_primary_service_user = options.compose_primary_service_user;
     let using_existing_remote_user_image = remote_user_image.is_some();
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
     let mut lookup_base_image = None;
@@ -300,8 +302,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         plan,
         lookup,
         existing_container_config_hash,
-        update_features,
-        compose_canonical_model,
+        options,
     ))
     .await?;
     if plan.config.features.is_empty() {
@@ -314,6 +315,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         &lookup_image,
         update_features,
         compose_canonical_model,
+        compose_primary_service_user,
     ))
     .await?;
 
@@ -342,6 +344,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
 pub(in crate::up) struct FinalizeUpPlanMountsOptions<'a> {
     pub(in crate::up) update_features: bool,
     pub(in crate::up) compose_canonical_model: Option<&'a JsonValue>,
+    pub(in crate::up) compose_primary_service_user: Option<&'a str>,
 }
 
 async fn finalize_mounts_and_resources_for_plan(
@@ -351,16 +354,18 @@ async fn finalize_mounts_and_resources_for_plan(
     lookup_image: &str,
     update_features: bool,
     compose_canonical_model: Option<&JsonValue>,
+    compose_primary_service_user: Option<&str>,
 ) -> Result<UpPlan> {
     let compose_base_image = matches!(
         plan.config.devcontainer.source,
         Some(ResolvedDevcontainerSource::Compose(_))
     )
     .then(|| plan.base_image.clone());
-    let effective_users = resolve_effective_users_from_image(
+    let effective_users = resolve_effective_users_for_image(
         client,
         lookup_image,
         effective_user_input_from_config_layers(&plan.config_layers),
+        compose_primary_service_user,
     )
     .await?;
     let remote_user =
@@ -479,6 +484,26 @@ async fn finalize_mounts_and_resources_for_plan(
     Ok(plan)
 }
 
+async fn resolve_effective_users_for_image(
+    client: &DockerClient,
+    image: &str,
+    input: EffectiveUserResolveInput<'_>,
+    compose_primary_service_user: Option<&str>,
+) -> Result<crate::docker::user::EffectiveUsers> {
+    let Some(compose_primary_service_user) = compose_primary_service_user else {
+        return resolve_effective_users_from_image(client, image, input).await;
+    };
+    let image_config_user = image_config_user(client, image).await?;
+
+    resolve_effective_users_with_compose_service_user(
+        EffectiveUserResolveInput {
+            image_config_user: image_config_user.as_deref(),
+            ..input
+        },
+        Some(compose_primary_service_user),
+    )
+}
+
 async fn startup_command_hash_input(
     client: &DockerClient,
     plan: &UpPlan,
@@ -593,8 +618,7 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
     mut plan: UpPlan,
     lookup: ImageLookupPreparation<'_>,
     existing_container_config_hash: Option<&str>,
-    update_features: bool,
-    compose_canonical_model: Option<&JsonValue>,
+    options: FinalizeUpPlanMountsOptions<'_>,
 ) -> Result<UpPlan> {
     if config_has_github_cli_feature(&plan.config) {
         return Ok(plan);
@@ -616,8 +640,14 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
         image: (*lookup.image).clone(),
         uses_existing_image: false,
     });
-    let command_probe_env =
-        command_probe_container_env(client, workspace, &plan, &command_probe_image.image).await?;
+    let command_probe_env = command_probe_container_env(
+        client,
+        workspace,
+        &plan,
+        &command_probe_image.image,
+        options.compose_primary_service_user,
+    )
+    .await?;
     let image_has_gh =
         image_has_command(client, &command_probe_image.image, "gh", &command_probe_env).await?;
     if image_has_gh && command_probe_image.uses_existing_image {
@@ -627,8 +657,7 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
             plan,
             &lookup,
             existing_container_config_hash,
-            update_features,
-            compose_canonical_model,
+            options,
         ))
         .await;
     }
@@ -639,7 +668,7 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
 
     ui::info("Adding GitHub CLI Feature for GitHub token forwarding");
     plan = add_github_cli_feature_to_plan(plan)?;
-    plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
+    plan = prepare_feature_metadata_for_plan(workspace, plan, options.update_features).await?;
 
     if let Some((pull, no_cache)) = lookup.build_options {
         prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
@@ -658,8 +687,7 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
     plan: UpPlan,
     lookup: &ImageLookupPreparation<'_>,
     existing_container_config_hash: Option<&str>,
-    update_features: bool,
-    compose_canonical_model: Option<&JsonValue>,
+    options: FinalizeUpPlanMountsOptions<'_>,
 ) -> Result<UpPlan> {
     let Some(existing_container_config_hash) = existing_container_config_hash else {
         return Ok(plan);
@@ -670,8 +698,9 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
         workspace,
         plan.clone(),
         lookup.image,
-        update_features,
-        compose_canonical_model,
+        options.update_features,
+        options.compose_canonical_model,
+        options.compose_primary_service_user,
     ))
     .await?;
     if finalized_plan.resources.config_hash == existing_container_config_hash {
@@ -684,14 +713,15 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
 
     let candidate = add_github_cli_feature_to_plan(plan.clone())?;
     let candidate =
-        prepare_feature_metadata_for_plan(workspace, candidate, update_features).await?;
+        prepare_feature_metadata_for_plan(workspace, candidate, options.update_features).await?;
     let finalized_candidate = Box::pin(finalize_mounts_and_resources_for_plan(
         client,
         workspace,
         candidate.clone(),
         lookup.image,
-        update_features,
-        compose_canonical_model,
+        options.update_features,
+        options.compose_canonical_model,
+        options.compose_primary_service_user,
     ))
     .await?;
     if finalized_candidate.resources.config_hash == existing_container_config_hash {
@@ -706,11 +736,13 @@ async fn command_probe_container_env(
     workspace: &Workspace,
     plan: &UpPlan,
     image: &str,
+    compose_primary_service_user: Option<&str>,
 ) -> Result<BTreeMap<String, String>> {
-    let effective_users = resolve_effective_users_from_image(
+    let effective_users = resolve_effective_users_for_image(
         client,
         image,
         effective_user_input_from_config_layers(&plan.config_layers),
+        compose_primary_service_user,
     )
     .await?;
     let remote_user = resolve_remote_user_from_image(client, image, &effective_users).await?;

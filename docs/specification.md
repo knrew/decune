@@ -759,14 +759,15 @@ Compose mode では workspace mount を自動追加しない。primary service �
 
 user 解決:
 
-- effective container user: `containerUser`、image/Feature metadata `containerUser`、Docker image config `User`、Compose service `user`、`root`。
+- effective container user: `containerUser`、image/Feature metadata `containerUser`、Compose service `user`、Docker image config `User`、`root`。
 - effective remote user: `remoteUser`、image/Feature metadata `remoteUser`、effective container user。
 
 存在しない effective remote user は root fallback せず configuration error とする。numeric UID/GID は passwd entry がなくても runtime identity として扱えるが、home directory が必要な処理では error または warning skip になる。
 
-`updateRemoteUserUID` は Linux host で既定 true。remote user が明示されていれば remote user、なければ `containerUser` が明示されている場合に container user を sync target とする。非 Linux host、root target、`updateRemoteUserUID = false`、passwd entry がない numeric target は no-op または warning skip とする。
+`updateRemoteUserUID` は Linux host で既定 true。remote user が明示されていれば remote user、なければ `containerUser`、image/Feature metadata `containerUser`、Compose service `user` のいずれかで container user が明示されている場合に container user を sync target とする。非 Linux host、root target、`updateRemoteUserUID = false`、passwd entry がない numeric target は no-op または warning skip とする。
 
 Compose mode で UID/GID sync が必要な場合、primary service base image に sync layer を重ねた final image を作る。running container 内で `/etc/passwd` を直接 mutation しない。
+UID/GID sync によって runtime user 表現が変わる場合、generated Compose override の primary service `user` には sync 後の user/group を反映し、元の numeric UID/GID で primary process を起動しない。
 
 ## Lifecycle と shell attach
 
