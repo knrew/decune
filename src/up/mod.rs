@@ -714,6 +714,7 @@ mod tests {
         config.credentials.git.https = GitHttpsMode::Off;
         let mut plan = test_up_plan_with_config(config);
         plan.forward_ports = vec![ResolvedForwardPort {
+            service: None,
             container: 4321,
             host: 54321,
             host_ip: "127.0.0.1".to_owned(),
@@ -779,6 +780,7 @@ mod tests {
         config.credentials.github.mode = GithubCredentialsMode::Off;
         let mut plan = test_up_plan_with_config(config);
         plan.forward_ports = vec![ResolvedForwardPort {
+            service: None,
             container: 4321,
             host: 54321,
             host_ip: "127.0.0.1".to_owned(),
@@ -1093,6 +1095,7 @@ digest = "sha256:locked"
         assert_eq!(
             forwarding.forward_ports,
             vec![ResolvedForwardPort {
+                service: None,
                 container: 3000,
                 host: 3000,
                 host_ip: "127.0.0.1".to_owned(),
@@ -1408,6 +1411,7 @@ digest = "sha256:locked"
         assert_eq!(
             attached.forward_ports,
             vec![ResolvedForwardPort {
+                service: None,
                 container: 3000,
                 host: 3000,
                 host_ip: "127.0.0.1".to_owned(),

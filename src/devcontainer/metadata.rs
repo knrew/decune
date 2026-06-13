@@ -6,8 +6,8 @@ use serde_json::Value;
 
 use crate::{
     config::layer::{
-        ConfigLayer, LayerDevcontainerBuild, LayerDevcontainerMetadata, LayerDevcontainerSource,
-        LayerFeature, LayerRunArg, LayerUserEnvProbe,
+        ConfigLayer, LayerDevcontainerBuild, LayerDevcontainerCompose, LayerDevcontainerMetadata,
+        LayerDevcontainerSource, LayerFeature, LayerRunArg, LayerShutdownAction, LayerUserEnvProbe,
     },
     devcontainer::lifecycle::parse_lifecycle_layer_definition,
     devcontainer::mounts::DevcontainerMount,
@@ -66,6 +66,7 @@ pub(crate) struct DevcontainerMetadata {
     cap_add: Vec<String>,
     security_opt: Vec<String>,
     entrypoints: Vec<String>,
+    shutdown_action: Option<DevcontainerShutdownAction>,
     lifecycle: BTreeMap<LifecycleProperty, Value>,
     customizations: Option<Value>,
     unsupported_properties: BTreeMap<String, Value>,
@@ -155,6 +156,10 @@ impl DevcontainerMetadata {
 
     pub(crate) fn security_opt(&self) -> &[String] {
         &self.security_opt
+    }
+
+    pub(crate) fn shutdown_action(&self) -> Option<&DevcontainerShutdownAction> {
+        self.shutdown_action.as_ref()
     }
 
     pub(crate) fn lifecycle(&self) -> &BTreeMap<LifecycleProperty, Value> {
@@ -284,6 +289,7 @@ impl DevcontainerMetadata {
             cap_add: self.cap_add.clone(),
             security_opt: self.security_opt.clone(),
             entrypoints: self.entrypoints.clone(),
+            shutdown_action: self.shutdown_action.as_ref().map(shutdown_action_to_layer),
             lifecycle: parse_lifecycle_layer_definition(&self.lifecycle)?,
         })
     }
@@ -299,6 +305,13 @@ fn devcontainer_source_to_layer(source: &DevcontainerSource) -> LayerDevcontaine
                 args: build.args.clone(),
                 target: build.target.clone(),
                 cache_from: build.cache_from.clone(),
+            })
+        }
+        DevcontainerSource::Compose(compose) => {
+            LayerDevcontainerSource::Compose(LayerDevcontainerCompose {
+                files: compose.files.clone(),
+                service: compose.service.clone(),
+                run_services: compose.run_services.clone(),
             })
         }
     }
@@ -369,10 +382,19 @@ fn user_env_probe_to_layer(value: &UserEnvProbe) -> LayerUserEnvProbe {
     }
 }
 
+fn shutdown_action_to_layer(value: &DevcontainerShutdownAction) -> LayerShutdownAction {
+    match value {
+        DevcontainerShutdownAction::None => LayerShutdownAction::None,
+        DevcontainerShutdownAction::StopContainer => LayerShutdownAction::StopContainer,
+        DevcontainerShutdownAction::StopCompose => LayerShutdownAction::StopCompose,
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DevcontainerSource {
     Image(String),
     Dockerfile(DevcontainerBuild),
+    Compose(DevcontainerCompose),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -385,6 +407,13 @@ pub(crate) struct DevcontainerBuild {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DevcontainerCompose {
+    pub(crate) files: Vec<String>,
+    pub(crate) service: String,
+    pub(crate) run_services: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum DevcontainerRunArg {
     Init,
     Privileged,
@@ -393,6 +422,14 @@ pub(crate) enum DevcontainerRunArg {
     AddHost(String),
     Dns(String),
     DnsSearch(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum DevcontainerShutdownAction {
+    None,
+    StopContainer,
+    StopCompose,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -422,6 +459,7 @@ struct RawDevcontainerMetadata {
     build: Option<RawDevcontainerBuild>,
     docker_compose_file: Option<Value>,
     service: Option<String>,
+    run_services: Option<Vec<String>>,
     #[serde(default)]
     features: BTreeMap<String, Value>,
     #[serde(default)]
@@ -456,6 +494,7 @@ struct RawDevcontainerMetadata {
     #[serde(default, rename = "securityOpt")]
     security_opt: Vec<String>,
     entrypoint: Option<String>,
+    shutdown_action: Option<DevcontainerShutdownAction>,
     initialize_command: Option<Value>,
     on_create_command: Option<Value>,
     update_content_command: Option<Value>,
@@ -470,16 +509,10 @@ struct RawDevcontainerMetadata {
 
 impl RawDevcontainerMetadata {
     fn validate(
-        self,
+        mut self,
         source_requirement: SourceRequirement,
         layer_kind: MetadataLayerKind,
     ) -> Result<DevcontainerMetadata> {
-        if self.docker_compose_file.is_some() || self.service.is_some() {
-            return Err(anyhow!(
-                "Docker Compose mode is not supported in decune v0.1"
-            ));
-        }
-
         if layer_kind == MetadataLayerKind::ImageLabel && self.initialize_command.is_some() {
             return Err(anyhow!(
                 "Image devcontainer metadata must not specify initializeCommand"
@@ -487,20 +520,61 @@ impl RawDevcontainerMetadata {
         }
 
         let lifecycle = self.lifecycle_values();
-        let source = match (self.image, self.build) {
-            (Some(_), Some(_)) => {
+        let docker_compose_file = parse_docker_compose_file(self.docker_compose_file.take())?;
+        let is_compose_mode = docker_compose_file.is_some() || self.service.is_some();
+        let (source, run_args) = if is_compose_mode {
+            validate_compose_unsupported_properties(&self)?;
+            if self.image.is_some() {
                 return Err(anyhow!(
-                    "Devcontainer metadata must not specify both image and build"
+                    "Devcontainer metadata must not specify image with dockerComposeFile"
                 ));
             }
-            (Some(image), None) => Some(DevcontainerSource::Image(image)),
-            (None, Some(build)) => Some(DevcontainerSource::Dockerfile(build.validate()?)),
-            (None, None) if source_requirement == SourceRequirement::Required => {
+            if self.build.is_some() {
                 return Err(anyhow!(
-                    "Devcontainer metadata must specify either image or build"
+                    "Devcontainer metadata must not specify build with dockerComposeFile"
                 ));
             }
-            (None, None) => None,
+            let files = docker_compose_file.ok_or_else(|| {
+                anyhow!("Docker Compose devcontainer metadata must specify dockerComposeFile")
+            })?;
+            let service = self.service.take().ok_or_else(|| {
+                anyhow!("Docker Compose devcontainer metadata must specify service")
+            })?;
+            if self.workspace_folder.is_none() {
+                self.workspace_folder = Some("/".to_owned());
+            }
+            if self.override_command.is_none() {
+                self.override_command = Some(false);
+            }
+            if self.shutdown_action.is_none() {
+                self.shutdown_action = Some(DevcontainerShutdownAction::StopCompose);
+            }
+
+            (
+                Some(DevcontainerSource::Compose(DevcontainerCompose {
+                    files,
+                    service,
+                    run_services: self.run_services.take(),
+                })),
+                Vec::new(),
+            )
+        } else {
+            let source = match (self.image, self.build) {
+                (Some(_), Some(_)) => {
+                    return Err(anyhow!(
+                        "Devcontainer metadata must not specify both image and build"
+                    ));
+                }
+                (Some(image), None) => Some(DevcontainerSource::Image(image)),
+                (None, Some(build)) => Some(DevcontainerSource::Dockerfile(build.validate()?)),
+                (None, None) if source_requirement == SourceRequirement::Required => {
+                    return Err(anyhow!(
+                        "Devcontainer metadata must specify either image, build, or dockerComposeFile with service"
+                    ));
+                }
+                (None, None) => None,
+            };
+            (source, normalize_run_args(&self.run_args)?)
         };
 
         Ok(DevcontainerMetadata {
@@ -521,12 +595,13 @@ impl RawDevcontainerMetadata {
             ports_attributes: self.ports_attributes,
             other_ports_attributes: self.other_ports_attributes,
             app_port: self.app_port,
-            run_args: normalize_run_args(&self.run_args)?,
+            run_args,
             init: self.init,
             privileged: self.privileged,
             cap_add: self.cap_add,
             security_opt: self.security_opt,
             entrypoints: self.entrypoint.into_iter().collect(),
+            shutdown_action: self.shutdown_action,
             lifecycle,
             customizations: self.customizations,
             unsupported_properties: self.unsupported_properties,
@@ -565,6 +640,54 @@ impl RawDevcontainerMetadata {
         .filter_map(|(key, value)| value.map(|value| (key, value)))
         .collect()
     }
+}
+
+fn validate_compose_unsupported_properties(raw: &RawDevcontainerMetadata) -> Result<()> {
+    if raw.workspace_mount.is_some() {
+        return Err(anyhow!(
+            "workspaceMount is not supported in Docker Compose mode; define workspace volumes in the Compose file"
+        ));
+    }
+    if !raw.app_port.is_empty() {
+        return Err(anyhow!(
+            "appPort is not supported in Docker Compose mode; define published ports in the Compose file"
+        ));
+    }
+    if !raw.run_args.is_empty() {
+        return Err(anyhow!(
+            "runArgs is not supported in Docker Compose mode; define service options in the Compose file"
+        ));
+    }
+
+    Ok(())
+}
+
+fn parse_docker_compose_file(value: Option<Value>) -> Result<Option<Vec<String>>> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+
+    let files = match value {
+        Value::String(value) => vec![value],
+        Value::Array(values) => values
+            .into_iter()
+            .map(|value| match value {
+                Value::String(value) => Ok(value),
+                _ => Err(anyhow!("dockerComposeFile entries must be strings")),
+            })
+            .collect::<Result<Vec<_>>>()?,
+        _ => {
+            return Err(anyhow!(
+                "dockerComposeFile must be a string or string array"
+            ));
+        }
+    };
+
+    if files.is_empty() {
+        return Err(anyhow!("dockerComposeFile must not be empty"));
+    }
+
+    Ok(Some(files))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -728,7 +851,7 @@ mod tests {
     use serde_json::json;
 
     use crate::config::{
-        layer::{ConfigMergeInput, LayerFeature, LayerPort},
+        layer::{ConfigMergeInput, LayerFeature, LayerPort, LayerShutdownAction},
         merge::resolve_config,
         resolved::ResolvedPublishPort,
         types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward, PortProtocol},
@@ -947,25 +1070,144 @@ mod tests {
     }
 
     #[test]
-    fn compose_mode_is_rejected() {
-        for value in [
-            json!({"dockerComposeFile": "compose.yml", "service": "app"}),
-            json!({"service": "app", "image": "ubuntu:24.04"}),
-        ] {
-            let error = parse_metadata(value).unwrap_err();
+    fn parses_compose_metadata_from_string_file() {
+        let metadata = parse_metadata(json!({
+            "dockerComposeFile": "compose.yml",
+            "service": "app"
+        }))
+        .unwrap();
 
-            assert!(error.to_string().contains("Docker Compose mode"));
+        assert_eq!(
+            metadata.source(),
+            Some(&DevcontainerSource::Compose(DevcontainerCompose {
+                files: vec!["compose.yml".to_owned()],
+                service: "app".to_owned(),
+                run_services: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn parses_compose_metadata_from_file_array_preserving_order() {
+        let metadata = parse_metadata(json!({
+            "dockerComposeFile": ["compose.yml", "compose.override.yml"],
+            "service": "app"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            metadata.source(),
+            Some(&DevcontainerSource::Compose(DevcontainerCompose {
+                files: vec!["compose.yml".to_owned(), "compose.override.yml".to_owned()],
+                service: "app".to_owned(),
+                run_services: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn compose_run_services_distinguishes_missing_empty_and_values() {
+        for (run_services, expected) in [
+            (None, None),
+            (Some(json!([])), Some(Vec::new())),
+            (
+                Some(json!(["app", "db"])),
+                Some(vec!["app".to_owned(), "db".to_owned()]),
+            ),
+        ] {
+            let mut value = json!({
+                "dockerComposeFile": "compose.yml",
+                "service": "app"
+            });
+            if let Some(run_services) = run_services {
+                value["runServices"] = run_services;
+            }
+            let metadata = parse_metadata(value).unwrap();
+            let Some(DevcontainerSource::Compose(compose)) = metadata.source() else {
+                panic!("expected Compose source");
+            };
+
+            assert_eq!(compose.run_services, expected);
         }
     }
 
     #[test]
-    fn docker_compose_file_alone_is_rejected() {
-        let error = parse_metadata(json!({
-            "dockerComposeFile": "compose.yml"
+    fn compose_mode_applies_defaults_to_config_layer() {
+        let metadata = parse_metadata(json!({
+            "dockerComposeFile": "compose.yml",
+            "service": "app"
         }))
-        .unwrap_err();
+        .unwrap();
 
-        assert!(error.to_string().contains("Docker Compose mode"));
+        let config = resolve_config(ConfigMergeInput {
+            devcontainer: Some(metadata.to_config_layer().unwrap()),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.devcontainer.workspace_folder.as_deref(), Some("/"));
+        assert!(!config.devcontainer.override_command);
+        assert_eq!(
+            config.devcontainer.shutdown_action,
+            LayerShutdownAction::StopCompose
+        );
+    }
+
+    #[test]
+    fn invalid_compose_mode_metadata_is_rejected() {
+        for (value, expected) in [
+            (
+                json!({"dockerComposeFile": "compose.yml"}),
+                "must specify service",
+            ),
+            (json!({"service": "app"}), "must specify dockerComposeFile"),
+            (
+                json!({
+                    "image": "ubuntu:24.04",
+                    "dockerComposeFile": "compose.yml",
+                    "service": "app"
+                }),
+                "must not specify image with dockerComposeFile",
+            ),
+            (
+                json!({
+                    "build": {"dockerfile": "Dockerfile"},
+                    "dockerComposeFile": "compose.yml",
+                    "service": "app"
+                }),
+                "must not specify build with dockerComposeFile",
+            ),
+            (
+                json!({
+                    "dockerComposeFile": "compose.yml",
+                    "service": "app",
+                    "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+                }),
+                "workspaceMount is not supported in Docker Compose mode",
+            ),
+            (
+                json!({
+                    "dockerComposeFile": "compose.yml",
+                    "service": "app",
+                    "appPort": [8080]
+                }),
+                "appPort is not supported in Docker Compose mode",
+            ),
+            (
+                json!({
+                    "dockerComposeFile": "compose.yml",
+                    "service": "app",
+                    "runArgs": ["--init"]
+                }),
+                "runArgs is not supported in Docker Compose mode",
+            ),
+        ] {
+            let error = parse_metadata(value).unwrap_err();
+
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?} in {error}"
+            );
+        }
     }
 
     #[test]
@@ -975,7 +1217,11 @@ mod tests {
         }))
         .unwrap_err();
 
-        assert!(error.to_string().contains("either image or build"));
+        assert!(
+            error
+                .to_string()
+                .contains("either image, build, or dockerComposeFile with service")
+        );
     }
 
     #[test]
@@ -1169,6 +1415,7 @@ mod tests {
             vec![
                 LayerPort {
                     enabled: true,
+                    service: None,
                     container: 3000,
                     host: None,
                     host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
@@ -1178,11 +1425,72 @@ mod tests {
                 },
                 LayerPort {
                     enabled: true,
+                    service: None,
                     container: 5432,
                     host: None,
                     host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
                     protocol: PortProtocol::Tcp,
                     require_local: false,
+                    label: Some("db".to_owned()),
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn converts_compose_forward_ports_to_service_aware_layer_ports() {
+        let metadata = parse_metadata(json!({
+            "dockerComposeFile": "compose.yml",
+            "service": "app",
+            "forwardPorts": [3000, "3001", "db:5432"],
+            "portsAttributes": {
+                "5432": {
+                    "label": "generic"
+                },
+                "db:5432": {
+                    "label": "db",
+                    "requireLocalPort": true
+                }
+            }
+        }))
+        .unwrap();
+
+        let config = resolve_config(ConfigMergeInput {
+            devcontainer: Some(metadata.to_config_layer().unwrap()),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config.ports.entries,
+            vec![
+                LayerPort {
+                    enabled: true,
+                    service: None,
+                    container: 3000,
+                    host: None,
+                    host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                    protocol: PortProtocol::Tcp,
+                    require_local: false,
+                    label: None,
+                },
+                LayerPort {
+                    enabled: true,
+                    service: None,
+                    container: 3001,
+                    host: None,
+                    host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                    protocol: PortProtocol::Tcp,
+                    require_local: false,
+                    label: None,
+                },
+                LayerPort {
+                    enabled: true,
+                    service: Some("db".to_owned()),
+                    container: 5432,
+                    host: None,
+                    host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+                    protocol: PortProtocol::Tcp,
+                    require_local: true,
                     label: Some("db".to_owned()),
                 },
             ]
@@ -1221,6 +1529,7 @@ mod tests {
             config.ports.entries,
             vec![LayerPort {
                 enabled: true,
+                service: None,
                 container: 3000,
                 host: None,
                 host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
@@ -1250,6 +1559,7 @@ mod tests {
             config.ports.entries[0],
             LayerPort {
                 enabled: true,
+                service: None,
                 container: 3000,
                 host: None,
                 host_ip: DEFAULT_PORT_HOST_IP.to_owned(),

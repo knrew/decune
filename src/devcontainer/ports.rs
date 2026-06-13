@@ -43,12 +43,13 @@ pub(crate) fn forwarding_port_to_layer(
     attributes: &BTreeMap<String, DevcontainerPortAttributes>,
 ) -> Result<LayerForwardPort> {
     let parsed = parse_forwarding_port(port)?;
-    let attribute_keys = attribute_keys_for_port(parsed.container, port);
+    let attribute_keys = attribute_keys_for_port(parsed.service.as_deref(), parsed.container, port);
     let port_attributes = attributes_for_keys(attributes, &attribute_keys);
 
     Ok(LayerForwardPort {
         port: LayerPort {
             enabled: true,
+            service: parsed.service,
             container: parsed.container,
             host: parsed.host,
             host_ip: parsed
@@ -90,13 +91,28 @@ pub(crate) fn port_attributes_to_layer(
     }
 }
 
-fn attribute_keys_for_port(container_port: u16, original: &DevcontainerPort) -> Vec<String> {
+fn attribute_keys_for_port(
+    service: Option<&str>,
+    container_port: u16,
+    original: &DevcontainerPort,
+) -> Vec<String> {
     let container_key = container_port.to_string();
+    let service_key = service.map(|service| format!("{service}:{container_key}"));
 
     match original {
         DevcontainerPort::Number(_) => vec![container_key],
         DevcontainerPort::String(value) if value == &container_key => vec![container_key],
-        DevcontainerPort::String(value) => vec![container_key, value.clone()],
+        DevcontainerPort::String(value) => {
+            let mut keys = Vec::new();
+            if let Some(service_key) = service_key {
+                keys.push(service_key);
+            }
+            keys.push(container_key);
+            if !keys.iter().any(|key| key == value) {
+                keys.push(value.clone());
+            }
+            keys
+        }
     }
 }
 
@@ -109,6 +125,7 @@ fn attributes_for_keys<'a>(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ParsedPort {
+    service: Option<String>,
     container: u16,
     host: Option<u16>,
     host_ip: Option<String>,
@@ -118,6 +135,7 @@ struct ParsedPort {
 fn parse_forwarding_port(port: &DevcontainerPort) -> Result<ParsedPort> {
     match port {
         DevcontainerPort::Number(container) => Ok(ParsedPort {
+            service: None,
             container: *container,
             host: None,
             host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
@@ -130,6 +148,7 @@ fn parse_forwarding_port(port: &DevcontainerPort) -> Result<ParsedPort> {
 fn parse_publish_port(port: &DevcontainerPort) -> Result<ParsedPort> {
     match port {
         DevcontainerPort::Number(container) => Ok(ParsedPort {
+            service: None,
             container: *container,
             host: Some(*container),
             host_ip: None,
@@ -145,6 +164,7 @@ fn parse_forwarding_port_string(original: &str) -> Result<ParsedPort> {
 
     match segments.as_slice() {
         [host, container] if is_local_forwarding_host(host) => Ok(ParsedPort {
+            service: None,
             container: parse_u16_port(container, "container port")?,
             host: None,
             host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
@@ -156,18 +176,20 @@ fn parse_forwarding_port_string(original: &str) -> Result<ParsedPort> {
                 "Invalid devcontainer forwardPorts entry: {original}. Use a numeric JSON value for a current-container port; host-port mappings are not supported in forwardPorts"
             ))
         }
-        [host, container] => {
-            let _ = parse_u16_port(container, "container port")?;
-            Err(anyhow!(
-                "Unsupported devcontainer forwardPorts host: {host}. Docker Compose service forwarding is not supported"
-            ))
-        }
-        [container] => {
-            let _ = parse_u16_port(container, "container port")?;
-            Err(anyhow!(
-                "Invalid devcontainer forwardPorts entry: {original}. Use a numeric JSON value or localhost:<port>"
-            ))
-        }
+        [service, container] => Ok(ParsedPort {
+            service: Some(parse_compose_service_name(service, original)?),
+            container: parse_u16_port(container, "container port")?,
+            host: None,
+            host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
+            protocol,
+        }),
+        [container] => Ok(ParsedPort {
+            service: None,
+            container: parse_u16_port(container, "container port")?,
+            host: None,
+            host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
+            protocol,
+        }),
         _ => Err(anyhow!(
             "Invalid devcontainer forwardPorts entry: {original}"
         )),
@@ -180,24 +202,28 @@ fn parse_publish_port_string(value: &str) -> Result<ParsedPort> {
 
     match segments.as_slice() {
         [container] => Ok(ParsedPort {
+            service: None,
             container: parse_u16_port(container, "container port")?,
             host: None,
             host_ip: None,
             protocol,
         }),
         [left, container] if is_numeric_port_candidate(left) => Ok(ParsedPort {
+            service: None,
             container: parse_u16_port(container, "container port")?,
             host: Some(parse_u16_port(left, "host port")?),
             host_ip: None,
             protocol,
         }),
         [host_ip, container] => Ok(ParsedPort {
+            service: None,
             container: parse_u16_port(container, "container port")?,
             host: None,
             host_ip: Some(normalize_host_ip(host_ip)?),
             protocol,
         }),
         [host_ip, host, container] => Ok(ParsedPort {
+            service: None,
             container: parse_u16_port(container, "container port")?,
             host: Some(parse_u16_port(host, "host port")?),
             host_ip: Some(normalize_host_ip(host_ip)?),
@@ -232,6 +258,16 @@ fn parse_u16_port(value: &str, label: &str) -> Result<u16> {
     value
         .parse()
         .map_err(|error| anyhow!("Invalid {label} in devcontainer port {value}: {error}"))
+}
+
+fn parse_compose_service_name(value: &str, original: &str) -> Result<String> {
+    if value.is_empty() {
+        return Err(anyhow!(
+            "Invalid devcontainer forwardPorts entry: {original}. Compose service name must not be empty"
+        ));
+    }
+
+    Ok(value.to_owned())
 }
 
 fn is_numeric_port_candidate(value: &str) -> bool {
@@ -330,18 +366,17 @@ mod tests {
     }
 
     #[test]
-    fn string_numeric_forward_port_is_rejected() {
-        let error = forwarding_port_to_layer(
+    fn string_numeric_forward_port_targets_primary_service() {
+        let port = forwarding_port_to_layer(
             &DevcontainerPort::String("3000".to_owned()),
             &empty_attributes(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("Use a numeric JSON value or localhost:<port>")
-        );
+        assert_eq!(port.port.service, None);
+        assert_eq!(port.port.container, 3000);
+        assert_eq!(port.port.host, None);
+        assert_eq!(port.port.host_ip, DEFAULT_PORT_HOST_IP);
     }
 
     #[test]
@@ -360,18 +395,17 @@ mod tests {
     }
 
     #[test]
-    fn compose_service_forward_port_host_is_rejected() {
-        let error = forwarding_port_to_layer(
+    fn compose_service_forward_port_is_preserved() {
+        let port = forwarding_port_to_layer(
             &DevcontainerPort::String("db:5432".to_owned()),
             &empty_attributes(),
         )
-        .unwrap_err();
+        .unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("Docker Compose service forwarding is not supported")
-        );
+        assert_eq!(port.port.service.as_deref(), Some("db"));
+        assert_eq!(port.port.container, 5432);
+        assert_eq!(port.port.host, None);
+        assert_eq!(port.port.host_ip, DEFAULT_PORT_HOST_IP);
     }
 
     #[test]

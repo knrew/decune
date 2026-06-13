@@ -168,6 +168,7 @@ impl LayerMount {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct LayerPort {
     pub(crate) enabled: bool,
+    pub(crate) service: Option<String>,
     pub(crate) container: u16,
     pub(crate) host: Option<u16>,
     pub(crate) host_ip: String,
@@ -180,6 +181,7 @@ impl LayerPort {
     fn from_raw(raw: RawPortConfig) -> Self {
         Self {
             enabled: raw.enabled.unwrap_or(true),
+            service: raw.service,
             container: raw.container,
             host: raw.host,
             host_ip: raw
@@ -242,6 +244,7 @@ pub(crate) struct LayerDevcontainerMetadata {
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
     pub(crate) entrypoints: Vec<String>,
+    pub(crate) shutdown_action: Option<LayerShutdownAction>,
     pub(crate) lifecycle: Option<LayerLifecycleDefinition>,
 }
 
@@ -249,6 +252,7 @@ pub(crate) struct LayerDevcontainerMetadata {
 pub(crate) enum LayerDevcontainerSource {
     Image(String),
     Dockerfile(LayerDevcontainerBuild),
+    Compose(LayerDevcontainerCompose),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -258,6 +262,20 @@ pub(crate) struct LayerDevcontainerBuild {
     pub(crate) args: BTreeMap<String, String>,
     pub(crate) target: Option<String>,
     pub(crate) cache_from: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerDevcontainerCompose {
+    pub(crate) files: Vec<String>,
+    pub(crate) service: String,
+    pub(crate) run_services: Option<Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LayerShutdownAction {
+    None,
+    StopContainer,
+    StopCompose,
 }
 
 #[derive(Debug, Clone, PartialEq)]

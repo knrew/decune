@@ -325,6 +325,9 @@ pub(super) fn final_image_source(
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
+        Some(ResolvedDevcontainerSource::Compose(_)) => {
+            bail!("Docker Compose runtime planning is not implemented yet")
+        }
         None => bail!("Devcontainer image is required"),
     }
 }
@@ -342,6 +345,9 @@ pub(super) fn base_image_source(
             Ok(format!("{}-base", resources.image_tag))
         }
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
+        Some(ResolvedDevcontainerSource::Compose(_)) => {
+            bail!("Docker Compose runtime planning is not implemented yet")
+        }
         None => bail!("Devcontainer image is required"),
     }
 }
