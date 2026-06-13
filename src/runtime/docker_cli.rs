@@ -209,6 +209,26 @@ impl DockerCli {
             .await
     }
 
+    pub(crate) async fn list_standalone_workspace_containers(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<UpContainerSummary>> {
+        let containers = self
+            .list_workspace_container_inspects_with_filters(workspace_id, &[])
+            .await?;
+        containers
+            .into_iter()
+            .filter(|container| {
+                container
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.labels.as_ref())
+                    .is_none_or(|labels| !labels.contains_key("com.docker.compose.project"))
+            })
+            .map(up_container_summary_from_inspect)
+            .collect()
+    }
+
     pub(crate) async fn list_compose_service_containers(
         &self,
         workspace_id: &str,
@@ -242,6 +262,18 @@ impl DockerCli {
         workspace_id: &str,
         extra_filters: &[String],
     ) -> Result<Vec<UpContainerSummary>> {
+        self.list_workspace_container_inspects_with_filters(workspace_id, extra_filters)
+            .await?
+            .into_iter()
+            .map(up_container_summary_from_inspect)
+            .collect()
+    }
+
+    async fn list_workspace_container_inspects_with_filters(
+        &self,
+        workspace_id: &str,
+        extra_filters: &[String],
+    ) -> Result<Vec<ContainerInspect>> {
         let mut command = docker_cmd(["ps", "--all"])
             .arg("--filter")
             .arg("label=decune.managed=true")
@@ -260,13 +292,8 @@ impl DockerCli {
         }
 
         let command = docker_cmd(["container", "inspect"]).args(ids.iter().map(String::as_str));
-        let containers: Vec<ContainerInspect> = self
-            .run_json_command("inspect Docker containers", workspace_id, command)
-            .await?;
-        containers
-            .into_iter()
-            .map(up_container_summary_from_inspect)
-            .collect()
+        self.run_json_command("inspect Docker containers", workspace_id, command)
+            .await
     }
 
     pub(crate) async fn exec_capture(

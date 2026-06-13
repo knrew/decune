@@ -504,11 +504,12 @@ async fn start_compose_project(
         .service(&compose.service)
         .and_then(|service| service.build.as_ref())
         .is_some();
-    plan.base_image = compose_primary_service_image(
+    let compose_primary_image = compose_primary_service_image(
         user_model,
         compose_project.project_name(),
         &compose.service,
     )?;
+    plan.base_image = compose_primary_image.clone();
 
     let client = DockerClient::connect_from_env()?;
     let existing_compose_project_containers =
@@ -574,7 +575,8 @@ async fn start_compose_project(
     .await?;
     let mut plan = plan;
     if !plan_requires_final_image_layer(&plan) {
-        plan.image = plan.base_image.clone();
+        plan.image = compose_primary_image.clone();
+        plan.base_image = compose_primary_image;
     }
     if !image_prepared {
         prepare_image_for_create(&client, &plan, false, options.no_cache, false).await?;
@@ -942,7 +944,36 @@ fn append_indent(content: &mut String, indent: usize) {
 }
 
 fn yaml_quote(value: &str) -> String {
+    if value
+        .chars()
+        .any(|ch| matches!(ch, '\n' | '\r') || ch.is_control())
+    {
+        return yaml_double_quote(value);
+    }
+
     format!("'{}'", value.replace('\'', "''"))
+}
+
+fn yaml_double_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            '\u{08}' => quoted.push_str("\\b"),
+            '\u{0c}' => quoted.push_str("\\f"),
+            ch if ch.is_control() => {
+                quoted.push_str(&format!("\\u{:04x}", ch as u32));
+            }
+            ch => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 async fn validate_compose_canonical_model(plan: &UpPlan) -> Result<()> {
@@ -1799,5 +1830,52 @@ mod tests {
         assert!(content.contains("command:"));
         assert!(content.contains("'/docker-entrypoint.sh'"));
         assert!(content.contains("'server'"));
+    }
+
+    #[test]
+    fn generated_compose_override_preserves_multiline_command_values() {
+        let config = ResolvedConfig::default();
+        let resources = DockerResources {
+            container_name: "unused".to_owned(),
+            image_tag: "decune/test:hash".to_owned(),
+            workspace_volume_name: "unused-volume".to_owned(),
+            labels: BTreeMap::new(),
+            config_hash: "hash".to_owned(),
+        };
+        let plan = UpPlan {
+            image: "decune/test:hash".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources,
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers: ConfigMergeInput::default(),
+            config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspace".to_owned(),
+            mounts: Vec::new(),
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
+        };
+
+        let content = generated_compose_override_content_with_startup(
+            "app",
+            &plan,
+            Some(ComposeOverrideStartup {
+                entrypoint: vec!["/bin/sh".to_owned()],
+                command: vec![
+                    "-c".to_owned(),
+                    "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+                ],
+            }),
+        );
+
+        assert!(content.contains("\"trap 'exit 0' TERM\\nwhile sleep 1 & wait $!; do :; done\""));
+        assert!(!content.contains("TERM\nwhile"));
     }
 }

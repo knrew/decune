@@ -352,6 +352,11 @@ async fn finalize_mounts_and_resources_for_plan(
     update_features: bool,
     compose_canonical_model: Option<&JsonValue>,
 ) -> Result<UpPlan> {
+    let compose_base_image = matches!(
+        plan.config.devcontainer.source,
+        Some(ResolvedDevcontainerSource::Compose(_))
+    )
+    .then(|| plan.base_image.clone());
     let effective_users = resolve_effective_users_from_image(
         client,
         lookup_image,
@@ -448,7 +453,11 @@ async fn finalize_mounts_and_resources_for_plan(
     let resources = DockerResources::from_workspace(workspace, hash, config_file);
     let image = final_image_source(&plan.config, &resources, &uid_gid_sync_plan)?;
     let base_image_resources = pre_uid_gid_sync_resources.as_ref().unwrap_or(&resources);
-    let base_image = base_image_source(&plan.config, base_image_resources, &uid_gid_sync_plan)?;
+    let base_image = if let Some(compose_base_image) = compose_base_image {
+        Ok(compose_base_image)
+    } else {
+        base_image_source(&plan.config, base_image_resources, &uid_gid_sync_plan)
+    }?;
 
     plan.image = image;
     plan.base_image = base_image;
@@ -754,6 +763,10 @@ pub(in crate::up) fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> Result<
     if config_has_github_cli_feature(&plan.config) {
         return Ok(plan);
     }
+    let preserve_base_image = matches!(
+        plan.config.devcontainer.source,
+        Some(ResolvedDevcontainerSource::Compose(_))
+    );
 
     let mut cli_layer = plan.config_layers.cli.take().unwrap_or_default();
     cli_layer
@@ -763,7 +776,10 @@ pub(in crate::up) fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> Result<
     plan.config = resolve_config(plan.config_layers.clone());
     plan.feature_install = None;
     plan.image = final_image_source(&plan.config, &plan.resources, &plan.uid_gid_sync_plan)?;
-    plan.base_image = base_image_source(&plan.config, &plan.resources, &plan.uid_gid_sync_plan)?;
+    if !preserve_base_image {
+        plan.base_image =
+            base_image_source(&plan.config, &plan.resources, &plan.uid_gid_sync_plan)?;
+    }
 
     Ok(plan)
 }

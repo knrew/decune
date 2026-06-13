@@ -51,6 +51,7 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
     let client = DockerClient::connect_from_env()?;
+    let mut stopped_compose_project = false;
     if let Some(plan) =
         compose_lifecycle_plan(&workspace, ComposeLifecycleCommand::Down, &client).await?
     {
@@ -67,12 +68,12 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
             "Stopped Docker Compose project: {}",
             plan.project.project_name
         ));
-        return Ok(());
+        stopped_compose_project = true;
     }
 
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
-    if containers.is_empty() {
+    if containers.is_empty() && !stopped_compose_project {
         ui::done("No dev container found for this workspace");
         return Ok(());
     }
@@ -93,6 +94,7 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
     let client = DockerClient::connect_from_env()?;
+    let mut remove_generated_images = options.images;
     if let Some(plan) = compose_lifecycle_plan(
         &workspace,
         ComposeLifecycleCommand::Clean {
@@ -116,20 +118,7 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
             plan.project.project_name
         ));
 
-        if plan.cleanup.remove_generated_images {
-            let image_repository = DockerResources::image_repository_for_workspace(&workspace);
-            for image in workspace_image_tags(&client, &image_repository).await? {
-                remove_image(&client, &image, true).await?;
-                ui::done(&format!("Removed Docker image: {image}"));
-            }
-        }
-
-        remove_state_runtime_dirs(
-            workspace.paths().state_dir(),
-            workspace.paths().runtime_dir(),
-        )?;
-        ui::done("Cleaned dev container resources");
-        return Ok(());
+        remove_generated_images |= plan.cleanup.remove_generated_images;
     }
 
     let containers = list_managed_containers(&client, workspace.id()).await?;
@@ -145,7 +134,7 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
         ui::done(&format!("Removed Docker volume: {volume}"));
     }
 
-    if options.images {
+    if remove_generated_images {
         let image_repository = DockerResources::image_repository_for_workspace(&workspace);
         for image in workspace_image_tags(&client, &image_repository).await? {
             remove_image(&client, &image, true).await?;
@@ -217,7 +206,7 @@ async fn list_managed_containers(
 ) -> Result<Vec<ManagedContainer>> {
     let containers = client
         .cli()
-        .list_workspace_containers(workspace_id)
+        .list_standalone_workspace_containers(workspace_id)
         .await
         .with_context(|| {
             format!("Failed to list Docker containers for workspace: {workspace_id}")

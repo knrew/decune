@@ -185,6 +185,7 @@ decune down [--timeout <SECONDS>] [WORKSPACE]
 
 - image/Dockerfile mode: decune 管理 container を停止する。volume、state、image は削除しない。
 - Compose mode: decune 管理 Compose project を停止する。volume、state、image は削除しない。`runServices` 指定時も、Compose が `depends_on` 等で起動した dependency service を残さないよう project 全体を停止対象にする。
+- 現在の設定が Compose mode でも、同じ workspace に過去の image/Dockerfile mode 由来の decune-managed container が残っている場合は停止する。
 
 明示的な `decune down` は `shutdownAction` に関係なく停止を行う。
 
@@ -196,6 +197,7 @@ decune clean [--force] [--images] [WORKSPACE]
 
 - image/Dockerfile mode: managed container、managed volume、state/runtime を削除する。`--images` 指定時だけ generated image を削除する。
 - Compose mode: managed Compose project を `docker compose down --volumes --remove-orphans` 相当で削除し、state/runtime を削除する。external volume/network は Compose の標準挙動に従い削除しない。`--images` 指定時だけ decune generated image を削除する。user が Compose file で指定した image を `--rmi all` で削除してはならない。
+- 現在の設定が Compose mode でも、同じ workspace に過去の image/Dockerfile mode 由来の decune-managed container や managed volume が残っている場合は削除する。
 
 TTY でない `clean` without `--force` は確認不能として error にする。
 
