@@ -1125,6 +1125,88 @@ digest = "sha256:locked"
     }
 
     #[test]
+    fn build_up_plan_rejects_service_qualified_forward_ports_without_compose_source() {
+        let workspace = test_workspace("service-forward-port-image-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "forwardPorts": ["db:5432"]
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains(
+            "Service-qualified port forwarding is only supported in Docker Compose mode"
+        ));
+        assert!(error.to_string().contains("db:5432"));
+    }
+
+    #[test]
+    fn build_up_plan_rejects_service_qualified_forward_ports_with_dockerfile_source() {
+        let workspace = test_workspace("service-forward-port-dockerfile-plan");
+        fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+        fs::write(
+            workspace.root().join(".devcontainer/Dockerfile"),
+            "FROM alpine:3.20\n",
+        )
+        .unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "forwardPorts": ["db:5432"]
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains(
+            "Service-qualified port forwarding is only supported in Docker Compose mode"
+        ));
+        assert!(error.to_string().contains("db:5432"));
+    }
+
+    #[test]
+    fn build_up_plan_rejects_service_qualified_decune_ports_without_compose_source() {
+        let workspace = test_workspace("service-decune-port-image-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[ports]]
+service = "db"
+container = 5432
+"#,
+        )
+        .unwrap();
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains(
+            "Service-qualified port forwarding is only supported in Docker Compose mode"
+        ));
+        assert!(error.to_string().contains("db:5432"));
+    }
+
+    #[test]
     fn untrusted_repository_warnings_are_empty_for_default_plan_security_surface() {
         let mut config = ResolvedConfig::default();
         config.credentials.git.enabled = false;
