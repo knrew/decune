@@ -83,6 +83,18 @@ pub(crate) fn current_size() -> Option<TerminalSize> {
     }
 }
 
+pub(crate) fn stdin_is_tty() -> bool {
+    #[cfg(unix)]
+    {
+        is_tty(libc::STDIN_FILENO)
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 #[cfg(unix)]
 fn is_tty(fd: i32) -> bool {
     // SAFETY: isatty は fd を読み取るだけで，失敗は 0 として返る．

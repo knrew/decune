@@ -3548,7 +3548,7 @@ type = "bind"
                 let message = format!("{error:#}");
                 assert!(
                     message.contains("Failed to build Docker image")
-                        && message.contains("Docker stream error"),
+                        && message.contains("sync-uid-gid.sh"),
                     "{message}"
                 );
 
@@ -3619,7 +3619,7 @@ type = "bind"
                 let message = format!("{error:#}");
                 assert!(
                     message.contains("Failed to build Docker image")
-                        && message.contains("Docker stream error"),
+                        && message.contains("sync-uid-gid.sh"),
                     "{message}"
                 );
 
@@ -3689,7 +3689,7 @@ type = "bind"
                 let message = format!("{error:#}");
                 assert!(
                     message.contains("Failed to build Docker image")
-                        && message.contains("Docker stream error"),
+                        && message.contains("sync-uid-gid.sh"),
                     "{message}"
                 );
 
@@ -3759,7 +3759,7 @@ type = "bind"
                 let message = format!("{error:#}");
                 assert!(
                     message.contains("Failed to build Docker image")
-                        && message.contains("Docker stream error"),
+                        && message.contains("sync-uid-gid.sh"),
                     "{message}"
                 );
 

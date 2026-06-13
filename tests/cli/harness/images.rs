@@ -220,15 +220,17 @@ async fn build_alpine_configured_image(
 fn dockerfile_for_config(config: &DockerfileImageConfig) -> anyhow::Result<String> {
     let mut dockerfile = String::from("FROM alpine:3.20\n");
     if let Some(script) = &config.run_script {
-        dockerfile.push_str("RUN /bin/sh -c ");
-        dockerfile.push_str(&shell_single_quote(&format!("set -eu\n{script}")));
+        let script_command = format!("set -eu\n{script}");
+        let run = vec!["/bin/sh", "-c", &script_command];
+        dockerfile.push_str("RUN ");
+        dockerfile.push_str(&serde_json::to_string(&run)?);
         dockerfile.push('\n');
     }
     for (key, value) in &config.labels {
         dockerfile.push_str("LABEL ");
         dockerfile.push_str(key);
         dockerfile.push('=');
-        dockerfile.push_str(&serde_json::to_string(value)?);
+        dockerfile.push_str(&dockerfile_label_value(value)?);
         dockerfile.push('\n');
     }
     if let Some(user) = &config.user {
@@ -245,8 +247,8 @@ fn dockerfile_for_config(config: &DockerfileImageConfig) -> anyhow::Result<Strin
     Ok(dockerfile)
 }
 
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
+fn dockerfile_label_value(value: &str) -> anyhow::Result<String> {
+    Ok(serde_json::to_string(value)?.replace('$', "\\$"))
 }
 
 #[allow(dead_code)]

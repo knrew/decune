@@ -15,6 +15,7 @@ use crate::{
         RuntimeCommand, RuntimeCommandRunner, RuntimeOutput, RuntimeStdio, TokioRuntimeCommand,
         ensure_success,
     },
+    terminal,
     up::{UpContainerSummary, UpMountSummary},
 };
 
@@ -234,7 +235,7 @@ impl DockerCli {
         container: &str,
         spec: &crate::docker::exec::ExecCommandSpec,
     ) -> Result<crate::docker::exec::ExecOutput> {
-        let command = docker_exec_command(container, spec, false, false);
+        let command = docker_exec_command(container, spec, false, false, false);
         let output = self.runner.run_capture(command.clone()).await?;
         Ok(crate::docker::exec::ExecOutput {
             stdout: output.stdout,
@@ -248,7 +249,7 @@ impl DockerCli {
         container: &str,
         spec: &crate::docker::exec::ExecCommandSpec,
     ) -> Result<String> {
-        let command = docker_exec_command(container, spec, false, true);
+        let command = docker_exec_command(container, spec, false, false, true);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success("start detached Docker exec", container, &command, &output)?;
         let inspect = self.inspect_container(container).await?;
@@ -264,7 +265,13 @@ impl DockerCli {
         container: &str,
         spec: &crate::docker::exec::ExecCommandSpec,
     ) -> Result<i64> {
-        let command = docker_exec_command(container, spec, spec.tty, false);
+        let command = docker_exec_command(
+            container,
+            spec,
+            true,
+            spec.tty && terminal::stdin_is_tty(),
+            false,
+        );
         let status = self
             .runner
             .run_status(command, RuntimeStdio::Inherit)
@@ -411,8 +418,14 @@ pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeComman
     if let Some(user) = &spec.user {
         command = command.arg("--user").arg(user);
     }
-    if let Some(entrypoint) = &spec.entrypoint {
-        command = command.arg("--entrypoint").arg(entrypoint.join(" "));
+    let mut entrypoint_args = Vec::new();
+    if let Some((entrypoint, args)) = spec
+        .entrypoint
+        .as_ref()
+        .and_then(|entrypoint| entrypoint.split_first())
+    {
+        command = command.arg("--entrypoint").arg(entrypoint);
+        entrypoint_args.extend(args.iter().cloned());
     }
     command = add_host_config_args(command, spec);
     for mount in &spec.mounts {
@@ -422,6 +435,7 @@ pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeComman
         command = command.arg("--publish").arg(publish.to_cli_publish());
     }
     command = command.arg(&spec.image);
+    command = command.args(entrypoint_args);
     if let Some(command_args) = &spec.command {
         command = command.args(command_args);
     }
@@ -457,11 +471,15 @@ fn docker_exec_command(
     container: &str,
     spec: &crate::docker::exec::ExecCommandSpec,
     interactive: bool,
+    tty: bool,
     detached: bool,
 ) -> RuntimeCommand {
     let mut command = docker_cmd(["exec"]);
     if interactive {
-        command = command.arg("--interactive").arg("--tty");
+        command = command.arg("--interactive");
+    }
+    if tty {
+        command = command.arg("--tty");
     }
     if detached {
         command = command.arg("--detach");
@@ -625,19 +643,31 @@ impl DockerPublishCliExt for DockerPublishPort {
             PortProtocol::Tcp => "tcp",
             PortProtocol::Udp => "udp",
         };
-        let mut value = String::new();
-        if let Some(host_ip) = &self.host_ip {
-            value.push_str(host_ip);
-            value.push(':');
-        }
-        if let Some(host) = self.host {
-            value.push_str(&host.to_string());
-            value.push(':');
-        }
-        value.push_str(&self.container.to_string());
+        let mut value = match (&self.host_ip, self.host) {
+            (None, None) => self.container.to_string(),
+            (None, Some(host)) => format!("{host}:{}", self.container),
+            (Some(host_ip), None) => {
+                format!("{}::{}", docker_publish_host_ip(host_ip), self.container)
+            }
+            (Some(host_ip), Some(host)) => {
+                format!(
+                    "{}:{host}:{}",
+                    docker_publish_host_ip(host_ip),
+                    self.container
+                )
+            }
+        };
         value.push('/');
         value.push_str(protocol);
         value
+    }
+}
+
+fn docker_publish_host_ip(host_ip: &str) -> String {
+    if host_ip.contains(':') && !(host_ip.starts_with('[') && host_ip.ends_with(']')) {
+        format!("[{host_ip}]")
+    } else {
+        host_ip.to_owned()
     }
 }
 
@@ -655,7 +685,8 @@ mod tests {
         runtime::{
             command::{FakeRuntimeCommand, RuntimeOutput},
             docker_cli::{
-                DockerBuildCliInput, DockerCli, docker_build_command, docker_create_command,
+                DockerBuildCliInput, DockerCli, DockerPublishCliExt, docker_build_command,
+                docker_create_command, docker_exec_command,
             },
         },
     };
@@ -723,7 +754,121 @@ mod tests {
         assert_eq!(command.args_vec()[0], "create");
         assert!(command.args_vec().contains(&"--mount".to_owned()));
         assert!(command.args_vec().contains(&"--publish".to_owned()));
+        assert_eq!(arg_after(&command, "--entrypoint"), Some("/bin/sh"));
+        assert_eq!(
+            arg_after(&command, "--publish"),
+            Some("127.0.0.1:18080:8080/tcp")
+        );
         assert!(!command.sanitized_display().contains("sh -c docker"));
+    }
+
+    #[test]
+    fn docker_create_command_maps_multi_element_entrypoint_to_cli_shape() {
+        let spec = ContainerCreateSpec {
+            image: "alpine:3.20".to_owned(),
+            name: "decune-test".to_owned(),
+            entrypoint: Some(vec!["/bin/sh".to_owned(), "-c".to_owned()]),
+            command: Some(vec!["echo ok".to_owned()]),
+            labels: BTreeMap::new(),
+            env: BTreeMap::new(),
+            working_dir: None,
+            user: None,
+            mounts: Vec::new(),
+            publish_ports: Vec::new(),
+            host_config: ContainerHostConfig::default(),
+        };
+
+        let command = docker_create_command(&spec);
+
+        assert_eq!(arg_after(&command, "--entrypoint"), Some("/bin/sh"));
+        assert_eq!(
+            command.args_vec(),
+            [
+                "create",
+                "--name",
+                "decune-test",
+                "--entrypoint",
+                "/bin/sh",
+                "alpine:3.20",
+                "-c",
+                "echo ok"
+            ]
+        );
+    }
+
+    #[test]
+    fn docker_exec_command_keeps_interactive_and_tty_independent() {
+        let spec = crate::docker::exec::ExecCommandSpec {
+            command: vec!["/bin/sh".to_owned()],
+            user: Some("vscode".to_owned()),
+            working_dir: Some("/workspace".to_owned()),
+            env: BTreeMap::from([("TERM".to_owned(), "xterm".to_owned())]),
+            tty: true,
+        };
+
+        let non_tty_attached = docker_exec_command("container", &spec, true, false, false);
+        assert!(
+            non_tty_attached
+                .args_vec()
+                .contains(&"--interactive".to_owned())
+        );
+        assert!(!non_tty_attached.args_vec().contains(&"--tty".to_owned()));
+
+        let tty_attached = docker_exec_command("container", &spec, true, true, false);
+        assert!(
+            tty_attached
+                .args_vec()
+                .contains(&"--interactive".to_owned())
+        );
+        assert!(tty_attached.args_vec().contains(&"--tty".to_owned()));
+
+        let captured = docker_exec_command("container", &spec, false, false, false);
+        assert!(!captured.args_vec().contains(&"--interactive".to_owned()));
+        assert!(!captured.args_vec().contains(&"--tty".to_owned()));
+    }
+
+    #[test]
+    fn docker_publish_format_handles_host_and_host_ip_combinations() {
+        assert_eq!(
+            DockerPublishPort {
+                container: 8080,
+                host: None,
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }
+            .to_cli_publish(),
+            "8080/tcp"
+        );
+        assert_eq!(
+            DockerPublishPort {
+                container: 8080,
+                host: Some(18080),
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }
+            .to_cli_publish(),
+            "18080:8080/tcp"
+        );
+        assert_eq!(
+            DockerPublishPort {
+                container: 8080,
+                host: None,
+                host_ip: Some("127.0.0.1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }
+            .to_cli_publish(),
+            "127.0.0.1::8080/tcp"
+        );
+        assert_eq!(
+            DockerPublishPort {
+                container: 8080,
+                host: Some(18080),
+                host_ip: Some("::1".to_owned()),
+                protocol: PortProtocol::Udp,
+            }
+            .to_cli_publish(),
+            "[::1]:18080:8080/udp"
+        );
     }
 
     #[test]
@@ -761,6 +906,16 @@ mod tests {
             .find_map(|args| (args[0] == "--mount").then_some(args[1].as_str()))
             .expect("expected --mount argument");
         assert!(!mount.contains("bind-create"));
+    }
+
+    fn arg_after<'a>(
+        command: &'a crate::runtime::command::RuntimeCommand,
+        flag: &str,
+    ) -> Option<&'a str> {
+        command
+            .args_vec()
+            .windows(2)
+            .find_map(|args| (args[0] == flag).then_some(args[1].as_str()))
     }
 
     #[test]

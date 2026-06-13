@@ -5,7 +5,7 @@ use crate::{
     docker::{
         client::DockerClient,
         container::inspect_container_env,
-        exec::{ExecCommandSpec, exec_attach, resolve_exec_env, run_attached_exec_stdio},
+        exec::{ExecCommandSpec, exec_capture_output, resolve_exec_env, run_attached_exec_stdio},
         user::resolve_remote_user,
     },
     up::{
@@ -48,28 +48,65 @@ pub(in crate::up) async fn attach_shell(
         plan.config.devcontainer.user_env_probe,
     )
     .await?;
-    let candidates =
-        shell_command_candidates(plan.config.shell.as_deref(), remote_user.shell.as_deref());
-    let (spec, attached) = first_successful_shell_candidate(candidates, |command| {
+    let command = if let Some(shell) = plan
+        .config
+        .shell
+        .as_deref()
+        .map(str::trim)
+        .filter(|shell| !shell.is_empty())
+    {
+        shell.to_owned()
+    } else {
+        let candidates = shell_command_candidates(None, remote_user.shell.as_deref());
+        first_successful_shell_candidate(candidates, |command| {
+            let env = env.clone();
+            let user = remote_user.user.clone();
+
+            async move {
+                let output = exec_capture_output(
+                    client,
+                    container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-lc".to_owned(),
+                            "command -v \"$1\" >/dev/null 2>&1".to_owned(),
+                            "decune-shell-probe".to_owned(),
+                            command.clone(),
+                        ],
+                        user: Some(user),
+                        working_dir: None,
+                        env,
+                        tty: false,
+                    },
+                )
+                .await?;
+
+                if output.exit_code == 0 {
+                    Ok(command)
+                } else {
+                    anyhow::bail!("shell command was not found")
+                }
+            }
+        })
+        .await
+        .with_context(|| {
+            format!("Failed to select an attached shell in container: {container_name}")
+        })?
+    };
+    let spec = {
         let env = env.clone();
         let user = remote_user.user.clone();
         let working_dir = plan.workspace_folder.clone();
 
-        async move {
-            let spec = ExecCommandSpec {
-                command: vec![command],
-                user: Some(user),
-                working_dir: Some(working_dir),
-                env,
-                tty: true,
-            };
-            let attached = exec_attach(client, container_name, &spec).await?;
-
-            Ok::<_, anyhow::Error>((spec, attached))
+        ExecCommandSpec {
+            command: vec![command],
+            user: Some(user),
+            working_dir: Some(working_dir),
+            env,
+            tty: true,
         }
-    })
-    .await
-    .with_context(|| format!("Failed to start an attached shell in container: {container_name}"))?;
+    };
 
-    run_attached_exec_stdio(client, container_name, &spec, attached).await
+    run_attached_exec_stdio(client, container_name, &spec).await
 }

@@ -20,11 +20,6 @@ pub(crate) struct ExecOutput {
     pub(crate) exit_code: i64,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct AttachedExec {
-    pub(crate) id: String,
-}
-
 pub(crate) async fn exec_capture(
     client: &DockerClient,
     container: &str,
@@ -45,18 +40,6 @@ pub(crate) async fn exec_capture_output(
     validate_exec_spec(spec)?;
 
     client.cli().exec_capture(container, spec).await
-}
-
-pub(crate) async fn exec_attach(
-    _client: &DockerClient,
-    _container: &str,
-    spec: &ExecCommandSpec,
-) -> Result<AttachedExec> {
-    validate_exec_spec(spec)?;
-
-    Ok(AttachedExec {
-        id: "docker-cli-stdio".to_owned(),
-    })
 }
 
 pub(crate) async fn exec_attach_stdio(
@@ -83,7 +66,6 @@ pub(crate) async fn run_attached_exec_stdio(
     client: &DockerClient,
     container: &str,
     spec: &ExecCommandSpec,
-    _attached: AttachedExec,
 ) -> Result<i64> {
     exec_attach_stdio(client, container, spec).await
 }
