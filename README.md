@@ -2,13 +2,15 @@
 
 `decune` は、VS Code や Node.js ベースの Dev Container CLI に依存せず、Rust 製の単一 CLI で devcontainer を起動・接続・停止・削除するためのツールです。
 
-Dev Containers Specification の image-based / Dockerfile-based 構成を読み込み、Docker Engine API 経由でコンテナを操作します。加えて、個人用・プロジェクト用の TOML 設定、Dev Container Features、dotfiles、Git/GitHub 認証、localhost port forwarding、UID/GID sync を扱います。
+Dev Containers Specification の image-based / Dockerfile-based / Docker Compose-based 構成を読み込み、Docker CLI / Docker Compose CLI 経由で container または Compose project を操作します。加えて、個人用・プロジェクト用の TOML 設定、Dev Container Features、dotfiles、Git/GitHub 認証、localhost port forwarding、UID/GID sync を扱います。
 
 ## 特徴
 
 - `decune up` で devcontainer を作成・起動し、remote user の shell に接続
 - `decune rebuild` / `decune down` / `decune clean` による明示的な lifecycle 管理
 - `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
+- image-based / Dockerfile-based / Docker Compose-based devcontainer の起動
+- Docker Compose の `dockerComposeFile`、`service`、`runServices` 対応
 - `~/.config/decune/config.toml` と `<workspace>/.decune/config.toml` の重ね合わせ
 - OCI / local Dev Container Features、feature lock、Feature metadata merge
 - Git HTTPS credential helper、SSH agent、GitHub CLI token の forwarding
@@ -18,23 +20,25 @@ Dev Containers Specification の image-based / Dockerfile-based 構成を読み�
 
 ## 現在のスコープ
 
-v0.1 は単一コンテナの image-based / Dockerfile-based devcontainer を対象にします。
+v0.1 は image-based / Dockerfile-based / Docker Compose-based devcontainer を対象にします。Docker Compose mode では、Dev Container の primary service に対して Features、dotfiles、credentials、lifecycle、remote shell、port forwarding を適用します。
 
 未対応または意図的に対象外の主な項目は以下です。
 
-- Docker Compose mode（`dockerComposeFile` / `service`）
+- 旧 `docker-compose` v1 standalone binary の公式対応
+- Kubernetes、Swarm stack、Docker Desktop UI、cloud provider 固有 orchestrator の直接サポート
 - VS Code 拡張機能のインストールと `customizations.vscode` の適用
 - GPG agent forwarding
 - コンテナから任意の host command を実行する API
 - Windows host 向け公式配布
 - `cargo install` / `cargo install --git` を公式インストール手段として扱うこと
 
-詳細な仕様は [docs/specification.md](docs/specification.md) を参照してください。
+詳細な仕様は [docs/specification.md](docs/specification.md) を参照してください。Compose 対応を実装する PR 単位の作業分解は [docs/issues/](docs/issues/) にあります。
 
 ## 必要なもの
 
 - Linux または macOS host
-- Docker Engine API 互換 daemon（Docker または Podman 互換 endpoint）
+- Docker CLI `docker`
+- Docker Compose v2 plugin（`docker compose version` が成功すること）
 - Docker daemon へ接続できる権限
 - Git 認証連携を使う場合: host 側の `git`、必要に応じて `SSH_AUTH_SOCK`
 - GitHub CLI 連携を使う場合: host 側の `gh` と `gh auth token` が成功する状態
@@ -75,6 +79,8 @@ DECUNE_CONTAINER_TOOLS_BUNDLE=off cargo check --workspace --all-targets --all-fe
 
 ## Quick start
 
+### image-based
+
 対象 repository に `devcontainer.json` を用意します。
 
 ```jsonc
@@ -89,6 +95,40 @@ DECUNE_CONTAINER_TOOLS_BUNDLE=off cargo check --workspace --all-targets --all-fe
   "forwardPorts": [5173],
   "postCreateCommand": "echo ready"
 }
+```
+
+### Docker Compose-based
+
+Docker Compose を使う場合は、`dockerComposeFile` と primary `service` を指定します。
+
+```jsonc
+// .devcontainer/devcontainer.json
+{
+  "name": "compose-example",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "runServices": ["app", "db"],
+  "workspaceFolder": "/workspaces/example",
+  "features": {
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "forwardPorts": ["app:5173", "db:5432"],
+  "postCreateCommand": "echo ready"
+}
+```
+
+```yaml
+# .devcontainer/compose.yaml
+services:
+  app:
+    image: mcr.microsoft.com/devcontainers/base:ubuntu
+    volumes:
+      - ..:/workspaces/example:cached
+    command: sleep infinity
+  db:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
 ```
 
 必要に応じて project-local の decune 設定を追加します。
@@ -121,7 +161,7 @@ install_feature_if_missing = true
 decune up
 ```
 
-コンテナを再作成します。
+コンテナまたは Compose project を再作成します。
 
 ```sh
 decune rebuild --no-cache
@@ -153,19 +193,19 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 decune up [OPTIONS] [WORKSPACE]
 ```
 
-devcontainer を作成または起動し、remote user の shell に接続します。既に起動済みで設定 hash が一致する container があれば、作成処理をスキップして接続します。
+devcontainer を作成または起動し、remote user の shell に接続します。image/Dockerfile mode では単一 container、Compose mode では Compose project を起動します。既に起動済みで設定 hash が一致する container/project があれば、作成処理をスキップして接続します。
 
 主なオプション:
 
 - `--config <PATH>`: devcontainer metadata file を明示する。decune TOML overlay の指定ではありません。
 - `--detach`: shell に接続せず起動だけ行う。
-- `--rebuild`: 既存 container を破棄して再作成する。decune 管理 volume は保持する。
-- `--no-cache`: Dockerfile build と Feature layer build で cache を使わない。
-- `--pull`: base image を pull してから build/create する。
+- `--rebuild`: 既存 container/project を破棄して再作成する。decune 管理 volume は保持する。
+- `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
+- `--pull`: base image または Compose service image を pull してから build/create する。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
 - `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000:3000`, `127.0.0.1:8080:3000`。
 
-`--detach` では host daemon も `up` 終了時に止まるため、manual/automatic forwarding と Git HTTPS host-helper は維持されません。detached container で外部公開したい port は `appPort` を使ってください。`--detach -p` はエラーになります。
+`--detach` では host daemon も `up` 終了時に止まるため、manual/automatic forwarding と Git HTTPS host-helper は維持されません。detached container で外部公開したい port は、image/Dockerfile mode では `appPort`、Compose mode では Compose file の `ports` を使ってください。`--detach -p` はエラーになります。
 
 ### `decune rebuild`
 
@@ -181,7 +221,7 @@ decune rebuild [OPTIONS] [WORKSPACE]
 decune down [--timeout <SECONDS>] [WORKSPACE]
 ```
 
-decune 管理 container を停止します。volume、state、image は保持します。
+decune 管理 container または Compose project を停止します。volume、state、image は保持します。
 
 ### `decune clean`
 
@@ -189,7 +229,7 @@ decune 管理 container を停止します。volume、state、image は保持し
 decune clean [--force] [--images] [WORKSPACE]
 ```
 
-decune 管理 container、volume、state/runtime を削除します。`--images` を付けた場合だけ decune generated image も削除します。
+decune 管理 container / Compose project、volume、state/runtime を削除します。`--images` を付けた場合だけ decune generated image も削除します。Compose mode では user が Compose file で指定した image を削除しません。
 
 TTY でない環境では確認プロンプトを出せないため、`--force` なしの `clean` はエラーになります。
 
@@ -199,10 +239,11 @@ decune TOML は以下の順で読み込まれます。後勝ちが基本です�
 
 1. decune default
 2. image metadata の `devcontainer.metadata`
-3. global decune config: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`
-4. `devcontainer.json`
-5. project decune config: `<workspace>/.decune/config.toml`
-6. CLI flags
+3. Feature metadata
+4. global decune config: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`
+5. `devcontainer.json`
+6. project decune config: `<workspace>/.decune/config.toml`
+7. CLI flags
 
 最小例:
 
@@ -235,6 +276,8 @@ host_ip = "127.0.0.1"
 protocol = "tcp"
 require_local = false
 label = "web"
+# Compose mode で sidecar service を対象にする場合だけ指定する。
+# service = "db"
 
 [ports.auto]
 enabled = true
@@ -268,11 +311,13 @@ shell = true
 
 `forwardPorts`、decune TOML の `[[ports]]`、CLI の `-p` は decune forwarding です。host 側の既定 listen address は `127.0.0.1` で、container 内の `127.0.0.1:<port>` にだけ listen している開発 server にも届くよう、container-side agent 経由で転送します。
 
-`appPort` は Docker publish です。container 作成時に決まるため、既存 container への後付けはできません。host IP を省略した publish は Docker の既定により localhost 限定にならない可能性があります。localhost 限定が必要な場合は `forwardPorts`、`[[ports]]`、または `decune up -p` を使ってください。
+`appPort` は image/Dockerfile mode の Docker publish です。container 作成時に決まるため、既存 container への後付けはできません。host IP を省略した publish は Docker の既定により localhost 限定にならない可能性があります。localhost 限定が必要な場合は `forwardPorts`、`[[ports]]`、または `decune up -p` を使ってください。
+
+Compose mode の publish は Compose file の `ports` に委譲します。Compose sidecar service へ forwarding する場合は、`forwardPorts` の `"service:port"` 形式、または decune TOML の `[[ports]].service` を使います。
 
 ## 認証とセキュリティ
 
-`decune up` は devcontainer の Dockerfile、Feature `install.sh`、lifecycle command、hook、`userEnvProbe` 対象 shell startup file を実行し得ます。信頼していない repository では、実行前に `.devcontainer/`、local Feature、mount、credentials、`privileged`、`capAdd`、`securityOpt`、`appPort` を確認してください。
+`decune up` は devcontainer の Dockerfile、Compose service build、Feature `install.sh`、lifecycle command、hook、`userEnvProbe` 対象 shell startup file を実行し得ます。信頼していない repository では、実行前に `.devcontainer/`、Compose file、local Feature、mount、credentials、`privileged`、`capAdd`、`securityOpt`、`appPort` / Compose `ports` を確認してください。
 
 untrusted repository では、認証 forwarding を無効にする設定を推奨します。
 
@@ -299,7 +344,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-features --all-targets -- -D warnings
 ```
 
-Docker integration test を含む full test:
+Docker / Compose integration test を含む full test:
 
 ```sh
 cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
@@ -322,6 +367,7 @@ cargo run --locked -p xtask -- release-manifest --dist-dir target/dist --version
 ## ドキュメント
 
 - [docs/specification.md](docs/specification.md): v0.1 の共有仕様、設定、セキュリティ境界、検証方針
+- [docs/issues/](docs/issues/): Docker Compose 完全サポートと bollard 廃止を実装する PR 単位の issue 文書
 - [AGENTS.md](AGENTS.md): AI coding agent 向けの作業規約
 
 ## License
