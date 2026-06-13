@@ -245,6 +245,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: true,
         };
@@ -268,6 +269,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: false,
         };
@@ -291,6 +293,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(None, "/workspaces/project")]),
             running: true,
         };
@@ -318,6 +321,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(
                 Some("/tmp/agent-a.sock"),
                 SSH_AGENT_SOCKET_TARGET,
@@ -352,6 +356,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary_with_type(
                 Some("/tmp/gh-config"),
                 GITHUB_CLI_CONFIG_TARGET,
@@ -387,6 +392,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary_with_type(
                 None,
                 GITHUB_CLI_CONFIG_TARGET,
@@ -423,6 +429,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary_with_type_and_read_only(
                 Some("/tmp/secrets/github-token"),
                 GITHUB_CLI_TOKEN_TARGET,
@@ -460,6 +467,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary_with_type_and_read_only(
                 Some("/tmp/secrets/github-token"),
                 GITHUB_CLI_TOKEN_TARGET,
@@ -498,6 +506,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(
                 Some("/tmp/agent-a.sock"),
                 SSH_AGENT_SOCKET_TARGET,
@@ -528,6 +537,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![
                 mount_summary_with_type_and_read_only(
                     Some("/tmp/gh-token"),
@@ -795,6 +805,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("stable-hash".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(
                 runtime_dir.path().to_str(),
                 DECUNE_RUNTIME_TARGET,
@@ -822,6 +833,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: true,
         };
@@ -839,6 +851,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: true,
         };

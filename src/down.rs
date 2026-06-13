@@ -1,6 +1,6 @@
 use std::{
     io::{self, IsTerminal, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
@@ -15,8 +15,10 @@ use crate::{
         volume::{remove_volume, workspace_volumes},
     },
     host::{credentials::cleanup_github_cli_token_file, daemon::cleanup_host_daemon_socket},
-    runtime::compose_cli::{ComposeDownOptions, ComposeLifecyclePlan, DockerComposeCli},
-    state::remove_state_runtime_dirs,
+    runtime::compose_cli::{
+        ComposeDownOptions, ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli,
+    },
+    state::{load_state_file, remove_state_runtime_dirs},
     ui,
     up::{ForwardingResolution, build_up_plan_with_forwarding_resolution},
     workspace::Workspace,
@@ -48,9 +50,18 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
     let workspace = Workspace::resolve(&options.workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
-    if let Some(plan) = compose_lifecycle_plan(&workspace, ComposeLifecycleCommand::Down)? {
+    let client = DockerClient::connect_from_env()?;
+    if let Some(plan) =
+        compose_lifecycle_plan(&workspace, ComposeLifecycleCommand::Down, &client).await?
+    {
         DockerComposeCli::default()
-            .stop(&plan.project, &plan.services)
+            .stop(
+                &plan.project,
+                ComposeStopOptions {
+                    timeout_seconds: Some(timeout_seconds),
+                },
+                &plan.services,
+            )
             .await?;
         ui::done(&format!(
             "Stopped Docker Compose project: {}",
@@ -59,7 +70,6 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
         return Ok(());
     }
 
-    let client = DockerClient::connect_from_env()?;
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
     if containers.is_empty() {
@@ -82,12 +92,16 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     let workspace = Workspace::resolve(&options.workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
+    let client = DockerClient::connect_from_env()?;
     if let Some(plan) = compose_lifecycle_plan(
         &workspace,
         ComposeLifecycleCommand::Clean {
             images: options.images,
         },
-    )? {
+        &client,
+    )
+    .await?
+    {
         DockerComposeCli::default()
             .down(
                 &plan.project,
@@ -103,7 +117,6 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
         ));
 
         if plan.cleanup.remove_generated_images {
-            let client = DockerClient::connect_from_env()?;
             let image_repository = DockerResources::image_repository_for_workspace(&workspace);
             for image in workspace_image_tags(&client, &image_repository).await? {
                 remove_image(&client, &image, true).await?;
@@ -119,7 +132,6 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
         return Ok(());
     }
 
-    let client = DockerClient::connect_from_env()?;
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
     for container in containers {
@@ -226,17 +238,19 @@ enum ComposeLifecycleCommand {
     Clean { images: bool },
 }
 
-fn compose_lifecycle_plan(
+async fn compose_lifecycle_plan(
     workspace: &Workspace,
     command: ComposeLifecycleCommand,
+    client: &DockerClient,
 ) -> Result<Option<ComposeLifecyclePlan>> {
-    if !has_devcontainer_metadata_hint(workspace) {
+    let explicit_config_path = compose_lifecycle_config_path(workspace, client).await?;
+    if !has_devcontainer_metadata_hint(workspace) && explicit_config_path.is_none() {
         return Ok(None);
     }
 
     let plan = build_up_plan_with_forwarding_resolution(
         workspace,
-        None,
+        explicit_config_path.as_deref(),
         ConfigLayer::default(),
         ForwardingResolution::IgnoreDetached,
         false,
@@ -264,6 +278,49 @@ fn compose_lifecycle_plan(
     Ok(Some(lifecycle))
 }
 
+async fn compose_lifecycle_config_path(
+    workspace: &Workspace,
+    client: &DockerClient,
+) -> Result<Option<PathBuf>> {
+    if has_devcontainer_metadata_hint(workspace) {
+        return Ok(None);
+    }
+
+    if let Some(config_file) = load_state_file(workspace.paths().state_dir())
+        .ok()
+        .flatten()
+        .and_then(|state| state.config_file)
+        .filter(|config_file| !config_file.trim().is_empty())
+    {
+        return Ok(Some(config_path_from_label(workspace.root(), &config_file)));
+    }
+
+    let containers = client
+        .cli()
+        .list_workspace_containers(workspace.id())
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to list Docker containers for workspace: {}",
+                workspace.id()
+            )
+        })?;
+    Ok(containers
+        .into_iter()
+        .filter_map(|container| container.config_file)
+        .find(|config_file| !config_file.trim().is_empty())
+        .map(|config_file| config_path_from_label(workspace.root(), &config_file)))
+}
+
+fn config_path_from_label(workspace_root: &Path, config_file: &str) -> PathBuf {
+    let path = PathBuf::from(config_file);
+    if path.is_absolute() {
+        path
+    } else {
+        workspace_root.join(path)
+    }
+}
+
 fn has_devcontainer_metadata_hint(workspace: &Workspace) -> bool {
     let root = workspace.root();
     root.join(".devcontainer/devcontainer.json").is_file()
@@ -281,7 +338,13 @@ fn has_devcontainer_metadata_hint(workspace: &Workspace) -> bool {
 #[cfg(test)]
 mod tests {
     use super::stop_timeout_seconds;
+    use crate::{
+        docker::client::DockerClient,
+        state::{LifecycleState, StateContainerSnapshot, sync_state_with_container},
+        workspace::Workspace,
+    };
     use anyhow::Result;
+    use std::{fs, path::Path};
 
     #[test]
     fn clean_confirmation_is_required_only_for_interactive_non_force_runs() {
@@ -338,5 +401,65 @@ mod tests {
     fn stop_timeout_rejects_values_that_docker_api_cannot_represent() {
         assert_eq!(stop_timeout_seconds(10).unwrap(), 10);
         assert!(stop_timeout_seconds(i32::MAX as u64 + 1).is_err());
+    }
+
+    #[test]
+    fn compose_lifecycle_uses_state_config_path_without_standard_hint() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let config_dir = workspace_root.join("custom-devcontainer");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("devcontainer.json"),
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app"
+            }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            config_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+        let workspace = Workspace::resolve(&workspace_root).unwrap();
+        sync_state_with_container(
+            workspace.paths().state_dir(),
+            workspace.root(),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "decune/project:hash-a".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: Some(config_dir.join("devcontainer.json").display().to_string()),
+            },
+            LifecycleState::default(),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let plan = runtime
+            .block_on(async {
+                let client = DockerClient::connect_from_env().unwrap();
+                super::compose_lifecycle_plan(
+                    &workspace,
+                    super::ComposeLifecycleCommand::Down,
+                    &client,
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+
+        assert!(plan.services.is_empty());
+        assert_eq!(plan.project.project_directory, config_dir);
+        assert!(plan.project.files.iter().any(|file| {
+            file.file_name()
+                .is_some_and(|name| name == Path::new("compose.yaml"))
+        }));
     }
 }

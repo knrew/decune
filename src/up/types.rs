@@ -66,6 +66,7 @@ pub(crate) struct UpContainerSummary {
     pub(crate) name: String,
     pub(crate) image_id: Option<String>,
     pub(crate) config_hash: Option<String>,
+    pub(crate) config_file: Option<String>,
     pub(crate) mounts: Option<Vec<UpMountSummary>>,
     pub(crate) running: bool,
 }

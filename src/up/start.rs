@@ -172,11 +172,7 @@ fn sync_started_state(
     outcome: &UpOutcome,
     lifecycle_path: LifecycleRunPath,
 ) -> Result<WorkspaceState> {
-    let container = StateContainerSnapshot {
-        container_id: outcome.container_id.clone(),
-        image: plan.image.clone(),
-        config_hash: plan.resources.config_hash.clone(),
-    };
+    let container = state_container_snapshot(plan, outcome.container_id.clone());
     match lifecycle_path {
         LifecycleRunPath::New => state::sync_state_with_container(
             workspace.paths().state_dir(),
@@ -221,6 +217,19 @@ fn write_reused_started_state(
         existing.lifecycle,
         Some(existing.created_at),
     )
+}
+
+fn state_container_snapshot(plan: &UpPlan, container_id: String) -> StateContainerSnapshot {
+    StateContainerSnapshot {
+        container_id,
+        image: plan.image.clone(),
+        config_hash: plan.resources.config_hash.clone(),
+        config_file: plan
+            .resources
+            .labels
+            .get("devcontainer.config_file")
+            .cloned(),
+    }
 }
 
 fn state_matches_container_snapshot(
@@ -536,6 +545,9 @@ async fn start_compose_project(
             .first()
             .and_then(existing::existing_container_image_id)
     };
+    if existing_remote_user_image.is_none() && !primary_service_has_build {
+        ensure_image(&client, &plan.base_image, PullPolicy::Missing).await?;
+    }
     let (plan, image_prepared) = finalize_up_plan_mounts(
         &client,
         &workspace,
@@ -565,7 +577,7 @@ async fn start_compose_project(
     else {
         bail!("Docker Compose devcontainer source is missing after finalization");
     };
-    write_generated_compose_override(compose_project, &compose.service, &plan)?;
+    write_generated_compose_override(&client, compose_project, &compose.service, &plan).await?;
     let runtime_lifecycle = ComposeLifecyclePlan::up(
         compose_project.command_plan_with_generated_override(),
         &compose.service,
@@ -609,11 +621,7 @@ async fn start_compose_project(
                 &runtime_lifecycle.services,
             )
             .await?;
-            let container = StateContainerSnapshot {
-                container_id: id.clone(),
-                image: plan.image.clone(),
-                config_hash: plan.resources.config_hash.clone(),
-            };
+            let container = state_container_snapshot(&plan, id.clone());
             let existing_state = reusable_lifecycle_state(&workspace, &container)?;
             let state = write_reused_started_state(&workspace, container, existing_state)?;
             let outcome = UpOutcome {
@@ -668,19 +676,27 @@ fn compose_primary_service_image(
     project_name: &str,
     service: &str,
 ) -> Result<String> {
-    model
-        .service(service)
-        .and_then(|service| service.image.as_ref())
+    let Some(service_model) = model.service(service) else {
+        bail!("Docker Compose project {project_name} primary service `{service}` is missing");
+    };
+    if let Some(image) = service_model
+        .image
+        .as_ref()
         .filter(|image| !image.trim().is_empty())
-        .cloned()
-        .with_context(|| {
-            format!(
-                "Docker Compose project {project_name} primary service `{service}` did not resolve an image"
-            )
-        })
+    {
+        return Ok(image.clone());
+    }
+    if service_model.build.is_some() {
+        return Ok(format!("{project_name}-{service}"));
+    }
+
+    bail!(
+        "Docker Compose project {project_name} primary service `{service}` did not resolve an image or build"
+    )
 }
 
-fn write_generated_compose_override(
+async fn write_generated_compose_override(
+    client: &DockerClient,
     project: &ComposeProjectPlan,
     primary_service: &str,
     plan: &UpPlan,
@@ -695,7 +711,8 @@ fn write_generated_compose_override(
         })?;
     }
 
-    let content = generated_compose_override_content(primary_service, plan);
+    let startup = compose_override_startup(client, plan).await?;
+    let content = generated_compose_override_content_with_startup(primary_service, plan, startup);
     fs::write(&path, content).with_context(|| {
         format!(
             "Failed to write Docker Compose generated override file: {}",
@@ -704,7 +721,64 @@ fn write_generated_compose_override(
     })
 }
 
+#[cfg(test)]
 fn generated_compose_override_content(primary_service: &str, plan: &UpPlan) -> String {
+    let startup = if plan.config.devcontainer.override_command {
+        let (entrypoint, command) = devcontainer_keepalive_command();
+        Some(ComposeOverrideStartup {
+            entrypoint,
+            command,
+        })
+    } else {
+        None
+    };
+    generated_compose_override_content_with_startup(primary_service, plan, startup)
+}
+
+async fn compose_override_startup(
+    client: &DockerClient,
+    plan: &UpPlan,
+) -> Result<Option<ComposeOverrideStartup>> {
+    if !plan.config.devcontainer.entrypoints.is_empty() {
+        let command = if plan.config.devcontainer.override_command {
+            let (entrypoint, command) = devcontainer_keepalive_command();
+            let mut wrapped_command = vec![entrypoint.join(" ")];
+            wrapped_command.extend(command);
+            wrapped_command
+        } else {
+            let startup = image_startup_command(client, &plan.image).await?;
+            let mut wrapped_command = startup.entrypoint;
+            wrapped_command.extend(startup.command);
+            wrapped_command
+        };
+        return Ok(Some(ComposeOverrideStartup {
+            entrypoint: vec![FEATURE_ENTRYPOINT_WRAPPER.to_owned()],
+            command,
+        }));
+    }
+
+    if plan.config.devcontainer.override_command {
+        let (entrypoint, command) = devcontainer_keepalive_command();
+        return Ok(Some(ComposeOverrideStartup {
+            entrypoint,
+            command,
+        }));
+    }
+
+    Ok(None)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComposeOverrideStartup {
+    entrypoint: Vec<String>,
+    command: Vec<String>,
+}
+
+fn generated_compose_override_content_with_startup(
+    primary_service: &str,
+    plan: &UpPlan,
+    startup: Option<ComposeOverrideStartup>,
+) -> String {
     let mut content = String::new();
     content.push_str("services:\n");
     content.push_str("  ");
@@ -740,10 +814,9 @@ fn generated_compose_override_content(primary_service: &str, plan: &UpPlan) -> S
         &plan.config.devcontainer.security_opt,
     );
     append_yaml_mounts(&mut content, 4, &plan.mounts);
-    if plan.config.devcontainer.override_command {
-        let (entrypoint, command) = devcontainer_keepalive_command();
-        append_yaml_string_list(&mut content, 4, "entrypoint", &entrypoint);
-        append_yaml_string_list(&mut content, 4, "command", &command);
+    if let Some(startup) = startup {
+        append_yaml_string_list(&mut content, 4, "entrypoint", &startup.entrypoint);
+        append_yaml_string_list(&mut content, 4, "command", &startup.command);
     }
     content
 }
@@ -866,11 +939,7 @@ async fn start_stopped_existing_container(
     container_id: String,
     container_name: String,
 ) -> Result<(UpOutcome, WorkspaceState)> {
-    let container = StateContainerSnapshot {
-        container_id: container_id.clone(),
-        image: plan.image.clone(),
-        config_hash: plan.resources.config_hash.clone(),
-    };
+    let container = state_container_snapshot(plan, container_id.clone());
     let existing_state = reusable_lifecycle_state(workspace, &container)?;
 
     start_container_and_verify_running(
@@ -1248,11 +1317,7 @@ fn persist_initial_container_state(
     state::sync_state_with_container(
         workspace.paths().state_dir(),
         workspace.root(),
-        StateContainerSnapshot {
-            container_id: container_id.to_owned(),
-            image: plan.image.clone(),
-            config_hash: plan.resources.config_hash.clone(),
-        },
+        state_container_snapshot(plan, container_id.to_owned()),
         LifecycleState::default(),
     )
 }
@@ -1523,7 +1588,10 @@ async fn list_compose_primary_containers(
 
 #[cfg(test)]
 mod tests {
-    use super::generated_compose_override_content;
+    use super::{
+        ComposeOverrideStartup, compose_primary_service_image, generated_compose_override_content,
+        generated_compose_override_content_with_startup,
+    };
     use crate::{
         config::{ConfigMergeInput, resolved::ResolvedConfig, types::MountType},
         docker::{
@@ -1535,6 +1603,49 @@ mod tests {
         up::UpPlan,
     };
     use std::collections::BTreeMap;
+
+    #[test]
+    fn compose_primary_service_image_uses_compose_build_default_tag_without_image() {
+        let model = serde_json::from_str(
+            r#"
+            {
+              "services": {
+                "app": {
+                  "build": {"context": ".", "dockerfile": "Dockerfile"}
+                }
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let image =
+            compose_primary_service_image(&model, "decune-project-abc123def456", "app").unwrap();
+
+        assert_eq!(image, "decune-project-abc123def456-app");
+    }
+
+    #[test]
+    fn compose_primary_service_image_prefers_explicit_image_over_build_default_tag() {
+        let model = serde_json::from_str(
+            r#"
+            {
+              "services": {
+                "app": {
+                  "image": "example/app:dev",
+                  "build": {"context": ".", "dockerfile": "Dockerfile"}
+                }
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let image =
+            compose_primary_service_image(&model, "decune-project-abc123def456", "app").unwrap();
+
+        assert_eq!(image, "example/app:dev");
+    }
 
     #[test]
     fn generated_compose_override_patches_only_primary_service() {
@@ -1589,5 +1700,56 @@ mod tests {
         assert!(content.contains("'decune.managed': 'true'"));
         assert!(content.contains("target: '/cache'"));
         assert!(!content.contains("sidecar"));
+    }
+
+    #[test]
+    fn generated_compose_override_uses_feature_entrypoint_wrapper_startup() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.override_command = false;
+        config.devcontainer.entrypoints = vec!["touch /tmp/decune-feature-entrypoint".to_owned()];
+        let resources = DockerResources {
+            container_name: "unused".to_owned(),
+            image_tag: "decune/test:hash".to_owned(),
+            workspace_volume_name: "unused-volume".to_owned(),
+            labels: BTreeMap::new(),
+            config_hash: "hash".to_owned(),
+        };
+        let plan = UpPlan {
+            image: "decune/test:hash".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources,
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers: ConfigMergeInput::default(),
+            config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspace".to_owned(),
+            mounts: Vec::new(),
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
+        };
+
+        let content = generated_compose_override_content_with_startup(
+            "app",
+            &plan,
+            Some(ComposeOverrideStartup {
+                entrypoint: vec![
+                    "/usr/local/share/decune/feature-entrypoint-wrapper.sh".to_owned(),
+                ],
+                command: vec!["/docker-entrypoint.sh".to_owned(), "server".to_owned()],
+            }),
+        );
+
+        assert!(content.contains("entrypoint:"));
+        assert!(content.contains("'/usr/local/share/decune/feature-entrypoint-wrapper.sh'"));
+        assert!(content.contains("command:"));
+        assert!(content.contains("'/docker-entrypoint.sh'"));
+        assert!(content.contains("'server'"));
     }
 }

@@ -359,7 +359,7 @@ Compose mode の image creation は次の順で行う。
 1. `initializeCommand` を host で実行する。
 2. user Compose file だけで `docker compose config --format json` を実行し、primary service の base image/build 情報を検証する。
 3. `docker compose build` または `docker compose up -d --build` で primary service と必要な service image を準備する。`--no-cache` と `--pull` は Compose build option に反映する。
-4. primary service の base image を特定する。Compose service に `build` がある場合は Compose が tag した service image を使う。service に `image` のみがある場合はその image を使う。
+4. primary service の base image を特定する。Compose service に `build` がある場合は Compose が tag した service image を使う。`image` がない build-only service では Compose の既定 tag `<project-name>-<service>` を使う。service に `image` のみがある場合はその image を使い、metadata 解決前に missing image を pull する。
 5. Feature、UID/GID sync、entrypoint shim が必要な場合、base image に decune generated layer を重ね、decune generated image tag を作る。
 6. generated Compose override に primary service image 差し替えを反映する。
 7. generated override 込みで `docker compose up -d` を実行する。
@@ -704,7 +704,7 @@ Compose mode では上記 label を primary service に追加する。Compose �
 
 config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の canonical Compose model、Compose file digest、generated override plan を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path は含めない。
 
-state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 flag は state に記録し、creation lifecycle の二重実行を避ける。
+state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 flag と devcontainer config file path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 
 ## Build と Features
 

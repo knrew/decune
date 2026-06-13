@@ -566,6 +566,9 @@ fn up_container_summary_from_inspect(container: ContainerInspect) -> Result<UpCo
     let config_hash = labels
         .and_then(|labels| labels.get("decune.config_hash"))
         .cloned();
+    let config_file = labels
+        .and_then(|labels| labels.get("devcontainer.config_file"))
+        .cloned();
     let mounts = container.mounts.map(|mounts| {
         mounts
             .into_iter()
@@ -583,6 +586,7 @@ fn up_container_summary_from_inspect(container: ContainerInspect) -> Result<UpCo
         name,
         image_id: container.image,
         config_hash,
+        config_file,
         mounts,
         running,
     })

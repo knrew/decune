@@ -24,6 +24,8 @@ pub(crate) struct WorkspaceState {
     pub(crate) container_id: String,
     pub(crate) image: String,
     pub(crate) config_hash: String,
+    #[serde(default)]
+    pub(crate) config_file: Option<String>,
     pub(crate) created_at: String,
     pub(crate) last_started_at: String,
     #[serde(default)]
@@ -108,6 +110,7 @@ pub(crate) struct StateContainerSnapshot {
     pub(crate) container_id: String,
     pub(crate) image: String,
     pub(crate) config_hash: String,
+    pub(crate) config_file: Option<String>,
 }
 
 pub(crate) fn load_state_file(state_dir: impl AsRef<Path>) -> Result<Option<WorkspaceState>> {
@@ -177,6 +180,7 @@ pub(crate) fn write_state_for_container(
         container_id: container.container_id,
         image: container.image,
         config_hash: container.config_hash,
+        config_file: container.config_file,
         created_at: created_at.unwrap_or_else(|| now.clone()),
         last_started_at: now,
         lifecycle,
@@ -349,6 +353,7 @@ mod tests {
                 container_id: "container-a".to_owned(),
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
+                config_file: Some("/workspace/custom/devcontainer.json".to_owned()),
             },
             LifecycleState::default(),
         )
@@ -360,6 +365,7 @@ mod tests {
         let content = fs::read_to_string(&state_file).unwrap();
         assert!(content.contains("version = 1"));
         assert!(content.contains("container_id = \"container-a\""));
+        assert!(content.contains("config_file = \"/workspace/custom/devcontainer.json\""));
         assert_eq!(load_state_file(&state_dir).unwrap(), Some(state));
         let temp_files = fs::read_dir(&state_dir)
             .unwrap()
@@ -381,6 +387,7 @@ mod tests {
                 container_id: "container-a".to_owned(),
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
+                config_file: None,
             },
             LifecycleState::all_completed(),
         )
@@ -403,6 +410,7 @@ mod tests {
                 container_id: "container-a".to_owned(),
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
+                config_file: None,
             },
             LifecycleState {
                 on_create_completed: true,
@@ -424,6 +432,7 @@ mod tests {
                 container_id: "container-a".to_owned(),
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
+                config_file: None,
             },
             LifecycleState::all_completed(),
         )
@@ -467,6 +476,7 @@ mod tests {
                 container_id: "container-a".to_owned(),
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
+                config_file: None,
             },
             LifecycleState::all_completed(),
         )
@@ -487,6 +497,7 @@ mod tests {
                 container_id: "container-a".to_owned(),
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
+                config_file: None,
             },
             LifecycleState::default(),
         )

@@ -113,9 +113,10 @@ impl DockerComposeCli {
     pub(crate) async fn stop(
         &self,
         project: &ComposeCommandPlan,
+        options: ComposeStopOptions,
         services: &[String],
     ) -> Result<()> {
-        let command = project.command(["stop"]).args(services);
+        let command = compose_stop_command(project, options, services);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
             "stop Docker Compose services",
@@ -480,6 +481,11 @@ pub(crate) struct ComposeUpOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ComposeStopOptions {
+    pub(crate) timeout_seconds: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct ComposeDownOptions {
     pub(crate) volumes: bool,
     pub(crate) remove_orphans: bool,
@@ -632,6 +638,18 @@ fn compose_up_command(
     command.args(services)
 }
 
+fn compose_stop_command(
+    project: &ComposeCommandPlan,
+    options: ComposeStopOptions,
+    services: &[String],
+) -> RuntimeCommand {
+    let mut command = project.command(["stop"]);
+    if let Some(timeout_seconds) = options.timeout_seconds {
+        command = command.arg("--timeout").arg(timeout_seconds.to_string());
+    }
+    command.args(services)
+}
+
 fn compose_down_command(
     project: &ComposeCommandPlan,
     options: ComposeDownOptions,
@@ -706,8 +724,8 @@ mod tests {
     use super::{
         ComposeBuildOptions, ComposeCommandPlan, ComposeConfigModel, ComposeDownOptions,
         ComposeIntrospector, ComposeLifecyclePlan, ComposeProject, ComposeProjectPlan,
-        ComposePullOptions, ComposeServiceValidation, ComposeUpOptions, DockerComposeCli,
-        resolve_compose_container,
+        ComposePullOptions, ComposeServiceValidation, ComposeStopOptions, ComposeUpOptions,
+        DockerComposeCli, resolve_compose_container,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
 
@@ -938,6 +956,34 @@ mod tests {
         assert!(!plan.cleanup.remove_volumes);
         assert!(!plan.cleanup.remove_state);
         assert!(!plan.cleanup.remove_generated_images);
+    }
+
+    #[test]
+    fn compose_stop_command_includes_timeout_when_requested() {
+        let plan = ComposeLifecyclePlan::down(lifecycle_command_plan());
+        let command = super::compose_stop_command(
+            &plan.project,
+            ComposeStopOptions {
+                timeout_seconds: Some(37),
+            },
+            &plan.services,
+        );
+
+        assert_eq!(
+            command.args_vec(),
+            &[
+                "compose",
+                "--project-name",
+                "decune-project-abc123def456",
+                "--project-directory",
+                "/workspace",
+                "-f",
+                "/workspace/compose.yaml",
+                "stop",
+                "--timeout",
+                "37",
+            ]
+        );
     }
 
     #[test]
