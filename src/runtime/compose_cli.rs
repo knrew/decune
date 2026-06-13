@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::{
     config::{canonical::sha256_hex, hash::ComposeFileHashInput},
@@ -260,8 +260,22 @@ pub(crate) struct ComposePsContainer {
     pub(crate) service: String,
     #[serde(default, rename = "State")]
     pub(crate) state: Option<String>,
-    #[serde(default, rename = "Publishers")]
+    #[serde(
+        default,
+        rename = "Publishers",
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
     pub(crate) published_ports: Vec<ComposePublishedPort>,
+}
+
+fn deserialize_null_as_empty_vec<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -915,6 +929,30 @@ mod tests {
         assert_eq!(container.service, "app");
         assert_eq!(container.state.as_deref(), Some("running"));
         assert_eq!(container.published_ports.len(), 1);
+    }
+
+    #[test]
+    fn compose_ps_fixture_treats_null_publishers_as_empty_ports() {
+        let containers = serde_json::from_str(
+            r#"
+            [
+              {
+                "ID": "abc123",
+                "Name": "project-app-1",
+                "Service": "app",
+                "State": "running",
+                "Publishers": null
+              }
+            ]
+            "#,
+        )
+        .unwrap();
+
+        let container =
+            resolve_compose_container("decune-project-abc123", "app", containers).unwrap();
+
+        assert_eq!(container.id, "abc123");
+        assert!(container.published_ports.is_empty());
     }
 
     #[test]
