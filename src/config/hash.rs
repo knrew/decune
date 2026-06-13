@@ -148,9 +148,11 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
         Some(build) => write_build_input(writer, build),
         None => writer.none(),
     });
-    writer.field("compose_files", |writer| {
-        write_compose_file_inputs(writer, &input.compose_files);
-    });
+    if !input.compose_files.is_empty() {
+        writer.field("compose_files", |writer| {
+            write_compose_file_inputs(writer, &input.compose_files);
+        });
+    }
     writer.field("resolved_mounts", |writer| {
         write_resolved_mounts(writer, &input.resolved_mounts);
     });
@@ -903,6 +905,45 @@ mod tests {
         config_hash(&ConfigHashInput::new(config))
     }
 
+    fn legacy_hash_without_compose_files_field(input: &ConfigHashInput<'_>) -> String {
+        let mut writer = CanonicalWriter::default();
+
+        writer.field("version", |writer| writer.string("decune-config-hash-v1"));
+        writer.field("resolved_config", |writer| {
+            write_resolved_config(writer, input.config);
+        });
+        writer.field("feature_locks", |writer| {
+            write_feature_locks(writer, &input.feature_locks);
+        });
+        writer.field("cli_flags", |writer| {
+            writer.map(input.cli_flags.iter(), |writer, value| {
+                writer.toml_value(value);
+            });
+        });
+        writer.field("internal_versions", |writer| {
+            writer.map(input.internal_versions.iter(), |writer, value| {
+                writer.string(value);
+            });
+        });
+        writer.field("build", |writer| match &input.build {
+            Some(build) => write_build_input(writer, build),
+            None => writer.none(),
+        });
+        writer.field("resolved_mounts", |writer| {
+            write_resolved_mounts(writer, &input.resolved_mounts);
+        });
+        writer.field("startup_command", |writer| match &input.startup_command {
+            Some(startup_command) => write_startup_command(writer, startup_command),
+            None => writer.none(),
+        });
+        writer.field("uid_gid_sync", |writer| match &input.uid_gid_sync {
+            Some(uid_gid_sync) => write_uid_gid_sync_input(writer, uid_gid_sync),
+            None => writer.none(),
+        });
+
+        sha256_hex(writer.finish().as_bytes())
+    }
+
     #[test]
     fn same_config_produces_same_hash() {
         let config = resolved_config(
@@ -914,6 +955,22 @@ shell = "/bin/zsh"
 
         assert_eq!(hash_for(&config), hash_for(&config));
         assert_eq!(hash_for(&config).len(), 64);
+    }
+
+    #[test]
+    fn empty_compose_file_inputs_preserve_legacy_non_compose_hash() {
+        let config = resolved_config(
+            r#"
+version = 1
+shell = "/bin/zsh"
+"#,
+        );
+        let input = ConfigHashInput::new(&config);
+
+        assert_eq!(
+            config_hash(&input),
+            legacy_hash_without_compose_files_field(&input)
+        );
     }
 
     #[test]
