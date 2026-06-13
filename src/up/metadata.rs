@@ -22,7 +22,7 @@ use crate::{
         client::DockerClient,
         container::{ContainerCreateSpec, ContainerHostConfig, create_container, start_container},
         image::{
-            LocalImagePresence, PullPolicy, ensure_image,
+            ImageStartupCommand, LocalImagePresence, PullPolicy, ensure_image,
             image_devcontainer_metadata_layers_if_present_with_forward_ports,
             image_devcontainer_metadata_layers_with_forward_ports,
             image_has_devcontainer_metadata_label_if_present, image_startup_command,
@@ -37,6 +37,7 @@ use crate::{
         },
     },
     host::credentials::host_github_auth_token_available,
+    runtime::compose_cli::ComposeConfigService,
     ui,
     up::{
         build::{
@@ -229,6 +230,39 @@ pub(in crate::up) async fn prepare_image_based_metadata(
     Ok((plan, true))
 }
 
+pub(in crate::up) async fn prepare_compose_image_metadata(
+    client: &DockerClient,
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    preliminary_plan: UpPlan,
+    compose_primary_image: &str,
+    resolution: UpPlanResolution,
+) -> Result<UpPlan> {
+    let include_forward_ports = resolution.forwarding == ForwardingResolution::Resolve;
+    let image_metadata = image_devcontainer_metadata_layers_with_forward_ports(
+        client,
+        compose_primary_image,
+        include_forward_ports,
+    )
+    .await?;
+    if image_metadata.layers.is_empty() {
+        return Ok(preliminary_plan);
+    }
+
+    let mut plan = build_up_plan_with_image_metadata_and_forwarding_resolution(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        image_metadata.layers,
+        !include_forward_ports && image_metadata.has_forward_ports,
+        resolution.forwarding,
+        resolution.update_features,
+    )?;
+    plan.base_image = compose_primary_image.to_owned();
+    Ok(plan)
+}
+
 pub(in crate::up) async fn finalize_up_plan_mounts(
     client: &DockerClient,
     workspace: &Workspace,
@@ -239,8 +273,6 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     options: FinalizeUpPlanMountsOptions<'_>,
 ) -> Result<(UpPlan, bool)> {
     let update_features = options.update_features;
-    let compose_canonical_model = options.compose_canonical_model;
-    let compose_primary_service_user = options.compose_primary_service_user;
     let using_existing_remote_user_image = remote_user_image.is_some();
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
     let mut lookup_base_image = None;
@@ -313,9 +345,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         workspace,
         plan,
         &lookup_image,
-        update_features,
-        compose_canonical_model,
-        compose_primary_service_user,
+        options,
     ))
     .await?;
 
@@ -345,6 +375,7 @@ pub(in crate::up) struct FinalizeUpPlanMountsOptions<'a> {
     pub(in crate::up) update_features: bool,
     pub(in crate::up) compose_canonical_model: Option<&'a JsonValue>,
     pub(in crate::up) compose_primary_service_user: Option<&'a str>,
+    pub(in crate::up) compose_primary_service: Option<&'a ComposeConfigService>,
 }
 
 async fn finalize_mounts_and_resources_for_plan(
@@ -352,9 +383,7 @@ async fn finalize_mounts_and_resources_for_plan(
     workspace: &Workspace,
     mut plan: UpPlan,
     lookup_image: &str,
-    update_features: bool,
-    compose_canonical_model: Option<&JsonValue>,
-    compose_primary_service_user: Option<&str>,
+    options: FinalizeUpPlanMountsOptions<'_>,
 ) -> Result<UpPlan> {
     let compose_base_image = matches!(
         plan.config.devcontainer.source,
@@ -365,7 +394,7 @@ async fn finalize_mounts_and_resources_for_plan(
         client,
         lookup_image,
         effective_user_input_from_config_layers(&plan.config_layers),
-        compose_primary_service_user,
+        options.compose_primary_service_user,
     )
     .await?;
     let remote_user =
@@ -424,16 +453,21 @@ async fn finalize_mounts_and_resources_for_plan(
     if let Some(compose_project) = &plan.compose_project {
         hash_input.compose_files = compose_project.config_hash_files().to_vec();
     }
-    hash_input.compose_canonical_model = compose_canonical_model.cloned();
+    hash_input.compose_canonical_model = options.compose_canonical_model.cloned();
     let devcontainer_file = Path::new(&plan.resources.labels["devcontainer.config_file"]);
     hash_input.feature_locks = match &plan.feature_install {
         Some(feature_install) => feature_install.lock_entries.clone(),
-        None => {
-            feature_lock_hash_inputs(workspace, devcontainer_file, &plan.config, update_features)?
-        }
+        None => feature_lock_hash_inputs(
+            workspace,
+            devcontainer_file,
+            &plan.config,
+            options.update_features,
+        )?,
     };
     hash_input.resolved_mounts = crate::up::mount_hash_inputs(&mounts);
-    hash_input.startup_command = startup_command_hash_input(client, &plan, lookup_image).await?;
+    hash_input.startup_command =
+        startup_command_hash_input(client, &plan, lookup_image, options.compose_primary_service)
+            .await?;
     add_internal_hash_versions(&mut hash_input, &plan.config);
     let config_file = plan
         .resources
@@ -508,18 +542,37 @@ async fn startup_command_hash_input(
     client: &DockerClient,
     plan: &UpPlan,
     lookup_image: &str,
+    compose_primary_service: Option<&ComposeConfigService>,
 ) -> Result<Option<StartupCommandHashInput>> {
     if plan.config.devcontainer.override_command {
         return Ok(None);
     }
 
     let image = startup_command_image(client, plan, lookup_image).await?;
-    let startup = image_startup_command(client, &image).await?;
+    let image_startup = image_startup_command(client, &image).await?;
+    let startup = effective_startup_command(image_startup, compose_primary_service);
 
     Ok(Some(StartupCommandHashInput {
         entrypoint: startup.entrypoint,
         command: startup.command,
     }))
+}
+
+pub(in crate::up) fn effective_startup_command(
+    image_startup: ImageStartupCommand,
+    compose_primary_service: Option<&ComposeConfigService>,
+) -> ImageStartupCommand {
+    let Some(service) = compose_primary_service else {
+        return image_startup;
+    };
+
+    ImageStartupCommand {
+        entrypoint: service
+            .entrypoint
+            .clone()
+            .unwrap_or(image_startup.entrypoint),
+        command: service.command.clone().unwrap_or(image_startup.command),
+    }
 }
 
 async fn startup_command_image(
@@ -698,9 +751,7 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
         workspace,
         plan.clone(),
         lookup.image,
-        options.update_features,
-        options.compose_canonical_model,
-        options.compose_primary_service_user,
+        options,
     ))
     .await?;
     if finalized_plan.resources.config_hash == existing_container_config_hash {
@@ -719,9 +770,7 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
         workspace,
         candidate.clone(),
         lookup.image,
-        options.update_features,
-        options.compose_canonical_model,
-        options.compose_primary_service_user,
+        options,
     ))
     .await?;
     if finalized_candidate.resources.config_hash == existing_container_config_hash {
@@ -1073,4 +1122,47 @@ pub(in crate::up) async fn warn_about_unsupported_dockerfile_image_metadata(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn effective_startup_command_uses_compose_overrides() {
+        let image_startup = ImageStartupCommand {
+            entrypoint: vec!["/image-entrypoint.sh".to_owned()],
+            command: vec!["image-cmd".to_owned()],
+        };
+        let service = ComposeConfigService {
+            entrypoint: Some(vec!["/service-entrypoint.sh".to_owned()]),
+            command: Some(vec!["service-cmd".to_owned()]),
+            ..ComposeConfigService::default()
+        };
+
+        let startup = effective_startup_command(image_startup, Some(&service));
+
+        assert_eq!(
+            startup.entrypoint,
+            vec!["/service-entrypoint.sh".to_owned()]
+        );
+        assert_eq!(startup.command, vec!["service-cmd".to_owned()]);
+    }
+
+    #[test]
+    fn effective_startup_command_falls_back_to_image_parts_independently() {
+        let image_startup = ImageStartupCommand {
+            entrypoint: vec!["/image-entrypoint.sh".to_owned()],
+            command: vec!["image-cmd".to_owned()],
+        };
+        let service = ComposeConfigService {
+            command: Some(vec!["service-cmd".to_owned()]),
+            ..ComposeConfigService::default()
+        };
+
+        let startup = effective_startup_command(image_startup, Some(&service));
+
+        assert_eq!(startup.entrypoint, vec!["/image-entrypoint.sh".to_owned()]);
+        assert_eq!(startup.command, vec!["service-cmd".to_owned()]);
+    }
 }

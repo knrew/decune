@@ -157,8 +157,9 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
         });
     }
     if let Some(model) = &input.compose_canonical_model {
+        let model = redact_compose_canonical_model_for_hash(model);
         writer.field("compose_canonical_model", |writer| {
-            writer.json_value(model);
+            writer.json_value(&model);
         });
     }
     writer.field("resolved_mounts", |writer| {
@@ -185,6 +186,49 @@ fn write_compose_file_inputs(writer: &mut CanonicalWriter, inputs: &[ComposeFile
             writer.field("digest", |writer| writer.string(&input.digest));
         });
     });
+}
+
+fn redact_compose_canonical_model_for_hash(model: &JsonValue) -> JsonValue {
+    let mut model = model.clone();
+    redact_compose_canonical_model_value(&mut model, None);
+    model
+}
+
+fn redact_compose_canonical_model_value(value: &mut JsonValue, key: Option<&str>) {
+    match value {
+        JsonValue::Object(map) => {
+            if matches!(key, Some("environment" | "secrets")) {
+                redact_json_leaf_values(value);
+                return;
+            }
+            for (child_key, child_value) in map {
+                redact_compose_canonical_model_value(child_value, Some(child_key));
+            }
+        }
+        JsonValue::Array(values) => {
+            for value in values {
+                redact_compose_canonical_model_value(value, key);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_json_leaf_values(value: &mut JsonValue) {
+    match value {
+        JsonValue::Object(map) => {
+            for value in map.values_mut() {
+                redact_json_leaf_values(value);
+            }
+        }
+        JsonValue::Array(values) => {
+            for value in values {
+                redact_json_leaf_values(value);
+            }
+        }
+        JsonValue::Null => {}
+        _ => *value = JsonValue::String("<redacted>".to_owned()),
+    }
 }
 
 fn write_uid_gid_sync_input(writer: &mut CanonicalWriter, input: &UidGidSyncHashInput) {
@@ -1546,7 +1590,42 @@ shell = false
     }
 
     #[test]
-    fn config_hash_changes_when_compose_canonical_model_changes() {
+    fn config_hash_changes_when_compose_canonical_model_non_secret_changes() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20"
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.21"
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_redacts_compose_environment_values() {
         let config = resolved_config("version = 1\n");
         let first = config_hash(&ConfigHashInput {
             compose_files: vec![ComposeFileHashInput {
@@ -1558,7 +1637,7 @@ shell = false
                     "app": {
                         "image": "alpine:3.20",
                         "environment": {
-                            "APP_ENV": "first"
+                            "TOKEN": "first-secret"
                         }
                     }
                 }
@@ -1575,7 +1654,48 @@ shell = false
                     "app": {
                         "image": "alpine:3.20",
                         "environment": {
-                            "APP_ENV": "second"
+                            "TOKEN": "second-secret"
+                        }
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn config_hash_keeps_compose_environment_keys() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "environment": {
+                            "TOKEN": "secret"
+                        }
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "environment": {
+                            "OTHER_TOKEN": "secret"
                         }
                     }
                 }
@@ -1584,6 +1704,53 @@ shell = false
         });
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_redacts_compose_secret_values() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "secrets": ["app_token"]
+                    }
+                },
+                "secrets": {
+                    "app_token": {
+                        "file": "/tmp/first-token"
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "secrets": ["app_token"]
+                    }
+                },
+                "secrets": {
+                    "app_token": {
+                        "file": "/tmp/second-token"
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_eq!(first, second);
     }
 
     #[test]

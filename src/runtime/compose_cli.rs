@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, de};
 use serde_json::Value as JsonValue;
 
 use crate::{
@@ -302,6 +302,44 @@ pub(crate) struct ComposeConfigService {
     pub(crate) user: Option<String>,
     #[serde(default)]
     pub(crate) working_dir: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_compose_startup_value")]
+    pub(crate) entrypoint: Option<Vec<String>>,
+    #[serde(default, deserialize_with = "deserialize_compose_startup_value")]
+    pub(crate) command: Option<Vec<String>>,
+}
+
+fn deserialize_compose_startup_value<'de, D>(
+    deserializer: D,
+) -> std::result::Result<Option<Vec<String>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<JsonValue>::deserialize(deserializer)? else {
+        return Ok(None);
+    };
+    match value {
+        JsonValue::Null => Ok(None),
+        JsonValue::String(value) => {
+            if value.is_empty() {
+                Ok(Some(Vec::new()))
+            } else {
+                Ok(Some(vec![value]))
+            }
+        }
+        JsonValue::Array(values) => values
+            .into_iter()
+            .map(|value| match value {
+                JsonValue::String(value) => Ok(value),
+                other => Err(de::Error::custom(format!(
+                    "Docker Compose startup value must contain only strings: {other}"
+                ))),
+            })
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map(Some),
+        other => Err(de::Error::custom(format!(
+            "Docker Compose startup value must be null, string, or string array: {other}"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -761,10 +799,10 @@ mod tests {
     use crate::workspace::Workspace;
 
     use super::{
-        ComposeBuildOptions, ComposeCommandPlan, ComposeConfigModel, ComposeDownOptions,
-        ComposeIntrospector, ComposeLifecyclePlan, ComposeProject, ComposeProjectPlan,
-        ComposePullOptions, ComposeServiceValidation, ComposeStopOptions, ComposeUpOptions,
-        DockerComposeCli, resolve_compose_container,
+        ComposeBuildOptions, ComposeCommandPlan, ComposeConfigModel, ComposeConfigService,
+        ComposeDownOptions, ComposeIntrospector, ComposeLifecyclePlan, ComposeProject,
+        ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation, ComposeStopOptions,
+        ComposeUpOptions, DockerComposeCli, resolve_compose_container,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
 
@@ -1498,6 +1536,48 @@ mod tests {
                 "app",
             ]
         );
+    }
+
+    #[test]
+    fn compose_config_service_deserializes_startup_values() {
+        let service: ComposeConfigService = serde_json::from_value(serde_json::json!({
+            "image": "alpine:3.20",
+            "entrypoint": ["/entrypoint.sh", "--flag"],
+            "command": "server --port 3000"
+        }))
+        .unwrap();
+
+        assert_eq!(
+            service.entrypoint,
+            Some(vec!["/entrypoint.sh".to_owned(), "--flag".to_owned()])
+        );
+        assert_eq!(service.command, Some(vec!["server --port 3000".to_owned()]));
+    }
+
+    #[test]
+    fn compose_config_service_treats_null_startup_as_image_default() {
+        let service: ComposeConfigService = serde_json::from_value(serde_json::json!({
+            "image": "alpine:3.20",
+            "entrypoint": null,
+            "command": null
+        }))
+        .unwrap();
+
+        assert_eq!(service.entrypoint, None);
+        assert_eq!(service.command, None);
+    }
+
+    #[test]
+    fn compose_config_service_preserves_empty_startup_override() {
+        let service: ComposeConfigService = serde_json::from_value(serde_json::json!({
+            "image": "alpine:3.20",
+            "entrypoint": [],
+            "command": ""
+        }))
+        .unwrap();
+
+        assert_eq!(service.entrypoint, Some(Vec::new()));
+        assert_eq!(service.command, Some(Vec::new()));
     }
 
     #[test]

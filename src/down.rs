@@ -76,7 +76,6 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
             stopped_compose_project = true;
         }
         Ok(None) => {}
-        Err(error) if compose_project_names.is_empty() => return Err(error),
         Err(error) => {
             ui::warn(&format!(
                 "Falling back to Docker labels because Docker Compose lifecycle planning failed: {error:#}"
@@ -112,6 +111,7 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     let client = DockerClient::connect_from_env()?;
     let mut compose_project_names = compose_fallback_project_names(&workspace, &client).await?;
     let mut remove_generated_images = options.images;
+    let mut compose_projects_removed_by_compose = Vec::new();
     match compose_lifecycle_plan(
         &workspace,
         ComposeLifecycleCommand::Clean {
@@ -141,9 +141,12 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
             ));
 
             remove_generated_images |= plan.cleanup.remove_generated_images;
+            push_unique(
+                &mut compose_projects_removed_by_compose,
+                plan.project.project_name,
+            );
         }
         Ok(None) => {}
-        Err(error) if compose_project_names.is_empty() => return Err(error),
         Err(error) => {
             ui::warn(&format!(
                 "Falling back to Docker labels because Docker Compose lifecycle planning failed: {error:#}"
@@ -151,6 +154,10 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
         }
     }
 
+    retain_compose_label_cleanup_projects(
+        &mut compose_project_names,
+        &compose_projects_removed_by_compose,
+    );
     remove_compose_project_resources(&client, &compose_project_names).await?;
 
     let containers = list_managed_containers(&client, workspace.id()).await?;
@@ -372,6 +379,17 @@ fn push_unique(values: &mut Vec<String>, value: String) {
     }
 }
 
+fn retain_compose_label_cleanup_projects(
+    project_names: &mut Vec<String>,
+    removed_by_compose: &[String],
+) {
+    project_names.retain(|project_name| {
+        !removed_by_compose
+            .iter()
+            .any(|removed| removed == project_name)
+    });
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComposeLifecycleCommand {
     Down,
@@ -537,6 +555,21 @@ mod tests {
     fn stop_timeout_rejects_values_that_docker_api_cannot_represent() {
         assert_eq!(stop_timeout_seconds(10).unwrap(), 10);
         assert!(stop_timeout_seconds(i32::MAX as u64 + 1).is_err());
+    }
+
+    #[test]
+    fn compose_label_cleanup_excludes_projects_removed_by_compose_down() {
+        let mut project_names = vec![
+            "decune-current".to_owned(),
+            "decune-stale".to_owned(),
+            "decune-other".to_owned(),
+        ];
+        super::retain_compose_label_cleanup_projects(
+            &mut project_names,
+            &["decune-current".to_owned(), "decune-other".to_owned()],
+        );
+
+        assert_eq!(project_names, vec!["decune-stale".to_owned()]);
     }
 
     #[test]

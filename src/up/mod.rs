@@ -2949,6 +2949,7 @@ type = "bind"
                     update_features: false,
                     compose_canonical_model: None,
                     compose_primary_service_user: None,
+                    compose_primary_service: None,
                 },
             )
             .await
@@ -3016,6 +3017,7 @@ type = "bind"
                         update_features: false,
                         compose_canonical_model: None,
                         compose_primary_service_user: None,
+                        compose_primary_service: None,
                     },
                 )
                 .await?;
@@ -3096,6 +3098,7 @@ type = "bind"
                         update_features: false,
                         compose_canonical_model: None,
                         compose_primary_service_user: None,
+                        compose_primary_service: None,
                     },
                 )
                 .await?;

@@ -40,9 +40,9 @@ use crate::{
         forward::{ForwardRuntime, prepare_forward_runtime},
     },
     runtime::compose_cli::{
-        ComposeBuildOptions, ComposeConfigModel, ComposeIntrospector, ComposeLifecyclePlan,
-        ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation, ComposeUpOptions,
-        DockerComposeCli,
+        ComposeBuildOptions, ComposeConfigModel, ComposeConfigService, ComposeIntrospector,
+        ComposeLifecyclePlan, ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation,
+        ComposeUpOptions, DockerComposeCli,
     },
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
@@ -55,7 +55,8 @@ use crate::{
         metadata::{
             FinalizeUpPlanMountsOptions, build_existing_container_decision_plan,
             existing_remote_user_image_for_decision, finalize_up_plan_mounts,
-            prepare_image_based_metadata, warn_about_deferred_features,
+            prepare_compose_image_metadata, prepare_image_based_metadata,
+            warn_about_deferred_features,
         },
         plan::build_preliminary_up_plan_with_forwarding_resolution,
         types::{
@@ -265,7 +266,8 @@ pub(in crate::up) async fn ensure_container_started(
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     if preliminary_plan.compose_project.is_some() {
         validate_compose_canonical_model(&preliminary_plan).await?;
-        return start_compose_project(workspace, preliminary_plan, options).await;
+        return start_compose_project(workspace, preliminary_plan, options, forwarding_resolution)
+            .await;
     }
     let plan_resolution = UpPlanResolution::new(forwarding_resolution, options.update_features);
 
@@ -310,6 +312,7 @@ pub(in crate::up) async fn ensure_container_started(
                 update_features: options.update_features,
                 compose_canonical_model: None,
                 compose_primary_service_user: None,
+                compose_primary_service: None,
             },
         )
         .await?;
@@ -384,6 +387,7 @@ pub(in crate::up) async fn ensure_container_started(
             update_features: options.update_features,
             compose_canonical_model: None,
             compose_primary_service_user: None,
+            compose_primary_service: None,
         },
     )
     .await?;
@@ -485,6 +489,7 @@ async fn start_compose_project(
     workspace: Workspace,
     mut plan: UpPlan,
     options: UpOptions,
+    forwarding_resolution: ForwardingResolution,
 ) -> Result<StartedUpContainer> {
     let Some(compose_project) = &plan.compose_project else {
         bail!("Docker Compose project plan is missing");
@@ -524,6 +529,7 @@ async fn start_compose_project(
     let compose_primary_service_user = user_model
         .service(&compose.service)
         .and_then(|service| service.user.as_deref());
+    let compose_primary_service = user_model.service(&compose.service).cloned();
     plan.base_image = compose_primary_image.clone();
 
     let client = DockerClient::connect_from_env()?;
@@ -575,6 +581,17 @@ async fn start_compose_project(
     if existing_remote_user_image.is_none() && !primary_service_has_build {
         ensure_image(&client, &plan.base_image, PullPolicy::Missing).await?;
     }
+    plan = prepare_compose_image_metadata(
+        &client,
+        &workspace,
+        options.config_path.as_deref(),
+        options.cli_layer.clone(),
+        plan,
+        &compose_primary_image,
+        UpPlanResolution::new(forwarding_resolution, options.update_features),
+    )
+    .await?;
+    plan.base_image = compose_primary_image.clone();
     let (plan, image_prepared) = finalize_up_plan_mounts(
         &client,
         &workspace,
@@ -588,6 +605,7 @@ async fn start_compose_project(
             update_features: options.update_features,
             compose_canonical_model: Some(&user_config.canonical_model),
             compose_primary_service_user,
+            compose_primary_service: compose_primary_service.as_ref(),
         },
     )
     .await?;
@@ -611,7 +629,14 @@ async fn start_compose_project(
     else {
         bail!("Docker Compose devcontainer source is missing after finalization");
     };
-    write_generated_compose_override(&client, compose_project, &compose.service, &plan).await?;
+    write_generated_compose_override(
+        &client,
+        compose_project,
+        &compose.service,
+        &plan,
+        compose_primary_service.as_ref(),
+    )
+    .await?;
     let runtime_lifecycle = ComposeLifecyclePlan::up(
         compose_project.command_plan_with_generated_override(),
         &compose.service,
@@ -759,6 +784,7 @@ async fn write_generated_compose_override(
     project: &ComposeProjectPlan,
     primary_service: &str,
     plan: &UpPlan,
+    compose_primary_service: Option<&ComposeConfigService>,
 ) -> Result<()> {
     let path = project.generated_override_path();
     if let Some(parent) = path.parent() {
@@ -770,7 +796,7 @@ async fn write_generated_compose_override(
         })?;
     }
 
-    let startup = compose_override_startup(client, plan).await?;
+    let startup = compose_override_startup(client, plan, compose_primary_service).await?;
     let content = generated_compose_override_content_with_startup(primary_service, plan, startup)?;
     fs::write(&path, content).with_context(|| {
         format!(
@@ -797,6 +823,7 @@ fn generated_compose_override_content(primary_service: &str, plan: &UpPlan) -> R
 async fn compose_override_startup(
     client: &DockerClient,
     plan: &UpPlan,
+    compose_primary_service: Option<&ComposeConfigService>,
 ) -> Result<Option<ComposeOverrideStartup>> {
     if !plan.config.devcontainer.entrypoints.is_empty() {
         let command = if plan.config.devcontainer.override_command {
@@ -805,7 +832,11 @@ async fn compose_override_startup(
             wrapped_command.extend(command);
             wrapped_command
         } else {
-            let startup = image_startup_command(client, &plan.image).await?;
+            let image_startup = image_startup_command(client, &plan.image).await?;
+            let startup = crate::up::metadata::effective_startup_command(
+                image_startup,
+                compose_primary_service,
+            );
             let mut wrapped_command = startup.entrypoint;
             wrapped_command.extend(startup.command);
             wrapped_command
