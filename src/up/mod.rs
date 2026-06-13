@@ -62,7 +62,11 @@ pub(in crate::up) use uid_gid::static_uid_gid_sync_hash_input;
 use uid_gid::{uid_gid_sync_base_image, uid_gid_sync_warning};
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
-    let started = ensure_container_started(options, ForwardingResolution::IgnoreDetached).await?;
+    let started = Box::pin(ensure_container_started(
+        options,
+        ForwardingResolution::IgnoreDetached,
+    ))
+    .await?;
     warn_about_detached_forwarding(&started.plan);
     let _host_daemon = start_host_daemon_for_up(&started).await?;
     {
@@ -75,7 +79,11 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
 }
 
 pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
-    let started = ensure_container_started(options, ForwardingResolution::Resolve).await?;
+    let started = Box::pin(ensure_container_started(
+        options,
+        ForwardingResolution::Resolve,
+    ))
+    .await?;
     let _host_daemon = start_host_daemon_for_up(&started).await?;
     let lifecycle = prepare_up_lifecycle(&started).await?;
     run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
