@@ -148,16 +148,16 @@ impl ComposeProjectPlan {
         let first_file = files
             .first()
             .expect("compose files are checked as non-empty before resolution");
-        let project_directory = first_file
-            .canonical_path
-            .parent()
-            .ok_or_else(|| {
-                anyhow!(
-                    "Failed to resolve Docker Compose project directory from file: {}",
-                    first_file.canonical_path.display()
-                )
-            })?
-            .to_path_buf();
+        let project_directory_path = first_file.resolved_path.parent().ok_or_else(|| {
+            anyhow!(
+                "Failed to resolve Docker Compose project directory from file: {}",
+                first_file.resolved_path.display()
+            )
+        })?;
+        let project_directory = project_directory_path.canonicalize().with_path_context(
+            "canonicalize Docker Compose project directory",
+            project_directory_path,
+        )?;
         let config_hash_files = files
             .iter()
             .map(|file| ComposeFileHashInput {
@@ -221,6 +221,7 @@ impl ComposeProjectPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ComposeFilePlan {
+    resolved_path: PathBuf,
     canonical_path: PathBuf,
     digest: String,
 }
@@ -288,6 +289,7 @@ fn resolve_compose_file(devcontainer_dir: &Path, value: &str) -> Result<ComposeF
         fs::read(&canonical_path).with_path_context("read Docker Compose file", &canonical_path)?;
 
     Ok(ComposeFilePlan {
+        resolved_path,
         canonical_path,
         digest: sha256_hex(&contents),
     })
@@ -486,6 +488,40 @@ mod tests {
         assert_eq!(
             plan.project_directory(),
             compose_dir.canonicalize().unwrap().as_path()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn compose_project_directory_uses_declared_first_compose_file_parent_for_symlink() {
+        let (_temp, workspace) = fixture_workspace("symlink-project-directory");
+        let devcontainer_dir = workspace.root().join(".devcontainer");
+        let target_dir = workspace.root().join("shared-compose");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::create_dir(&target_dir).unwrap();
+        write_compose_file(target_dir.join("compose.yaml"), "services: {}\n");
+        std::os::unix::fs::symlink(
+            target_dir.join("compose.yaml"),
+            devcontainer_dir.join("compose.yaml"),
+        )
+        .unwrap();
+
+        let plan =
+            ComposeProjectPlan::resolve(&workspace, &devcontainer_dir, &["compose.yaml".into()])
+                .unwrap();
+
+        assert_eq!(
+            plan.project_directory(),
+            devcontainer_dir.canonicalize().unwrap().as_path()
+        );
+        assert_eq!(
+            plan.config_hash_files()[0].canonical_path,
+            target_dir
+                .join("compose.yaml")
+                .canonicalize()
+                .unwrap()
+                .display()
+                .to_string()
         );
     }
 

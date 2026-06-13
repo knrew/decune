@@ -294,7 +294,7 @@ Compose mode では `workspaceMount` は unsupported error とする。workspace
 
 `dockerComposeFile` は string または string array である。各 path は `devcontainer.json` のある directory から相対解決する。絶対 path は portable でないため warning 対象とする。path escape は許可するが、state/hash には canonical path と file digest を含める。存在しない path は error とする。
 
-解決した Compose file は指定順に `docker compose -f <file>` へ渡す。後続 file が前 file を override/add する Compose 標準の merge semantics に従う。relative path resolution の基準は Docker Compose CLI の標準挙動に合わせ、第一 Compose file の parent directory を project directory とする。必要に応じて `--project-directory <first-compose-file-parent>` を明示する。
+解決した Compose file は指定順に `docker compose -f <file>` へ渡す。後続 file が前 file を override/add する Compose 標準の merge semantics に従う。relative path resolution の基準は Docker Compose CLI の標準挙動に合わせ、第一 Compose file の parent directory を project directory とする。必要に応じて `--project-directory <first-compose-file-parent>` を明示する。第一 Compose file が symlink の場合、project directory は final symlink を辿った canonical path の parent ではなく、`devcontainer.json` 相対で解決した入力 path の parent とする。
 
 `dockerComposeFile` から git URL、OCI artifact、stdin を参照する構成は v0.1 では unsupported error とする。
 
