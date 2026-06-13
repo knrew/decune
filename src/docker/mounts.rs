@@ -278,9 +278,9 @@ fn parse_devcontainer_mount(
 fn docker_mount_string_fields(input: &str) -> Result<BTreeMap<String, MountFieldValue>> {
     let mut fields = BTreeMap::new();
 
-    for segment in input
-        .split(',')
-        .map(str::trim)
+    for segment in docker_mount_csv_fields(input)?
+        .into_iter()
+        .map(|segment| segment.trim().to_owned())
         .filter(|segment| !segment.is_empty())
     {
         if let Some((key, value)) = segment.split_once('=') {
@@ -289,7 +289,7 @@ fn docker_mount_string_fields(input: &str) -> Result<BTreeMap<String, MountField
                 MountFieldValue::String(value.trim().to_owned()),
             );
         } else {
-            let key = normalize_key(segment);
+            let key = normalize_key(&segment);
             if matches!(
                 key.as_str(),
                 "readonly" | "bind-create-src" | "volume-nocopy"
@@ -301,6 +301,59 @@ fn docker_mount_string_fields(input: &str) -> Result<BTreeMap<String, MountField
         }
     }
 
+    Ok(fields)
+}
+
+fn docker_mount_csv_fields(input: &str) -> Result<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut chars = input.chars().peekable();
+    let mut quoted = false;
+    let mut after_quote = false;
+    let mut field_start = true;
+
+    while let Some(character) = chars.next() {
+        if quoted {
+            match character {
+                '"' if chars.peek() == Some(&'"') => {
+                    field.push('"');
+                    chars.next();
+                }
+                '"' => {
+                    quoted = false;
+                    after_quote = true;
+                }
+                _ => field.push(character),
+            }
+            continue;
+        }
+
+        match character {
+            ',' => {
+                fields.push(std::mem::take(&mut field));
+                after_quote = false;
+                field_start = true;
+            }
+            '"' if field_start => {
+                quoted = true;
+                field_start = false;
+            }
+            '"' => bail!("Invalid quote in Docker mount field: {input}"),
+            _ if after_quote => {
+                bail!("Invalid character after quoted Docker mount field: {input}");
+            }
+            _ => {
+                field.push(character);
+                field_start = false;
+            }
+        }
+    }
+
+    if quoted {
+        bail!("Unterminated quoted Docker mount field: {input}");
+    }
+
+    fields.push(field);
     Ok(fields)
 }
 
@@ -853,6 +906,30 @@ mod tests {
         assert_eq!(mounts[0].target, "/tools");
         assert_eq!(mounts[0].mount_type, MountType::Bind);
         assert!(mounts[0].read_only);
+    }
+
+    #[test]
+    fn parses_devcontainer_string_mount_with_quoted_csv_fields() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join(r#"tools, "quoted""#);
+        fs::create_dir_all(&source).unwrap();
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    r#""source=${localWorkspaceFolder}/tools, ""quoted""",target=/tools,type=bind"#
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts =
+            config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
+
+        assert_eq!(mounts[0].source.as_deref(), Some(source.to_str().unwrap()));
+        assert_eq!(mounts[0].target, "/tools");
+        assert_eq!(mounts[0].mount_type, MountType::Bind);
     }
 
     #[test]

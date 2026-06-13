@@ -581,48 +581,69 @@ pub(crate) trait DockerMountCliExt {
 impl DockerMountCliExt for DockerMountSpec {
     fn to_cli_mount(&self) -> String {
         let mut fields = vec![
-            format!("type={}", mount_type_value(self.mount_type)),
-            format!("target={}", self.target),
+            mount_field("type", mount_type_value(self.mount_type)),
+            mount_field("target", &self.target),
         ];
         if let Some(source) = &self.source {
-            fields.push(format!("source={source}"));
+            fields.push(mount_field("source", source));
         }
         if self.read_only {
             fields.push("readonly".to_owned());
         }
         if let Some(consistency) = &self.consistency {
-            fields.push(format!("consistency={consistency}"));
+            fields.push(mount_field("consistency", consistency));
         }
         if let Some(bind_options) = &self.bind_options
             && let Some(propagation) = bind_options.propagation
         {
-            fields.push(format!("bind-propagation={}", propagation.as_str()));
+            fields.push(mount_field("bind-propagation", propagation.as_str()));
         }
         if let Some(volume_options) = &self.volume_options {
             if volume_options.no_copy == Some(true) {
                 fields.push("volume-nocopy".to_owned());
             }
             if let Some(subpath) = &volume_options.subpath {
-                fields.push(format!("volume-subpath={subpath}"));
+                fields.push(mount_field("volume-subpath", subpath));
             }
             if let Some(labels) = &volume_options.labels {
                 for (key, value) in labels {
-                    fields.push(format!("volume-label={key}={value}"));
+                    fields.push(mount_field("volume-label", &format!("{key}={value}")));
                 }
             }
             if let Some(driver_config) = &volume_options.driver_config {
                 if let Some(name) = &driver_config.name {
-                    fields.push(format!("volume-driver={name}"));
+                    fields.push(mount_field("volume-driver", name));
                 }
                 if let Some(options) = &driver_config.options {
                     for (key, value) in options {
-                        fields.push(format!("volume-opt={key}={value}"));
+                        fields.push(mount_field("volume-opt", &format!("{key}={value}")));
                     }
                 }
             }
         }
         fields.join(",")
     }
+}
+
+fn mount_field(key: &str, value: &str) -> String {
+    quote_mount_csv_field(&format!("{key}={value}"))
+}
+
+fn quote_mount_csv_field(field: &str) -> String {
+    if !field.contains([',', '"', '\n', '\r']) {
+        return field.to_owned();
+    }
+
+    let mut quoted = String::with_capacity(field.len() + 2);
+    quoted.push('"');
+    for character in field.chars() {
+        if character == '"' {
+            quoted.push('"');
+        }
+        quoted.push(character);
+    }
+    quoted.push('"');
+    quoted
 }
 
 fn mount_type_value(mount_type: MountType) -> &'static str {
@@ -679,14 +700,14 @@ mod tests {
         config::types::{MountType, PortProtocol},
         docker::{
             container::{ContainerCreateSpec, ContainerHostConfig},
-            mounts::{DockerMountSpec, MountBindOptions},
+            mounts::{DockerMountSpec, MountBindOptions, MountVolumeOptions},
             ports::DockerPublishPort,
         },
         runtime::{
             command::{FakeRuntimeCommand, RuntimeOutput},
             docker_cli::{
-                DockerBuildCliInput, DockerCli, DockerPublishCliExt, docker_build_command,
-                docker_create_command, docker_exec_command,
+                DockerBuildCliInput, DockerCli, DockerMountCliExt, DockerPublishCliExt,
+                docker_build_command, docker_create_command, docker_exec_command,
             },
         },
     };
@@ -906,6 +927,45 @@ mod tests {
             .find_map(|args| (args[0] == "--mount").then_some(args[1].as_str()))
             .expect("expected --mount argument");
         assert!(!mount.contains("bind-create"));
+    }
+
+    #[test]
+    fn docker_mount_cli_format_quotes_csv_fields() {
+        let mount = DockerMountSpec {
+            source: Some(r#"/host/work,one/"quoted""#.to_owned()),
+            target: "/workspaces/project".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: true,
+            consistency: Some("cached".to_owned()),
+            bind_options: None,
+            volume_options: None,
+        };
+
+        assert_eq!(
+            mount.to_cli_mount(),
+            r#"type=bind,target=/workspaces/project,"source=/host/work,one/""quoted""",readonly,consistency=cached"#
+        );
+    }
+
+    #[test]
+    fn docker_mount_cli_format_quotes_volume_option_fields() {
+        let mount = DockerMountSpec {
+            source: Some("project-cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Volume,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: Some(MountVolumeOptions {
+                subpath: Some("deps,with,commas".to_owned()),
+                ..MountVolumeOptions::default()
+            }),
+        };
+
+        assert_eq!(
+            mount.to_cli_mount(),
+            r#"type=volume,target=/cache,source=project-cache,"volume-subpath=deps,with,commas""#
+        );
     }
 
     fn arg_after<'a>(
