@@ -393,7 +393,10 @@ pub(crate) fn docker_build_command(input: &DockerBuildCliInput<'_>) -> RuntimeCo
         command = command.arg("--label").arg(format!("{key}={value}"));
     }
     for (key, value) in input.build_args {
-        command = command.arg("--build-arg").arg(format!("{key}={value}"));
+        command = command
+            .env(key.clone(), value.clone())
+            .arg("--build-arg")
+            .arg(key.as_str());
     }
     if let Some(target) = input.target {
         command = command.arg("--target").arg(target);
@@ -410,7 +413,10 @@ pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeComman
         command = command.arg("--label").arg(format!("{key}={value}"));
     }
     for (key, value) in &spec.env {
-        command = command.arg("--env").arg(format!("{key}={value}"));
+        command = command
+            .env(key.clone(), value.clone())
+            .arg("--env")
+            .arg(key.as_str());
     }
     if let Some(working_dir) = &spec.working_dir {
         command = command.arg("--workdir").arg(working_dir);
@@ -736,6 +742,39 @@ mod tests {
     }
 
     #[test]
+    fn docker_build_command_keeps_build_arg_values_out_of_argv() {
+        let command = docker_build_command(&DockerBuildCliInput {
+            image_tag: "decune/test:hash",
+            dockerfile: Path::new("/work/Dockerfile"),
+            context_dir: Path::new("/work"),
+            labels: &BTreeMap::new(),
+            build_args: &BTreeMap::from([("TOKEN".to_owned(), "test-secret".to_owned())]),
+            target: None,
+            cache_from: &[],
+            no_cache: false,
+            pull: false,
+        });
+
+        assert!(
+            !command
+                .args_vec()
+                .iter()
+                .any(|arg| arg.contains("test-secret"))
+        );
+        assert!(!command.sanitized_display().contains("test-secret"));
+        assert!(
+            command
+                .args_vec()
+                .windows(2)
+                .any(|args| { args[0] == "--build-arg" && args[1] == "TOKEN" })
+        );
+        assert_eq!(
+            command.env_value("TOKEN").map(String::as_str),
+            Some("test-secret")
+        );
+    }
+
+    #[test]
     fn docker_create_command_maps_container_plan_to_argv() {
         let spec = ContainerCreateSpec {
             image: "alpine:3.20".to_owned(),
@@ -784,6 +823,43 @@ mod tests {
             Some("127.0.0.1:18080:8080/tcp")
         );
         assert!(!command.sanitized_display().contains("sh -c docker"));
+    }
+
+    #[test]
+    fn docker_create_command_keeps_env_values_out_of_argv() {
+        let spec = ContainerCreateSpec {
+            image: "alpine:3.20".to_owned(),
+            name: "decune-test".to_owned(),
+            entrypoint: None,
+            command: None,
+            labels: BTreeMap::new(),
+            env: BTreeMap::from([("API_TOKEN".to_owned(), "test-secret".to_owned())]),
+            working_dir: None,
+            user: None,
+            mounts: Vec::new(),
+            publish_ports: Vec::new(),
+            host_config: ContainerHostConfig::default(),
+        };
+
+        let command = docker_create_command(&spec);
+
+        assert!(
+            !command
+                .args_vec()
+                .iter()
+                .any(|arg| arg.contains("test-secret"))
+        );
+        assert!(!command.sanitized_display().contains("test-secret"));
+        assert!(
+            command
+                .args_vec()
+                .windows(2)
+                .any(|args| { args[0] == "--env" && args[1] == "API_TOKEN" })
+        );
+        assert_eq!(
+            command.env_value("API_TOKEN").map(String::as_str),
+            Some("test-secret")
+        );
     }
 
     #[test]

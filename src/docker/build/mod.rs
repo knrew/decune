@@ -122,7 +122,12 @@ mod tests {
         });
 
         assert!(command.args_vec().contains(&"--build-arg".to_owned()));
-        assert!(command.args_vec().contains(&"VARIANT=bookworm".to_owned()));
+        assert!(command.args_vec().contains(&"VARIANT".to_owned()));
+        assert!(!command.args_vec().contains(&"VARIANT=bookworm".to_owned()));
+        assert_eq!(
+            command.env_value("VARIANT").map(String::as_str),
+            Some("bookworm")
+        );
         assert!(command.args_vec().contains(&"--target".to_owned()));
         assert!(command.args_vec().contains(&"dev".to_owned()));
         assert!(command.args_vec().contains(&"--cache-from".to_owned()));
