@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::{Context, Result};
 
 use crate::{
-    docker::exec::{ExecCommandSpec, exec_capture, exec_detached, inspect_exec},
+    docker::exec::{ExecCommandSpec, exec_capture, exec_detached},
     host::forward::{
         AutoForwardConfig, ForwardAgentStatus, ForwardSession, forward_agent_command,
         new_forward_agent_secret, start_forward_session_with_auto,
@@ -52,7 +52,7 @@ pub(in crate::up) async fn start_forwarding_for_up(
     }
 
     let secret = new_forward_agent_secret()?;
-    let agent_exec_id = exec_detached(
+    exec_detached(
         &started.client,
         &started.outcome.container_name,
         &forward_agent_command(&started.plan.forward_ports, &secret),
@@ -66,21 +66,7 @@ pub(in crate::up) async fn start_forwarding_for_up(
     })?;
     let agent_socket_path =
         wait_for_forward_agent_with_status(started.workspace.paths().runtime_dir(), || async {
-            let inspect = inspect_exec(
-                &started.client,
-                &agent_exec_id,
-                &started.outcome.container_name,
-            )
-            .await?;
-            Ok(
-                if inspect.running == Some(false) || inspect.exit_code.is_some() {
-                    ForwardAgentStatus::Exited {
-                        exit_code: inspect.exit_code,
-                    }
-                } else {
-                    ForwardAgentStatus::Running
-                },
-            )
+            Ok(ForwardAgentStatus::Running)
         })
         .await
         .with_context(|| {

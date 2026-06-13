@@ -830,8 +830,10 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
         )
         .unwrap();
     fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = gh_path.parent().unwrap().display().to_string();
     let empty_path = empty_tools.create_dir("bin").unwrap();
+    symlink_host_executable_into_path("docker", gh_path.parent().unwrap());
+    symlink_host_executable_into_path("docker", &empty_path);
+    let fake_path = gh_path.parent().unwrap().display().to_string();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

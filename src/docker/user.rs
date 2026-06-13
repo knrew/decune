@@ -5,11 +5,10 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use bollard::{models::ContainerCreateBody, query_parameters::CreateContainerOptionsBuilder};
 
 use crate::docker::{
     client::DockerClient,
-    container::{remove_container, start_container},
+    container::{ContainerCreateSpec, ContainerHostConfig, remove_container, start_container},
     exec::{ExecCommandSpec, ExecOutput, ensure_success_output, exec_capture_output},
 };
 
@@ -532,7 +531,7 @@ pub(crate) async fn image_config_user(
     image: &str,
 ) -> Result<Option<String>> {
     let inspect = client
-        .raw()
+        .cli()
         .inspect_image(image)
         .await
         .with_context(|| format!("Failed to inspect Docker image for remote user: {image}"))?;
@@ -548,23 +547,26 @@ pub(crate) async fn image_config_user(
 
 async fn create_remote_user_lookup_container(client: &DockerClient, image: &str) -> Result<String> {
     let container = remote_user_lookup_container_name();
-    let options = CreateContainerOptionsBuilder::default()
-        .name(&container)
-        .build();
-    let body = ContainerCreateBody {
-        image: Some(image.to_owned()),
+    let spec = ContainerCreateSpec {
+        image: image.to_owned(),
+        name: container.clone(),
         entrypoint: Some(vec!["/bin/sh".to_owned()]),
-        cmd: Some(vec![
+        command: Some(vec![
             "-c".to_owned(),
             "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
         ]),
+        labels: BTreeMap::new(),
+        env: BTreeMap::new(),
+        working_dir: None,
         user: Some(ROOT_USER.to_owned()),
-        ..Default::default()
+        mounts: Vec::new(),
+        publish_ports: Vec::new(),
+        host_config: ContainerHostConfig::default(),
     };
 
     client
-        .raw()
-        .create_container(Some(options), body)
+        .cli()
+        .create_container(&spec)
         .await
         .with_context(|| format!("Failed to create remote user lookup container from: {image}"))?;
 
@@ -809,14 +811,10 @@ fn current_gid() -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use bollard::{
-        models::ContainerCreateBody,
-        query_parameters::{CreateContainerOptionsBuilder, StartContainerOptionsBuilder},
-    };
 
     use crate::docker::{
         build::{DockerBuildInput, DockerBuildOptions, ResolvedBuildContext, build_image},
-        container::remove_container,
+        container::{create_container, remove_container, start_container},
         image::{PullPolicy, ensure_image, remove_image},
     };
 
@@ -2031,22 +2029,25 @@ mod tests {
     ) -> Result<()> {
         remove_container(client, name, true, true).await?;
 
-        let options = CreateContainerOptionsBuilder::default().name(name).build();
-        let body = ContainerCreateBody {
-            image: Some(image.to_owned()),
+        let spec = ContainerCreateSpec {
+            image: image.to_owned(),
+            name: name.to_owned(),
             entrypoint: Some(vec!["/bin/sh".to_owned()]),
-            cmd: Some(vec![
+            command: Some(vec![
                 "-c".to_owned(),
                 "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
             ]),
-            ..Default::default()
+            labels: BTreeMap::new(),
+            env: BTreeMap::new(),
+            working_dir: None,
+            user: None,
+            mounts: Vec::new(),
+            publish_ports: Vec::new(),
+            host_config: ContainerHostConfig::default(),
         };
 
-        client.raw().create_container(Some(options), body).await?;
-        client
-            .raw()
-            .start_container(name, Some(StartContainerOptionsBuilder::default().build()))
-            .await?;
+        create_container(client, &spec).await?;
+        start_container(client, name).await?;
 
         Ok(())
     }

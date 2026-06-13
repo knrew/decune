@@ -17,6 +17,7 @@ pub(crate) use session::{ForwardSession, start_forward_session_with_auto};
 const FORWARD_AGENT_NAME: &str = "decune-forward-agent";
 const FORWARD_AGENT_SOCKET_NAME: &str = "forward-agent.sock";
 const FORWARD_AGENT_DIAGNOSTIC_NAME: &str = "forward-agent.err";
+const FORWARD_AGENT_STATUS_NAME: &str = "forward-agent.status";
 const FORWARD_AGENT_SOCKET_TARGET: &str = "/run/decune/forward-agent.sock";
 const FORWARD_AGENT_TARGET: &str = "/run/decune/decune-forward-agent";
 const FORWARD_AGENT_USER: &str = "0";

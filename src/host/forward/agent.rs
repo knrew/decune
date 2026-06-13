@@ -21,7 +21,7 @@ use super::{
     FORWARD_AGENT_ALLOWED_PORTS_ENV, FORWARD_AGENT_DIAGNOSTIC_NAME,
     FORWARD_AGENT_DIAGNOSTIC_TAIL_BYTES, FORWARD_AGENT_NAME, FORWARD_AGENT_SECRET_ENV,
     FORWARD_AGENT_SOCKET_NAME, FORWARD_AGENT_SOCKET_TARGET, FORWARD_AGENT_START_DELAY,
-    FORWARD_AGENT_START_RETRIES, proc_scan::detect_listen_ports,
+    FORWARD_AGENT_START_RETRIES, FORWARD_AGENT_STATUS_NAME, proc_scan::detect_listen_ports,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,7 +78,16 @@ pub(crate) fn invoked_as_forward_agent() -> bool {
 pub(crate) async fn run_forward_agent() -> Result<()> {
     let socket_path = env::var("DECUNE_FORWARD_AGENT_SOCKET")
         .unwrap_or_else(|_| FORWARD_AGENT_SOCKET_TARGET.to_owned());
-    run_forward_agent_at_with_access(Path::new(&socket_path), ForwardAgentAccess::from_env()?).await
+    let socket_path = Path::new(&socket_path);
+    let result = async {
+        let access = ForwardAgentAccess::from_env()?;
+        run_forward_agent_at_with_access(socket_path, access).await
+    }
+    .await;
+    if let Err(error) = &result {
+        write_forward_agent_failure(socket_path, error);
+    }
+    result
 }
 
 #[cfg(test)]
@@ -110,8 +119,11 @@ where
                         | io::ErrorKind::PermissionDenied
                 ) =>
             {
-                if let Some(error) = forward_agent_start_error(runtime_dir, agent_status().await?)?
-                {
+                let status = match read_forward_agent_status(runtime_dir)? {
+                    Some(status) => status,
+                    None => agent_status().await?,
+                };
+                if let Some(error) = forward_agent_start_error(runtime_dir, status)? {
                     bail!("{error}");
                 }
                 sleep(FORWARD_AGENT_START_DELAY).await;
@@ -353,6 +365,44 @@ fn forward_agent_start_error(
     Ok(diagnostic.map(|diagnostic| format!("Port forwarding agent failed to start: {diagnostic}")))
 }
 
+fn write_forward_agent_failure(socket_path: &Path, error: &anyhow::Error) {
+    let Some(runtime_dir) = socket_path.parent() else {
+        return;
+    };
+    let _ = fs::write(
+        runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
+        format!("{error:#}\n"),
+    );
+    let _ = fs::write(runtime_dir.join(FORWARD_AGENT_STATUS_NAME), "exited\n");
+}
+
+fn read_forward_agent_status(runtime_dir: &Path) -> Result<Option<ForwardAgentStatus>> {
+    let path = runtime_dir.join(FORWARD_AGENT_STATUS_NAME);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error).with_context(|| {
+                format!(
+                    "Failed to read port forwarding agent status: {}",
+                    path.display()
+                )
+            });
+        }
+    };
+    let status = String::from_utf8_lossy(&bytes);
+    let status = status.trim();
+    if status == "exited" {
+        return Ok(Some(ForwardAgentStatus::Exited { exit_code: None }));
+    }
+    if let Some(exit_code) = status.strip_prefix("exited:") {
+        return Ok(Some(ForwardAgentStatus::Exited {
+            exit_code: exit_code.trim().parse().ok(),
+        }));
+    }
+    Ok(None)
+}
+
 fn read_forward_agent_diagnostic(runtime_dir: &Path) -> Result<Option<String>> {
     let path = runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME);
     let bytes = match fs::read(&path) {
@@ -426,6 +476,35 @@ pub(super) mod tests {
             let message = format!("{error:#}");
 
             assert!(message.contains("Unsupported port forwarding agent container architecture"));
+            assert!(!message.contains("Timed out waiting"));
+        });
+    }
+
+    #[test]
+    fn wait_for_forward_agent_reports_agent_status_exit() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            fs::write(temp.path().join(FORWARD_AGENT_STATUS_NAME), "exited\n").unwrap();
+            fs::write(
+                temp.path().join(FORWARD_AGENT_DIAGNOSTIC_NAME),
+                "startup failed\n",
+            )
+            .unwrap();
+
+            let error = wait_for_forward_agent_with_status(temp.path(), || async {
+                Ok(ForwardAgentStatus::Running)
+            })
+            .await
+            .unwrap_err();
+            let message = format!("{error:#}");
+
+            assert!(message.contains("Port forwarding agent exited"));
+            assert!(message.contains("startup failed"));
             assert!(!message.contains("Timed out waiting"));
         });
     }

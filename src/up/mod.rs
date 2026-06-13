@@ -108,10 +108,6 @@ mod tests {
     };
 
     use anyhow::Context;
-    use bollard::models::{
-        ContainerSummary, ContainerSummaryStateEnum, MountBindOptions,
-        MountBindOptionsPropagationEnum, MountPoint, MountVolumeOptions,
-    };
 
     use crate::config::layer::{
         LayerDevcontainerMetadata, LayerDevcontainerSource, LayerUserEnvProbe,
@@ -127,10 +123,14 @@ mod tests {
         DockerBuildInput, DockerBuildOptions, ResolvedBuildContext, build_image,
     };
     use crate::docker::client::DockerClient;
-    use crate::docker::container::{remove_container, stop_container};
+    use crate::docker::container::{
+        ContainerInspect, ContainerMount, ContainerState, remove_container, stop_container,
+    };
     use crate::docker::exec::{ExecCommandSpec, exec_capture};
     use crate::docker::image::{PullPolicy, ensure_image, remove_image};
-    use crate::docker::mounts::DockerMountSpec;
+    use crate::docker::mounts::{
+        DockerMountSpec, MountBindOptions, MountBindPropagation, MountVolumeOptions,
+    };
     use crate::docker::ports::ResolvedForwardPort;
     use crate::docker::resource::DockerResources;
     use crate::docker::user::{
@@ -559,27 +559,29 @@ mod tests {
 
     #[test]
     fn container_summary_restores_read_only_from_docker_mount_rw() {
-        let summary = container_summary(ContainerSummary {
+        let summary = container_summary(ContainerInspect {
             id: Some("container-id".to_owned()),
-            names: Some(vec!["/decune-project-abc123".to_owned()]),
-            state: Some(ContainerSummaryStateEnum::RUNNING),
+            name: Some("/decune-project-abc123".to_owned()),
+            state: Some(ContainerState {
+                running: Some(true),
+                exit_code: None,
+                pid: None,
+            }),
             mounts: Some(vec![
-                MountPoint {
+                ContainerMount {
                     typ: Some("bind".to_owned()),
                     source: Some("/tmp/secrets/github-token".to_owned()),
                     destination: Some(GITHUB_CLI_TOKEN_TARGET.to_owned()),
                     rw: Some(false),
-                    ..MountPoint::default()
                 },
-                MountPoint {
+                ContainerMount {
                     typ: Some("bind".to_owned()),
                     source: Some("/tmp/agent.sock".to_owned()),
                     destination: Some(SSH_AGENT_SOCKET_TARGET.to_owned()),
                     rw: Some(true),
-                    ..MountPoint::default()
                 },
             ]),
-            ..ContainerSummary::default()
+            ..ContainerInspect::default()
         })
         .unwrap();
 
@@ -1936,12 +1938,12 @@ resolve_symlink = true
 
         let mut rshared = test_mount();
         rshared.bind_options = Some(MountBindOptions {
-            propagation: Some(MountBindOptionsPropagationEnum::RSHARED),
+            propagation: Some(MountBindPropagation::RShared),
             ..MountBindOptions::default()
         });
         let mut rslave = test_mount();
         rslave.bind_options = Some(MountBindOptions {
-            propagation: Some(MountBindOptionsPropagationEnum::RSLAVE),
+            propagation: Some(MountBindPropagation::RSlave),
             ..MountBindOptions::default()
         });
         assert_ne!(
@@ -2070,10 +2072,7 @@ type = "bind"
                 assert_eq!(first.container_name, container_name);
                 assert!(!first.reused);
 
-                let inspect = client
-                    .raw()
-                    .inspect_container(&container_name, None)
-                    .await?;
+                let inspect = client.cli().inspect_container(&container_name).await?;
                 assert_eq!(inspect.state.and_then(|state| state.running), Some(true));
 
                 let second = run_detached_up(UpOptions {
@@ -2124,10 +2123,7 @@ type = "bind"
                 let workspace = test_workspace("docker-up-effective-container-user-state");
                 create_and_start_container(&client, &workspace, &plan, false, false, false).await?;
 
-                let inspect = client
-                    .raw()
-                    .inspect_container(&container_name, None)
-                    .await?;
+                let inspect = client.cli().inspect_container(&container_name).await?;
                 assert_eq!(
                     inspect.config.and_then(|config| config.user),
                     Some("nobody".to_owned())
@@ -2175,10 +2171,7 @@ type = "bind"
                     false,
                 )
                 .await?;
-                let legacy_inspect = client
-                    .raw()
-                    .inspect_container(&container_name, None)
-                    .await?;
+                let legacy_inspect = client.cli().inspect_container(&container_name).await?;
                 assert!(!container_has_mount_target(
                     &legacy_inspect.mounts,
                     "/run/decune"
@@ -2197,10 +2190,7 @@ type = "bind"
                 assert!(!recreated.reused);
                 assert_ne!(legacy.container_id, recreated.container_id);
 
-                let recreated_inspect = client
-                    .raw()
-                    .inspect_container(&container_name, None)
-                    .await?;
+                let recreated_inspect = client.cli().inspect_container(&container_name).await?;
                 assert!(container_has_mount_target(
                     &recreated_inspect.mounts,
                     "/run/decune"
@@ -2580,7 +2570,7 @@ type = "bind"
                 .await?;
                 assert!(!outcome.reused);
 
-                let inspect = client.raw().inspect_container(&container_name, None).await?;
+                let inspect = client.cli().inspect_container(&container_name).await?;
                 assert_eq!(
                     inspect.config.and_then(|config| config.user),
                     Some("syncuser".to_owned())
@@ -3175,10 +3165,7 @@ type = "bind"
                 .await?;
                 assert!(!outcome.reused);
 
-                let inspect = client
-                    .raw()
-                    .inspect_container(&container_name, None)
-                    .await?;
+                let inspect = client.cli().inspect_container(&container_name).await?;
                 assert_eq!(
                     inspect.config.and_then(|config| config.user),
                     Some(format!("syncuser:{}", host.gid))
@@ -3269,10 +3256,7 @@ type = "bind"
                 .await?;
                 assert!(!outcome.reused);
 
-                let inspect = client
-                    .raw()
-                    .inspect_container(&container_name, None)
-                    .await?;
+                let inspect = client.cli().inspect_container(&container_name).await?;
                 assert_eq!(
                     inspect.config.and_then(|config| config.user),
                     Some(format!("syncuser:{}", host.gid))
@@ -3564,7 +3548,7 @@ type = "bind"
                 let message = format!("{error:#}");
                 assert!(
                     message.contains("Failed to build Docker image")
-                        && message.contains("Docker stream error"),
+                        && message.contains("sync-uid-gid.sh"),
                     "{message}"
                 );
 
@@ -3635,7 +3619,7 @@ type = "bind"
                 let message = format!("{error:#}");
                 assert!(
                     message.contains("Failed to build Docker image")
-                        && message.contains("Docker stream error"),
+                        && message.contains("sync-uid-gid.sh"),
                     "{message}"
                 );
 
@@ -3705,7 +3689,7 @@ type = "bind"
                 let message = format!("{error:#}");
                 assert!(
                     message.contains("Failed to build Docker image")
-                        && message.contains("Docker stream error"),
+                        && message.contains("sync-uid-gid.sh"),
                     "{message}"
                 );
 
@@ -3775,7 +3759,7 @@ type = "bind"
                 let message = format!("{error:#}");
                 assert!(
                     message.contains("Failed to build Docker image")
-                        && message.contains("Docker stream error"),
+                        && message.contains("sync-uid-gid.sh"),
                     "{message}"
                 );
 
@@ -4397,10 +4381,7 @@ shell = "/usr/local/bin/decune-shell-check"
                 .await?;
                 assert_eq!(exit_code, 0);
 
-                let inspect = client
-                    .raw()
-                    .inspect_container(&container_name, None)
-                    .await?;
+                let inspect = client.cli().inspect_container(&container_name).await?;
                 let rebuilt_container_id = inspect
                     .id
                     .context("Docker inspect response did not include container id")?;
@@ -5313,10 +5294,7 @@ user = "root"
         plan
     }
 
-    fn container_has_mount_target(
-        mounts: &Option<Vec<bollard::models::MountPoint>>,
-        target: &str,
-    ) -> bool {
+    fn container_has_mount_target(mounts: &Option<Vec<ContainerMount>>, target: &str) -> bool {
         mounts.as_ref().is_some_and(|mounts| {
             mounts
                 .iter()

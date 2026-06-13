@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,6 +80,18 @@ pub(crate) fn current_size() -> Option<TerminalSize> {
     #[cfg(not(unix))]
     {
         None
+    }
+}
+
+pub(crate) fn stdin_is_tty() -> bool {
+    #[cfg(unix)]
+    {
+        is_tty(libc::STDIN_FILENO)
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
     }
 }
 

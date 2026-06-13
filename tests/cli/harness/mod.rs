@@ -1,10 +1,10 @@
 use assert_cmd::Command;
 
-pub(crate) use bollard::Docker;
 pub(crate) use predicates::prelude::*;
 pub(crate) use std::{
     fs,
     os::unix::{fs::PermissionsExt, net::UnixListener},
+    path::{Path, PathBuf},
 };
 
 pub(crate) use crate::support;
@@ -39,4 +39,26 @@ pub(crate) fn decune() -> Command {
         .env_remove("GH_ENTERPRISE_TOKEN")
         .env_remove("GITHUB_ENTERPRISE_TOKEN");
     command
+}
+
+pub(crate) fn symlink_host_executable_into_path(name: &str, path_dir: &Path) -> PathBuf {
+    let source = find_host_executable(name)
+        .unwrap_or_else(|| panic!("host executable was not found in PATH: {name}"));
+    let target = path_dir.join(name);
+    std::os::unix::fs::symlink(&source, &target).unwrap_or_else(|error| {
+        panic!(
+            "failed to symlink host executable {} to {}: {error}",
+            source.display(),
+            target.display()
+        )
+    });
+    target
+}
+
+fn find_host_executable(name: &str) -> Option<PathBuf> {
+    std::env::var_os("PATH")
+        .into_iter()
+        .flat_map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
+        .map(|path| path.join(name))
+        .find(|candidate| candidate.is_file())
 }

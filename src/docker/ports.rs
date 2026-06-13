@@ -229,19 +229,6 @@ fn is_addr_in_use(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::AddrInUse
 }
 
-impl DockerPublishPort {
-    pub(crate) fn key(&self) -> String {
-        format!("{}/{}", self.container, docker_protocol(self.protocol))
-    }
-}
-
-fn docker_protocol(protocol: PortProtocol) -> &'static str {
-    match protocol {
-        PortProtocol::Tcp => "tcp",
-        PortProtocol::Udp => "udp",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

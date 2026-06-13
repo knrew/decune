@@ -1,41 +1,43 @@
 use anyhow::{Error, Result};
-use bollard::{Docker, models::SystemVersion};
 
-#[allow(dead_code)]
+use crate::runtime::docker_cli::DockerCli;
+
+#[derive(Clone)]
 pub(crate) struct DockerClient {
-    docker: Docker,
+    cli: DockerCli,
+    #[allow(dead_code)]
     endpoint: String,
 }
 
-#[allow(dead_code)]
 impl DockerClient {
     pub(crate) fn connect_from_env() -> Result<Self> {
-        let endpoint = docker_endpoint_from_env();
-        let docker = Docker::connect_with_defaults()
-            .map_err(|error| connection_error("connect to Docker daemon", &endpoint, error))?;
-
-        Ok(Self { docker, endpoint })
+        Ok(Self {
+            cli: DockerCli::default(),
+            endpoint: docker_endpoint_from_env(),
+        })
     }
 
-    pub(crate) fn raw(&self) -> &Docker {
-        &self.docker
+    pub(crate) fn cli(&self) -> &DockerCli {
+        &self.cli
     }
 
+    #[allow(dead_code)]
     pub(crate) fn endpoint(&self) -> &str {
         &self.endpoint
     }
 
+    #[allow(dead_code)]
     pub(crate) async fn ping(&self) -> Result<()> {
-        self.docker
+        self.cli()
             .ping()
             .await
-            .map(|_| ())
             .map_err(|error| connection_error("ping Docker daemon", &self.endpoint, error))
     }
 
-    pub(crate) async fn version(&self) -> Result<SystemVersion> {
-        self.docker
-            .version()
+    #[allow(dead_code)]
+    pub(crate) async fn version(&self) -> Result<serde_json::Value> {
+        self.cli()
+            .version_json()
             .await
             .map_err(|error| connection_error("read Docker daemon version", &self.endpoint, error))
     }
@@ -69,6 +71,7 @@ fn default_endpoint() -> &'static str {
     }
 }
 
+#[allow(dead_code)]
 fn connection_error(action: &'static str, endpoint: &str, source: impl Into<Error>) -> Error {
     source.into().context(format!(
         "Failed to {action}: {endpoint}. {}",
@@ -76,6 +79,7 @@ fn connection_error(action: &'static str, endpoint: &str, source: impl Into<Erro
     ))
 }
 
+#[allow(dead_code)]
 fn guidance_for_endpoint(endpoint: &str) -> &'static str {
     if endpoint.starts_with("unix://") || endpoint.starts_with("npipe://") {
         "Ensure Docker or Podman is running, DOCKER_HOST is set correctly, and socket permissions allow access."
@@ -88,9 +92,7 @@ fn guidance_for_endpoint(endpoint: &str) -> &'static str {
 mod tests {
     use anyhow::anyhow;
 
-    use super::{
-        DockerClient, connection_error, docker_endpoint_from_env_value, guidance_for_endpoint,
-    };
+    use super::{connection_error, docker_endpoint_from_env_value, guidance_for_endpoint};
 
     #[test]
     fn default_endpoint_describes_local_daemon_when_docker_host_is_unset() {
@@ -128,28 +130,6 @@ mod tests {
         let guidance = guidance_for_endpoint("unix:///var/run/docker.sock");
 
         assert!(guidance.contains("socket permissions"));
-    }
-
-    #[test]
-    fn ping_and_version_work() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
-
-            client.ping().await.unwrap();
-            let version = client.version().await.unwrap();
-
-            assert!(
-                version
-                    .version
-                    .as_deref()
-                    .is_some_and(|value| !value.is_empty())
-            );
-        });
     }
 
     fn platform_default_endpoint() -> &'static str {

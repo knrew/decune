@@ -4,12 +4,11 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use bollard::models::ContainerSummary;
 
 use crate::{
     docker::{
         client::DockerClient,
-        container::{remove_container, stop_container, workspace_container_list_options},
+        container::{remove_container, stop_container},
         image::{remove_image, workspace_image_tags},
         resource::DockerResources,
         volume::{remove_volume, workspace_volumes},
@@ -154,8 +153,8 @@ async fn list_managed_containers(
     workspace_id: &str,
 ) -> Result<Vec<ManagedContainer>> {
     let containers = client
-        .raw()
-        .list_containers(Some(workspace_container_list_options(workspace_id)))
+        .cli()
+        .list_workspace_containers(workspace_id)
         .await
         .with_context(|| {
             format!("Failed to list Docker containers for workspace: {workspace_id}")
@@ -163,19 +162,11 @@ async fn list_managed_containers(
 
     Ok(containers
         .into_iter()
-        .filter_map(managed_container)
+        .map(|container| ManagedContainer {
+            id: container.id,
+            name: container.name,
+        })
         .collect())
-}
-
-fn managed_container(container: ContainerSummary) -> Option<ManagedContainer> {
-    let id = container.id?;
-    let name = container
-        .names
-        .and_then(|names| names.into_iter().next())
-        .map(|name| name.trim_start_matches('/').to_owned())
-        .unwrap_or_else(|| id.clone());
-
-    Some(ManagedContainer { id, name })
 }
 
 #[cfg(test)]

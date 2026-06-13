@@ -7,9 +7,8 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use bollard::query_parameters::WaitContainerOptionsBuilder;
 use futures_util::{
-    FutureExt, TryStreamExt,
+    FutureExt,
     future::{Either, select},
 };
 
@@ -23,7 +22,6 @@ use crate::{
         container::{
             ContainerCreateInput, ContainerCreateSpec, create_container,
             devcontainer_keepalive_command, remove_container, start_container, stop_container,
-            workspace_container_list_options,
         },
         exec::{ExecCommandSpec, exec_capture_output},
         image::{PullPolicy, ensure_image, image_container_tool_platform, image_startup_command},
@@ -45,9 +43,7 @@ use crate::{
             build_workspace_image_layers, plan_requires_final_image_layer,
             prepare_base_image_for_plan,
         },
-        existing::{
-            self, CredentialRuntimeMountPolicy, container_summary, decide_existing_container,
-        },
+        existing::{self, CredentialRuntimeMountPolicy, decide_existing_container},
         metadata::{
             build_existing_container_decision_plan, existing_remote_user_image_for_decision,
             finalize_up_plan_mounts, prepare_image_based_metadata, warn_about_deferred_features,
@@ -916,8 +912,8 @@ async fn ensure_container_running_after_start(
 
 async fn ensure_container_running_now(client: &DockerClient, container_name: &str) -> Result<()> {
     let inspect = client
-        .raw()
-        .inspect_container(container_name, None)
+        .cli()
+        .inspect_container(container_name)
         .await
         .with_context(|| {
             format!("Failed to inspect Docker container after start: {container_name}")
@@ -1056,24 +1052,11 @@ pub(in crate::up) async fn wait_for_container_exit_code(
     client: &DockerClient,
     container: &str,
 ) -> Result<i64> {
-    let options = WaitContainerOptionsBuilder::default()
-        .condition("not-running")
-        .build();
-    match client
-        .raw()
-        .wait_container(container, Some(options))
-        .try_next()
+    client
+        .cli()
+        .wait_container(container)
         .await
-    {
-        Ok(Some(response)) => Ok(response.status_code),
-        Ok(None) => Err(anyhow::anyhow!(
-            "Docker container wait ended without a response: {container}"
-        )),
-        Err(bollard::errors::Error::DockerContainerWaitError { code, .. }) => Ok(code),
-        Err(error) => {
-            Err(error).with_context(|| format!("Failed to wait for Docker container: {container}"))
-        }
-    }
+        .with_context(|| format!("Failed to wait for Docker container: {container}"))
 }
 
 #[cfg(test)]
@@ -1096,16 +1079,9 @@ async fn list_workspace_containers_inner(
     client: &DockerClient,
     workspace_id: &str,
 ) -> Result<Vec<UpContainerSummary>> {
-    let containers = client
-        .raw()
-        .list_containers(Some(workspace_container_list_options(workspace_id)))
+    client
+        .cli()
+        .list_workspace_containers(workspace_id)
         .await
-        .with_context(|| {
-            format!("Failed to list Docker containers for workspace: {workspace_id}")
-        })?;
-
-    Ok(containers
-        .into_iter()
-        .filter_map(container_summary)
-        .collect())
+        .with_context(|| format!("Failed to list Docker containers for workspace: {workspace_id}"))
 }
