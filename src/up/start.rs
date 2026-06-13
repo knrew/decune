@@ -234,6 +234,9 @@ pub(in crate::up) async fn ensure_container_started(
         forwarding_resolution,
         options.update_features,
     )?;
+    if preliminary_plan.compose_project.is_some() {
+        bail!("Docker Compose lifecycle is not implemented yet");
+    }
     let plan_resolution = UpPlanResolution::new(forwarding_resolution, options.update_features);
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
 

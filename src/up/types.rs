@@ -10,6 +10,7 @@ use crate::{
         resource::DockerResources,
         user::{EffectiveUsers, UidGidSyncPlan},
     },
+    runtime::compose_cli::ComposeProjectPlan,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +89,7 @@ pub(crate) struct UpPlan {
     pub(crate) uid_gid_sync_build_context_dir: Option<PathBuf>,
     pub(crate) resources: DockerResources,
     pub(crate) pre_uid_gid_sync_resources: Option<DockerResources>,
+    pub(crate) compose_project: Option<ComposeProjectPlan>,
     pub(crate) config_layers: ConfigMergeInput,
     pub(crate) config: ResolvedConfig,
     pub(crate) effective_users: EffectiveUsers,

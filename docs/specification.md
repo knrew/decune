@@ -294,7 +294,7 @@ Compose mode では `workspaceMount` は unsupported error とする。workspace
 
 `dockerComposeFile` は string または string array である。各 path は `devcontainer.json` のある directory から相対解決する。絶対 path は portable でないため warning 対象とする。path escape は許可するが、state/hash には canonical path と file digest を含める。存在しない path は error とする。
 
-解決した Compose file は指定順に `docker compose -f <file>` へ渡す。後続 file が前 file を override/add する Compose 標準の merge semantics に従う。relative path resolution の基準は Docker Compose CLI の標準挙動に合わせ、第一 Compose file の parent directory を project directory とする。必要に応じて `--project-directory <first-compose-file-parent>` を明示する。
+解決した Compose file は指定順に `docker compose -f <file>` へ渡す。後続 file が前 file を override/add する Compose 標準の merge semantics に従う。relative path resolution の基準は Docker Compose CLI の標準挙動に合わせ、第一 Compose file の parent directory を project directory とする。必要に応じて `--project-directory <first-compose-file-parent>` を明示する。第一 Compose file が symlink の場合、project directory は final symlink を辿った canonical path の parent ではなく、`devcontainer.json` 相対で解決した入力 path の parent とする。
 
 `dockerComposeFile` から git URL、OCI artifact、stdin を参照する構成は v0.1 では unsupported error とする。
 
@@ -303,11 +303,11 @@ Compose mode では `workspaceMount` は unsupported error とする。workspace
 decune は Compose project name を必ず明示する。top-level `name:`、`COMPOSE_PROJECT_NAME`、current directory basename に依存しない。
 
 ```text
-decune_<safe_workspace_slug>_<workspace_id>
+decune-<safe_workspace_slug>-<workspace_id>
 ```
 
-- lowercase ASCII、decimal digits、dash、underscore のみ。
-- 先頭は `decune_` 固定。
+- lowercase ASCII、decimal digits、dash のみ。
+- 先頭は `decune-` 固定。
 - `workspace_id = hex(sha256(canonical_workspace_path))[0..12]`。
 - config hash は project name に含めない。同じ workspace の rebuild で project name は安定する。
 
@@ -683,7 +683,7 @@ image/Dockerfile mode の Docker resource name には workspace basename をそ�
 
 Compose mode:
 
-- project: `decune_<safe_workspace_slug>_<workspace_id>`
+- project: `decune-<safe_workspace_slug>-<workspace_id>`
 - generated primary image: `decune/<safe_workspace_slug>-<workspace_id>:<config_hash>`
 - generated Compose override: `$XDG_STATE_HOME/decune/<workspace_id>/compose.override.yaml`
 - state/runtime directory は image/Dockerfile mode と同じ。

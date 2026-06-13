@@ -25,6 +25,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) cli_flags: BTreeMap<String, Value>,
     pub(crate) internal_versions: BTreeMap<String, String>,
     pub(crate) build: Option<BuildHashInput>,
+    pub(crate) compose_files: Vec<ComposeFileHashInput>,
     pub(crate) resolved_mounts: Vec<MountHashInput>,
     pub(crate) startup_command: Option<StartupCommandHashInput>,
     pub(crate) uid_gid_sync: Option<UidGidSyncHashInput>,
@@ -38,11 +39,18 @@ impl<'a> ConfigHashInput<'a> {
             cli_flags: BTreeMap::new(),
             internal_versions: BTreeMap::new(),
             build: None,
+            compose_files: Vec::new(),
             resolved_mounts: Vec::new(),
             startup_command: None,
             uid_gid_sync: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeFileHashInput {
+    pub(crate) canonical_path: String,
+    pub(crate) digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +148,11 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
         Some(build) => write_build_input(writer, build),
         None => writer.none(),
     });
+    if !input.compose_files.is_empty() {
+        writer.field("compose_files", |writer| {
+            write_compose_file_inputs(writer, &input.compose_files);
+        });
+    }
     writer.field("resolved_mounts", |writer| {
         write_resolved_mounts(writer, &input.resolved_mounts);
     });
@@ -153,6 +166,17 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
     });
 
     sha256_hex(writer.finish().as_bytes())
+}
+
+fn write_compose_file_inputs(writer: &mut CanonicalWriter, inputs: &[ComposeFileHashInput]) {
+    writer.seq(inputs.iter(), |writer, input| {
+        writer.object("ComposeFile", |writer| {
+            writer.field("canonical_path", |writer| {
+                writer.string(&input.canonical_path)
+            });
+            writer.field("digest", |writer| writer.string(&input.digest));
+        });
+    });
 }
 
 fn write_uid_gid_sync_input(writer: &mut CanonicalWriter, input: &UidGidSyncHashInput) {
@@ -881,6 +905,45 @@ mod tests {
         config_hash(&ConfigHashInput::new(config))
     }
 
+    fn legacy_hash_without_compose_files_field(input: &ConfigHashInput<'_>) -> String {
+        let mut writer = CanonicalWriter::default();
+
+        writer.field("version", |writer| writer.string("decune-config-hash-v1"));
+        writer.field("resolved_config", |writer| {
+            write_resolved_config(writer, input.config);
+        });
+        writer.field("feature_locks", |writer| {
+            write_feature_locks(writer, &input.feature_locks);
+        });
+        writer.field("cli_flags", |writer| {
+            writer.map(input.cli_flags.iter(), |writer, value| {
+                writer.toml_value(value);
+            });
+        });
+        writer.field("internal_versions", |writer| {
+            writer.map(input.internal_versions.iter(), |writer, value| {
+                writer.string(value);
+            });
+        });
+        writer.field("build", |writer| match &input.build {
+            Some(build) => write_build_input(writer, build),
+            None => writer.none(),
+        });
+        writer.field("resolved_mounts", |writer| {
+            write_resolved_mounts(writer, &input.resolved_mounts);
+        });
+        writer.field("startup_command", |writer| match &input.startup_command {
+            Some(startup_command) => write_startup_command(writer, startup_command),
+            None => writer.none(),
+        });
+        writer.field("uid_gid_sync", |writer| match &input.uid_gid_sync {
+            Some(uid_gid_sync) => write_uid_gid_sync_input(writer, uid_gid_sync),
+            None => writer.none(),
+        });
+
+        sha256_hex(writer.finish().as_bytes())
+    }
+
     #[test]
     fn same_config_produces_same_hash() {
         let config = resolved_config(
@@ -892,6 +955,22 @@ shell = "/bin/zsh"
 
         assert_eq!(hash_for(&config), hash_for(&config));
         assert_eq!(hash_for(&config).len(), 64);
+    }
+
+    #[test]
+    fn empty_compose_file_inputs_preserve_legacy_non_compose_hash() {
+        let config = resolved_config(
+            r#"
+version = 1
+shell = "/bin/zsh"
+"#,
+        );
+        let input = ConfigHashInput::new(&config);
+
+        assert_eq!(
+            config_hash(&input),
+            legacy_hash_without_compose_files_field(&input)
+        );
     }
 
     #[test]
@@ -1409,6 +1488,48 @@ shell = false
             feature_locks: vec![FeatureLockHashEntry {
                 feature_id: "feature-a".to_owned(),
                 digest: "sha256:second".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_changes_when_compose_file_digest_changes() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:first".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:second".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_changes_when_compose_file_canonical_path_changes() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
             }],
             ..ConfigHashInput::new(&config)
         });
