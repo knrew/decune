@@ -223,7 +223,10 @@ fn build_up_plan_inner(
     let base_image = base_image_source(&config, &resources, &UidGidSyncPlan::default())?;
     let image = final_image_source(&config, &resources, &UidGidSyncPlan::default())?;
     let forward_ports = match resolution.forwarding {
-        ForwardingResolution::Resolve => resolve_forward_ports(&config.ports.entries)?,
+        ForwardingResolution::Resolve => {
+            validate_service_qualified_forward_ports(&config)?;
+            resolve_forward_ports(&config.ports.entries)?
+        }
         ForwardingResolution::IgnoreDetached => Vec::new(),
     };
     let ignored_detached_forwarding = resolution.forwarding == ForwardingResolution::IgnoreDetached
@@ -250,6 +253,30 @@ fn build_up_plan_inner(
         forward_ports,
         ignored_detached_forwarding,
     })
+}
+
+fn validate_service_qualified_forward_ports(config: &ResolvedConfig) -> Result<()> {
+    if matches!(
+        config.devcontainer.source,
+        Some(ResolvedDevcontainerSource::Compose(_))
+    ) {
+        return Ok(());
+    }
+
+    if let Some(port) = config
+        .ports
+        .entries
+        .iter()
+        .find(|port| port.service.is_some())
+    {
+        let service = port.service.as_deref().unwrap_or_default();
+        bail!(
+            "Service-qualified port forwarding is only supported in Docker Compose mode: {service}:{}",
+            port.container
+        );
+    }
+
+    Ok(())
 }
 
 pub(super) fn feature_lock_hash_inputs(
@@ -325,6 +352,9 @@ pub(super) fn final_image_source(
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
+        Some(ResolvedDevcontainerSource::Compose(_)) => {
+            bail!("Docker Compose runtime planning is not implemented yet")
+        }
         None => bail!("Devcontainer image is required"),
     }
 }
@@ -342,6 +372,9 @@ pub(super) fn base_image_source(
             Ok(format!("{}-base", resources.image_tag))
         }
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
+        Some(ResolvedDevcontainerSource::Compose(_)) => {
+            bail!("Docker Compose runtime planning is not implemented yet")
+        }
         None => bail!("Devcontainer image is required"),
     }
 }

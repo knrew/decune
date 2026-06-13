@@ -33,6 +33,7 @@ mod tests {
 
     pub(super) fn forward_port(host: u16, container: u16) -> ResolvedForwardPort {
         ResolvedForwardPort {
+            service: None,
             container,
             host,
             host_ip: "127.0.0.1".to_owned(),

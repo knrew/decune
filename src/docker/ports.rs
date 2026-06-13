@@ -20,6 +20,7 @@ pub(crate) struct DockerPublishPort {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ResolvedForwardPort {
+    pub(crate) service: Option<String>,
     pub(crate) container: u16,
     pub(crate) host: u16,
     pub(crate) host_ip: String,
@@ -52,6 +53,7 @@ where
         let host = resolve_host_port(port, start_host, &resolved, &mut host_port_available)?;
 
         resolved.push(ResolvedForwardPort {
+            service: port.service.clone(),
             container: port.container,
             host,
             host_ip: port.host_ip.clone(),
@@ -134,6 +136,7 @@ where
 
         let port = ResolvedPort {
             enabled: true,
+            service: None,
             container,
             host: Some(container),
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
@@ -145,6 +148,7 @@ where
         };
         let host = resolve_host_port(&port, container, &resolved, &mut host_port_available)?;
         let port = ResolvedForwardPort {
+            service: None,
             container,
             host,
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
@@ -243,6 +247,7 @@ mod tests {
         assert_eq!(
             resolved,
             vec![ResolvedForwardPort {
+                service: None,
                 container: 3000,
                 host: 3000,
                 host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
@@ -467,6 +472,7 @@ mod tests {
     ) -> LayerPort {
         LayerPort {
             enabled: true,
+            service: None,
             container,
             host,
             host_ip: host_ip.to_owned(),
@@ -478,6 +484,7 @@ mod tests {
 
     fn forward_port(host: u16, container: u16) -> ResolvedForwardPort {
         ResolvedForwardPort {
+            service: None,
             container,
             host,
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),

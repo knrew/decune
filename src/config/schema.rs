@@ -225,6 +225,7 @@ impl<'de> Deserialize<'de> for RawPortsConfig {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawPortConfig {
     pub(crate) enabled: Option<bool>,
+    pub(crate) service: Option<String>,
     pub(crate) container: u16,
     pub(crate) host: Option<u16>,
     pub(crate) host_ip: Option<String>,

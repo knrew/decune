@@ -827,6 +827,8 @@ Compose mode の service 解決:
 - `portsAttributes` key `"db:5432"`: Compose service `db` の port attributes。
 - `[[ports]].service = "db"`: Compose service `db` の port。
 
+`forwardPorts` の `"service:port"` 形式と `[[ports]].service` は Compose mode 専用である。image/Dockerfile mode では service 名で対象 container を解決できないため unsupported error とする。
+
 sidecar service forwarding は、その service の container ID を解決し、必要な container-side tool を runtime install して forward-agent を起動する。service の replica が 2 以上なら error とする。
 
 automatic forwarding は container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、LISTEN port を検出する。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済み、Docker publish 済み、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose mode の automatic forwarding は primary service のみを対象にする。

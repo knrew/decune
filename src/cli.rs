@@ -292,6 +292,7 @@ impl ManualPort {
     fn into_layer_port(self) -> LayerPort {
         LayerPort {
             enabled: true,
+            service: None,
             container: self.container,
             host: self.host,
             host_ip: self.host_ip,

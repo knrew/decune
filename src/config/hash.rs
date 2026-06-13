@@ -7,7 +7,7 @@ use crate::config::{
     resolved::{
         ResolvedConfig, ResolvedDevcontainer, ResolvedDevcontainerMount,
         ResolvedDevcontainerSource, ResolvedDotfile, ResolvedDotfileEntry, ResolvedHook,
-        ResolvedPublishPort, ResolvedRunArg, ResolvedUserEnvProbe,
+        ResolvedPublishPort, ResolvedRunArg, ResolvedShutdownAction, ResolvedUserEnvProbe,
     },
     types::{
         Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, HookLocation, MountCreate,
@@ -480,6 +480,9 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
         writer.field("override_command", |writer| {
             writer.bool(devcontainer.override_command);
         });
+        writer.field("shutdown_action", |writer| {
+            writer.string(shutdown_action_name(devcontainer.shutdown_action));
+        });
         writer.field("user_env_probe", |writer| {
             match devcontainer.user_env_probe {
                 Some(value) => writer.string(user_env_probe_name(value)),
@@ -556,6 +559,22 @@ fn write_devcontainer_source(writer: &mut CanonicalWriter, source: &ResolvedDevc
                     writer.seq(build.cache_from.iter(), |writer, entry| {
                         writer.string(entry)
                     });
+                });
+            });
+        }
+        ResolvedDevcontainerSource::Compose(compose) => {
+            writer.object("ComposeSource", |writer| {
+                writer.field("files", |writer| {
+                    writer.seq(compose.files.iter(), |writer, file| writer.string(file));
+                });
+                writer.field("service", |writer| writer.string(&compose.service));
+                writer.field("run_services", |writer| match &compose.run_services {
+                    Some(run_services) => {
+                        writer.seq(run_services.iter(), |writer, service| {
+                            writer.string(service)
+                        });
+                    }
+                    None => writer.none(),
                 });
             });
         }
@@ -768,6 +787,14 @@ fn user_env_probe_name(value: ResolvedUserEnvProbe) -> &'static str {
         ResolvedUserEnvProbe::LoginShell => "loginShell",
         ResolvedUserEnvProbe::InteractiveShell => "interactiveShell",
         ResolvedUserEnvProbe::LoginInteractiveShell => "loginInteractiveShell",
+    }
+}
+
+fn shutdown_action_name(value: ResolvedShutdownAction) -> &'static str {
+    match value {
+        ResolvedShutdownAction::None => "none",
+        ResolvedShutdownAction::StopContainer => "stopContainer",
+        ResolvedShutdownAction::StopCompose => "stopCompose",
     }
 }
 

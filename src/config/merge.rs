@@ -290,6 +290,7 @@ impl MergeAccumulator {
         if !port.enabled {
             remove_by_identity(&mut self.ports, |existing| {
                 existing.port.protocol == port.protocol
+                    && existing.port.service == port.service
                     && existing.port.container == port.container
                     && existing.port.host_ip == port.host_ip
             });
@@ -424,6 +425,9 @@ impl MergeAccumulator {
         self.devcontainer
             .entrypoints
             .extend(devcontainer.entrypoints);
+        if let Some(shutdown_action) = devcontainer.shutdown_action {
+            self.devcontainer.shutdown_action = shutdown_action;
+        }
         if let Some(lifecycle) = devcontainer.lifecycle {
             match &mut self.devcontainer.lifecycle {
                 Some(target) => target.merge_layer(lifecycle),
@@ -524,6 +528,7 @@ fn dotfile_entry_target(entry: &ResolvedDotfileEntry) -> &str {
 
 fn same_port_identity(left: &ResolvedPort, right: &ResolvedPort) -> bool {
     left.protocol == right.protocol
+        && left.service == right.service
         && left.container == right.container
         && left.host_ip == right.host_ip
 }
@@ -1657,6 +1662,7 @@ label = "project"
             cli: Some(ConfigLayer {
                 ports: vec![LayerPort {
                     enabled: true,
+                    service: None,
                     container: 3000,
                     host: Some(6000),
                     host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
@@ -1672,6 +1678,36 @@ label = "project"
         assert_eq!(config.ports.entries.len(), 1);
         assert_eq!(config.ports.entries[0].host, Some(6000));
         assert_eq!(config.ports.entries[0].label, None);
+    }
+
+    #[test]
+    fn manual_port_identity_includes_compose_service() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[[ports]]
+service = "app"
+container = 5432
+host = 15432
+label = "app"
+
+[[ports]]
+service = "db"
+container = 5432
+host = 25432
+label = "db"
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(config.ports.entries.len(), 2);
+        assert_eq!(config.ports.entries[0].service.as_deref(), Some("app"));
+        assert_eq!(config.ports.entries[0].label.as_deref(), Some("app"));
+        assert_eq!(config.ports.entries[1].service.as_deref(), Some("db"));
+        assert_eq!(config.ports.entries[1].label.as_deref(), Some("db"));
     }
 
     #[test]
@@ -1707,6 +1743,7 @@ host = 8080
             cli: Some(ConfigLayer {
                 ports: vec![LayerPort {
                     enabled: true,
+                    service: None,
                     container: 3003,
                     host: Some(8080),
                     host_ip: DEFAULT_PORT_HOST_IP.to_owned(),

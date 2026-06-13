@@ -6,7 +6,7 @@ use crate::config::{
     layer::{
         LayerDevcontainerBuild, LayerDevcontainerMount, LayerDevcontainerSource, LayerHook,
         LayerHooks, LayerPort, LayerPortAttributes, LayerPublishPort, LayerRunArg,
-        LayerUserEnvProbe,
+        LayerShutdownAction, LayerUserEnvProbe,
     },
     path::ConfigPathOrigin,
     types::{
@@ -120,6 +120,7 @@ pub(crate) struct ResolvedDevcontainer {
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
     pub(crate) entrypoints: Vec<String>,
+    pub(crate) shutdown_action: ResolvedShutdownAction,
     pub(crate) lifecycle: Option<crate::devcontainer::lifecycle::LifecycleDefinition>,
 }
 
@@ -147,12 +148,14 @@ impl Default for ResolvedDevcontainer {
             cap_add: Vec::new(),
             security_opt: Vec::new(),
             entrypoints: Vec::new(),
+            shutdown_action: ResolvedShutdownAction::StopContainer,
             lifecycle: None,
         }
     }
 }
 
 pub(crate) type ResolvedDevcontainerSource = LayerDevcontainerSource;
+pub(crate) type ResolvedShutdownAction = LayerShutdownAction;
 #[allow(dead_code)]
 pub(crate) type ResolvedDevcontainerBuild = LayerDevcontainerBuild;
 pub(crate) type ResolvedDevcontainerMount = LayerDevcontainerMount;
