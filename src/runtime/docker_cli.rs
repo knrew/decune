@@ -491,7 +491,10 @@ fn docker_exec_command(
         command = command.arg("--workdir").arg(working_dir);
     }
     for (key, value) in &spec.env {
-        command = command.arg("--env").arg(format!("{key}={value}"));
+        command = command
+            .env(key.clone(), value.clone())
+            .arg("--env")
+            .arg(key.as_str());
     }
     command.arg(container).args(&spec.command)
 }
@@ -846,6 +849,47 @@ mod tests {
         let captured = docker_exec_command("container", &spec, false, false, false);
         assert!(!captured.args_vec().contains(&"--interactive".to_owned()));
         assert!(!captured.args_vec().contains(&"--tty".to_owned()));
+    }
+
+    #[test]
+    fn docker_exec_command_keeps_env_values_out_of_argv() {
+        let spec = crate::docker::exec::ExecCommandSpec {
+            command: vec!["/run/decune/decune-forward-agent".to_owned()],
+            user: Some("0".to_owned()),
+            working_dir: None,
+            env: BTreeMap::from([
+                (
+                    "DECUNE_FORWARD_AGENT_ALLOWED_PORTS".to_owned(),
+                    "4321".to_owned(),
+                ),
+                (
+                    "DECUNE_FORWARD_AGENT_SECRET".to_owned(),
+                    "test-secret".to_owned(),
+                ),
+            ]),
+            tty: false,
+        };
+
+        let command = docker_exec_command("container", &spec, false, false, true);
+
+        assert!(
+            !command
+                .args_vec()
+                .iter()
+                .any(|arg| arg.contains("test-secret"))
+        );
+        assert!(
+            command
+                .args_vec()
+                .windows(2)
+                .any(|args| { args[0] == "--env" && args[1] == "DECUNE_FORWARD_AGENT_SECRET" })
+        );
+        assert_eq!(
+            command
+                .env_value("DECUNE_FORWARD_AGENT_SECRET")
+                .map(String::as_str),
+            Some("test-secret")
+        );
     }
 
     #[test]

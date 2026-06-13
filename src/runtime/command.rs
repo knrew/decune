@@ -1,4 +1,4 @@
-use std::{future::Future, pin::Pin, process::Stdio, time::Duration};
+use std::{collections::BTreeMap, future::Future, pin::Pin, process::Stdio, time::Duration};
 
 #[cfg(test)]
 use std::sync::Arc;
@@ -10,6 +10,7 @@ use tokio::process::Command;
 pub(crate) struct RuntimeCommand {
     program: String,
     args: Vec<String>,
+    env: BTreeMap<String, String>,
     redactions: RedactionRules,
     timeout: Option<Duration>,
 }
@@ -19,6 +20,7 @@ impl RuntimeCommand {
         Self {
             program: program.into(),
             args: Vec::new(),
+            env: BTreeMap::new(),
             redactions: RedactionRules::default(),
             timeout: None,
         }
@@ -31,6 +33,11 @@ impl RuntimeCommand {
 
     pub(crate) fn args(mut self, args: impl IntoIterator<Item = impl Into<String>>) -> Self {
         self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    pub(crate) fn env(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
+        self.env.insert(key.into(), value.into());
         self
     }
 
@@ -52,6 +59,15 @@ impl RuntimeCommand {
 
     pub(crate) fn args_vec(&self) -> &[String] {
         &self.args
+    }
+
+    pub(crate) fn envs(&self) -> &BTreeMap<String, String> {
+        &self.env
+    }
+
+    #[cfg(test)]
+    pub(crate) fn env_value(&self, key: &str) -> Option<&String> {
+        self.env.get(key)
     }
 
     pub(crate) fn timeout_duration(&self) -> Option<Duration> {
@@ -141,6 +157,7 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
         Box::pin(async move {
             let mut process = Command::new(command.program());
             process.args(command.args_vec());
+            process.envs(command.envs());
             let output = if let Some(timeout) = command.timeout_duration() {
                 tokio::time::timeout(timeout, process.output())
                     .await
@@ -169,6 +186,7 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
         Box::pin(async move {
             let mut process = Command::new(command.program());
             process.args(command.args_vec());
+            process.envs(command.envs());
             match stdio {
                 RuntimeStdio::Capture => {
                     process
@@ -266,7 +284,7 @@ pub(crate) fn ensure_success(
 
 #[cfg(test)]
 mod tests {
-    use super::{RedactionRules, RuntimeCommand};
+    use super::{RedactionRules, RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand};
 
     #[test]
     fn runtime_command_keeps_program_and_argv_without_shell_string() {
@@ -275,6 +293,35 @@ mod tests {
         assert_eq!(command.program(), "docker");
         assert_eq!(command.args_vec(), ["inspect", "container"]);
         assert_eq!(command.sanitized_display(), "docker inspect container");
+    }
+
+    #[test]
+    fn runtime_command_keeps_child_env_out_of_display() {
+        let command = RuntimeCommand::new("docker")
+            .args(["exec", "--env", "DECUNE_SECRET", "container", "env"])
+            .env("DECUNE_SECRET", "secret-token");
+
+        assert_eq!(
+            command.env_value("DECUNE_SECRET").map(String::as_str),
+            Some("secret-token")
+        );
+        assert!(!command.sanitized_display().contains("secret-token"));
+    }
+
+    #[test]
+    fn runtime_command_runner_passes_child_env_to_process() {
+        let command = RuntimeCommand::new("env").env("DECUNE_RUNTIME_TEST_ENV", "visible");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let output = runtime
+            .block_on(TokioRuntimeCommand.run_capture(command))
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+
+        assert!(stdout.contains("DECUNE_RUNTIME_TEST_ENV=visible"));
     }
 
     #[test]
