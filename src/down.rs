@@ -6,6 +6,7 @@ use std::{
 use anyhow::{Context, Result, bail};
 
 use crate::{
+    config::ConfigLayer,
     docker::{
         client::DockerClient,
         container::{remove_container, stop_container},
@@ -14,8 +15,10 @@ use crate::{
         volume::{remove_volume, workspace_volumes},
     },
     host::{credentials::cleanup_github_cli_token_file, daemon::cleanup_host_daemon_socket},
+    runtime::compose_cli::{ComposeDownOptions, ComposeLifecyclePlan, DockerComposeCli},
     state::remove_state_runtime_dirs,
     ui,
+    up::{ForwardingResolution, build_up_plan_with_forwarding_resolution},
     workspace::Workspace,
 };
 
@@ -45,6 +48,17 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
     let workspace = Workspace::resolve(&options.workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
+    if let Some(plan) = compose_lifecycle_plan(&workspace, ComposeLifecycleCommand::Down)? {
+        DockerComposeCli::default()
+            .stop(&plan.project, &plan.services)
+            .await?;
+        ui::done(&format!(
+            "Stopped Docker Compose project: {}",
+            plan.project.project_name
+        ));
+        return Ok(());
+    }
+
     let client = DockerClient::connect_from_env()?;
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
@@ -68,6 +82,43 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     let workspace = Workspace::resolve(&options.workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
+    if let Some(plan) = compose_lifecycle_plan(
+        &workspace,
+        ComposeLifecycleCommand::Clean {
+            images: options.images,
+        },
+    )? {
+        DockerComposeCli::default()
+            .down(
+                &plan.project,
+                ComposeDownOptions {
+                    volumes: plan.cleanup.remove_volumes,
+                    remove_orphans: true,
+                },
+            )
+            .await?;
+        ui::done(&format!(
+            "Removed Docker Compose project: {}",
+            plan.project.project_name
+        ));
+
+        if plan.cleanup.remove_generated_images {
+            let client = DockerClient::connect_from_env()?;
+            let image_repository = DockerResources::image_repository_for_workspace(&workspace);
+            for image in workspace_image_tags(&client, &image_repository).await? {
+                remove_image(&client, &image, true).await?;
+                ui::done(&format!("Removed Docker image: {image}"));
+            }
+        }
+
+        remove_state_runtime_dirs(
+            workspace.paths().state_dir(),
+            workspace.paths().runtime_dir(),
+        )?;
+        ui::done("Cleaned dev container resources");
+        return Ok(());
+    }
+
     let client = DockerClient::connect_from_env()?;
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
@@ -167,6 +218,68 @@ async fn list_managed_containers(
             name: container.name,
         })
         .collect())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposeLifecycleCommand {
+    Down,
+    Clean { images: bool },
+}
+
+fn compose_lifecycle_plan(
+    workspace: &Workspace,
+    command: ComposeLifecycleCommand,
+) -> Result<Option<ComposeLifecyclePlan>> {
+    if !has_devcontainer_metadata_hint(workspace) {
+        return Ok(None);
+    }
+
+    let plan = build_up_plan_with_forwarding_resolution(
+        workspace,
+        None,
+        ConfigLayer::default(),
+        ForwardingResolution::IgnoreDetached,
+        false,
+    )?;
+    let Some(compose_project) = &plan.compose_project else {
+        return Ok(None);
+    };
+    let Some(crate::config::resolved::ResolvedDevcontainerSource::Compose(compose)) =
+        &plan.config.devcontainer.source
+    else {
+        return Ok(None);
+    };
+    if plan.workspace_folder.is_empty() {
+        anyhow::bail!("workspaceFolder must not be empty");
+    }
+
+    let command_plan = compose_project.command_plan_without_generated_override();
+    let lifecycle = match command {
+        ComposeLifecycleCommand::Down => ComposeLifecyclePlan::down(
+            command_plan,
+            &compose.service,
+            compose.run_services.as_deref(),
+        ),
+        ComposeLifecycleCommand::Clean { images } => {
+            ComposeLifecyclePlan::clean(command_plan, images)
+        }
+    };
+
+    Ok(Some(lifecycle))
+}
+
+fn has_devcontainer_metadata_hint(workspace: &Workspace) -> bool {
+    let root = workspace.root();
+    root.join(".devcontainer/devcontainer.json").is_file()
+        || root.join(".devcontainer.json").is_file()
+        || root
+            .join(".devcontainer")
+            .read_dir()
+            .ok()
+            .into_iter()
+            .flatten()
+            .filter_map(Result::ok)
+            .any(|entry| entry.path().join("devcontainer.json").is_file())
 }
 
 #[cfg(test)]

@@ -37,7 +37,10 @@ use crate::{
         },
         forward::{ForwardRuntime, prepare_forward_runtime},
     },
-    runtime::compose_cli::{ComposeIntrospector, ComposeServiceValidation},
+    runtime::compose_cli::{
+        ComposeBuildOptions, ComposeIntrospector, ComposeLifecyclePlan, ComposeServiceValidation,
+        ComposeUpOptions, DockerComposeCli,
+    },
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
     up::{
@@ -116,6 +119,15 @@ impl CredentialRuntime {
 
     pub(in crate::up) fn mount_policy(&self) -> &CredentialRuntimeMountPolicy {
         &self.mount_policy
+    }
+
+    fn empty() -> Self {
+        Self::new(
+            GitCredentialRuntime::empty(),
+            GithubCliRuntime::empty(),
+            SshAgentRuntime::empty(),
+            ForwardRuntime::empty(),
+        )
     }
 }
 
@@ -239,7 +251,7 @@ pub(in crate::up) async fn ensure_container_started(
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     if preliminary_plan.compose_project.is_some() {
         validate_compose_canonical_model(&preliminary_plan).await?;
-        bail!("Docker Compose lifecycle is not implemented yet");
+        return start_compose_project(workspace, preliminary_plan, options).await;
     }
     let plan_resolution = UpPlanResolution::new(forwarding_resolution, options.update_features);
 
@@ -445,6 +457,65 @@ pub(in crate::up) async fn ensure_container_started(
             ))
         }
     }
+}
+
+async fn start_compose_project(
+    workspace: Workspace,
+    plan: UpPlan,
+    options: UpOptions,
+) -> Result<StartedUpContainer> {
+    let Some(compose_project) = &plan.compose_project else {
+        bail!("Docker Compose project plan is missing");
+    };
+    let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
+    else {
+        bail!("Docker Compose devcontainer source is missing");
+    };
+    let lifecycle = ComposeLifecyclePlan::up(
+        compose_project.command_plan_without_generated_override(),
+        &compose.service,
+        compose.run_services.as_deref(),
+    );
+    let cli = DockerComposeCli::default();
+    if options.rebuild || options.no_cache || options.pull {
+        cli.build(
+            &lifecycle.project,
+            ComposeBuildOptions {
+                no_cache: options.no_cache,
+                pull: options.pull,
+            },
+            &lifecycle.services,
+        )
+        .await?;
+    }
+    cli.up(
+        &lifecycle.project,
+        ComposeUpOptions {
+            force_recreate: options.rebuild,
+        },
+        &lifecycle.services,
+    )
+    .await?;
+
+    let container = ComposeIntrospector::new(cli)
+        .resolve_service_container(&lifecycle.project, &compose.service)
+        .await?;
+    let outcome = UpOutcome {
+        container_name: container.name.unwrap_or_else(|| container.id.clone()),
+        container_id: container.id,
+        reused: false,
+    };
+    let state = sync_started_state(&workspace, &plan, &outcome, LifecycleRunPath::New)?;
+
+    Ok(started_up_container_with_state(
+        DockerClient::connect_from_env()?,
+        workspace,
+        plan,
+        outcome,
+        LifecycleRunPath::New,
+        CredentialRuntime::empty(),
+        state,
+    ))
 }
 
 async fn validate_compose_canonical_model(plan: &UpPlan) -> Result<()> {

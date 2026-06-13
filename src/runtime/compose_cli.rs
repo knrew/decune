@@ -65,9 +65,10 @@ impl DockerComposeCli {
     pub(crate) async fn build(
         &self,
         project: &ComposeCommandPlan,
+        options: ComposeBuildOptions,
         services: &[String],
     ) -> Result<()> {
-        let command = project.command(["build"]).args(services);
+        let command = compose_build_command(project, options, services);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
             "build Docker Compose services",
@@ -77,8 +78,13 @@ impl DockerComposeCli {
         )
     }
 
-    pub(crate) async fn up(&self, project: &ComposeCommandPlan, services: &[String]) -> Result<()> {
-        let command = project.command(["up", "-d"]).args(services);
+    pub(crate) async fn up(
+        &self,
+        project: &ComposeCommandPlan,
+        options: ComposeUpOptions,
+        services: &[String],
+    ) -> Result<()> {
+        let command = compose_up_command(project, options, services);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
             "start Docker Compose project",
@@ -103,8 +109,12 @@ impl DockerComposeCli {
         )
     }
 
-    pub(crate) async fn down(&self, project: &ComposeCommandPlan) -> Result<()> {
-        let command = project.command(["down"]);
+    pub(crate) async fn down(
+        &self,
+        project: &ComposeCommandPlan,
+        options: ComposeDownOptions,
+    ) -> Result<()> {
+        let command = compose_down_command(project, options);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
             "remove Docker Compose project",
@@ -436,6 +446,88 @@ pub(crate) struct ComposeCommandPlan {
     pub(crate) files: Vec<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ComposeBuildOptions {
+    pub(crate) no_cache: bool,
+    pub(crate) pull: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ComposeUpOptions {
+    pub(crate) force_recreate: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ComposeDownOptions {
+    pub(crate) volumes: bool,
+    pub(crate) remove_orphans: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeLifecyclePlan {
+    pub(crate) project: ComposeCommandPlan,
+    pub(crate) services: Vec<String>,
+    pub(crate) cleanup: ComposeCleanupPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeCleanupPlan {
+    pub(crate) remove_project: bool,
+    pub(crate) remove_volumes: bool,
+    pub(crate) remove_state: bool,
+    pub(crate) remove_generated_images: bool,
+}
+
+impl ComposeLifecyclePlan {
+    pub(crate) fn up(
+        project: ComposeCommandPlan,
+        primary_service: &str,
+        run_services: Option<&[String]>,
+    ) -> Self {
+        Self {
+            project,
+            services: compose_target_services(primary_service, run_services),
+            cleanup: ComposeCleanupPlan::keep_all(),
+        }
+    }
+
+    pub(crate) fn down(
+        project: ComposeCommandPlan,
+        primary_service: &str,
+        run_services: Option<&[String]>,
+    ) -> Self {
+        Self {
+            project,
+            services: compose_target_services(primary_service, run_services),
+            cleanup: ComposeCleanupPlan::keep_all(),
+        }
+    }
+
+    pub(crate) fn clean(project: ComposeCommandPlan, images: bool) -> Self {
+        Self {
+            project,
+            services: Vec::new(),
+            cleanup: ComposeCleanupPlan {
+                remove_project: true,
+                remove_volumes: true,
+                remove_state: true,
+                remove_generated_images: images,
+            },
+        }
+    }
+}
+
+impl ComposeCleanupPlan {
+    fn keep_all() -> Self {
+        Self {
+            remove_project: false,
+            remove_volumes: false,
+            remove_state: false,
+            remove_generated_images: false,
+        }
+    }
+}
+
 impl ComposeCommandPlan {
     pub(crate) fn command<const N: usize>(&self, args: [&str; N]) -> RuntimeCommand {
         let mut command = compose_cmd([])
@@ -478,6 +570,62 @@ impl ComposeProject {
 
 fn compose_cmd<const N: usize>(args: [&str; N]) -> RuntimeCommand {
     RuntimeCommand::new("docker").arg("compose").args(args)
+}
+
+fn compose_build_command(
+    project: &ComposeCommandPlan,
+    options: ComposeBuildOptions,
+    services: &[String],
+) -> RuntimeCommand {
+    let mut command = project.command(["build"]);
+    if options.no_cache {
+        command = command.arg("--no-cache");
+    }
+    if options.pull {
+        command = command.arg("--pull");
+    }
+    command.args(services)
+}
+
+fn compose_up_command(
+    project: &ComposeCommandPlan,
+    options: ComposeUpOptions,
+    services: &[String],
+) -> RuntimeCommand {
+    let mut command = project.command(["up", "-d"]);
+    if options.force_recreate {
+        command = command.arg("--force-recreate");
+    }
+    command.args(services)
+}
+
+fn compose_down_command(
+    project: &ComposeCommandPlan,
+    options: ComposeDownOptions,
+) -> RuntimeCommand {
+    let mut command = project.command(["down"]);
+    if options.volumes {
+        command = command.arg("--volumes");
+    }
+    if options.remove_orphans {
+        command = command.arg("--remove-orphans");
+    }
+    command
+}
+
+fn compose_target_services(primary_service: &str, run_services: Option<&[String]>) -> Vec<String> {
+    let Some(run_services) = run_services else {
+        return Vec::new();
+    };
+
+    let mut services = Vec::with_capacity(run_services.len() + 1);
+    services.push(primary_service.to_owned());
+    for service in run_services {
+        if !services.iter().any(|existing| existing == service) {
+            services.push(service.clone());
+        }
+    }
+    services
 }
 
 fn compose_project_name(workspace: &Workspace) -> String {
@@ -523,8 +671,9 @@ mod tests {
     use crate::workspace::Workspace;
 
     use super::{
-        ComposeCommandPlan, ComposeConfigModel, ComposeIntrospector, ComposeProject,
-        ComposeProjectPlan, ComposeServiceValidation, DockerComposeCli, resolve_compose_container,
+        ComposeBuildOptions, ComposeCommandPlan, ComposeConfigModel, ComposeDownOptions,
+        ComposeIntrospector, ComposeLifecyclePlan, ComposeProject, ComposeProjectPlan,
+        ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, resolve_compose_container,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
 
@@ -629,6 +778,120 @@ mod tests {
             ]
         );
         assert_eq!(command.env_value("COMPOSE_PROJECT_NAME"), None);
+    }
+
+    fn lifecycle_command_plan() -> ComposeCommandPlan {
+        ComposeCommandPlan {
+            project_name: "decune-project-abc123def456".to_owned(),
+            project_directory: PathBuf::from("/workspace"),
+            files: vec![PathBuf::from("/workspace/compose.yaml")],
+        }
+    }
+
+    #[test]
+    fn compose_lifecycle_up_without_run_services_targets_whole_project() {
+        let plan = ComposeLifecyclePlan::up(lifecycle_command_plan(), "app", None);
+        let command =
+            super::compose_up_command(&plan.project, ComposeUpOptions::default(), &plan.services);
+
+        assert!(plan.services.is_empty());
+        assert_eq!(
+            command.args_vec(),
+            &[
+                "compose",
+                "--project-name",
+                "decune-project-abc123def456",
+                "--project-directory",
+                "/workspace",
+                "-f",
+                "/workspace/compose.yaml",
+                "up",
+                "-d",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_lifecycle_up_with_run_services_includes_primary_service_first() {
+        let run_services = vec!["db".to_owned()];
+        let plan = ComposeLifecyclePlan::up(lifecycle_command_plan(), "app", Some(&run_services));
+        let command =
+            super::compose_up_command(&plan.project, ComposeUpOptions::default(), &plan.services);
+
+        assert_eq!(plan.services, ["app", "db"]);
+        assert_eq!(
+            command.args_vec().iter().rev().take(4).collect::<Vec<_>>(),
+            vec!["db", "app", "-d", "up"]
+        );
+    }
+
+    #[test]
+    fn compose_lifecycle_rebuild_maps_no_cache_pull_and_force_recreate() {
+        let run_services = vec!["db".to_owned()];
+        let plan = ComposeLifecyclePlan::up(lifecycle_command_plan(), "app", Some(&run_services));
+        let build = super::compose_build_command(
+            &plan.project,
+            ComposeBuildOptions {
+                no_cache: true,
+                pull: true,
+            },
+            &plan.services,
+        );
+        let up = super::compose_up_command(
+            &plan.project,
+            ComposeUpOptions {
+                force_recreate: true,
+            },
+            &plan.services,
+        );
+
+        assert_eq!(
+            build.args_vec().iter().rev().take(5).collect::<Vec<_>>(),
+            vec!["db", "app", "--pull", "--no-cache", "build"]
+        );
+        assert_eq!(
+            up.args_vec().iter().rev().take(5).collect::<Vec<_>>(),
+            vec!["db", "app", "--force-recreate", "-d", "up"]
+        );
+    }
+
+    #[test]
+    fn compose_lifecycle_down_keeps_state_volumes_and_images() {
+        let run_services = vec!["db".to_owned()];
+        let plan = ComposeLifecyclePlan::down(lifecycle_command_plan(), "app", Some(&run_services));
+
+        assert_eq!(plan.services, ["app", "db"]);
+        assert!(!plan.cleanup.remove_project);
+        assert!(!plan.cleanup.remove_volumes);
+        assert!(!plan.cleanup.remove_state);
+        assert!(!plan.cleanup.remove_generated_images);
+    }
+
+    #[test]
+    fn compose_clean_down_removes_project_volumes_orphans_without_rmi() {
+        let plan = ComposeLifecyclePlan::clean(lifecycle_command_plan(), false);
+        let command = super::compose_down_command(
+            &plan.project,
+            ComposeDownOptions {
+                volumes: plan.cleanup.remove_volumes,
+                remove_orphans: true,
+            },
+        );
+
+        assert!(plan.cleanup.remove_project);
+        assert!(plan.cleanup.remove_state);
+        assert!(!plan.cleanup.remove_generated_images);
+        assert!(command.args_vec().contains(&"--volumes".to_owned()));
+        assert!(command.args_vec().contains(&"--remove-orphans".to_owned()));
+        assert!(!command.args_vec().contains(&"--rmi".to_owned()));
+    }
+
+    #[test]
+    fn compose_clean_images_targets_only_decune_generated_image_policy() {
+        let plan = ComposeLifecyclePlan::clean(lifecycle_command_plan(), true);
+
+        assert!(plan.cleanup.remove_generated_images);
+        assert!(plan.services.is_empty());
     }
 
     #[test]

@@ -29,6 +29,13 @@ pub(crate) struct ForwardRuntime {
 }
 
 impl ForwardRuntime {
+    pub(crate) fn empty() -> Self {
+        Self {
+            mounts: Vec::new(),
+            cleanup_paths: Vec::new(),
+        }
+    }
+
     pub(crate) fn mounts(&self) -> &[crate::docker::mounts::DockerMountSpec] {
         &self.mounts
     }
