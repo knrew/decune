@@ -151,14 +151,6 @@ pub(crate) fn effective_user_env_probe(
     user_env_probe.unwrap_or(ResolvedUserEnvProbe::LoginInteractiveShell)
 }
 
-pub(crate) async fn inspect_exec(
-    client: &DockerClient,
-    exec_id: &str,
-    container: &str,
-) -> Result<crate::docker::container::DockerExecInspect> {
-    client.cli().exec_inspect(exec_id, container).await
-}
-
 pub(crate) fn ensure_success_output(
     container: &str,
     command: &[String],

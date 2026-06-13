@@ -183,6 +183,7 @@ pub(crate) struct ContainerInspect {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct ContainerInspectConfig {
     pub(crate) env: Option<Vec<String>>,
+    pub(crate) labels: Option<BTreeMap<String, String>>,
     pub(crate) user: Option<String>,
 }
 
@@ -203,12 +204,6 @@ pub(crate) struct ContainerMount {
     pub(crate) destination: Option<String>,
     #[serde(rename = "RW")]
     pub(crate) rw: Option<bool>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DockerExecInspect {
-    pub(crate) running: Option<bool>,
-    pub(crate) exit_code: Option<i64>,
 }
 
 #[cfg(test)]

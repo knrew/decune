@@ -19,7 +19,7 @@ use crate::{
 
 use super::{
     FORWARD_AGENT_ALLOWED_PORTS_ENV, FORWARD_AGENT_DIAGNOSTIC_NAME, FORWARD_AGENT_SECRET_ENV,
-    FORWARD_AGENT_SOCKET_NAME, FORWARD_AGENT_TARGET, FORWARD_AGENT_USER,
+    FORWARD_AGENT_SOCKET_NAME, FORWARD_AGENT_STATUS_NAME, FORWARD_AGENT_TARGET, FORWARD_AGENT_USER,
 };
 
 #[derive(Debug)]
@@ -56,6 +56,8 @@ fn prepare_forward_runtime_with_tool_dirs(
     tool_source_dirs: Option<Vec<PathBuf>>,
 ) -> Result<ForwardRuntime> {
     prepare_private_runtime_dir(runtime_dir, "port forwarding")?;
+    remove_stale_agent_start_file(runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME))?;
+    remove_stale_agent_start_file(runtime_dir.join(FORWARD_AGENT_STATUS_NAME))?;
     let agent_path = match tool_source_dirs {
         Some(source_dirs) => crate::host::container_tools::stage_container_tool_from_dirs(
             ContainerTool::ForwardAgent,
@@ -80,9 +82,23 @@ fn prepare_forward_runtime_with_tool_dirs(
             .chain([
                 runtime_dir.join(FORWARD_AGENT_SOCKET_NAME),
                 runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
+                runtime_dir.join(FORWARD_AGENT_STATUS_NAME),
             ])
             .collect(),
     })
+}
+
+fn remove_stale_agent_start_file(path: PathBuf) -> Result<()> {
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to remove stale port forwarding agent state file: {}",
+                path.display()
+            )
+        }),
+    }
 }
 
 pub(crate) fn forward_agent_command(

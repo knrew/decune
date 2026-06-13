@@ -6,7 +6,7 @@ use serde::Deserialize;
 use crate::{
     config::types::{MountType, PortProtocol},
     docker::{
-        container::{ContainerCreateSpec, ContainerInspect, DockerExecInspect},
+        container::{ContainerCreateSpec, ContainerInspect},
         image::{DockerImageInspect, DockerImageSummary},
         mounts::DockerMountSpec,
         ports::DockerPublishPort,
@@ -15,7 +15,7 @@ use crate::{
         RuntimeCommand, RuntimeCommandRunner, RuntimeOutput, RuntimeStdio, TokioRuntimeCommand,
         ensure_success,
     },
-    up::UpContainerSummary,
+    up::{UpContainerSummary, UpMountSummary},
 };
 
 #[derive(Clone)]
@@ -214,9 +214,18 @@ impl DockerCli {
         let values: Vec<DockerPsRow> = self
             .run_json_lines_command("list Docker containers", workspace_id, command)
             .await?;
-        values
+        let ids = values.into_iter().map(|row| row.id).collect::<Vec<_>>();
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let command = docker_cmd(["container", "inspect"]).args(ids.iter().map(String::as_str));
+        let containers: Vec<ContainerInspect> = self
+            .run_json_command("inspect Docker containers", workspace_id, command)
+            .await?;
+        containers
             .into_iter()
-            .map(UpContainerSummary::try_from)
+            .map(up_container_summary_from_inspect)
             .collect()
     }
 
@@ -261,18 +270,6 @@ impl DockerCli {
             .run_status(command, RuntimeStdio::Inherit)
             .await?;
         Ok(i64::from(status))
-    }
-
-    pub(crate) async fn exec_inspect(
-        &self,
-        _exec_id: &str,
-        container: &str,
-    ) -> Result<DockerExecInspect> {
-        let inspect = self.inspect_container(container).await?;
-        Ok(DockerExecInspect {
-            running: inspect.state.as_ref().and_then(|state| state.running),
-            exit_code: inspect.state.as_ref().and_then(|state| state.exit_code),
-        })
     }
 
     pub(crate) async fn list_volumes(&self, workspace_id: &str) -> Result<Vec<String>> {
@@ -499,33 +496,63 @@ fn is_not_found_or_not_running(output: &RuntimeOutput) -> bool {
 struct DockerPsRow {
     #[serde(rename = "ID")]
     id: String,
-    #[serde(rename = "Names")]
-    names: String,
-    #[serde(rename = "ImageID")]
-    image_id: Option<String>,
-    #[serde(rename = "State")]
-    state: String,
-    #[serde(default, rename = "Labels")]
-    labels: String,
 }
 
-impl TryFrom<DockerPsRow> for UpContainerSummary {
-    type Error = anyhow::Error;
+fn up_container_summary_from_inspect(container: ContainerInspect) -> Result<UpContainerSummary> {
+    let id = container
+        .id
+        .context("Docker container inspect output was missing Id")?;
+    let name = container
+        .name
+        .map(|name| name.trim_start_matches('/').to_owned())
+        .unwrap_or_else(|| id.clone());
+    let labels = container
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref());
+    let config_hash = labels
+        .and_then(|labels| labels.get("decune.config_hash"))
+        .cloned();
+    let mounts = container.mounts.map(|mounts| {
+        mounts
+            .into_iter()
+            .filter_map(up_mount_summary_from_inspect)
+            .collect()
+    });
+    let running = container
+        .state
+        .as_ref()
+        .and_then(|state| state.running)
+        .unwrap_or(false);
 
-    fn try_from(row: DockerPsRow) -> Result<Self> {
-        let config_hash = row
-            .labels
-            .split(',')
-            .filter_map(|entry| entry.split_once('='))
-            .find_map(|(key, value)| (key == "decune.config_hash").then(|| value.to_owned()));
-        Ok(Self {
-            id: row.id,
-            name: row.names,
-            image_id: row.image_id,
-            config_hash,
-            mounts: None,
-            running: row.state == "running",
-        })
+    Ok(UpContainerSummary {
+        id,
+        name,
+        image_id: container.image,
+        config_hash,
+        mounts,
+        running,
+    })
+}
+
+fn up_mount_summary_from_inspect(
+    mount: crate::docker::container::ContainerMount,
+) -> Option<UpMountSummary> {
+    let mount_type = mount_type_from_summary(mount.typ.as_deref())?;
+    Some(UpMountSummary {
+        source: mount.source,
+        target: mount.destination?,
+        mount_type,
+        read_only: !mount.rw.unwrap_or(true),
+    })
+}
+
+fn mount_type_from_summary(value: Option<&str>) -> Option<MountType> {
+    match value {
+        Some("bind") => Some(MountType::Bind),
+        Some("volume") => Some(MountType::Volume),
+        Some("tmpfs") => Some(MountType::Tmpfs),
+        _ => None,
     }
 }
 
@@ -548,13 +575,10 @@ impl DockerMountCliExt for DockerMountSpec {
         if let Some(consistency) = &self.consistency {
             fields.push(format!("consistency={consistency}"));
         }
-        if let Some(bind_options) = &self.bind_options {
-            if let Some(propagation) = bind_options.propagation {
-                fields.push(format!("bind-propagation={}", propagation.as_str()));
-            }
-            if bind_options.create_mountpoint == Some(true) {
-                fields.push("bind-create".to_owned());
-            }
+        if let Some(bind_options) = &self.bind_options
+            && let Some(propagation) = bind_options.propagation
+        {
+            fields.push(format!("bind-propagation={}", propagation.as_str()));
         }
         if let Some(volume_options) = &self.volume_options {
             if volume_options.no_copy == Some(true) {
@@ -619,16 +643,21 @@ impl DockerPublishCliExt for DockerPublishPort {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, path::Path};
+    use std::{collections::BTreeMap, path::Path, sync::Arc};
 
     use crate::{
         config::types::{MountType, PortProtocol},
         docker::{
             container::{ContainerCreateSpec, ContainerHostConfig},
-            mounts::DockerMountSpec,
+            mounts::{DockerMountSpec, MountBindOptions},
             ports::DockerPublishPort,
         },
-        runtime::docker_cli::{DockerBuildCliInput, docker_build_command, docker_create_command},
+        runtime::{
+            command::{FakeRuntimeCommand, RuntimeOutput},
+            docker_cli::{
+                DockerBuildCliInput, DockerCli, docker_build_command, docker_create_command,
+            },
+        },
     };
 
     #[test]
@@ -695,5 +724,111 @@ mod tests {
         assert!(command.args_vec().contains(&"--mount".to_owned()));
         assert!(command.args_vec().contains(&"--publish".to_owned()));
         assert!(!command.sanitized_display().contains("sh -c docker"));
+    }
+
+    #[test]
+    fn docker_create_command_does_not_emit_unsupported_bind_create_field() {
+        let spec = ContainerCreateSpec {
+            image: "alpine:3.20".to_owned(),
+            name: "decune-test".to_owned(),
+            entrypoint: None,
+            command: None,
+            labels: BTreeMap::new(),
+            env: BTreeMap::new(),
+            working_dir: None,
+            user: None,
+            mounts: vec![DockerMountSpec {
+                source: Some("/host/generated/cache".to_owned()),
+                target: "/cache".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+                consistency: None,
+                bind_options: Some(MountBindOptions {
+                    create_mountpoint: Some(true),
+                    ..MountBindOptions::default()
+                }),
+                volume_options: None,
+            }],
+            publish_ports: Vec::new(),
+            host_config: ContainerHostConfig::default(),
+        };
+
+        let command = docker_create_command(&spec);
+
+        let mount = command
+            .args_vec()
+            .windows(2)
+            .find_map(|args| (args[0] == "--mount").then_some(args[1].as_str()))
+            .expect("expected --mount argument");
+        assert!(!mount.contains("bind-create"));
+    }
+
+    #[test]
+    fn list_workspace_containers_preserves_inspected_mounts_for_reuse() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(
+                br#"[{
+                    "Id": "container-id",
+                    "Name": "/decune-project",
+                    "Image": "sha256:image",
+                    "Config": {
+                        "Labels": {
+                            "decune.config_hash": "hash123"
+                        }
+                    },
+                    "State": {
+                        "Running": true,
+                        "ExitCode": 0,
+                        "Pid": 1234
+                    },
+                    "Mounts": [{
+                        "Type": "bind",
+                        "Source": "/tmp/ssh-agent.sock",
+                        "Destination": "/run/decune/ssh-agent.sock",
+                        "RW": true
+                    }]
+                }]"#,
+            )),
+            Ok(output(
+                br#"{"ID":"container-id","Names":"decune-project","ImageID":"sha256:image","State":"running","Labels":"decune.config_hash=hash123"}"#,
+            )),
+        ]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let containers = runtime
+            .block_on(client.list_workspace_containers("workspace123"))
+            .unwrap();
+
+        assert_eq!(containers.len(), 1);
+        let container = &containers[0];
+        assert_eq!(container.id, "container-id");
+        assert_eq!(container.name, "decune-project");
+        assert_eq!(container.config_hash.as_deref(), Some("hash123"));
+        assert!(container.running);
+        assert_eq!(container.mounts.as_ref().unwrap().len(), 1);
+        let mount = &container.mounts.as_ref().unwrap()[0];
+        assert_eq!(mount.source.as_deref(), Some("/tmp/ssh-agent.sock"));
+        assert_eq!(mount.target, "/run/decune/ssh-agent.sock");
+        assert_eq!(mount.mount_type, MountType::Bind);
+        assert!(!mount.read_only);
+
+        let commands = runner.commands();
+        assert_eq!(commands[0].args_vec()[0], "ps");
+        assert_eq!(
+            commands[1].args_vec(),
+            ["container", "inspect", "container-id"]
+        );
+    }
+
+    fn output(stdout: &[u8]) -> RuntimeOutput {
+        RuntimeOutput {
+            stdout: stdout.to_vec(),
+            stderr: Vec::new(),
+            exit_code: 0,
+        }
     }
 }
