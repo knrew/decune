@@ -174,16 +174,18 @@ fn sync_started_state(
     lifecycle_path: LifecycleRunPath,
 ) -> Result<WorkspaceState> {
     let container = state_container_snapshot(plan, outcome.container_id.clone());
+    let compose_project_name = state_compose_project_name(plan);
     match lifecycle_path {
-        LifecycleRunPath::New => state::sync_state_with_container(
+        LifecycleRunPath::New => state::sync_state_with_container_and_compose_project(
             workspace.paths().state_dir(),
             workspace.root(),
             container,
+            compose_project_name,
             LifecycleState::default(),
         ),
         LifecycleRunPath::Started | LifecycleRunPath::Running => {
             let existing = reusable_lifecycle_state(workspace, &container)?;
-            write_reused_started_state(workspace, container, existing)
+            write_reused_started_state(workspace, container, compose_project_name, existing)
         }
     }
 }
@@ -209,15 +211,23 @@ fn reusable_lifecycle_state(
 fn write_reused_started_state(
     workspace: &Workspace,
     container: StateContainerSnapshot,
+    compose_project_name: Option<String>,
     existing: WorkspaceState,
 ) -> Result<WorkspaceState> {
     state::write_state_for_container(
         workspace.paths().state_dir(),
         workspace.root(),
         container,
+        compose_project_name,
         existing.lifecycle,
         Some(existing.created_at),
     )
+}
+
+fn state_compose_project_name(plan: &UpPlan) -> Option<String> {
+    plan.compose_project
+        .as_ref()
+        .map(|project| project.project_name().to_owned())
 }
 
 fn state_container_snapshot(plan: &UpPlan, container_id: String) -> StateContainerSnapshot {
@@ -650,7 +660,12 @@ async fn start_compose_project(
             .await?;
             let container = state_container_snapshot(&plan, id.clone());
             let existing_state = reusable_lifecycle_state(&workspace, &container)?;
-            let state = write_reused_started_state(&workspace, container, existing_state)?;
+            let state = write_reused_started_state(
+                &workspace,
+                container,
+                state_compose_project_name(&plan),
+                existing_state,
+            )?;
             let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
@@ -1014,7 +1029,12 @@ async fn start_stopped_existing_container(
     )
     .await?;
 
-    let state = write_reused_started_state(workspace, container, existing_state)?;
+    let state = write_reused_started_state(
+        workspace,
+        container,
+        state_compose_project_name(plan),
+        existing_state,
+    )?;
     Ok((
         UpOutcome {
             container_id,
@@ -1379,10 +1399,11 @@ fn persist_initial_container_state(
     plan: &UpPlan,
     container_id: &str,
 ) -> Result<WorkspaceState> {
-    state::sync_state_with_container(
+    state::sync_state_with_container_and_compose_project(
         workspace.paths().state_dir(),
         workspace.root(),
         state_container_snapshot(plan, container_id.to_owned()),
+        state_compose_project_name(plan),
         LifecycleState::default(),
     )
 }

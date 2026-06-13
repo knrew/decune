@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
@@ -51,25 +52,40 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
     let client = DockerClient::connect_from_env()?;
+    let mut compose_project_names = compose_fallback_project_names(&workspace, &client).await?;
     let mut stopped_compose_project = false;
-    if let Some(plan) =
-        compose_lifecycle_plan(&workspace, ComposeLifecycleCommand::Down, &client).await?
-    {
-        DockerComposeCli::default()
-            .stop(
-                &plan.project,
-                ComposeStopOptions {
-                    timeout_seconds: Some(timeout_seconds),
-                },
-                &plan.services,
-            )
-            .await?;
-        ui::done(&format!(
-            "Stopped Docker Compose project: {}",
-            plan.project.project_name
-        ));
-        stopped_compose_project = true;
+    match compose_lifecycle_plan(&workspace, ComposeLifecycleCommand::Down, &client).await {
+        Ok(Some(plan)) => {
+            push_unique(
+                &mut compose_project_names,
+                plan.project.project_name.clone(),
+            );
+            DockerComposeCli::default()
+                .stop(
+                    &plan.project,
+                    ComposeStopOptions {
+                        timeout_seconds: Some(timeout_seconds),
+                    },
+                    &plan.services,
+                )
+                .await?;
+            ui::done(&format!(
+                "Stopped Docker Compose project: {}",
+                plan.project.project_name
+            ));
+            stopped_compose_project = true;
+        }
+        Ok(None) => {}
+        Err(error) if compose_project_names.is_empty() => return Err(error),
+        Err(error) => {
+            ui::warn(&format!(
+                "Falling back to Docker labels because Docker Compose lifecycle planning failed: {error:#}"
+            ));
+        }
     }
+
+    stopped_compose_project |=
+        stop_compose_project_containers(&client, &compose_project_names, timeout_seconds).await?;
 
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
@@ -94,32 +110,48 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
     let client = DockerClient::connect_from_env()?;
+    let mut compose_project_names = compose_fallback_project_names(&workspace, &client).await?;
     let mut remove_generated_images = options.images;
-    if let Some(plan) = compose_lifecycle_plan(
+    match compose_lifecycle_plan(
         &workspace,
         ComposeLifecycleCommand::Clean {
             images: options.images,
         },
         &client,
     )
-    .await?
+    .await
     {
-        DockerComposeCli::default()
-            .down(
-                &plan.project,
-                ComposeDownOptions {
-                    volumes: plan.cleanup.remove_volumes,
-                    remove_orphans: true,
-                },
-            )
-            .await?;
-        ui::done(&format!(
-            "Removed Docker Compose project: {}",
-            plan.project.project_name
-        ));
+        Ok(Some(plan)) => {
+            push_unique(
+                &mut compose_project_names,
+                plan.project.project_name.clone(),
+            );
+            DockerComposeCli::default()
+                .down(
+                    &plan.project,
+                    ComposeDownOptions {
+                        volumes: plan.cleanup.remove_volumes,
+                        remove_orphans: true,
+                    },
+                )
+                .await?;
+            ui::done(&format!(
+                "Removed Docker Compose project: {}",
+                plan.project.project_name
+            ));
 
-        remove_generated_images |= plan.cleanup.remove_generated_images;
+            remove_generated_images |= plan.cleanup.remove_generated_images;
+        }
+        Ok(None) => {}
+        Err(error) if compose_project_names.is_empty() => return Err(error),
+        Err(error) => {
+            ui::warn(&format!(
+                "Falling back to Docker labels because Docker Compose lifecycle planning failed: {error:#}"
+            ));
+        }
     }
+
+    remove_compose_project_resources(&client, &compose_project_names).await?;
 
     let containers = list_managed_containers(&client, workspace.id()).await?;
 
@@ -219,6 +251,125 @@ async fn list_managed_containers(
             name: container.name,
         })
         .collect())
+}
+
+async fn compose_fallback_project_names(
+    workspace: &Workspace,
+    client: &DockerClient,
+) -> Result<Vec<String>> {
+    let mut project_names = BTreeSet::new();
+    if let Some(project_name) = load_state_file(workspace.paths().state_dir())
+        .ok()
+        .flatten()
+        .and_then(|state| state.compose_project_name)
+        .filter(|project_name| !project_name.trim().is_empty())
+    {
+        project_names.insert(project_name);
+    }
+
+    for project_name in client
+        .cli()
+        .list_workspace_compose_project_names(workspace.id())
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to list Docker Compose projects for workspace: {}",
+                workspace.id()
+            )
+        })?
+    {
+        project_names.insert(project_name);
+    }
+
+    Ok(project_names.into_iter().collect())
+}
+
+async fn stop_compose_project_containers(
+    client: &DockerClient,
+    project_names: &[String],
+    timeout_seconds: i32,
+) -> Result<bool> {
+    let mut found = false;
+    for project_name in project_names {
+        let containers = client
+            .cli()
+            .list_containers_for_compose_project(project_name)
+            .await
+            .with_context(|| {
+                format!("Failed to list Docker Compose containers for project: {project_name}")
+            })?;
+        found |= !containers.is_empty();
+        for container in containers.into_iter().filter(|container| container.running) {
+            stop_container(client, &container.id, timeout_seconds).await?;
+            ui::done(&format!(
+                "Stopped Docker Compose container: {}",
+                container.name
+            ));
+        }
+    }
+    Ok(found)
+}
+
+async fn remove_compose_project_resources(
+    client: &DockerClient,
+    project_names: &[String],
+) -> Result<()> {
+    for project_name in project_names {
+        let containers = client
+            .cli()
+            .list_containers_for_compose_project(project_name)
+            .await
+            .with_context(|| {
+                format!("Failed to list Docker Compose containers for project: {project_name}")
+            })?;
+        for container in containers {
+            if container.running {
+                stop_container(client, &container.id, DEFAULT_STOP_TIMEOUT_SECONDS).await?;
+            }
+            remove_container(client, &container.id, true, true).await?;
+            ui::done(&format!(
+                "Removed Docker Compose container: {}",
+                container.name
+            ));
+        }
+
+        for volume in client
+            .cli()
+            .list_compose_project_volumes(project_name)
+            .await
+            .with_context(|| {
+                format!("Failed to list Docker Compose volumes for project: {project_name}")
+            })?
+        {
+            remove_volume(client, &volume, true).await?;
+            ui::done(&format!("Removed Docker volume: {volume}"));
+        }
+
+        for network in client
+            .cli()
+            .list_compose_project_networks(project_name)
+            .await
+            .with_context(|| {
+                format!("Failed to list Docker Compose networks for project: {project_name}")
+            })?
+        {
+            client
+                .cli()
+                .remove_network(&network)
+                .await
+                .with_context(|| format!("Failed to remove Docker network: {network}"))?;
+            ui::done(&format!("Removed Docker network: {network}"));
+        }
+    }
+
+    Ok(())
+}
+
+fn push_unique(values: &mut Vec<String>, value: String) {
+    if !values.iter().any(|existing| existing == &value) {
+        values.push(value);
+        values.sort();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

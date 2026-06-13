@@ -26,6 +26,8 @@ pub(crate) struct WorkspaceState {
     pub(crate) config_hash: String,
     #[serde(default)]
     pub(crate) config_file: Option<String>,
+    #[serde(default)]
+    pub(crate) compose_project_name: Option<String>,
     pub(crate) created_at: String,
     pub(crate) last_started_at: String,
     #[serde(default)]
@@ -137,10 +139,27 @@ pub(crate) fn load_state_file(state_dir: impl AsRef<Path>) -> Result<Option<Work
     Ok(Some(state))
 }
 
+#[cfg(test)]
 pub(crate) fn sync_state_with_container(
     state_dir: impl AsRef<Path>,
     workspace_root: &Path,
     container: StateContainerSnapshot,
+    default_lifecycle: LifecycleState,
+) -> Result<WorkspaceState> {
+    sync_state_with_container_and_compose_project(
+        state_dir,
+        workspace_root,
+        container,
+        None,
+        default_lifecycle,
+    )
+}
+
+pub(crate) fn sync_state_with_container_and_compose_project(
+    state_dir: impl AsRef<Path>,
+    workspace_root: &Path,
+    container: StateContainerSnapshot,
+    compose_project_name: Option<String>,
     default_lifecycle: LifecycleState,
 ) -> Result<WorkspaceState> {
     let state_dir = state_dir.as_ref();
@@ -160,6 +179,7 @@ pub(crate) fn sync_state_with_container(
         state_dir,
         workspace_root,
         container,
+        compose_project_name,
         lifecycle,
         Some(created_at),
     )
@@ -169,6 +189,7 @@ pub(crate) fn write_state_for_container(
     state_dir: impl AsRef<Path>,
     workspace_root: &Path,
     container: StateContainerSnapshot,
+    compose_project_name: Option<String>,
     lifecycle: LifecycleState,
     created_at: Option<String>,
 ) -> Result<WorkspaceState> {
@@ -181,6 +202,7 @@ pub(crate) fn write_state_for_container(
         image: container.image,
         config_hash: container.config_hash,
         config_file: container.config_file,
+        compose_project_name,
         created_at: created_at.unwrap_or_else(|| now.clone()),
         last_started_at: now,
         lifecycle,
@@ -314,7 +336,8 @@ mod tests {
 
     use super::{
         LifecycleState, StateContainerSnapshot, load_state_file, reconcile_state_without_container,
-        remove_state_runtime_dirs, state_file_path, sync_state_with_container, write_state_file,
+        remove_state_runtime_dirs, state_file_path, sync_state_with_container,
+        sync_state_with_container_and_compose_project, write_state_file,
     };
 
     #[test]
@@ -373,6 +396,46 @@ mod tests {
             .filter(|entry| entry.file_name().to_string_lossy().contains(".tmp."))
             .count();
         assert_eq!(temp_files, 0);
+    }
+
+    #[test]
+    fn state_can_persist_compose_project_name_without_requiring_it_in_legacy_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let state = sync_state_with_container_and_compose_project(
+            &state_dir,
+            Path::new("/workspace/project"),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "decune/project:hash-a".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+            },
+            Some("decune-project-abc123".to_owned()),
+            LifecycleState::default(),
+        )
+        .unwrap();
+
+        let state_file = state_file_path(&state_dir);
+        let content = fs::read_to_string(&state_file).unwrap();
+        assert!(content.contains("compose_project_name = \"decune-project-abc123\""));
+        assert_eq!(
+            load_state_file(&state_dir)
+                .unwrap()
+                .and_then(|state| state.compose_project_name),
+            Some("decune-project-abc123".to_owned())
+        );
+
+        let legacy = content
+            .lines()
+            .filter(|line| !line.starts_with("compose_project_name = "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&state_file, legacy).unwrap();
+
+        let legacy_state = load_state_file(&state_dir).unwrap().unwrap();
+        assert_eq!(legacy_state.compose_project_name, None);
+        assert_eq!(legacy_state.container_id, state.container_id);
     }
 
     #[test]

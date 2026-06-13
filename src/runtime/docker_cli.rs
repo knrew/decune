@@ -257,6 +257,44 @@ impl DockerCli {
         .await
     }
 
+    pub(crate) async fn list_workspace_compose_project_names(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<String>> {
+        let containers = self
+            .list_workspace_container_inspects_with_filters(workspace_id, &[])
+            .await?;
+        let mut project_names = containers
+            .iter()
+            .filter_map(|container| {
+                container
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.labels.as_ref())
+                    .and_then(compose_project_name_from_labels)
+            })
+            .collect::<Vec<_>>();
+        project_names.sort();
+        project_names.dedup();
+        Ok(project_names)
+    }
+
+    pub(crate) async fn list_containers_for_compose_project(
+        &self,
+        project_name: &str,
+    ) -> Result<Vec<UpContainerSummary>> {
+        let containers = self
+            .list_container_inspects_with_filters(
+                project_name,
+                &[format!("label=com.docker.compose.project={project_name}")],
+            )
+            .await?;
+        containers
+            .into_iter()
+            .map(up_container_summary_from_inspect)
+            .collect()
+    }
+
     async fn list_workspace_containers_with_filters(
         &self,
         workspace_id: &str,
@@ -274,17 +312,28 @@ impl DockerCli {
         workspace_id: &str,
         extra_filters: &[String],
     ) -> Result<Vec<ContainerInspect>> {
-        let mut command = docker_cmd(["ps", "--all"])
-            .arg("--filter")
-            .arg("label=decune.managed=true")
-            .arg("--filter")
-            .arg(format!("label=decune.workspace_id={workspace_id}"));
-        for filter in extra_filters {
+        let mut filters = vec![
+            "label=decune.managed=true".to_owned(),
+            format!("label=decune.workspace_id={workspace_id}"),
+        ];
+        filters.extend(extra_filters.iter().cloned());
+
+        self.list_container_inspects_with_filters(workspace_id, &filters)
+            .await
+    }
+
+    async fn list_container_inspects_with_filters(
+        &self,
+        target: &str,
+        filters: &[String],
+    ) -> Result<Vec<ContainerInspect>> {
+        let mut command = docker_cmd(["ps", "--all"]);
+        for filter in filters {
             command = command.arg("--filter").arg(filter);
         }
         command = command.arg("--format").arg("json");
         let values: Vec<DockerPsRow> = self
-            .run_json_lines_command("list Docker containers", workspace_id, command)
+            .run_json_lines_command("list Docker containers", target, command)
             .await?;
         let ids = values.into_iter().map(|row| row.id).collect::<Vec<_>>();
         if ids.is_empty() {
@@ -292,8 +341,61 @@ impl DockerCli {
         }
 
         let command = docker_cmd(["container", "inspect"]).args(ids.iter().map(String::as_str));
-        self.run_json_command("inspect Docker containers", workspace_id, command)
+        self.run_json_command("inspect Docker containers", target, command)
             .await
+    }
+
+    pub(crate) async fn list_compose_project_volumes(
+        &self,
+        project_name: &str,
+    ) -> Result<Vec<String>> {
+        let command = docker_cmd([
+            "volume",
+            "ls",
+            "--filter",
+            &format!("label=com.docker.compose.project={project_name}"),
+            "--format",
+            "{{.Name}}",
+        ]);
+        let output = self.runner.run_capture(command.clone()).await?;
+        ensure_success(
+            "list Docker Compose volumes",
+            project_name,
+            &command,
+            &output,
+        )?;
+        Ok(lines_from_output(output.stdout_string()?))
+    }
+
+    pub(crate) async fn list_compose_project_networks(
+        &self,
+        project_name: &str,
+    ) -> Result<Vec<String>> {
+        let command = docker_cmd([
+            "network",
+            "ls",
+            "--filter",
+            &format!("label=com.docker.compose.project={project_name}"),
+            "--format",
+            "{{.Name}}",
+        ]);
+        let output = self.runner.run_capture(command.clone()).await?;
+        ensure_success(
+            "list Docker Compose networks",
+            project_name,
+            &command,
+            &output,
+        )?;
+        Ok(lines_from_output(output.stdout_string()?))
+    }
+
+    pub(crate) async fn remove_network(&self, network: &str) -> Result<()> {
+        self.run_ok_or_not_found(
+            "remove Docker network",
+            network,
+            docker_cmd(["network", "rm", network]),
+        )
+        .await
     }
 
     pub(crate) async fn exec_capture(
@@ -584,6 +686,22 @@ fn is_not_found_or_not_running(output: &RuntimeOutput) -> bool {
     is_not_found(output) || stderr.contains("is not running")
 }
 
+fn lines_from_output(output: String) -> Vec<String> {
+    output
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn compose_project_name_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
+    labels
+        .get("com.docker.compose.project")
+        .filter(|project_name| !project_name.trim().is_empty())
+        .cloned()
+}
+
 #[derive(Debug, Deserialize)]
 struct DockerPsRow {
     #[serde(rename = "ID")]
@@ -789,6 +907,25 @@ mod tests {
             },
         },
     };
+
+    #[test]
+    fn compose_project_name_is_extracted_only_from_non_empty_label() {
+        let labels = BTreeMap::from([(
+            "com.docker.compose.project".to_owned(),
+            "decune-project-abc123".to_owned(),
+        )]);
+        assert_eq!(
+            super::compose_project_name_from_labels(&labels),
+            Some("decune-project-abc123".to_owned())
+        );
+
+        let empty = BTreeMap::from([("com.docker.compose.project".to_owned(), "".to_owned())]);
+        assert_eq!(super::compose_project_name_from_labels(&empty), None);
+        assert_eq!(
+            super::compose_project_name_from_labels(&BTreeMap::new()),
+            None
+        );
+    }
 
     #[test]
     fn docker_build_command_uses_argv_for_dockerfile_plan() {
