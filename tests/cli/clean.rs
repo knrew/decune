@@ -66,7 +66,7 @@ fn down_and_clean_manage_image_container() {
                 containers[0]
                     .state
                     .as_ref()
-                    .is_some_and(|state| state.to_string() == "running")
+                    .is_some_and(|state| state == "running")
             );
         });
 
@@ -322,7 +322,7 @@ fn clean_without_force_fails_non_interactive_without_removing_managed_container(
                 containers[0]
                     .state
                     .as_ref()
-                    .is_some_and(|state| state.to_string() == "running")
+                    .is_some_and(|state| state == "running")
             );
         });
     });

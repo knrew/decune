@@ -1,6 +1,5 @@
 use assert_cmd::Command;
 
-pub(crate) use bollard::Docker;
 pub(crate) use predicates::prelude::*;
 pub(crate) use std::{
     fs,

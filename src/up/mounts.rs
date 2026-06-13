@@ -1,7 +1,6 @@
 use std::path::Path;
 
 use anyhow::{Context, Result, bail};
-use bollard::models::{MountBindOptions, MountVolumeOptions};
 
 use crate::{
     config::{
@@ -12,7 +11,8 @@ use crate::{
     docker::{
         dotfiles::dotfile_mount_specs,
         mounts::{
-            DockerMountSpec, config_mount_specs, devcontainer_mount_spec, normalize_container_path,
+            DockerMountSpec, MountBindOptions, MountVolumeOptions, config_mount_specs,
+            devcontainer_mount_spec, normalize_container_path,
         },
     },
     workspace::Workspace,

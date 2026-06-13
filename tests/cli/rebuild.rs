@@ -63,7 +63,7 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
                 containers[0]
                     .state
                     .as_ref()
-                    .is_some_and(|state| state.to_string() == "running")
+                    .is_some_and(|state| state == "running")
             );
 
             let volumes = workspace_volumes(&workspace_root).await.unwrap();

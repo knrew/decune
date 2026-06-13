@@ -48,7 +48,7 @@ fn up_detach_creates_and_reuses_image_container() {
                 containers[0]
                     .state
                     .as_ref()
-                    .is_some_and(|state| state.to_string() == "running")
+                    .is_some_and(|state| state == "running")
             );
         });
     });
@@ -1452,7 +1452,7 @@ fn up_detach_rejects_changed_create_config_without_replacing_container() {
                 containers[0]
                     .state
                     .as_ref()
-                    .is_some_and(|state| state.to_string() == "running")
+                    .is_some_and(|state| state == "running")
             );
         });
     });

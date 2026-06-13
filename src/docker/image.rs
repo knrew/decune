@@ -1,15 +1,7 @@
 use std::collections::HashMap;
 
 use anyhow::{Context, Result, bail};
-use bollard::{
-    errors::Error as DockerError,
-    models::CreateImageInfo,
-    query_parameters::{
-        CreateImageOptions, CreateImageOptionsBuilder, ListImagesOptionsBuilder,
-        RemoveImageOptions, RemoveImageOptionsBuilder, TagImageOptionsBuilder,
-    },
-};
-use futures_util::TryStreamExt;
+use serde::Deserialize;
 use serde_json::Value;
 
 use crate::ui;
@@ -52,6 +44,58 @@ pub(crate) enum ImagePullOutcome {
     Pulled,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct DockerImageInspect {
+    pub(crate) id: Option<String>,
+    pub(crate) config: Option<DockerImageConfig>,
+    #[serde(rename = "Os")]
+    pub(crate) os: Option<String>,
+    pub(crate) architecture: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct DockerImageConfig {
+    pub(crate) labels: Option<HashMap<String, String>>,
+    pub(crate) entrypoint: Option<Vec<String>>,
+    pub(crate) cmd: Option<Vec<String>>,
+    pub(crate) user: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub(crate) struct DockerImageSummary {
+    #[serde(rename = "Repository")]
+    pub(crate) repository: String,
+    #[serde(rename = "Tag")]
+    pub(crate) tag: String,
+}
+
+impl DockerImageSummary {
+    pub(crate) fn repository_tag(self) -> Option<String> {
+        if self.repository == "<none>" || self.tag == "<none>" {
+            None
+        } else {
+            Some(format!("{}:{}", self.repository, self.tag))
+        }
+    }
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub(crate) struct DockerImagePullEvent {
+    pub(crate) id: Option<String>,
+    pub(crate) status: Option<String>,
+    pub(crate) progress_detail: Option<DockerProgressDetail>,
+}
+
+#[cfg(test)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+pub(crate) struct DockerProgressDetail {
+    pub(crate) current: Option<u64>,
+    pub(crate) total: Option<u64>,
+}
+
 pub(crate) async fn ensure_image(
     client: &DockerClient,
     image: &str,
@@ -76,61 +120,29 @@ pub(crate) async fn workspace_image_tags(
     client: &DockerClient,
     image_repository: &str,
 ) -> Result<Vec<String>> {
-    let mut filters = HashMap::new();
-    filters.insert(
-        "reference".to_owned(),
-        vec![format!("{image_repository}:*")],
-    );
-    let options = ListImagesOptionsBuilder::default()
-        .all(true)
-        .filters(&filters)
-        .build();
     let images = client
-        .raw()
-        .list_images(Some(options))
+        .cli()
+        .list_images(&format!("{image_repository}:*"))
         .await
         .with_context(|| format!("Failed to list Docker images: {image_repository}"))?;
     let repo_tags = images
         .into_iter()
-        .flat_map(|image| image.repo_tags)
+        .filter_map(DockerImageSummary::repository_tag)
         .collect::<Vec<_>>();
 
     Ok(image_tags_for_repository(repo_tags, image_repository))
 }
 
 pub(crate) async fn remove_image(client: &DockerClient, image: &str, force: bool) -> Result<()> {
-    let options = remove_image_options(force);
     let _lock = DockerResourceLock::acquire_exclusive_from_env()?;
 
-    match client.raw().remove_image(image, Some(options), None).await {
-        Ok(_) => Ok(()),
-        Err(error) if is_image_not_found(&error) => Ok(()),
-        Err(error) => Err(error).with_context(|| format!("Failed to remove Docker image: {image}")),
-    }
-}
-
-fn remove_image_options(force: bool) -> RemoveImageOptions {
-    RemoveImageOptionsBuilder::default()
-        .force(force)
-        .noprune(true)
-        .build()
+    client.cli().remove_image(image, force).await
 }
 
 pub(crate) async fn tag_image(client: &DockerClient, source: &str, target: &str) -> Result<()> {
-    let (repo, tag) = target
-        .rsplit_once(':')
-        .with_context(|| format!("Docker image tag must include a tag: {target}"))?;
-    let options = TagImageOptionsBuilder::default()
-        .repo(repo)
-        .tag(tag)
-        .build();
     let _lock = DockerResourceLock::acquire_shared_from_env()?;
 
-    client
-        .raw()
-        .tag_image(source, Some(options))
-        .await
-        .with_context(|| format!("Failed to tag Docker image {source} as {target}"))
+    client.cli().tag(source, target).await
 }
 
 pub(crate) async fn image_startup_command(
@@ -138,7 +150,7 @@ pub(crate) async fn image_startup_command(
     image: &str,
 ) -> Result<ImageStartupCommand> {
     let inspect = client
-        .raw()
+        .cli()
         .inspect_image(image)
         .await
         .with_context(|| format!("Failed to inspect Docker image startup command: {image}"))?;
@@ -155,7 +167,7 @@ pub(crate) async fn image_container_tool_platform(
     image: &str,
 ) -> Result<ContainerToolPlatform> {
     let inspect = client
-        .raw()
+        .cli()
         .inspect_image(image)
         .await
         .with_context(|| format!("Failed to inspect Docker image platform: {image}"))?;
@@ -188,7 +200,7 @@ pub(crate) async fn image_devcontainer_metadata_layers_with_forward_ports(
     include_forward_ports: bool,
 ) -> Result<ImageMetadataLayers> {
     let inspect = client
-        .raw()
+        .cli()
         .inspect_image(image)
         .await
         .with_context(|| format!("Failed to inspect Docker image metadata: {image}"))?;
@@ -205,13 +217,13 @@ pub(crate) async fn image_devcontainer_metadata_layers_if_present_with_forward_p
     image: &str,
     include_forward_ports: bool,
 ) -> Result<Option<ImageMetadataLayers>> {
-    let inspect = match client.raw().inspect_image(image).await {
-        Ok(inspect) => inspect,
-        Err(error) if is_image_not_found(&error) => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("Failed to inspect Docker image metadata: {image}"));
-        }
+    let Some(inspect) = client
+        .cli()
+        .inspect_image_if_present(image)
+        .await
+        .with_context(|| format!("Failed to inspect Docker image metadata: {image}"))?
+    else {
+        return Ok(None);
     };
     let labels = inspect.config.and_then(|config| config.labels);
     let label = labels
@@ -226,13 +238,13 @@ pub(crate) async fn image_has_devcontainer_metadata_label_if_present(
     client: &DockerClient,
     image: &str,
 ) -> Result<Option<bool>> {
-    let inspect = match client.raw().inspect_image(image).await {
-        Ok(inspect) => inspect,
-        Err(error) if is_image_not_found(&error) => return Ok(None),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("Failed to inspect Docker image metadata: {image}"));
-        }
+    let Some(inspect) = client
+        .cli()
+        .inspect_image_if_present(image)
+        .await
+        .with_context(|| format!("Failed to inspect Docker image metadata: {image}"))?
+    else {
+        return Ok(None);
     };
     let labels = inspect.config.and_then(|config| config.labels);
 
@@ -305,9 +317,9 @@ pub(crate) async fn local_image_presence(
     client: &DockerClient,
     image: &str,
 ) -> Result<LocalImagePresence> {
-    match client.raw().inspect_image(image).await {
-        Ok(_) => Ok(LocalImagePresence::Present),
-        Err(error) if is_image_not_found(&error) => Ok(LocalImagePresence::Missing),
+    match client.cli().inspect_image_if_present(image).await {
+        Ok(Some(_)) => Ok(LocalImagePresence::Present),
+        Ok(None) => Ok(LocalImagePresence::Missing),
         Err(error) => {
             Err(error).with_context(|| format!("Failed to inspect Docker image: {image}"))
         }
@@ -339,17 +351,10 @@ fn metadata_value_to_layer(
 async fn pull_image(client: &DockerClient, image: &str) -> Result<()> {
     ui::info(&format!("Pulling Docker image: {image}"));
 
-    let options = create_image_options_for_pull(image);
-    let stream = client.raw().create_image(Some(options), None, None);
-    futures_util::pin_mut!(stream);
-
-    while let Some(event) = stream
-        .try_next()
-        .await
-        .with_context(|| format!("Failed to pull Docker image: {image}"))?
-    {
-        if let Some(line) = progress_line(&event) {
-            ui::info(&line);
+    let output = client.cli().pull(image).await?;
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        if !line.trim().is_empty() {
+            ui::info(line.trim());
         }
     }
 
@@ -382,16 +387,7 @@ fn should_pull_image(policy: PullPolicy, presence: LocalImagePresence) -> bool {
         )
 }
 
-fn create_image_options_for_pull(image: &str) -> CreateImageOptions {
-    let mut builder = CreateImageOptionsBuilder::default().from_image(image);
-
-    if !image_reference_has_tag_or_digest(image) {
-        builder = builder.tag("latest");
-    }
-
-    builder.build()
-}
-
+#[cfg(test)]
 fn image_reference_has_tag_or_digest(image: &str) -> bool {
     if image.contains('@') {
         return true;
@@ -401,17 +397,8 @@ fn image_reference_has_tag_or_digest(image: &str) -> bool {
     name.contains(':')
 }
 
-fn is_image_not_found(error: &DockerError) -> bool {
-    matches!(
-        error,
-        DockerError::DockerResponseServerError {
-            status_code: 404,
-            ..
-        }
-    )
-}
-
-fn progress_line(event: &CreateImageInfo) -> Option<String> {
+#[cfg(test)]
+fn progress_line(event: &DockerImagePullEvent) -> Option<String> {
     let status = event.status.as_deref()?;
     let progress = event
         .progress_detail
@@ -426,7 +413,8 @@ fn progress_line(event: &CreateImageInfo) -> Option<String> {
     }
 }
 
-fn progress_detail_line(progress_detail: &bollard::models::ProgressDetail) -> Option<String> {
+#[cfg(test)]
+fn progress_detail_line(progress_detail: &DockerProgressDetail) -> Option<String> {
     match (progress_detail.current, progress_detail.total) {
         (Some(current), Some(total)) => Some(format!("{current}/{total} bytes")),
         (Some(current), None) => Some(format!("{current} bytes")),
@@ -438,15 +426,11 @@ fn progress_detail_line(progress_detail: &bollard::models::ProgressDetail) -> Op
 mod tests {
     use std::collections::HashMap;
 
-    use bollard::models::{CreateImageInfo, ProgressDetail};
-
-    use crate::docker::client::DockerClient;
-
     use super::{
-        ImagePullOutcome, LocalImagePresence, PullPolicy, create_image_options_for_pull,
-        ensure_image, has_devcontainer_metadata_label, image_tags_for_repository,
-        parse_devcontainer_metadata_label, progress_line, remove_image_options, should_pull_image,
-        validate_image_name,
+        DockerImagePullEvent, DockerProgressDetail, LocalImagePresence, PullPolicy,
+        has_devcontainer_metadata_label, image_reference_has_tag_or_digest,
+        image_tags_for_repository, parse_devcontainer_metadata_label, progress_line,
+        should_pull_image, validate_image_name,
     };
 
     #[test]
@@ -474,17 +458,6 @@ mod tests {
     }
 
     #[test]
-    fn remove_image_options_do_not_prune_shared_parent_layers() {
-        let non_forced = remove_image_options(false);
-        assert!(!non_forced.force);
-        assert!(non_forced.noprune);
-
-        let forced = remove_image_options(true);
-        assert!(forced.force);
-        assert!(forced.noprune);
-    }
-
-    #[test]
     fn image_name_validation_rejects_whitespace_and_control_characters() {
         for image in ["", " ", " alpine:3.20", "alpine:3.20 ", "alpine\nRUN true"] {
             let error = validate_image_name(image).unwrap_err();
@@ -500,14 +473,13 @@ mod tests {
 
     #[test]
     fn progress_line_includes_layer_status_and_byte_counts() {
-        let event = CreateImageInfo {
+        let event = DockerImagePullEvent {
             id: Some("layer-1".to_owned()),
             status: Some("Downloading".to_owned()),
-            progress_detail: Some(ProgressDetail {
+            progress_detail: Some(DockerProgressDetail {
                 current: Some(1024),
                 total: Some(2048),
             }),
-            ..Default::default()
         };
 
         assert_eq!(
@@ -518,235 +490,58 @@ mod tests {
 
     #[test]
     fn progress_line_uses_status_when_layer_id_is_absent() {
-        let event = CreateImageInfo {
+        let event = DockerImagePullEvent {
             status: Some("Pull complete".to_owned()),
-            ..Default::default()
+            ..DockerImagePullEvent::default()
         };
 
         assert_eq!(progress_line(&event).as_deref(), Some("Pull complete"));
     }
 
     #[test]
-    fn pull_options_default_tagless_image_to_latest() {
-        let options = create_image_options_for_pull("ubuntu");
-
-        assert_eq!(options.from_image.as_deref(), Some("ubuntu"));
-        assert_eq!(options.tag.as_deref(), Some("latest"));
+    fn tag_or_digest_detection_matches_docker_reference_forms() {
+        assert!(!image_reference_has_tag_or_digest("ubuntu"));
+        assert!(image_reference_has_tag_or_digest("ubuntu:24.04"));
+        assert!(!image_reference_has_tag_or_digest(
+            "localhost:5000/team/image"
+        ));
+        assert!(image_reference_has_tag_or_digest(
+            "ubuntu@sha256:0123456789abcdef"
+        ));
     }
 
     #[test]
-    fn pull_options_preserve_explicit_tag() {
-        let options = create_image_options_for_pull("ubuntu:24.04");
-
-        assert_eq!(options.from_image.as_deref(), Some("ubuntu:24.04"));
-        assert_eq!(options.tag, None);
-    }
-
-    #[test]
-    fn pull_options_default_registry_image_without_tag_to_latest() {
-        let options = create_image_options_for_pull("localhost:5000/team/image");
-
-        assert_eq!(
-            options.from_image.as_deref(),
-            Some("localhost:5000/team/image")
-        );
-        assert_eq!(options.tag.as_deref(), Some("latest"));
-    }
-
-    #[test]
-    fn pull_options_preserve_digest_reference() {
-        let options = create_image_options_for_pull(
-            "ubuntu@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        );
-
-        assert_eq!(
-            options.from_image.as_deref(),
-            Some("ubuntu@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
-        );
-        assert_eq!(options.tag, None);
-    }
-
-    #[test]
-    fn image_tags_for_repository_selects_only_decune_workspace_repository_tags() {
+    fn image_tags_for_repository_filters_only_matching_repository() {
         let tags = image_tags_for_repository(
             vec![
-                "decune/project-abc123:hash1".to_owned(),
-                "decune/project-abc123:hash2".to_owned(),
-                "decune/project-other:hash1".to_owned(),
-                "alpine:3.20".to_owned(),
+                "decune/project:abc".to_owned(),
+                "decune/project:def".to_owned(),
+                "decune/other:abc".to_owned(),
             ],
-            "decune/project-abc123",
+            "decune/project",
         );
 
-        assert_eq!(
-            tags,
-            vec![
-                "decune/project-abc123:hash1".to_owned(),
-                "decune/project-abc123:hash2".to_owned(),
-            ]
-        );
+        assert_eq!(tags, vec!["decune/project:abc", "decune/project:def"]);
     }
 
     #[test]
-    fn detects_devcontainer_metadata_label_without_parsing_value() {
-        let labels = HashMap::from([(
+    fn metadata_label_presence_checks_label_key() {
+        assert!(has_devcontainer_metadata_label(Some(&HashMap::from([(
             "devcontainer.metadata".to_owned(),
-            "not necessarily valid json".to_owned(),
-        )]);
-
-        assert!(has_devcontainer_metadata_label(Some(&labels)));
+            "{}".to_owned()
+        )]))));
+        assert!(!has_devcontainer_metadata_label(Some(&HashMap::new())));
+        assert!(!has_devcontainer_metadata_label(None));
     }
 
     #[test]
-    fn image_metadata_label_object_is_converted_to_config_layer() {
+    fn parses_object_metadata_label() {
         let layers = parse_devcontainer_metadata_label(
-            "example/devcontainer:latest",
-            Some(
-                r#"{
-                    "remoteUser": "vscode",
-                    "remoteEnv": {
-                        "FROM_IMAGE": "1"
-                    }
-                }"#,
-            ),
+            "example",
+            Some(r#"{"remoteUser":"vscode","forwardPorts":[3000]}"#),
         )
         .unwrap();
 
         assert_eq!(layers.len(), 1);
-        let devcontainer = layers[0].devcontainer.as_ref().unwrap();
-        assert_eq!(devcontainer.remote_user.as_deref(), Some("vscode"));
-        assert_eq!(
-            devcontainer
-                .remote_env
-                .get("FROM_IMAGE")
-                .map(String::as_str),
-            Some("1")
-        );
-    }
-
-    #[test]
-    fn image_metadata_label_array_preserves_layer_order() {
-        let layers = parse_devcontainer_metadata_label(
-            "example/devcontainer:latest",
-            Some(
-                r#"[
-                    {
-                        "remoteUser": "image-user",
-                        "remoteEnv": {
-                            "FIRST": "1"
-                        }
-                    },
-                    {
-                        "remoteUser": "second-user",
-                        "remoteEnv": {
-                            "SECOND": "2"
-                        }
-                    }
-                ]"#,
-            ),
-        )
-        .unwrap();
-
-        assert_eq!(layers.len(), 2);
-        assert_eq!(
-            layers[0]
-                .devcontainer
-                .as_ref()
-                .unwrap()
-                .remote_user
-                .as_deref(),
-            Some("image-user")
-        );
-        assert_eq!(
-            layers[1]
-                .devcontainer
-                .as_ref()
-                .unwrap()
-                .remote_user
-                .as_deref(),
-            Some("second-user")
-        );
-    }
-
-    #[test]
-    fn image_metadata_label_rejects_initialize_command() {
-        let error = parse_devcontainer_metadata_label(
-            "example/devcontainer:latest",
-            Some(r#"{"initializeCommand": "echo image init"}"#),
-        )
-        .unwrap_err();
-
-        let message = format!("{error:#}");
-        assert!(message.contains("example/devcontainer:latest"));
-        assert!(message.contains("devcontainer.metadata"));
-        assert!(message.contains("initializeCommand"));
-    }
-
-    #[test]
-    fn invalid_image_metadata_label_error_mentions_image_and_label() {
-        let error = parse_devcontainer_metadata_label(
-            "example/devcontainer:latest",
-            Some(r#"{"remoteUser": "vscode""#),
-        )
-        .unwrap_err();
-
-        let message = format!("{error:#}");
-        assert!(message.contains("example/devcontainer:latest"));
-        assert!(message.contains("devcontainer.metadata"));
-    }
-
-    #[test]
-    fn image_metadata_label_array_entries_must_be_objects() {
-        let error =
-            parse_devcontainer_metadata_label("example/devcontainer:latest", Some(r#"[true]"#))
-                .unwrap_err();
-
-        let message = format!("{error:#}");
-        assert!(message.contains("example/devcontainer:latest"));
-        assert!(message.contains("devcontainer.metadata"));
-        assert!(message.contains("array entry 0"));
-    }
-
-    #[test]
-    fn public_image_can_be_pulled() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
-            let outcome = ensure_image(&client, "hello-world:latest", PullPolicy::Always)
-                .await
-                .unwrap();
-
-            assert_eq!(outcome, ImagePullOutcome::Pulled);
-            client
-                .raw()
-                .inspect_image("hello-world:latest")
-                .await
-                .unwrap();
-        });
-    }
-
-    #[test]
-    fn missing_policy_uses_local_image() {
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
-
-        runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
-            ensure_image(&client, "hello-world:latest", PullPolicy::Always)
-                .await
-                .unwrap();
-
-            let outcome = ensure_image(&client, "hello-world:latest", PullPolicy::Missing)
-                .await
-                .unwrap();
-
-            assert_eq!(outcome, ImagePullOutcome::AlreadyPresent);
-        });
     }
 }

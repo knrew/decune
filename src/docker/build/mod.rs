@@ -1,12 +1,6 @@
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
-use anyhow::{Context, Result, bail};
-use bollard::{
-    body_full,
-    models::BuildInfo,
-    query_parameters::{BuildImageOptions, BuildImageOptionsBuilder},
-};
-use futures_util::StreamExt;
+use anyhow::{Result, bail};
 
 mod context;
 mod feature_layer;
@@ -18,13 +12,13 @@ pub(crate) use feature_layer::{
     FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_WRAPPER, FeatureLayerBuildFeature,
     FeatureLayerBuildInput, prepare_feature_layer_build_context,
 };
-pub(crate) use tar::create_build_context_tar;
 pub(crate) use uid_gid_layer::{
     UidGidSyncLayerBuildInput, prepare_uid_gid_sync_layer_build_context,
 };
 
 use crate::{
     docker::{client::DockerClient, lock::DockerResourceLock},
+    runtime::docker_cli::DockerBuildCliInput,
     ui,
 };
 
@@ -48,70 +42,29 @@ pub(crate) struct DockerBuildOptions {
 pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) -> Result<()> {
     ui::info(&format!("Building Docker image: {}", input.image_tag));
 
-    let tar = create_build_context_tar(&input.context)?;
-    let options = build_image_options(&input);
+    let labels = input.labels.clone().into_iter().collect::<BTreeMap<_, _>>();
+    let command_input = DockerBuildCliInput {
+        image_tag: &input.image_tag,
+        dockerfile: &input.context.dockerfile_path,
+        context_dir: &input.context.context_dir,
+        labels: &labels,
+        build_args: &input.options.build_args,
+        target: input.options.target.as_deref(),
+        cache_from: &input.options.cache_from,
+        no_cache: input.options.no_cache,
+        pull: input.options.pull,
+    };
     let _lock = DockerResourceLock::acquire_shared_from_env()?;
-    let mut stream = client
-        .raw()
-        .build_image(options, None, Some(body_full(tar.into())));
+    let output = client.cli().build(command_input).await?;
 
-    while let Some(item) = stream.next().await {
-        let info =
-            item.with_context(|| format!("Failed to build Docker image: {}", input.image_tag))?;
-        handle_build_info(&input.image_tag, info)?;
-    }
-
-    ui::done(&format!("Built Docker image: {}", input.image_tag));
-    Ok(())
-}
-
-fn build_image_options(input: &DockerBuildInput) -> BuildImageOptions {
-    let labels = input.labels.clone();
-    let mut builder = BuildImageOptionsBuilder::default()
-        .dockerfile(&tar::path_for_docker(&input.context.dockerfile_in_context))
-        .t(&input.image_tag)
-        .labels(&labels)
-        .rm(true)
-        .forcerm(true)
-        .nocache(input.options.no_cache);
-
-    if !input.options.build_args.is_empty() {
-        let build_args = input
-            .options
-            .build_args
-            .iter()
-            .map(|(key, value)| (key.clone(), value.clone()))
-            .collect::<HashMap<_, _>>();
-        builder = builder.buildargs(&build_args);
-    }
-
-    if let Some(target) = &input.options.target {
-        builder = builder.target(target);
-    }
-
-    if !input.options.cache_from.is_empty() {
-        builder = builder.cachefrom(&input.options.cache_from);
-    }
-
-    if input.options.pull {
-        builder = builder.pull("true");
-    }
-
-    builder.build()
-}
-
-fn handle_build_info(image_tag: &str, info: BuildInfo) -> Result<()> {
-    if let Some(error) = info.error_detail.and_then(|detail| detail.message) {
-        bail!("Failed to build Docker image: {image_tag}: {error}");
-    }
-
-    if let Some(stream) = info.stream {
-        let line = stream.trim();
+    for line in String::from_utf8_lossy(&output.stdout).lines() {
+        let line = line.trim();
         if !line.is_empty() {
             ui::info(line);
         }
     }
 
+    ui::done(&format!("Built Docker image: {}", input.image_tag));
     Ok(())
 }
 
@@ -136,9 +89,14 @@ fn shell_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, path::PathBuf};
+    use std::{
+        collections::{BTreeMap, HashMap},
+        path::PathBuf,
+    };
 
-    use super::{DockerBuildInput, DockerBuildOptions, ResolvedBuildContext, build_image_options};
+    use crate::runtime::docker_cli::{DockerBuildCliInput, docker_build_command};
+
+    use super::{DockerBuildInput, DockerBuildOptions, ResolvedBuildContext};
 
     #[test]
     fn build_image_options_include_devcontainer_build_options() {
@@ -150,37 +108,50 @@ mod tests {
             pull: true,
         });
 
-        let options = build_image_options(&input);
+        let labels = input.labels.clone().into_iter().collect::<BTreeMap<_, _>>();
+        let command = docker_build_command(&DockerBuildCliInput {
+            image_tag: &input.image_tag,
+            dockerfile: &input.context.dockerfile_path,
+            context_dir: &input.context.context_dir,
+            labels: &labels,
+            build_args: &input.options.build_args,
+            target: input.options.target.as_deref(),
+            cache_from: &input.options.cache_from,
+            no_cache: input.options.no_cache,
+            pull: input.options.pull,
+        });
 
-        assert_eq!(
-            options.buildargs,
-            Some(HashMap::from([(
-                "VARIANT".to_owned(),
-                "bookworm".to_owned()
-            )]))
-        );
-        assert_eq!(options.target, "dev");
-        assert_eq!(
-            options.cachefrom,
-            Some(vec![
-                "type=registry,ref=example.test/cache:latest".to_owned()
-            ])
-        );
-        assert!(options.nocache);
-        assert_eq!(options.pull.as_deref(), Some("true"));
+        assert!(command.args_vec().contains(&"--build-arg".to_owned()));
+        assert!(command.args_vec().contains(&"VARIANT=bookworm".to_owned()));
+        assert!(command.args_vec().contains(&"--target".to_owned()));
+        assert!(command.args_vec().contains(&"dev".to_owned()));
+        assert!(command.args_vec().contains(&"--cache-from".to_owned()));
+        assert!(command.args_vec().contains(&"--no-cache".to_owned()));
+        assert!(command.args_vec().contains(&"--pull".to_owned()));
     }
 
     #[test]
     fn build_image_options_omit_empty_optional_build_options() {
         let input = docker_build_input(DockerBuildOptions::default());
 
-        let options = build_image_options(&input);
+        let labels = input.labels.clone().into_iter().collect::<BTreeMap<_, _>>();
+        let command = docker_build_command(&DockerBuildCliInput {
+            image_tag: &input.image_tag,
+            dockerfile: &input.context.dockerfile_path,
+            context_dir: &input.context.context_dir,
+            labels: &labels,
+            build_args: &input.options.build_args,
+            target: input.options.target.as_deref(),
+            cache_from: &input.options.cache_from,
+            no_cache: input.options.no_cache,
+            pull: input.options.pull,
+        });
 
-        assert_eq!(options.buildargs, None);
-        assert_eq!(options.target, "");
-        assert_eq!(options.cachefrom, None);
-        assert!(!options.nocache);
-        assert_eq!(options.pull, None);
+        assert!(!command.args_vec().contains(&"--build-arg".to_owned()));
+        assert!(!command.args_vec().contains(&"--target".to_owned()));
+        assert!(!command.args_vec().contains(&"--cache-from".to_owned()));
+        assert!(!command.args_vec().contains(&"--no-cache".to_owned()));
+        assert!(!command.args_vec().contains(&"--pull".to_owned()));
     }
 
     fn docker_build_input(options: DockerBuildOptions) -> DockerBuildInput {

@@ -1,10 +1,6 @@
 use std::{collections::BTreeMap, path::Path};
 
 use anyhow::{Context, Result, anyhow, bail};
-use bollard::models::{
-    Mount, MountBindOptions, MountBindOptionsPropagationEnum, MountType as DockerMountType,
-    MountVolumeOptions,
-};
 use serde_json::Value as JsonValue;
 
 use crate::config::{
@@ -29,29 +25,57 @@ pub(crate) struct DockerMountSpec {
     pub(crate) volume_options: Option<MountVolumeOptions>,
 }
 
-impl DockerMountSpec {
-    pub(crate) fn to_bollard_mount(&self) -> Mount {
-        Mount {
-            target: Some(self.target.clone()),
-            source: self.source.clone(),
-            typ: Some(docker_mount_type(self.mount_type)),
-            read_only: Some(self.read_only),
-            consistency: self.consistency.clone(),
-            bind_options: self.bind_options.clone(),
-            volume_options: self.volume_options.clone(),
-            ..Default::default()
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum MountBindPropagation {
+    RPrivate,
+    Private,
+    RShared,
+    Shared,
+    RSlave,
+    Slave,
+}
+
+impl MountBindPropagation {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::RPrivate => "rprivate",
+            Self::Private => "private",
+            Self::RShared => "rshared",
+            Self::Shared => "shared",
+            Self::RSlave => "rslave",
+            Self::Slave => "slave",
         }
     }
 }
 
-fn docker_mount_type(mount_type: MountType) -> DockerMountType {
-    match mount_type {
-        MountType::Bind => DockerMountType::BIND,
-        MountType::Volume => DockerMountType::VOLUME,
-        MountType::Tmpfs => DockerMountType::TMPFS,
+impl std::fmt::Display for MountBindPropagation {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct MountBindOptions {
+    pub(crate) propagation: Option<MountBindPropagation>,
+    pub(crate) non_recursive: Option<bool>,
+    pub(crate) create_mountpoint: Option<bool>,
+    pub(crate) read_only_non_recursive: Option<bool>,
+    pub(crate) read_only_force_recursive: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct MountVolumeDriverConfig {
+    pub(crate) name: Option<String>,
+    pub(crate) options: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct MountVolumeOptions {
+    pub(crate) no_copy: Option<bool>,
+    pub(crate) labels: Option<BTreeMap<String, String>>,
+    pub(crate) driver_config: Option<MountVolumeDriverConfig>,
+    pub(crate) subpath: Option<String>,
+}
 pub(crate) fn config_mount_specs(
     config: &ResolvedConfig,
     workspace_root: &Path,
@@ -393,11 +417,7 @@ fn bind_options(
     fields: &mut BTreeMap<String, MountFieldValue>,
 ) -> Result<Option<MountBindOptions>> {
     let propagation = string_field(fields, "bind-propagation")?
-        .map(|value| {
-            value
-                .parse::<MountBindOptionsPropagationEnum>()
-                .map_err(|_| anyhow!("Unsupported bind propagation: {value}"))
-        })
+        .map(|value| parse_bind_propagation(&value))
         .transpose()?;
     let create_mountpoint = bool_field(fields, "bind-create-src")?;
 
@@ -410,6 +430,18 @@ fn bind_options(
         create_mountpoint,
         ..Default::default()
     }))
+}
+
+fn parse_bind_propagation(value: &str) -> Result<MountBindPropagation> {
+    match value {
+        "rprivate" => Ok(MountBindPropagation::RPrivate),
+        "private" => Ok(MountBindPropagation::Private),
+        "rshared" => Ok(MountBindPropagation::RShared),
+        "shared" => Ok(MountBindPropagation::Shared),
+        "rslave" => Ok(MountBindPropagation::RSlave),
+        "slave" => Ok(MountBindPropagation::Slave),
+        value => bail!("Unsupported bind propagation: {value}"),
+    }
 }
 
 fn volume_options(
@@ -841,9 +873,8 @@ mod tests {
 
         let mounts =
             config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
-        let bollard_mount = mounts[0].to_bollard_mount();
 
-        assert_eq!(bollard_mount.consistency.as_deref(), Some("cached"));
+        assert_eq!(mounts[0].consistency.as_deref(), Some("cached"));
     }
 
     #[test]
@@ -864,11 +895,11 @@ mod tests {
 
         let mounts =
             config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
-        let bollard_mount = mounts[0].to_bollard_mount();
 
         assert_eq!(
-            bollard_mount
+            mounts[0]
                 .bind_options
+                .as_ref()
                 .unwrap()
                 .propagation
                 .unwrap()
@@ -894,11 +925,10 @@ mod tests {
 
         let mounts =
             config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
-        let bollard_mount = mounts[0].to_bollard_mount();
 
         assert!(source.is_dir());
         assert_eq!(
-            bollard_mount.bind_options.unwrap().create_mountpoint,
+            mounts[0].bind_options.as_ref().unwrap().create_mountpoint,
             Some(true)
         );
     }
@@ -919,7 +949,7 @@ mod tests {
 
         let mounts =
             config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
-        let volume_options = mounts[0].to_bollard_mount().volume_options.unwrap();
+        let volume_options = mounts[0].volume_options.as_ref().unwrap();
 
         assert_eq!(volume_options.no_copy, Some(true));
         assert_eq!(volume_options.subpath.as_deref(), Some("deps"));
@@ -1200,11 +1230,10 @@ mod tests {
 
         let mounts =
             config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
-        let bollard_mount = mounts[0].to_bollard_mount();
-        let bind_options = bollard_mount.bind_options.unwrap();
+        let bind_options = mounts[0].bind_options.as_ref().unwrap();
 
         assert!(source.is_dir());
-        assert_eq!(bollard_mount.consistency.as_deref(), Some("cached"));
+        assert_eq!(mounts[0].consistency.as_deref(), Some("cached"));
         assert_eq!(bind_options.propagation.unwrap().to_string(), "rshared");
         assert_eq!(bind_options.create_mountpoint, Some(true));
     }
@@ -1231,7 +1260,7 @@ mod tests {
 
         let mounts =
             config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
-        let volume_options = mounts[0].to_bollard_mount().volume_options.unwrap();
+        let volume_options = mounts[0].volume_options.as_ref().unwrap();
 
         assert_eq!(volume_options.no_copy, Some(true));
         assert_eq!(volume_options.subpath.as_deref(), Some("deps"));

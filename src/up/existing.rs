@@ -1,18 +1,17 @@
-use anyhow::{Result, bail};
-use bollard::models::ContainerSummary;
-
 use crate::{
-    config::types::MountType,
     docker::mounts::normalize_container_path,
     host::credentials::{
         DECUNE_RUNTIME_TARGET, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_LEGACY_TOKEN_DIR_TARGET,
         GITHUB_CLI_TOKEN_TARGET, SSH_AGENT_SOCKET_TARGET,
     },
 };
+use anyhow::{Result, bail};
+
+#[cfg(test)]
+use crate::{config::types::MountType, docker::container::ContainerInspect};
 
 use super::{ExistingContainerDecision, UpContainerSummary, UpMountSummary};
 
-const CONFIG_HASH_LABEL: &str = "decune.config_hash";
 const DECUNE_MANAGED_RUNTIME_MOUNT_TARGETS: &[&str] = &[
     DECUNE_RUNTIME_TARGET,
     SSH_AGENT_SOCKET_TARGET,
@@ -156,31 +155,22 @@ fn mount_matches_required(existing: &UpMountSummary, required: &UpMountSummary) 
     }
 }
 
-pub(crate) fn container_summary(container: ContainerSummary) -> Option<UpContainerSummary> {
+#[cfg(test)]
+pub(crate) fn container_summary(container: ContainerInspect) -> Option<UpContainerSummary> {
     let id = container.id?;
     let name = container
-        .names
-        .and_then(|names| names.into_iter().next())
+        .name
         .map(|name| name.trim_start_matches('/').to_owned())
         .unwrap_or_else(|| id.clone());
-    let config_hash = container
-        .labels
-        .and_then(|labels| labels.get(CONFIG_HASH_LABEL).cloned());
+    let config_hash = None;
     let mounts = container.mounts.map(|mounts| {
         mounts
             .into_iter()
             .filter_map(|mount| {
-                let bollard::models::MountPoint {
-                    typ,
-                    source,
-                    destination,
-                    rw,
-                    ..
-                } = mount;
-                let read_only = !rw.unwrap_or(true);
-                let mount_type = mount_type_from_summary(typ.as_deref())?;
-                destination.map(|target| UpMountSummary {
-                    source,
+                let read_only = !mount.rw.unwrap_or(true);
+                let mount_type = mount_type_from_summary(mount.typ.as_deref())?;
+                mount.destination.map(|target| UpMountSummary {
+                    source: mount.source,
                     target,
                     mount_type,
                     read_only,
@@ -190,18 +180,21 @@ pub(crate) fn container_summary(container: ContainerSummary) -> Option<UpContain
     });
     let running = container
         .state
-        .is_some_and(|state| state.to_string() == "running");
+        .as_ref()
+        .and_then(|state| state.running)
+        .unwrap_or(false);
 
     Some(UpContainerSummary {
         id,
         name,
-        image_id: container.image_id,
+        image_id: container.image,
         config_hash,
         mounts,
         running,
     })
 }
 
+#[cfg(test)]
 fn mount_type_from_summary(value: Option<&str>) -> Option<MountType> {
     match value {
         Some("bind") => Some(MountType::Bind),

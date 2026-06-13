@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

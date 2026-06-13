@@ -56,6 +56,7 @@ impl DockerResources {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn managed_workspace_label_filters(workspace_id: &str) -> BTreeMap<String, Vec<String>> {
     let mut filters = BTreeMap::new();
     filters.insert(

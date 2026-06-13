@@ -401,7 +401,7 @@ fn up_detach_default_override_command_keeps_short_lived_image_running() {
                 containers[0]
                     .state
                     .as_ref()
-                    .is_some_and(|state| state.to_string() == "running")
+                    .is_some_and(|state| state == "running")
             );
         });
     });
