@@ -343,6 +343,7 @@ Compose mode で decune 固有機能を適用するため、state/runtime direct
 
 - primary service に decune label を付与する。
 - primary service image を Feature/UID/GID/entrypoint 適用済み final image に差し替える。
+- primary service image を decune generated local image に差し替える場合、元 Compose service の `pull_policy` を引き継いで registry pull しないよう、generated override で `pull_policy: never` を明示する。
 - `containerEnv`、`containerUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles mount、credential/runtime mount を primary service に追加する。
 - `overrideCommand = true` の場合、primary service command を keepalive command に差し替える。
 - secret value は override file に書かない。GitHub token は host runtime file を bind mount し、token value 自体は file content にのみ存在する。
@@ -365,7 +366,7 @@ Compose mode の image creation は次の順で行う。
 3. `docker compose build` または `docker compose up -d --build` で primary service と必要な service image を準備する。`--no-cache` と `--pull` は Compose build option に反映する。
 4. primary service の base image を特定する。Compose service に `build` がある場合は Compose が tag した service image を使う。`image` がない build-only service では Compose の既定 tag `<project-name>-<service>` を使う。service に `image` のみがある場合はその image を使い、metadata 解決前に missing image を pull する。
 5. Feature、UID/GID sync、entrypoint shim が必要な場合、base image に decune generated layer を重ね、decune generated image tag を作る。
-6. generated Compose override に primary service image 差し替えを反映する。
+6. generated Compose override に primary service image 差し替えを反映する。decune generated local image に差し替える場合は `pull_policy: never` も反映する。
 7. generated override 込みで `docker compose up -d` を実行する。
 8. `docker compose ps --format json` と `docker inspect` で primary container ID を解決し、lifecycle と shell attach に進む。
 

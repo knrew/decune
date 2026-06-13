@@ -836,6 +836,9 @@ fn generated_compose_override_content_with_startup(
     content.push_str(&yaml_quote(primary_service));
     content.push_str(":\n");
     append_yaml_scalar(&mut content, 4, "image", &plan.image);
+    if plan.image != plan.base_image {
+        append_yaml_scalar(&mut content, 4, "pull_policy", "never");
+    }
     append_yaml_map(&mut content, 4, "labels", &plan.resources.labels);
     append_yaml_map(
         &mut content,
@@ -1837,10 +1840,23 @@ mod tests {
 
         assert!(content.contains("'app':"));
         assert!(content.contains("image: 'decune/test:hash'"));
+        assert!(content.contains("pull_policy: 'never'"));
         assert!(content.contains("'FROM_DECUNE': '1'"));
         assert!(content.contains("'decune.managed': 'true'"));
         assert!(content.contains("target: '/cache'"));
         assert!(!content.contains("sidecar"));
+    }
+
+    #[test]
+    fn generated_compose_override_does_not_override_pull_policy_for_original_image() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.image = "alpine:3.20".to_owned();
+        plan.base_image = "alpine:3.20".to_owned();
+
+        let content = generated_compose_override_content("app", &plan);
+
+        assert!(content.contains("image: 'alpine:3.20'"));
+        assert!(!content.contains("pull_policy:"));
     }
 
     #[test]
