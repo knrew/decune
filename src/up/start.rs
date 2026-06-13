@@ -949,6 +949,47 @@ fn append_yaml_mounts(content: &mut String, indent: usize, mounts: &[DockerMount
         if let Some(consistency) = &mount.consistency {
             append_yaml_scalar(content, indent + 4, "consistency", consistency);
         }
+        match mount.mount_type {
+            MountType::Bind => append_yaml_bind_mount_options(content, indent + 4, mount),
+            MountType::Volume => append_yaml_volume_mount_options(content, indent + 4, mount),
+            MountType::Tmpfs => {}
+        }
+    }
+}
+
+fn append_yaml_bind_mount_options(content: &mut String, indent: usize, mount: &DockerMountSpec) {
+    append_indent(content, indent);
+    content.push_str("bind:\n");
+    if let Some(propagation) = mount
+        .bind_options
+        .as_ref()
+        .and_then(|options| options.propagation)
+    {
+        append_yaml_scalar(content, indent + 2, "propagation", propagation.as_str());
+    }
+    let create_host_path = mount
+        .bind_options
+        .as_ref()
+        .and_then(|options| options.create_mountpoint)
+        .unwrap_or(false);
+    append_yaml_bool(content, indent + 2, "create_host_path", create_host_path);
+}
+
+fn append_yaml_volume_mount_options(content: &mut String, indent: usize, mount: &DockerMountSpec) {
+    let Some(volume_options) = &mount.volume_options else {
+        return;
+    };
+    if volume_options.no_copy.is_none() && volume_options.subpath.is_none() {
+        return;
+    }
+
+    append_indent(content, indent);
+    content.push_str("volume:\n");
+    if let Some(no_copy) = volume_options.no_copy {
+        append_yaml_bool(content, indent + 2, "nocopy", no_copy);
+    }
+    if let Some(subpath) = &volume_options.subpath {
+        append_yaml_scalar(content, indent + 2, "subpath", subpath);
     }
 }
 
@@ -1696,7 +1737,7 @@ mod tests {
         config::{ConfigMergeInput, resolved::ResolvedConfig, types::MountType},
         docker::{
             build::DockerBuildOptions,
-            mounts::DockerMountSpec,
+            mounts::{DockerMountSpec, MountBindOptions, MountBindPropagation, MountVolumeOptions},
             resource::DockerResources,
             user::{EffectiveUsers, UidGidSyncPlan},
         },
@@ -1800,6 +1841,104 @@ mod tests {
         assert!(content.contains("'decune.managed': 'true'"));
         assert!(content.contains("target: '/cache'"));
         assert!(!content.contains("sidecar"));
+    }
+
+    #[test]
+    fn generated_compose_override_preserves_bind_mount_options() {
+        let plan = generated_override_test_plan(vec![DockerMountSpec {
+            source: Some("/host/tools".to_owned()),
+            target: "/tools".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: false,
+            consistency: Some("cached".to_owned()),
+            bind_options: Some(MountBindOptions {
+                propagation: Some(MountBindPropagation::RShared),
+                create_mountpoint: Some(true),
+                ..MountBindOptions::default()
+            }),
+            volume_options: None,
+        }]);
+
+        let content = generated_compose_override_content("app", &plan);
+
+        assert!(content.contains("consistency: 'cached'"));
+        assert!(content.contains("bind:\n"));
+        assert!(content.contains("propagation: 'rshared'"));
+        assert!(content.contains("create_host_path: true"));
+    }
+
+    #[test]
+    fn generated_compose_override_disables_default_bind_source_creation() {
+        let plan = generated_override_test_plan(vec![DockerMountSpec {
+            source: Some("/host/cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        }]);
+
+        let content = generated_compose_override_content("app", &plan);
+
+        assert!(content.contains("bind:\n"));
+        assert!(content.contains("create_host_path: false"));
+    }
+
+    #[test]
+    fn generated_compose_override_preserves_volume_mount_options() {
+        let plan = generated_override_test_plan(vec![DockerMountSpec {
+            source: Some("project-cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Volume,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: Some(MountVolumeOptions {
+                no_copy: Some(true),
+                subpath: Some("deps".to_owned()),
+                ..MountVolumeOptions::default()
+            }),
+        }]);
+
+        let content = generated_compose_override_content("app", &plan);
+
+        assert!(content.contains("volume:\n"));
+        assert!(content.contains("nocopy: true"));
+        assert!(content.contains("subpath: 'deps'"));
+    }
+
+    fn generated_override_test_plan(mounts: Vec<DockerMountSpec>) -> UpPlan {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.override_command = false;
+        let resources = DockerResources {
+            container_name: "unused".to_owned(),
+            image_tag: "decune/test:hash".to_owned(),
+            workspace_volume_name: "unused-volume".to_owned(),
+            labels: BTreeMap::new(),
+            config_hash: "hash".to_owned(),
+        };
+
+        UpPlan {
+            image: "decune/test:hash".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources,
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers: ConfigMergeInput::default(),
+            config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspace".to_owned(),
+            mounts,
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
+        }
     }
 
     #[test]
