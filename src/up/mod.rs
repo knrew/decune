@@ -42,9 +42,8 @@ pub(in crate::up) use mounts::{
     workspace_mounts_from_resolved,
 };
 #[cfg(test)]
-use plan::{
-    build_preliminary_up_plan_with_forwarding_resolution, build_up_plan_with_forwarding_resolution,
-};
+use plan::build_preliminary_up_plan_with_forwarding_resolution;
+pub(crate) use plan::build_up_plan_with_forwarding_resolution;
 #[cfg(test)]
 use plan::{build_up_plan, build_up_plan_with_image_metadata, build_up_plan_with_update_features};
 #[cfg(test)]
@@ -63,7 +62,11 @@ pub(in crate::up) use uid_gid::static_uid_gid_sync_hash_input;
 use uid_gid::{uid_gid_sync_base_image, uid_gid_sync_warning};
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
-    let started = ensure_container_started(options, ForwardingResolution::IgnoreDetached).await?;
+    let started = Box::pin(ensure_container_started(
+        options,
+        ForwardingResolution::IgnoreDetached,
+    ))
+    .await?;
     warn_about_detached_forwarding(&started.plan);
     let _host_daemon = start_host_daemon_for_up(&started).await?;
     {
@@ -76,7 +79,11 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
 }
 
 pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
-    let started = ensure_container_started(options, ForwardingResolution::Resolve).await?;
+    let started = Box::pin(ensure_container_started(
+        options,
+        ForwardingResolution::Resolve,
+    ))
+    .await?;
     let _host_daemon = start_host_daemon_for_up(&started).await?;
     let lifecycle = prepare_up_lifecycle(&started).await?;
     run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
@@ -108,6 +115,8 @@ mod tests {
     };
 
     use anyhow::Context;
+
+    use super::metadata::FinalizeUpPlanMountsOptions;
 
     use crate::config::layer::{
         LayerDevcontainerMetadata, LayerDevcontainerSource, LayerUserEnvProbe,
@@ -246,6 +255,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: true,
         };
@@ -269,6 +279,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: false,
         };
@@ -292,6 +303,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(None, "/workspaces/project")]),
             running: true,
         };
@@ -319,6 +331,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(
                 Some("/tmp/agent-a.sock"),
                 SSH_AGENT_SOCKET_TARGET,
@@ -353,6 +366,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary_with_type(
                 Some("/tmp/gh-config"),
                 GITHUB_CLI_CONFIG_TARGET,
@@ -388,6 +402,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary_with_type(
                 None,
                 GITHUB_CLI_CONFIG_TARGET,
@@ -424,6 +439,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary_with_type_and_read_only(
                 Some("/tmp/secrets/github-token"),
                 GITHUB_CLI_TOKEN_TARGET,
@@ -461,6 +477,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary_with_type_and_read_only(
                 Some("/tmp/secrets/github-token"),
                 GITHUB_CLI_TOKEN_TARGET,
@@ -499,6 +516,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(
                 Some("/tmp/agent-a.sock"),
                 SSH_AGENT_SOCKET_TARGET,
@@ -529,6 +547,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![
                 mount_summary_with_type_and_read_only(
                     Some("/tmp/gh-token"),
@@ -796,6 +815,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("stable-hash".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(
                 runtime_dir.path().to_str(),
                 DECUNE_RUNTIME_TARGET,
@@ -823,6 +843,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: true,
         };
@@ -840,6 +861,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("old-hash".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: true,
         };
@@ -2923,7 +2945,12 @@ type = "bind"
                 None,
                 None,
                 Some((false, false)),
-                false,
+                FinalizeUpPlanMountsOptions {
+                    update_features: false,
+                    compose_canonical_model: None,
+                    compose_primary_service_user: None,
+                    compose_primary_service: None,
+                },
             )
             .await
             .unwrap();
@@ -2986,7 +3013,12 @@ type = "bind"
                     None,
                     None,
                     Some((false, false)),
-                    false,
+                    FinalizeUpPlanMountsOptions {
+                        update_features: false,
+                        compose_canonical_model: None,
+                        compose_primary_service_user: None,
+                        compose_primary_service: None,
+                    },
                 )
                 .await?;
 
@@ -3062,7 +3094,12 @@ type = "bind"
                     None,
                     None,
                     Some((false, false)),
-                    false,
+                    FinalizeUpPlanMountsOptions {
+                        update_features: false,
+                        compose_canonical_model: None,
+                        compose_primary_service_user: None,
+                        compose_primary_service: None,
+                    },
                 )
                 .await?;
                 let pre_sync_resources = plan

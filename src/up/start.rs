@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    collections::BTreeMap,
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -14,6 +15,7 @@ use futures_util::{
 
 use crate::{
     config::resolved::ResolvedDevcontainerSource,
+    config::types::MountType,
     devcontainer::lifecycle::{LifecycleRunPath, run_host_initialize_lifecycle},
     docker::{
         build::{
@@ -37,7 +39,11 @@ use crate::{
         },
         forward::{ForwardRuntime, prepare_forward_runtime},
     },
-    runtime::compose_cli::{ComposeIntrospector, ComposeServiceValidation},
+    runtime::compose_cli::{
+        ComposeBuildOptions, ComposeConfigModel, ComposeConfigService, ComposeIntrospector,
+        ComposeLifecyclePlan, ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation,
+        ComposeUpOptions, DockerComposeCli,
+    },
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
     up::{
@@ -47,8 +53,10 @@ use crate::{
         },
         existing::{self, CredentialRuntimeMountPolicy, decide_existing_container},
         metadata::{
-            build_existing_container_decision_plan, existing_remote_user_image_for_decision,
-            finalize_up_plan_mounts, prepare_image_based_metadata, warn_about_deferred_features,
+            FinalizeUpPlanMountsOptions, build_existing_container_decision_plan,
+            existing_remote_user_image_for_decision, finalize_up_plan_mounts,
+            prepare_compose_image_metadata, prepare_image_based_metadata,
+            warn_about_deferred_features,
         },
         plan::build_preliminary_up_plan_with_forwarding_resolution,
         types::{
@@ -166,21 +174,19 @@ fn sync_started_state(
     outcome: &UpOutcome,
     lifecycle_path: LifecycleRunPath,
 ) -> Result<WorkspaceState> {
-    let container = StateContainerSnapshot {
-        container_id: outcome.container_id.clone(),
-        image: plan.image.clone(),
-        config_hash: plan.resources.config_hash.clone(),
-    };
+    let container = state_container_snapshot(plan, outcome.container_id.clone());
+    let compose_project_name = state_compose_project_name(plan);
     match lifecycle_path {
-        LifecycleRunPath::New => state::sync_state_with_container(
+        LifecycleRunPath::New => state::sync_state_with_container_and_compose_project(
             workspace.paths().state_dir(),
             workspace.root(),
             container,
+            compose_project_name,
             LifecycleState::default(),
         ),
         LifecycleRunPath::Started | LifecycleRunPath::Running => {
             let existing = reusable_lifecycle_state(workspace, &container)?;
-            write_reused_started_state(workspace, container, existing)
+            write_reused_started_state(workspace, container, compose_project_name, existing)
         }
     }
 }
@@ -206,15 +212,36 @@ fn reusable_lifecycle_state(
 fn write_reused_started_state(
     workspace: &Workspace,
     container: StateContainerSnapshot,
+    compose_project_name: Option<String>,
     existing: WorkspaceState,
 ) -> Result<WorkspaceState> {
     state::write_state_for_container(
         workspace.paths().state_dir(),
         workspace.root(),
         container,
+        compose_project_name,
         existing.lifecycle,
         Some(existing.created_at),
     )
+}
+
+fn state_compose_project_name(plan: &UpPlan) -> Option<String> {
+    plan.compose_project
+        .as_ref()
+        .map(|project| project.project_name().to_owned())
+}
+
+fn state_container_snapshot(plan: &UpPlan, container_id: String) -> StateContainerSnapshot {
+    StateContainerSnapshot {
+        container_id,
+        image: plan.image.clone(),
+        config_hash: plan.resources.config_hash.clone(),
+        config_file: plan
+            .resources
+            .labels
+            .get("devcontainer.config_file")
+            .cloned(),
+    }
 }
 
 fn state_matches_container_snapshot(
@@ -239,7 +266,8 @@ pub(in crate::up) async fn ensure_container_started(
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     if preliminary_plan.compose_project.is_some() {
         validate_compose_canonical_model(&preliminary_plan).await?;
-        bail!("Docker Compose lifecycle is not implemented yet");
+        return start_compose_project(workspace, preliminary_plan, options, forwarding_resolution)
+            .await;
     }
     let plan_resolution = UpPlanResolution::new(forwarding_resolution, options.update_features);
 
@@ -280,7 +308,12 @@ pub(in crate::up) async fn ensure_container_started(
                 .first()
                 .and_then(existing::existing_container_config_hash),
             Some((options.pull, options.no_cache)),
-            options.update_features,
+            FinalizeUpPlanMountsOptions {
+                update_features: options.update_features,
+                compose_canonical_model: None,
+                compose_primary_service_user: None,
+                compose_primary_service: None,
+            },
         )
         .await?;
         let platform =
@@ -350,7 +383,12 @@ pub(in crate::up) async fn ensure_container_started(
         None,
         None,
         Some((options.pull, options.no_cache)),
-        options.update_features,
+        FinalizeUpPlanMountsOptions {
+            update_features: options.update_features,
+            compose_canonical_model: None,
+            compose_primary_service_user: None,
+            compose_primary_service: None,
+        },
     )
     .await?;
     let image_prepared =
@@ -447,6 +485,622 @@ pub(in crate::up) async fn ensure_container_started(
     }
 }
 
+async fn start_compose_project(
+    workspace: Workspace,
+    mut plan: UpPlan,
+    options: UpOptions,
+    forwarding_resolution: ForwardingResolution,
+) -> Result<StartedUpContainer> {
+    let Some(compose_project) = &plan.compose_project else {
+        bail!("Docker Compose project plan is missing");
+    };
+    let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
+    else {
+        bail!("Docker Compose devcontainer source is missing");
+    };
+    let user_lifecycle = ComposeLifecyclePlan::up(
+        compose_project.command_plan_without_generated_override(),
+        &compose.service,
+        compose.run_services.as_deref(),
+    );
+    let cli = DockerComposeCli::default();
+
+    let user_config = ComposeIntrospector::new(cli.clone())
+        .user_config(
+            compose_project,
+            &ComposeServiceValidation {
+                primary_service: &compose.service,
+                run_services: compose.run_services.as_deref(),
+                workspace_folder: &plan.workspace_folder,
+                project_name: compose_project.project_name(),
+            },
+        )
+        .await?;
+    let user_model = &user_config.model;
+    let primary_service_has_build = user_model
+        .service(&compose.service)
+        .and_then(|service| service.build.as_ref())
+        .is_some();
+    let compose_primary_image = compose_primary_service_image(
+        user_model,
+        compose_project.project_name(),
+        &compose.service,
+    )?;
+    let compose_primary_service_user = user_model
+        .service(&compose.service)
+        .and_then(|service| service.user.as_deref());
+    let compose_primary_service = user_model.service(&compose.service).cloned();
+    plan.base_image = compose_primary_image.clone();
+
+    let client = DockerClient::connect_from_env()?;
+    let existing_compose_project_containers =
+        list_compose_project_containers(&client, workspace.id(), compose_project.project_name())
+            .await?;
+    let existing_compose_containers = list_compose_primary_containers(
+        &client,
+        workspace.id(),
+        compose_project.project_name(),
+        &compose.service,
+    )
+    .await?;
+
+    if options.pull {
+        cli.pull(
+            &user_lifecycle.project,
+            ComposePullOptions {
+                always: true,
+                ignore_buildable: true,
+            },
+            &user_lifecycle.services,
+        )
+        .await?;
+    }
+    if options.rebuild
+        || options.no_cache
+        || options.pull
+        || (primary_service_has_build && existing_compose_containers.is_empty())
+    {
+        cli.build(
+            &user_lifecycle.project,
+            ComposeBuildOptions {
+                no_cache: options.no_cache,
+                pull: options.pull,
+            },
+            &user_lifecycle.services,
+        )
+        .await?;
+    }
+
+    let existing_remote_user_image = if options.rebuild {
+        None
+    } else {
+        existing_compose_containers
+            .first()
+            .and_then(existing::existing_container_image_id)
+    };
+    if existing_remote_user_image.is_none() && !primary_service_has_build {
+        ensure_image(&client, &plan.base_image, PullPolicy::Missing).await?;
+    }
+    plan = prepare_compose_image_metadata(
+        &client,
+        &workspace,
+        options.config_path.as_deref(),
+        options.cli_layer.clone(),
+        plan,
+        &compose_primary_image,
+        UpPlanResolution::new(forwarding_resolution, options.update_features),
+    )
+    .await?;
+    plan.base_image = compose_primary_image.clone();
+    let (plan, image_prepared) = finalize_up_plan_mounts(
+        &client,
+        &workspace,
+        plan,
+        existing_remote_user_image,
+        existing_compose_containers
+            .first()
+            .and_then(existing::existing_container_config_hash),
+        Some((false, options.no_cache)),
+        FinalizeUpPlanMountsOptions {
+            update_features: options.update_features,
+            compose_canonical_model: Some(&user_config.canonical_model),
+            compose_primary_service_user,
+            compose_primary_service: compose_primary_service.as_ref(),
+        },
+    )
+    .await?;
+    let mut plan = plan;
+    if !plan_requires_final_image_layer(&plan) {
+        plan.image = compose_primary_image.clone();
+        plan.base_image = compose_primary_image;
+    }
+    if !image_prepared {
+        prepare_image_for_create(&client, &plan, false, options.no_cache, false).await?;
+    }
+    let platform = image_container_tool_platform(&client, &plan.image).await?;
+    let (plan, credentials) =
+        add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
+    warn_about_deferred_features(&plan.config);
+
+    let Some(compose_project) = &plan.compose_project else {
+        bail!("Docker Compose project plan is missing after finalization");
+    };
+    let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
+    else {
+        bail!("Docker Compose devcontainer source is missing after finalization");
+    };
+    write_generated_compose_override(
+        &client,
+        compose_project,
+        &compose.service,
+        &plan,
+        compose_primary_service.as_ref(),
+    )
+    .await?;
+    let runtime_lifecycle = ComposeLifecyclePlan::up(
+        compose_project.command_plan_with_generated_override(),
+        &compose.service,
+        compose.run_services.as_deref(),
+    );
+
+    if existing_compose_project_containers.is_empty() {
+        state::reconcile_state_without_container(workspace.paths().state_dir())?;
+    }
+    let stale_compose_project =
+        !existing_compose_project_containers.is_empty() && existing_compose_containers.is_empty();
+
+    let decision = decide_existing_container(
+        &existing_compose_containers,
+        &plan.resources.config_hash,
+        credentials.mount_policy(),
+        options.rebuild,
+    )?;
+    let force_recreate = matches!(decision, ExistingContainerDecision::Recreate { .. })
+        || options.rebuild
+        || stale_compose_project;
+    let remove_orphans = force_recreate || stale_compose_project;
+    match decision {
+        ExistingContainerDecision::ReuseRunning { id, name } => {
+            let outcome = UpOutcome {
+                container_id: id,
+                container_name: name,
+                reused: true,
+            };
+            return started_up_container(
+                client,
+                workspace,
+                plan,
+                outcome,
+                LifecycleRunPath::Running,
+                credentials,
+            );
+        }
+        ExistingContainerDecision::StartStopped { id, name } => {
+            cli.up(
+                &runtime_lifecycle.project,
+                ComposeUpOptions {
+                    force_recreate: false,
+                    remove_orphans: false,
+                },
+                &runtime_lifecycle.services,
+            )
+            .await?;
+            ensure_container_running_after_start(
+                &client,
+                &name,
+                startup_verification_for_plan(&plan),
+            )
+            .await?;
+            let container = state_container_snapshot(&plan, id.clone());
+            let existing_state = reusable_lifecycle_state(&workspace, &container)?;
+            let state = write_reused_started_state(
+                &workspace,
+                container,
+                state_compose_project_name(&plan),
+                existing_state,
+            )?;
+            let outcome = UpOutcome {
+                container_id: id,
+                container_name: name,
+                reused: true,
+            };
+            return Ok(started_up_container_with_state(
+                client,
+                workspace,
+                plan,
+                outcome,
+                LifecycleRunPath::Started,
+                credentials,
+                state,
+            ));
+        }
+        ExistingContainerDecision::Create => {}
+        ExistingContainerDecision::Recreate { .. } => {}
+    }
+
+    cli.up(
+        &runtime_lifecycle.project,
+        ComposeUpOptions {
+            force_recreate,
+            remove_orphans,
+        },
+        &runtime_lifecycle.services,
+    )
+    .await?;
+
+    let container = ComposeIntrospector::new(cli)
+        .resolve_service_container(&runtime_lifecycle.project, &compose.service)
+        .await?;
+    let outcome = UpOutcome {
+        container_name: container.name.unwrap_or_else(|| container.id.clone()),
+        container_id: container.id,
+        reused: false,
+    };
+    ensure_container_running_after_start(
+        &client,
+        &outcome.container_name,
+        startup_verification_for_plan(&plan),
+    )
+    .await?;
+    let state = sync_started_state(&workspace, &plan, &outcome, LifecycleRunPath::New)?;
+
+    Ok(started_up_container_with_state(
+        client,
+        workspace,
+        plan,
+        outcome,
+        LifecycleRunPath::New,
+        credentials,
+        state,
+    ))
+}
+
+fn compose_primary_service_image(
+    model: &ComposeConfigModel,
+    project_name: &str,
+    service: &str,
+) -> Result<String> {
+    let Some(service_model) = model.service(service) else {
+        bail!("Docker Compose project {project_name} primary service `{service}` is missing");
+    };
+    if let Some(image) = service_model
+        .image
+        .as_ref()
+        .filter(|image| !image.trim().is_empty())
+    {
+        return Ok(image.clone());
+    }
+    if service_model.build.is_some() {
+        return Ok(format!("{project_name}-{service}"));
+    }
+
+    bail!(
+        "Docker Compose project {project_name} primary service `{service}` did not resolve an image or build"
+    )
+}
+
+async fn write_generated_compose_override(
+    client: &DockerClient,
+    project: &ComposeProjectPlan,
+    primary_service: &str,
+    plan: &UpPlan,
+    compose_primary_service: Option<&ComposeConfigService>,
+) -> Result<()> {
+    let path = project.generated_override_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).with_context(|| {
+            format!(
+                "Failed to create Docker Compose generated override directory: {}",
+                parent.display()
+            )
+        })?;
+    }
+
+    let startup = compose_override_startup(client, plan, compose_primary_service).await?;
+    let content = generated_compose_override_content_with_startup(primary_service, plan, startup)?;
+    fs::write(&path, content).with_context(|| {
+        format!(
+            "Failed to write Docker Compose generated override file: {}",
+            path.display()
+        )
+    })
+}
+
+#[cfg(test)]
+fn generated_compose_override_content(primary_service: &str, plan: &UpPlan) -> Result<String> {
+    let startup = if plan.config.devcontainer.override_command {
+        let (entrypoint, command) = devcontainer_keepalive_command();
+        Some(ComposeOverrideStartup {
+            entrypoint,
+            command,
+        })
+    } else {
+        None
+    };
+    generated_compose_override_content_with_startup(primary_service, plan, startup)
+}
+
+async fn compose_override_startup(
+    client: &DockerClient,
+    plan: &UpPlan,
+    compose_primary_service: Option<&ComposeConfigService>,
+) -> Result<Option<ComposeOverrideStartup>> {
+    if !plan.config.devcontainer.entrypoints.is_empty() {
+        let command = if plan.config.devcontainer.override_command {
+            let (entrypoint, command) = devcontainer_keepalive_command();
+            let mut wrapped_command = vec![entrypoint.join(" ")];
+            wrapped_command.extend(command);
+            wrapped_command
+        } else {
+            let image_startup = image_startup_command(client, &plan.image).await?;
+            let startup = crate::up::metadata::effective_startup_command(
+                image_startup,
+                compose_primary_service,
+            );
+            let mut wrapped_command = startup.entrypoint;
+            wrapped_command.extend(startup.command);
+            wrapped_command
+        };
+        return Ok(Some(ComposeOverrideStartup {
+            entrypoint: vec![FEATURE_ENTRYPOINT_WRAPPER.to_owned()],
+            command,
+        }));
+    }
+
+    if plan.config.devcontainer.override_command {
+        let (entrypoint, command) = devcontainer_keepalive_command();
+        return Ok(Some(ComposeOverrideStartup {
+            entrypoint,
+            command,
+        }));
+    }
+
+    Ok(None)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComposeOverrideStartup {
+    entrypoint: Vec<String>,
+    command: Vec<String>,
+}
+
+fn generated_compose_override_content_with_startup(
+    primary_service: &str,
+    plan: &UpPlan,
+    startup: Option<ComposeOverrideStartup>,
+) -> Result<String> {
+    let mut content = String::new();
+    content.push_str("services:\n");
+    content.push_str("  ");
+    content.push_str(&yaml_quote(primary_service));
+    content.push_str(":\n");
+    append_yaml_scalar(&mut content, 4, "image", &plan.image);
+    if plan.image != plan.base_image {
+        append_yaml_scalar(&mut content, 4, "pull_policy", "never");
+    }
+    append_yaml_map(&mut content, 4, "labels", &plan.resources.labels);
+    append_yaml_map(
+        &mut content,
+        4,
+        "environment",
+        &plan.config.devcontainer.container_env,
+    );
+    if let Some(user) = compose_override_user(plan)? {
+        append_yaml_scalar(&mut content, 4, "user", &user);
+    }
+    if plan.config.devcontainer.init {
+        append_yaml_bool(&mut content, 4, "init", true);
+    }
+    if plan.config.devcontainer.privileged {
+        append_yaml_bool(&mut content, 4, "privileged", true);
+    }
+    append_yaml_string_list(
+        &mut content,
+        4,
+        "cap_add",
+        &plan.config.devcontainer.cap_add,
+    );
+    append_yaml_string_list(
+        &mut content,
+        4,
+        "security_opt",
+        &plan.config.devcontainer.security_opt,
+    );
+    append_yaml_mounts(&mut content, 4, &plan.mounts);
+    if let Some(startup) = startup {
+        append_yaml_string_list(&mut content, 4, "entrypoint", &startup.entrypoint);
+        append_yaml_string_list(&mut content, 4, "command", &startup.command);
+    }
+    Ok(content)
+}
+
+fn compose_override_user(plan: &UpPlan) -> Result<Option<String>> {
+    if plan.config.devcontainer.container_user.is_some() {
+        return uid_gid_sync_runtime_user(
+            &plan.effective_users.container_user.user,
+            &plan.uid_gid_sync_plan,
+        )
+        .map(Some);
+    }
+
+    if !matches!(
+        plan.effective_users.container_user.source,
+        crate::docker::user::RemoteUserSource::ComposeService
+    ) {
+        return Ok(None);
+    }
+
+    let runtime_user = uid_gid_sync_runtime_user(
+        &plan.effective_users.container_user.user,
+        &plan.uid_gid_sync_plan,
+    )?;
+    if runtime_user == plan.effective_users.container_user.user {
+        return Ok(None);
+    }
+
+    Ok(Some(runtime_user))
+}
+
+fn append_yaml_scalar(content: &mut String, indent: usize, key: &str, value: &str) {
+    append_indent(content, indent);
+    content.push_str(key);
+    content.push_str(": ");
+    content.push_str(&yaml_quote(value));
+    content.push('\n');
+}
+
+fn append_yaml_bool(content: &mut String, indent: usize, key: &str, value: bool) {
+    append_indent(content, indent);
+    content.push_str(key);
+    content.push_str(": ");
+    content.push_str(if value { "true" } else { "false" });
+    content.push('\n');
+}
+
+fn append_yaml_map(
+    content: &mut String,
+    indent: usize,
+    key: &str,
+    values: &BTreeMap<String, String>,
+) {
+    if values.is_empty() {
+        return;
+    }
+    append_indent(content, indent);
+    content.push_str(key);
+    content.push_str(":\n");
+    for (name, value) in values {
+        append_indent(content, indent + 2);
+        content.push_str(&yaml_quote(name));
+        content.push_str(": ");
+        content.push_str(&yaml_quote(value));
+        content.push('\n');
+    }
+}
+
+fn append_yaml_string_list(content: &mut String, indent: usize, key: &str, values: &[String]) {
+    if values.is_empty() {
+        return;
+    }
+    append_indent(content, indent);
+    content.push_str(key);
+    content.push_str(":\n");
+    for value in values {
+        append_indent(content, indent + 2);
+        content.push_str("- ");
+        content.push_str(&yaml_quote(value));
+        content.push('\n');
+    }
+}
+
+fn append_yaml_mounts(content: &mut String, indent: usize, mounts: &[DockerMountSpec]) {
+    if mounts.is_empty() {
+        return;
+    }
+    append_indent(content, indent);
+    content.push_str("volumes:\n");
+    for mount in mounts {
+        append_indent(content, indent + 2);
+        content.push_str("- type: ");
+        content.push_str(match mount.mount_type {
+            MountType::Bind => "bind",
+            MountType::Volume => "volume",
+            MountType::Tmpfs => "tmpfs",
+        });
+        content.push('\n');
+        if let Some(source) = &mount.source {
+            append_yaml_scalar(content, indent + 4, "source", source);
+        }
+        append_yaml_scalar(content, indent + 4, "target", &mount.target);
+        if mount.read_only {
+            append_yaml_bool(content, indent + 4, "read_only", true);
+        }
+        if let Some(consistency) = &mount.consistency {
+            append_yaml_scalar(content, indent + 4, "consistency", consistency);
+        }
+        match mount.mount_type {
+            MountType::Bind => append_yaml_bind_mount_options(content, indent + 4, mount),
+            MountType::Volume => append_yaml_volume_mount_options(content, indent + 4, mount),
+            MountType::Tmpfs => {}
+        }
+    }
+}
+
+fn append_yaml_bind_mount_options(content: &mut String, indent: usize, mount: &DockerMountSpec) {
+    append_indent(content, indent);
+    content.push_str("bind:\n");
+    if let Some(propagation) = mount
+        .bind_options
+        .as_ref()
+        .and_then(|options| options.propagation)
+    {
+        append_yaml_scalar(content, indent + 2, "propagation", propagation.as_str());
+    }
+    let create_host_path = mount
+        .bind_options
+        .as_ref()
+        .and_then(|options| options.create_mountpoint)
+        .unwrap_or(false);
+    append_yaml_bool(content, indent + 2, "create_host_path", create_host_path);
+}
+
+fn append_yaml_volume_mount_options(content: &mut String, indent: usize, mount: &DockerMountSpec) {
+    let Some(volume_options) = &mount.volume_options else {
+        return;
+    };
+    if volume_options.no_copy.is_none() && volume_options.subpath.is_none() {
+        return;
+    }
+
+    append_indent(content, indent);
+    content.push_str("volume:\n");
+    if let Some(no_copy) = volume_options.no_copy {
+        append_yaml_bool(content, indent + 2, "nocopy", no_copy);
+    }
+    if let Some(subpath) = &volume_options.subpath {
+        append_yaml_scalar(content, indent + 2, "subpath", subpath);
+    }
+}
+
+fn append_indent(content: &mut String, indent: usize) {
+    for _ in 0..indent {
+        content.push(' ');
+    }
+}
+
+fn yaml_quote(value: &str) -> String {
+    if value
+        .chars()
+        .any(|ch| matches!(ch, '\n' | '\r') || ch.is_control())
+    {
+        return yaml_double_quote(value);
+    }
+
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+fn yaml_double_quote(value: &str) -> String {
+    let mut quoted = String::with_capacity(value.len() + 2);
+    quoted.push('"');
+    for ch in value.chars() {
+        match ch {
+            '"' => quoted.push_str("\\\""),
+            '\\' => quoted.push_str("\\\\"),
+            '\n' => quoted.push_str("\\n"),
+            '\r' => quoted.push_str("\\r"),
+            '\t' => quoted.push_str("\\t"),
+            '\u{08}' => quoted.push_str("\\b"),
+            '\u{0c}' => quoted.push_str("\\f"),
+            ch if ch.is_control() => {
+                quoted.push_str(&format!("\\u{:04x}", ch as u32));
+            }
+            ch => quoted.push(ch),
+        }
+    }
+    quoted.push('"');
+    quoted
+}
+
 async fn validate_compose_canonical_model(plan: &UpPlan) -> Result<()> {
     let Some(compose_project) = &plan.compose_project else {
         return Ok(());
@@ -475,11 +1129,7 @@ async fn start_stopped_existing_container(
     container_id: String,
     container_name: String,
 ) -> Result<(UpOutcome, WorkspaceState)> {
-    let container = StateContainerSnapshot {
-        container_id: container_id.clone(),
-        image: plan.image.clone(),
-        config_hash: plan.resources.config_hash.clone(),
-    };
+    let container = state_container_snapshot(plan, container_id.clone());
     let existing_state = reusable_lifecycle_state(workspace, &container)?;
 
     start_container_and_verify_running(
@@ -489,7 +1139,12 @@ async fn start_stopped_existing_container(
     )
     .await?;
 
-    let state = write_reused_started_state(workspace, container, existing_state)?;
+    let state = write_reused_started_state(
+        workspace,
+        container,
+        state_compose_project_name(plan),
+        existing_state,
+    )?;
     Ok((
         UpOutcome {
             container_id,
@@ -854,14 +1509,11 @@ fn persist_initial_container_state(
     plan: &UpPlan,
     container_id: &str,
 ) -> Result<WorkspaceState> {
-    state::sync_state_with_container(
+    state::sync_state_with_container_and_compose_project(
         workspace.paths().state_dir(),
         workspace.root(),
-        StateContainerSnapshot {
-            container_id: container_id.to_owned(),
-            image: plan.image.clone(),
-            config_hash: plan.resources.config_hash.clone(),
-        },
+        state_container_snapshot(plan, container_id.to_owned()),
+        state_compose_project_name(plan),
         LifecycleState::default(),
     )
 }
@@ -1111,4 +1763,440 @@ async fn list_workspace_containers_inner(
         .list_workspace_containers(workspace_id)
         .await
         .with_context(|| format!("Failed to list Docker containers for workspace: {workspace_id}"))
+}
+
+async fn list_compose_primary_containers(
+    client: &DockerClient,
+    workspace_id: &str,
+    project_name: &str,
+    service: &str,
+) -> Result<Vec<UpContainerSummary>> {
+    client
+        .cli()
+        .list_compose_service_containers(workspace_id, project_name, service)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to list Docker Compose containers for workspace {workspace_id} service `{service}`"
+            )
+        })
+}
+
+async fn list_compose_project_containers(
+    client: &DockerClient,
+    workspace_id: &str,
+    project_name: &str,
+) -> Result<Vec<UpContainerSummary>> {
+    client
+        .cli()
+        .list_compose_project_containers(workspace_id, project_name)
+        .await
+        .with_context(|| {
+            format!("Failed to list Docker Compose containers for workspace {workspace_id} project `{project_name}`")
+        })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        ComposeOverrideStartup, compose_primary_service_image, generated_compose_override_content,
+        generated_compose_override_content_with_startup,
+    };
+    use crate::{
+        config::{ConfigMergeInput, resolved::ResolvedConfig, types::MountType},
+        docker::{
+            build::DockerBuildOptions,
+            mounts::{DockerMountSpec, MountBindOptions, MountBindPropagation, MountVolumeOptions},
+            resource::DockerResources,
+            user::{
+                EffectiveUserResolveInput, EffectiveUsers, HostUserIds, ResolvedUserIds,
+                UidGidSyncPlan, UidGidSyncTarget, UidGidSyncTargetKind, resolve_effective_users,
+                resolve_effective_users_with_compose_service_user,
+            },
+        },
+        up::UpPlan,
+    };
+    use std::collections::BTreeMap;
+
+    #[test]
+    fn compose_primary_service_image_uses_compose_build_default_tag_without_image() {
+        let model = serde_json::from_str(
+            r#"
+            {
+              "services": {
+                "app": {
+                  "build": {"context": ".", "dockerfile": "Dockerfile"}
+                }
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let image =
+            compose_primary_service_image(&model, "decune-project-abc123def456", "app").unwrap();
+
+        assert_eq!(image, "decune-project-abc123def456-app");
+    }
+
+    #[test]
+    fn compose_primary_service_image_prefers_explicit_image_over_build_default_tag() {
+        let model = serde_json::from_str(
+            r#"
+            {
+              "services": {
+                "app": {
+                  "image": "example/app:dev",
+                  "build": {"context": ".", "dockerfile": "Dockerfile"}
+                }
+              }
+            }
+            "#,
+        )
+        .unwrap();
+
+        let image =
+            compose_primary_service_image(&model, "decune-project-abc123def456", "app").unwrap();
+
+        assert_eq!(image, "example/app:dev");
+    }
+
+    #[test]
+    fn generated_compose_override_patches_only_primary_service() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.container_env =
+            BTreeMap::from([("FROM_DECUNE".to_owned(), "1".to_owned())]);
+        config.devcontainer.override_command = false;
+        let mut resources = DockerResources {
+            container_name: "unused".to_owned(),
+            image_tag: "decune/test:hash".to_owned(),
+            workspace_volume_name: "unused-volume".to_owned(),
+            labels: BTreeMap::new(),
+            config_hash: "hash".to_owned(),
+        };
+        resources
+            .labels
+            .insert("decune.managed".to_owned(), "true".to_owned());
+        let plan = UpPlan {
+            image: "decune/test:hash".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources,
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers: ConfigMergeInput::default(),
+            config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspace".to_owned(),
+            mounts: vec![DockerMountSpec {
+                source: Some("/host/cache".to_owned()),
+                target: "/cache".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: true,
+                consistency: None,
+                bind_options: None,
+                volume_options: None,
+            }],
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
+        };
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("'app':"));
+        assert!(content.contains("image: 'decune/test:hash'"));
+        assert!(content.contains("pull_policy: 'never'"));
+        assert!(content.contains("'FROM_DECUNE': '1'"));
+        assert!(content.contains("'decune.managed': 'true'"));
+        assert!(content.contains("target: '/cache'"));
+        assert!(!content.contains("sidecar"));
+    }
+
+    #[test]
+    fn generated_compose_override_does_not_override_pull_policy_for_original_image() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.image = "alpine:3.20".to_owned();
+        plan.base_image = "alpine:3.20".to_owned();
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("image: 'alpine:3.20'"));
+        assert!(!content.contains("pull_policy:"));
+    }
+
+    #[test]
+    fn generated_compose_override_writes_synced_container_user() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.config.devcontainer.container_user = Some("2001:2001".to_owned());
+        plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
+            devcontainer_remote_user: None,
+            devcontainer_container_user: Some("2001:2001"),
+            image_metadata_remote_user: None,
+            image_metadata_container_user: None,
+            image_config_user: None,
+        })
+        .unwrap();
+        plan.uid_gid_sync_plan = sync_plan();
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("user: 'syncuser:1000'"));
+        assert!(!content.contains("user: '2001:2001'"));
+    }
+
+    #[test]
+    fn generated_compose_override_writes_compose_service_user_only_when_sync_changes_it() {
+        let mut unchanged = generated_override_test_plan(Vec::new());
+        unchanged.effective_users = resolve_effective_users_with_compose_service_user(
+            EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: None,
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: None,
+            },
+            Some("syncuser"),
+        )
+        .unwrap();
+        let unchanged_content = generated_compose_override_content("app", &unchanged).unwrap();
+        assert!(!unchanged_content.contains("user:"));
+
+        let mut synced = unchanged;
+        synced.effective_users = resolve_effective_users_with_compose_service_user(
+            EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: None,
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: None,
+            },
+            Some("2001:2001"),
+        )
+        .unwrap();
+        synced.uid_gid_sync_plan = sync_plan();
+        let synced_content = generated_compose_override_content("app", &synced).unwrap();
+
+        assert!(synced_content.contains("user: 'syncuser:1000'"));
+    }
+
+    #[test]
+    fn generated_compose_override_preserves_bind_mount_options() {
+        let plan = generated_override_test_plan(vec![DockerMountSpec {
+            source: Some("/host/tools".to_owned()),
+            target: "/tools".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: false,
+            consistency: Some("cached".to_owned()),
+            bind_options: Some(MountBindOptions {
+                propagation: Some(MountBindPropagation::RShared),
+                create_mountpoint: Some(true),
+                ..MountBindOptions::default()
+            }),
+            volume_options: None,
+        }]);
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("consistency: 'cached'"));
+        assert!(content.contains("bind:\n"));
+        assert!(content.contains("propagation: 'rshared'"));
+        assert!(content.contains("create_host_path: true"));
+    }
+
+    #[test]
+    fn generated_compose_override_disables_default_bind_source_creation() {
+        let plan = generated_override_test_plan(vec![DockerMountSpec {
+            source: Some("/host/cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        }]);
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("bind:\n"));
+        assert!(content.contains("create_host_path: false"));
+    }
+
+    #[test]
+    fn generated_compose_override_preserves_volume_mount_options() {
+        let plan = generated_override_test_plan(vec![DockerMountSpec {
+            source: Some("project-cache".to_owned()),
+            target: "/cache".to_owned(),
+            mount_type: MountType::Volume,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: Some(MountVolumeOptions {
+                no_copy: Some(true),
+                subpath: Some("deps".to_owned()),
+                ..MountVolumeOptions::default()
+            }),
+        }]);
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("volume:\n"));
+        assert!(content.contains("nocopy: true"));
+        assert!(content.contains("subpath: 'deps'"));
+    }
+
+    fn generated_override_test_plan(mounts: Vec<DockerMountSpec>) -> UpPlan {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.override_command = false;
+        let resources = DockerResources {
+            container_name: "unused".to_owned(),
+            image_tag: "decune/test:hash".to_owned(),
+            workspace_volume_name: "unused-volume".to_owned(),
+            labels: BTreeMap::new(),
+            config_hash: "hash".to_owned(),
+        };
+
+        UpPlan {
+            image: "decune/test:hash".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources,
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers: ConfigMergeInput::default(),
+            config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspace".to_owned(),
+            mounts,
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
+        }
+    }
+
+    fn sync_plan() -> UidGidSyncPlan {
+        UidGidSyncPlan::Sync {
+            target: UidGidSyncTarget {
+                kind: UidGidSyncTargetKind::ContainerUser,
+                user: "2001:2001".to_owned(),
+                host: HostUserIds {
+                    uid: 1000,
+                    gid: 1000,
+                },
+            },
+            container: ResolvedUserIds {
+                name: "syncuser".to_owned(),
+                uid: 2001,
+                gid: 2001,
+            },
+        }
+    }
+
+    #[test]
+    fn generated_compose_override_uses_feature_entrypoint_wrapper_startup() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.override_command = false;
+        config.devcontainer.entrypoints = vec!["touch /tmp/decune-feature-entrypoint".to_owned()];
+        let resources = DockerResources {
+            container_name: "unused".to_owned(),
+            image_tag: "decune/test:hash".to_owned(),
+            workspace_volume_name: "unused-volume".to_owned(),
+            labels: BTreeMap::new(),
+            config_hash: "hash".to_owned(),
+        };
+        let plan = UpPlan {
+            image: "decune/test:hash".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources,
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers: ConfigMergeInput::default(),
+            config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspace".to_owned(),
+            mounts: Vec::new(),
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
+        };
+
+        let content = generated_compose_override_content_with_startup(
+            "app",
+            &plan,
+            Some(ComposeOverrideStartup {
+                entrypoint: vec![
+                    "/usr/local/share/decune/feature-entrypoint-wrapper.sh".to_owned(),
+                ],
+                command: vec!["/docker-entrypoint.sh".to_owned(), "server".to_owned()],
+            }),
+        )
+        .unwrap();
+
+        assert!(content.contains("entrypoint:"));
+        assert!(content.contains("'/usr/local/share/decune/feature-entrypoint-wrapper.sh'"));
+        assert!(content.contains("command:"));
+        assert!(content.contains("'/docker-entrypoint.sh'"));
+        assert!(content.contains("'server'"));
+    }
+
+    #[test]
+    fn generated_compose_override_preserves_multiline_command_values() {
+        let config = ResolvedConfig::default();
+        let resources = DockerResources {
+            container_name: "unused".to_owned(),
+            image_tag: "decune/test:hash".to_owned(),
+            workspace_volume_name: "unused-volume".to_owned(),
+            labels: BTreeMap::new(),
+            config_hash: "hash".to_owned(),
+        };
+        let plan = UpPlan {
+            image: "decune/test:hash".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources,
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers: ConfigMergeInput::default(),
+            config,
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspace".to_owned(),
+            mounts: Vec::new(),
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
+        };
+
+        let content = generated_compose_override_content_with_startup(
+            "app",
+            &plan,
+            Some(ComposeOverrideStartup {
+                entrypoint: vec!["/bin/sh".to_owned()],
+                command: vec![
+                    "-c".to_owned(),
+                    "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
+                ],
+            }),
+        )
+        .unwrap();
+
+        assert!(content.contains("\"trap 'exit 0' TERM\\nwhile sleep 1 & wait $!; do :; done\""));
+        assert!(!content.contains("TERM\nwhile"));
+    }
 }

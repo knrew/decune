@@ -184,7 +184,9 @@ decune down [--timeout <SECONDS>] [WORKSPACE]
 ```
 
 - image/Dockerfile mode: decune 管理 container を停止する。volume、state、image は削除しない。
-- Compose mode: decune 管理 Compose project の対象 service を停止する。volume、state、image は削除しない。`runServices` 指定時は primary service と `runServices` の和集合を対象にする。未指定時は project 全体を対象にする。
+- Compose mode: decune 管理 Compose project を停止する。volume、state、image は削除しない。`runServices` 指定時も、Compose が `depends_on` 等で起動した dependency service を残さないよう project 全体を停止対象にする。
+- Compose mode で現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、または service rename 等で既存 resource と一致しない場合も、state または Docker label から decune 管理 Compose project を特定して停止する。
+- 現在の設定が Compose mode でも、同じ workspace に過去の image/Dockerfile mode 由来の decune-managed container が残っている場合は停止する。
 
 明示的な `decune down` は `shutdownAction` に関係なく停止を行う。
 
@@ -196,6 +198,8 @@ decune clean [--force] [--images] [WORKSPACE]
 
 - image/Dockerfile mode: managed container、managed volume、state/runtime を削除する。`--images` 指定時だけ generated image を削除する。
 - Compose mode: managed Compose project を `docker compose down --volumes --remove-orphans` 相当で削除し、state/runtime を削除する。external volume/network は Compose の標準挙動に従い削除しない。`--images` 指定時だけ decune generated image を削除する。user が Compose file で指定した image を `--rmi all` で削除してはならない。
+- Compose mode で現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、または service rename 等で既存 resource と一致しない場合も、state または Docker label から decune 管理 Compose project を特定して削除する。
+- 現在の設定が Compose mode でも、同じ workspace に過去の image/Dockerfile mode 由来の decune-managed container や managed volume が残っている場合は削除する。
 
 TTY でない `clean` without `--force` は確認不能として error にする。
 
@@ -339,6 +343,7 @@ Compose mode で decune 固有機能を適用するため、state/runtime direct
 
 - primary service に decune label を付与する。
 - primary service image を Feature/UID/GID/entrypoint 適用済み final image に差し替える。
+- primary service image を decune generated local image に差し替える場合、元 Compose service の `pull_policy` を引き継いで registry pull しないよう、generated override で `pull_policy: never` を明示する。
 - `containerEnv`、`containerUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles mount、credential/runtime mount を primary service に追加する。
 - `overrideCommand = true` の場合、primary service command を keepalive command に差し替える。
 - secret value は override file に書かない。GitHub token は host runtime file を bind mount し、token value 自体は file content にのみ存在する。
@@ -350,7 +355,7 @@ Generated override file は user の `dockerComposeFile` より後に `-f` で�
 - `runServices` 未指定: `docker compose up -d` を service 引数なしで実行し、Compose model 上の有効 service を起動対象にする。
 - `runServices` 指定あり: primary `service` と `runServices` の和集合を service 引数として `docker compose up -d <services...>` に渡す。
 - service dependencies の起動順、`depends_on`、healthcheck、profiles の扱いは Compose CLI に委譲する。
-- `down` / attached `up` 終了時の stop 対象も同じ集合にする。ただし `clean` は project 全体を削除対象にする。
+- `down` / attached `up` 終了時の `stopCompose` は、`runServices` の service 引数で対象を狭めず、Compose project 全体を停止する。これは Compose が `depends_on` 等で暗黙に起動した dependency service を残さないためである。`clean` は project 全体を削除対象にする。
 
 ### Build / pull / recreate
 
@@ -359,9 +364,9 @@ Compose mode の image creation は次の順で行う。
 1. `initializeCommand` を host で実行する。
 2. user Compose file だけで `docker compose config --format json` を実行し、primary service の base image/build 情報を検証する。
 3. `docker compose build` または `docker compose up -d --build` で primary service と必要な service image を準備する。`--no-cache` と `--pull` は Compose build option に反映する。
-4. primary service の base image を特定する。Compose service に `build` がある場合は Compose が tag した service image を使う。service に `image` のみがある場合はその image を使う。
+4. primary service の base image を特定する。Compose service に `build` がある場合は Compose が tag した service image を使う。`image` がない build-only service では Compose の既定 tag `<project-name>-<service>` を使う。service に `image` のみがある場合はその image を使い、metadata 解決前に missing image を pull する。
 5. Feature、UID/GID sync、entrypoint shim が必要な場合、base image に decune generated layer を重ね、decune generated image tag を作る。
-6. generated Compose override に primary service image 差し替えを反映する。
+6. generated Compose override に primary service image 差し替えを反映する。decune generated local image に差し替える場合は `pull_policy: never` も反映する。
 7. generated override 込みで `docker compose up -d` を実行する。
 8. `docker compose ps --format json` と `docker inspect` で primary container ID を解決し、lifecycle と shell attach に進む。
 
@@ -378,7 +383,7 @@ attached `up` で shell が終了したとき:
 
 - `none`: container/project を停止しない。
 - `stopContainer`: primary container だけ停止する。
-- `stopCompose`: Compose mode では runServices 対象を停止する。image/Dockerfile mode では `stopContainer` と同じ。
+- `stopCompose`: Compose mode では Compose project 全体を停止する。image/Dockerfile mode では `stopContainer` と同じ。
 
 明示的な `decune down` / `decune clean` は user 操作として扱い、`shutdownAction` によって no-op にはしない。
 
@@ -702,9 +707,9 @@ Compose mode では上記 label を primary service に追加する。Compose �
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
-config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の canonical Compose model、Compose file digest、generated override plan を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path は含めない。
+config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の user Compose files から得た secret-redacted canonical Compose model、Compose file digest、generated override plan を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path、Compose environment / secrets の解決済み value は含めない。Compose mode では `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から secret value を redaction したものを hash に含める。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため canonical model hash 入力にしない。
 
-state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 flag は state に記録し、creation lifecycle の二重実行を避ける。
+state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 flag と devcontainer config file path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 
 ## Build と Features
 
@@ -754,14 +759,15 @@ Compose mode では workspace mount を自動追加しない。primary service �
 
 user 解決:
 
-- effective container user: `containerUser`、image/Feature metadata `containerUser`、Docker image config `User`、Compose service `user`、`root`。
+- effective container user: `containerUser`、image/Feature metadata `containerUser`、Compose service `user`、Docker image config `User`、`root`。
 - effective remote user: `remoteUser`、image/Feature metadata `remoteUser`、effective container user。
 
 存在しない effective remote user は root fallback せず configuration error とする。numeric UID/GID は passwd entry がなくても runtime identity として扱えるが、home directory が必要な処理では error または warning skip になる。
 
-`updateRemoteUserUID` は Linux host で既定 true。remote user が明示されていれば remote user、なければ `containerUser` が明示されている場合に container user を sync target とする。非 Linux host、root target、`updateRemoteUserUID = false`、passwd entry がない numeric target は no-op または warning skip とする。
+`updateRemoteUserUID` は Linux host で既定 true。remote user が明示されていれば remote user、なければ `containerUser`、image/Feature metadata `containerUser`、Compose service `user` のいずれかで container user が明示されている場合に container user を sync target とする。非 Linux host、root target、`updateRemoteUserUID = false`、passwd entry がない numeric target は no-op または warning skip とする。
 
 Compose mode で UID/GID sync が必要な場合、primary service base image に sync layer を重ねた final image を作る。running container 内で `/etc/passwd` を直接 mutation しない。
+UID/GID sync によって runtime user 表現が変わる場合、generated Compose override の primary service `user` には sync 後の user/group を反映し、元の numeric UID/GID で primary process を起動しない。
 
 ## Lifecycle と shell attach
 

@@ -163,6 +163,12 @@ pub(crate) fn container_summary(container: ContainerInspect) -> Option<UpContain
         .map(|name| name.trim_start_matches('/').to_owned())
         .unwrap_or_else(|| id.clone());
     let config_hash = None;
+    let config_file = container
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .and_then(|labels| labels.get("devcontainer.config_file"))
+        .cloned();
     let mounts = container.mounts.map(|mounts| {
         mounts
             .into_iter()
@@ -189,6 +195,7 @@ pub(crate) fn container_summary(container: ContainerInspect) -> Option<UpContain
         name,
         image_id: container.image,
         config_hash,
+        config_file,
         mounts,
         running,
     })
@@ -241,6 +248,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(Vec::new()),
             running: true,
         };
@@ -264,6 +272,7 @@ mod tests {
             name: "decune-project-abc123".to_owned(),
             image_id: None,
             config_hash: Some("hash123".to_owned()),
+            config_file: None,
             mounts: Some(vec![mount_summary(None, "/workspaces/project")]),
             running: true,
         };

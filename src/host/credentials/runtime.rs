@@ -131,7 +131,7 @@ pub(crate) struct SshAgentRuntime {
 }
 
 impl SshAgentRuntime {
-    pub(super) fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             mounts: Vec::new(),
             container_env: BTreeMap::new(),
