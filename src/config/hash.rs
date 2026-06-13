@@ -190,28 +190,34 @@ fn write_compose_file_inputs(writer: &mut CanonicalWriter, inputs: &[ComposeFile
 
 fn redact_compose_canonical_model_for_hash(model: &JsonValue) -> JsonValue {
     let mut model = model.clone();
-    redact_compose_canonical_model_value(&mut model, None);
+    redact_compose_canonical_model_value(&mut model, &mut Vec::new());
     model
 }
 
-fn redact_compose_canonical_model_value(value: &mut JsonValue, key: Option<&str>) {
+fn redact_compose_canonical_model_value(value: &mut JsonValue, path: &mut Vec<String>) {
     match value {
         JsonValue::Object(map) => {
-            if matches!(key, Some("environment" | "secrets")) {
+            if is_compose_service_environment_path(path) {
                 redact_json_leaf_values(value);
                 return;
             }
             for (child_key, child_value) in map {
-                redact_compose_canonical_model_value(child_value, Some(child_key));
+                path.push(child_key.clone());
+                redact_compose_canonical_model_value(child_value, path);
+                path.pop();
             }
         }
         JsonValue::Array(values) => {
             for value in values {
-                redact_compose_canonical_model_value(value, key);
+                redact_compose_canonical_model_value(value, path);
             }
         }
         _ => {}
     }
+}
+
+fn is_compose_service_environment_path(path: &[String]) -> bool {
+    path.len() == 3 && path[0] == "services" && path[2] == "environment"
 }
 
 fn redact_json_leaf_values(value: &mut JsonValue) {
@@ -1707,7 +1713,7 @@ shell = false
     }
 
     #[test]
-    fn config_hash_redacts_compose_secret_values() {
+    fn config_hash_keeps_compose_secret_source_metadata() {
         let config = resolved_config("version = 1\n");
         let first = config_hash(&ConfigHashInput {
             compose_files: vec![ComposeFileHashInput {
@@ -1750,7 +1756,70 @@ shell = false
             ..ConfigHashInput::new(&config)
         });
 
-        assert_eq!(first, second);
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_keeps_compose_service_secret_mount_metadata() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "secrets": [
+                            {
+                                "source": "app_token",
+                                "target": "app_token.txt",
+                                "uid": "103",
+                                "gid": "103",
+                                "mode": "0440"
+                            }
+                        ]
+                    }
+                },
+                "secrets": {
+                    "app_token": {
+                        "environment": "APP_TOKEN"
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "secrets": [
+                            {
+                                "source": "app_token",
+                                "target": "renamed-token.txt",
+                                "uid": "103",
+                                "gid": "103",
+                                "mode": "0440"
+                            }
+                        ]
+                    }
+                },
+                "secrets": {
+                    "app_token": {
+                        "environment": "APP_TOKEN"
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
     }
 
     #[test]
