@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Result, anyhow};
-use serde_json::Value;
+use serde::{Deserialize, Deserializer};
 
 use crate::{
     config::{canonical::sha256_hex, hash::ComposeFileHashInput},
@@ -41,7 +41,10 @@ impl DockerComposeCli {
         Ok(output)
     }
 
-    pub(crate) async fn config(&self, project: &ComposeCommandPlan) -> Result<Value> {
+    pub(crate) async fn config_json(
+        &self,
+        project: &ComposeCommandPlan,
+    ) -> Result<ComposeConfigModel> {
         let command = project.command(["config", "--format", "json"]);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
@@ -50,7 +53,13 @@ impl DockerComposeCli {
             &command,
             &output,
         )?;
-        serde_json::from_slice(&output.stdout).map_err(Into::into)
+        serde_json::from_slice(&output.stdout).map_err(|error| {
+            anyhow!(
+                "Failed to parse Docker Compose config JSON for project {} from files {}: {error}",
+                project.project_name,
+                project.file_list()
+            )
+        })
     }
 
     pub(crate) async fn build(
@@ -105,12 +114,12 @@ impl DockerComposeCli {
         )
     }
 
-    pub(crate) async fn ps(
+    pub(crate) async fn ps_json(
         &self,
         project: &ComposeCommandPlan,
-        services: &[String],
-    ) -> Result<Value> {
-        let command = project.command(["ps", "--format", "json"]).args(services);
+        service: &str,
+    ) -> Result<Vec<ComposePsContainer>> {
+        let command = project.command(["ps", "--format", "json"]).arg(service);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
             "list Docker Compose services",
@@ -118,8 +127,202 @@ impl DockerComposeCli {
             &command,
             &output,
         )?;
-        serde_json::from_slice(&output.stdout).map_err(Into::into)
+        serde_json::from_slice(&output.stdout).map_err(|error| {
+            anyhow!(
+                "Failed to parse Docker Compose ps JSON for project {} service `{service}`: {error}",
+                project.project_name
+            )
+        })
     }
+}
+
+#[derive(Clone)]
+pub(crate) struct ComposeIntrospector {
+    cli: DockerComposeCli,
+}
+
+impl Default for ComposeIntrospector {
+    fn default() -> Self {
+        Self::new(DockerComposeCli::default())
+    }
+}
+
+impl ComposeIntrospector {
+    pub(crate) fn new(cli: DockerComposeCli) -> Self {
+        Self { cli }
+    }
+
+    pub(crate) async fn user_config_model(
+        &self,
+        project: &ComposeProjectPlan,
+        validation: &ComposeServiceValidation<'_>,
+    ) -> Result<ComposeConfigModel> {
+        let model = self
+            .cli
+            .config_json(&project.command_plan_without_generated_override())
+            .await?;
+        model.validate_services(validation)?;
+        Ok(model)
+    }
+
+    pub(crate) async fn config_model_with_generated_override(
+        &self,
+        project: &ComposeProjectPlan,
+        validation: &ComposeServiceValidation<'_>,
+    ) -> Result<ComposeConfigModel> {
+        let model = self
+            .cli
+            .config_json(&project.command_plan_with_generated_override())
+            .await?;
+        model.validate_services(validation)?;
+        Ok(model)
+    }
+
+    pub(crate) async fn resolve_service_container(
+        &self,
+        project: &ComposeCommandPlan,
+        service: &str,
+    ) -> Result<ComposePsContainer> {
+        let containers = self.cli.ps_json(project, service).await?;
+        resolve_compose_container(&project.project_name, service, containers)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct ComposeConfigModel {
+    #[serde(default)]
+    services: std::collections::BTreeMap<String, ComposeConfigService>,
+}
+
+impl ComposeConfigModel {
+    pub(crate) fn has_service(&self, service: &str) -> bool {
+        self.services.contains_key(service)
+    }
+
+    pub(crate) fn service(&self, service: &str) -> Option<&ComposeConfigService> {
+        self.services.get(service)
+    }
+
+    pub(crate) fn validate_services(
+        &self,
+        validation: &ComposeServiceValidation<'_>,
+    ) -> Result<()> {
+        validate_absolute_workspace_folder(validation.workspace_folder)?;
+        if !self.has_service(validation.primary_service) {
+            return Err(missing_compose_service_error(
+                validation.project_name,
+                "primary service",
+                validation.primary_service,
+            ));
+        }
+
+        if let Some(run_services) = validation.run_services {
+            for service in run_services {
+                if !self.has_service(service) {
+                    return Err(missing_compose_service_error(
+                        validation.project_name,
+                        "runServices service",
+                        service,
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub(crate) struct ComposeConfigService {
+    #[serde(default)]
+    pub(crate) image: Option<String>,
+    #[serde(default)]
+    pub(crate) build: Option<serde_json::Value>,
+    #[serde(default)]
+    pub(crate) working_dir: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComposeServiceValidation<'a> {
+    pub(crate) primary_service: &'a str,
+    pub(crate) run_services: Option<&'a [String]>,
+    pub(crate) workspace_folder: &'a str,
+    pub(crate) project_name: &'a str,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct ComposePsContainer {
+    #[serde(alias = "Id", rename = "ID")]
+    pub(crate) id: String,
+    #[serde(default, rename = "Name")]
+    pub(crate) name: Option<String>,
+    #[serde(rename = "Service")]
+    pub(crate) service: String,
+    #[serde(default, rename = "State")]
+    pub(crate) state: Option<String>,
+    #[serde(
+        default,
+        rename = "Publishers",
+        deserialize_with = "deserialize_null_as_empty_vec"
+    )]
+    pub(crate) published_ports: Vec<ComposePublishedPort>,
+}
+
+fn deserialize_null_as_empty_vec<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub(crate) struct ComposePublishedPort {
+    #[serde(default, rename = "URL")]
+    pub(crate) url: Option<String>,
+    #[serde(default, rename = "TargetPort")]
+    pub(crate) target_port: Option<u16>,
+    #[serde(default, rename = "PublishedPort")]
+    pub(crate) published_port: Option<u16>,
+    #[serde(default, rename = "Protocol")]
+    pub(crate) protocol: Option<String>,
+}
+
+pub(crate) fn resolve_compose_container(
+    project_name: &str,
+    service: &str,
+    containers: Vec<ComposePsContainer>,
+) -> Result<ComposePsContainer> {
+    match containers.len() {
+        0 => Err(anyhow!(
+            "Docker Compose project {project_name} service `{service}` has no running container"
+        )),
+        1 => Ok(containers
+            .into_iter()
+            .next()
+            .expect("container length checked before extraction")),
+        count => Err(anyhow!(
+            "Docker Compose project {project_name} service `{service}` has {count} containers; expected exactly one"
+        )),
+    }
+}
+
+fn missing_compose_service_error(project_name: &str, role: &str, service: &str) -> anyhow::Error {
+    anyhow!(
+        "Docker Compose project {project_name} does not contain {role} `{service}`. The service may be disabled by Compose profiles"
+    )
+}
+
+fn validate_absolute_workspace_folder(workspace_folder: &str) -> Result<()> {
+    if workspace_folder.starts_with('/') {
+        return Ok(());
+    }
+
+    Err(anyhow!(
+        "workspaceFolder must be an absolute container path: {workspace_folder}"
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -245,6 +448,14 @@ impl ComposeCommandPlan {
         }
         command.args(args)
     }
+
+    fn file_list(&self) -> String {
+        self.files
+            .iter()
+            .map(|file| file.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", ")
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -311,7 +522,11 @@ mod tests {
 
     use crate::workspace::Workspace;
 
-    use super::{ComposeCommandPlan, ComposeProject, ComposeProjectPlan};
+    use super::{
+        ComposeCommandPlan, ComposeConfigModel, ComposeIntrospector, ComposeProject,
+        ComposeProjectPlan, ComposeServiceValidation, DockerComposeCli, resolve_compose_container,
+    };
+    use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
 
     fn fixture_workspace(name: &str) -> (tempfile::TempDir, Workspace) {
         let temp = tempfile::tempdir().unwrap();
@@ -580,5 +795,316 @@ mod tests {
 
         assert!(message.contains("Failed to canonicalize Docker Compose file"));
         assert!(message.contains("missing.yaml"));
+    }
+
+    #[test]
+    fn compose_config_fixture_parses_services_without_rejecting_unknown_fields() {
+        let model: ComposeConfigModel = serde_json::from_str(
+            r#"
+            {
+              "name": "ignored",
+              "services": {
+                "app": {
+                  "image": "alpine:3.20",
+                  "working_dir": "/workspace",
+                  "x-compose-version-dependent": true
+                },
+                "db": {
+                  "build": {"context": ".", "dockerfile": "Dockerfile"}
+                }
+              },
+              "networks": {"default": {"name": "example_default"}}
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert!(model.has_service("app"));
+        assert!(model.has_service("db"));
+        assert_eq!(
+            model
+                .service("app")
+                .and_then(|service| service.image.as_deref()),
+            Some("alpine:3.20")
+        );
+    }
+
+    #[test]
+    fn compose_introspection_validation_rejects_missing_primary_service() {
+        let model: ComposeConfigModel =
+            serde_json::from_str(r#"{"services":{"db":{"image":"postgres:16"}}}"#).unwrap();
+        let validation = ComposeServiceValidation {
+            primary_service: "app",
+            run_services: None,
+            workspace_folder: "/workspace",
+            project_name: "decune-project-abc123",
+        };
+
+        let error = model.validate_services(&validation).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Docker Compose project decune-project-abc123 does not contain primary service `app`. The service may be disabled by Compose profiles"
+        );
+    }
+
+    #[test]
+    fn compose_introspection_validation_rejects_missing_run_service() {
+        let model: ComposeConfigModel =
+            serde_json::from_str(r#"{"services":{"app":{"image":"alpine:3.20"}}}"#).unwrap();
+        let run_services = vec!["app".to_owned(), "db".to_owned()];
+        let validation = ComposeServiceValidation {
+            primary_service: "app",
+            run_services: Some(&run_services),
+            workspace_folder: "/workspace",
+            project_name: "decune-project-abc123",
+        };
+
+        let error = model.validate_services(&validation).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Docker Compose project decune-project-abc123 does not contain runServices service `db`. The service may be disabled by Compose profiles"
+        );
+    }
+
+    #[test]
+    fn compose_introspection_validation_rejects_profile_disabled_primary_service() {
+        let model: ComposeConfigModel =
+            serde_json::from_str(r#"{"services":{"db":{"image":"postgres:16"}}}"#).unwrap();
+        let validation = ComposeServiceValidation {
+            primary_service: "app",
+            run_services: None,
+            workspace_folder: "/workspace",
+            project_name: "decune-project-abc123",
+        };
+
+        let error = model.validate_services(&validation).unwrap_err();
+
+        assert!(error.to_string().contains("disabled by Compose profiles"));
+    }
+
+    #[test]
+    fn compose_introspection_validation_rejects_relative_workspace_folder() {
+        let model: ComposeConfigModel =
+            serde_json::from_str(r#"{"services":{"app":{"image":"alpine:3.20"}}}"#).unwrap();
+        let validation = ComposeServiceValidation {
+            primary_service: "app",
+            run_services: None,
+            workspace_folder: "workspace",
+            project_name: "decune-project-abc123",
+        };
+
+        let error = model.validate_services(&validation).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "workspaceFolder must be an absolute container path: workspace"
+        );
+    }
+
+    #[test]
+    fn compose_ps_fixture_resolves_single_container_id() {
+        let containers = serde_json::from_str(
+            r#"
+            [
+              {
+                "ID": "abc123",
+                "Name": "project-app-1",
+                "Service": "app",
+                "State": "running",
+                "Publishers": [
+                  {"URL": "127.0.0.1", "TargetPort": 3000, "PublishedPort": 3000, "Protocol": "tcp"}
+                ]
+              }
+            ]
+            "#,
+        )
+        .unwrap();
+
+        let container =
+            resolve_compose_container("decune-project-abc123", "app", containers).unwrap();
+
+        assert_eq!(container.id, "abc123");
+        assert_eq!(container.service, "app");
+        assert_eq!(container.state.as_deref(), Some("running"));
+        assert_eq!(container.published_ports.len(), 1);
+    }
+
+    #[test]
+    fn compose_ps_fixture_treats_null_publishers_as_empty_ports() {
+        let containers = serde_json::from_str(
+            r#"
+            [
+              {
+                "ID": "abc123",
+                "Name": "project-app-1",
+                "Service": "app",
+                "State": "running",
+                "Publishers": null
+              }
+            ]
+            "#,
+        )
+        .unwrap();
+
+        let container =
+            resolve_compose_container("decune-project-abc123", "app", containers).unwrap();
+
+        assert_eq!(container.id, "abc123");
+        assert!(container.published_ports.is_empty());
+    }
+
+    #[test]
+    fn compose_ps_resolution_rejects_zero_containers() {
+        let containers = serde_json::from_str("[]").unwrap();
+
+        let error =
+            resolve_compose_container("decune-project-abc123", "app", containers).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Docker Compose project decune-project-abc123 service `app` has no running container"
+        );
+    }
+
+    #[test]
+    fn compose_ps_resolution_rejects_multiple_containers() {
+        let containers = serde_json::from_str(
+            r#"
+            [
+              {"ID": "abc123", "Name": "project-app-1", "Service": "app"},
+              {"ID": "def456", "Name": "project-app-2", "Service": "app"}
+            ]
+            "#,
+        )
+        .unwrap();
+
+        let error =
+            resolve_compose_container("decune-project-abc123", "app", containers).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Docker Compose project decune-project-abc123 service `app` has 2 containers; expected exactly one"
+        );
+    }
+
+    #[test]
+    fn docker_compose_cli_reads_typed_config_and_ps_json() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(RuntimeOutput {
+                stdout: br#"[{"ID":"abc123","Name":"project-app-1","Service":"app"}]"#.to_vec(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            Ok(RuntimeOutput {
+                stdout: br#"{"services":{"app":{"image":"alpine:3.20"}}}"#.to_vec(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+        ]);
+        let cli = DockerComposeCli::new(std::sync::Arc::new(runner.clone()));
+        let command_plan = ComposeCommandPlan {
+            project_name: "decune-project-abc123def456".to_owned(),
+            project_directory: PathBuf::from("/workspace"),
+            files: vec![PathBuf::from("/workspace/compose.yaml")],
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let config = runtime.block_on(cli.config_json(&command_plan)).unwrap();
+        let ps = runtime.block_on(cli.ps_json(&command_plan, "app")).unwrap();
+        let commands = runner.commands();
+
+        assert!(config.has_service("app"));
+        assert_eq!(ps.len(), 1);
+        assert_eq!(
+            commands[0].args_vec().last().map(String::as_str),
+            Some("json")
+        );
+        assert_eq!(
+            commands[1].args_vec(),
+            &[
+                "compose",
+                "--project-name",
+                "decune-project-abc123def456",
+                "--project-directory",
+                "/workspace",
+                "-f",
+                "/workspace/compose.yaml",
+                "ps",
+                "--format",
+                "json",
+                "app",
+            ]
+        );
+    }
+
+    #[test]
+    fn compose_introspection_reads_user_and_generated_config_paths() {
+        let (_temp, workspace) = fixture_workspace("introspection-paths");
+        let devcontainer_dir = workspace.root().join(".devcontainer");
+        fs::create_dir(&devcontainer_dir).unwrap();
+        write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
+        let project =
+            ComposeProjectPlan::resolve(&workspace, &devcontainer_dir, &["compose.yaml".into()])
+                .unwrap();
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(RuntimeOutput {
+                stdout: br#"{"services":{"app":{"image":"generated:latest"}}}"#.to_vec(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            Ok(RuntimeOutput {
+                stdout: br#"{"services":{"app":{"image":"alpine:3.20"}}}"#.to_vec(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+        ]);
+        let introspector =
+            ComposeIntrospector::new(DockerComposeCli::new(std::sync::Arc::new(runner.clone())));
+        let validation = ComposeServiceValidation {
+            primary_service: "app",
+            run_services: None,
+            workspace_folder: "/workspace",
+            project_name: project.project_name(),
+        };
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let user_model = runtime
+            .block_on(introspector.user_config_model(&project, &validation))
+            .unwrap();
+        let generated_model = runtime
+            .block_on(introspector.config_model_with_generated_override(&project, &validation))
+            .unwrap();
+        let commands = runner.commands();
+
+        assert_eq!(
+            user_model
+                .service("app")
+                .and_then(|service| service.image.as_deref()),
+            Some("alpine:3.20")
+        );
+        assert_eq!(
+            generated_model
+                .service("app")
+                .and_then(|service| service.image.as_deref()),
+            Some("generated:latest")
+        );
+        assert!(
+            !commands[0]
+                .args_vec()
+                .contains(&project.generated_override_path().display().to_string())
+        );
+        assert!(
+            commands[1]
+                .args_vec()
+                .contains(&project.generated_override_path().display().to_string())
+        );
     }
 }

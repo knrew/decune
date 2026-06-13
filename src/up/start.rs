@@ -13,6 +13,7 @@ use futures_util::{
 };
 
 use crate::{
+    config::resolved::ResolvedDevcontainerSource,
     devcontainer::lifecycle::{LifecycleRunPath, run_host_initialize_lifecycle},
     docker::{
         build::{
@@ -36,6 +37,7 @@ use crate::{
         },
         forward::{ForwardRuntime, prepare_forward_runtime},
     },
+    runtime::compose_cli::{ComposeIntrospector, ComposeServiceValidation},
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
     up::{
@@ -234,11 +236,12 @@ pub(in crate::up) async fn ensure_container_started(
         forwarding_resolution,
         options.update_features,
     )?;
+    run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     if preliminary_plan.compose_project.is_some() {
+        validate_compose_canonical_model(&preliminary_plan).await?;
         bail!("Docker Compose lifecycle is not implemented yet");
     }
     let plan_resolution = UpPlanResolution::new(forwarding_resolution, options.update_features);
-    run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
 
     let client = DockerClient::connect_from_env()?;
     let containers = list_workspace_containers(&client, workspace.id()).await?;
@@ -442,6 +445,27 @@ pub(in crate::up) async fn ensure_container_started(
             ))
         }
     }
+}
+
+async fn validate_compose_canonical_model(plan: &UpPlan) -> Result<()> {
+    let Some(compose_project) = &plan.compose_project else {
+        return Ok(());
+    };
+    let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
+    else {
+        return Ok(());
+    };
+    let validation = ComposeServiceValidation {
+        primary_service: &compose.service,
+        run_services: compose.run_services.as_deref(),
+        workspace_folder: &plan.workspace_folder,
+        project_name: compose_project.project_name(),
+    };
+
+    ComposeIntrospector::default()
+        .user_config_model(compose_project, &validation)
+        .await?;
+    Ok(())
 }
 
 async fn start_stopped_existing_container(

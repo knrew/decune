@@ -3,6 +3,7 @@ pub(crate) mod support;
 
 mod build;
 mod clean;
+mod compose;
 mod dotfiles;
 mod features;
 mod git_credentials;
