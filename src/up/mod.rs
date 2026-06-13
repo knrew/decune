@@ -108,6 +108,8 @@ mod tests {
 
     use anyhow::Context;
 
+    use super::metadata::FinalizeUpPlanMountsOptions;
+
     use crate::config::layer::{
         LayerDevcontainerMetadata, LayerDevcontainerSource, LayerUserEnvProbe,
     };
@@ -2935,7 +2937,10 @@ type = "bind"
                 None,
                 None,
                 Some((false, false)),
-                false,
+                FinalizeUpPlanMountsOptions {
+                    update_features: false,
+                    compose_canonical_model: None,
+                },
             )
             .await
             .unwrap();
@@ -2998,7 +3003,10 @@ type = "bind"
                     None,
                     None,
                     Some((false, false)),
-                    false,
+                    FinalizeUpPlanMountsOptions {
+                        update_features: false,
+                        compose_canonical_model: None,
+                    },
                 )
                 .await?;
 
@@ -3074,7 +3082,10 @@ type = "bind"
                     None,
                     None,
                     Some((false, false)),
-                    false,
+                    FinalizeUpPlanMountsOptions {
+                        update_features: false,
+                        compose_canonical_model: None,
+                    },
                 )
                 .await?;
                 let pre_sync_resources = plan

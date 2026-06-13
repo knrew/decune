@@ -53,8 +53,9 @@ use crate::{
         },
         existing::{self, CredentialRuntimeMountPolicy, decide_existing_container},
         metadata::{
-            build_existing_container_decision_plan, existing_remote_user_image_for_decision,
-            finalize_up_plan_mounts, prepare_image_based_metadata, warn_about_deferred_features,
+            FinalizeUpPlanMountsOptions, build_existing_container_decision_plan,
+            existing_remote_user_image_for_decision, finalize_up_plan_mounts,
+            prepare_image_based_metadata, warn_about_deferred_features,
         },
         plan::build_preliminary_up_plan_with_forwarding_resolution,
         types::{
@@ -295,7 +296,10 @@ pub(in crate::up) async fn ensure_container_started(
                 .first()
                 .and_then(existing::existing_container_config_hash),
             Some((options.pull, options.no_cache)),
-            options.update_features,
+            FinalizeUpPlanMountsOptions {
+                update_features: options.update_features,
+                compose_canonical_model: None,
+            },
         )
         .await?;
         let platform =
@@ -365,7 +369,10 @@ pub(in crate::up) async fn ensure_container_started(
         None,
         None,
         Some((options.pull, options.no_cache)),
-        options.update_features,
+        FinalizeUpPlanMountsOptions {
+            update_features: options.update_features,
+            compose_canonical_model: None,
+        },
     )
     .await?;
     let image_prepared =
@@ -481,8 +488,8 @@ async fn start_compose_project(
     );
     let cli = DockerComposeCli::default();
 
-    let user_model = ComposeIntrospector::new(cli.clone())
-        .user_config_model(
+    let user_config = ComposeIntrospector::new(cli.clone())
+        .user_config(
             compose_project,
             &ComposeServiceValidation {
                 primary_service: &compose.service,
@@ -492,17 +499,21 @@ async fn start_compose_project(
             },
         )
         .await?;
+    let user_model = &user_config.model;
     let primary_service_has_build = user_model
         .service(&compose.service)
         .and_then(|service| service.build.as_ref())
         .is_some();
     plan.base_image = compose_primary_service_image(
-        &user_model,
+        user_model,
         compose_project.project_name(),
         &compose.service,
     )?;
 
     let client = DockerClient::connect_from_env()?;
+    let existing_compose_project_containers =
+        list_compose_project_containers(&client, workspace.id(), compose_project.project_name())
+            .await?;
     let existing_compose_containers = list_compose_primary_containers(
         &client,
         workspace.id(),
@@ -555,7 +566,10 @@ async fn start_compose_project(
         existing_remote_user_image,
         None,
         Some((false, options.no_cache)),
-        options.update_features,
+        FinalizeUpPlanMountsOptions {
+            update_features: options.update_features,
+            compose_canonical_model: Some(&user_config.canonical_model),
+        },
     )
     .await?;
     let mut plan = plan;
@@ -584,9 +598,11 @@ async fn start_compose_project(
         compose.run_services.as_deref(),
     );
 
-    if existing_compose_containers.is_empty() {
+    if existing_compose_project_containers.is_empty() {
         state::reconcile_state_without_container(workspace.paths().state_dir())?;
     }
+    let stale_compose_project =
+        !existing_compose_project_containers.is_empty() && existing_compose_containers.is_empty();
 
     let decision = decide_existing_container(
         &existing_compose_containers,
@@ -594,8 +610,10 @@ async fn start_compose_project(
         credentials.mount_policy(),
         options.rebuild,
     )?;
-    let force_recreate =
-        matches!(decision, ExistingContainerDecision::Recreate { .. }) || options.rebuild;
+    let force_recreate = matches!(decision, ExistingContainerDecision::Recreate { .. })
+        || options.rebuild
+        || stale_compose_project;
+    let remove_orphans = force_recreate || stale_compose_project;
     match decision {
         ExistingContainerDecision::ReuseRunning { id, name } => {
             let outcome = UpOutcome {
@@ -617,8 +635,15 @@ async fn start_compose_project(
                 &runtime_lifecycle.project,
                 ComposeUpOptions {
                     force_recreate: false,
+                    remove_orphans: false,
                 },
                 &runtime_lifecycle.services,
+            )
+            .await?;
+            ensure_container_running_after_start(
+                &client,
+                &name,
+                startup_verification_for_plan(&plan),
             )
             .await?;
             let container = state_container_snapshot(&plan, id.clone());
@@ -645,7 +670,10 @@ async fn start_compose_project(
 
     cli.up(
         &runtime_lifecycle.project,
-        ComposeUpOptions { force_recreate },
+        ComposeUpOptions {
+            force_recreate,
+            remove_orphans,
+        },
         &runtime_lifecycle.services,
     )
     .await?;
@@ -658,6 +686,12 @@ async fn start_compose_project(
         container_id: container.id,
         reused: false,
     };
+    ensure_container_running_after_start(
+        &client,
+        &outcome.container_name,
+        startup_verification_for_plan(&plan),
+    )
+    .await?;
     let state = sync_started_state(&workspace, &plan, &outcome, LifecycleRunPath::New)?;
 
     Ok(started_up_container_with_state(
@@ -1583,6 +1617,20 @@ async fn list_compose_primary_containers(
             format!(
                 "Failed to list Docker Compose containers for workspace {workspace_id} service `{service}`"
             )
+        })
+}
+
+async fn list_compose_project_containers(
+    client: &DockerClient,
+    workspace_id: &str,
+    project_name: &str,
+) -> Result<Vec<UpContainerSummary>> {
+    client
+        .cli()
+        .list_compose_project_containers(workspace_id, project_name)
+        .await
+        .with_context(|| {
+            format!("Failed to list Docker Compose containers for workspace {workspace_id} project `{project_name}`")
         })
 }
 

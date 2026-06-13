@@ -1,5 +1,6 @@
 use std::collections::BTreeMap;
 
+use serde_json::Value as JsonValue;
 use toml::Value;
 
 use crate::config::{
@@ -26,6 +27,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) internal_versions: BTreeMap<String, String>,
     pub(crate) build: Option<BuildHashInput>,
     pub(crate) compose_files: Vec<ComposeFileHashInput>,
+    pub(crate) compose_canonical_model: Option<JsonValue>,
     pub(crate) resolved_mounts: Vec<MountHashInput>,
     pub(crate) startup_command: Option<StartupCommandHashInput>,
     pub(crate) uid_gid_sync: Option<UidGidSyncHashInput>,
@@ -40,6 +42,7 @@ impl<'a> ConfigHashInput<'a> {
             internal_versions: BTreeMap::new(),
             build: None,
             compose_files: Vec::new(),
+            compose_canonical_model: None,
             resolved_mounts: Vec::new(),
             startup_command: None,
             uid_gid_sync: None,
@@ -151,6 +154,11 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
     if !input.compose_files.is_empty() {
         writer.field("compose_files", |writer| {
             write_compose_file_inputs(writer, &input.compose_files);
+        });
+    }
+    if let Some(model) = &input.compose_canonical_model {
+        writer.field("compose_canonical_model", |writer| {
+            writer.json_value(model);
         });
     }
     writer.field("resolved_mounts", |writer| {
@@ -1531,6 +1539,47 @@ shell = false
                 canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
                 digest: "sha256:same".to_owned(),
             }],
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_changes_when_compose_canonical_model_changes() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "environment": {
+                            "APP_ENV": "first"
+                        }
+                    }
+                }
+            })),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(serde_json::json!({
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "environment": {
+                            "APP_ENV": "second"
+                        }
+                    }
+                }
+            })),
             ..ConfigHashInput::new(&config)
         });
 

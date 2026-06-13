@@ -702,7 +702,7 @@ Compose mode では上記 label を primary service に追加する。Compose �
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
-config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の canonical Compose model、Compose file digest、generated override plan を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path は含めない。
+config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の user Compose files から得た canonical Compose model、Compose file digest、generated override plan を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path は含めない。Compose mode では `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果を hash に含める。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため canonical model hash 入力にしない。
 
 state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 flag と devcontainer config file path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 

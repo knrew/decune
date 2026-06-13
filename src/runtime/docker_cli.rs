@@ -225,6 +225,18 @@ impl DockerCli {
         .await
     }
 
+    pub(crate) async fn list_compose_project_containers(
+        &self,
+        workspace_id: &str,
+        project_name: &str,
+    ) -> Result<Vec<UpContainerSummary>> {
+        self.list_workspace_containers_with_filters(
+            workspace_id,
+            &[format!("label=com.docker.compose.project={project_name}")],
+        )
+        .await
+    }
+
     async fn list_workspace_containers_with_filters(
         &self,
         workspace_id: &str,

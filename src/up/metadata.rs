@@ -5,6 +5,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
+use serde_json::Value as JsonValue;
 
 use crate::{
     config::{
@@ -234,8 +235,10 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     remote_user_image: Option<&str>,
     existing_container_config_hash: Option<&str>,
     build_for_lookup: Option<(bool, bool)>,
-    update_features: bool,
+    options: FinalizeUpPlanMountsOptions<'_>,
 ) -> Result<(UpPlan, bool)> {
+    let update_features = options.update_features;
+    let compose_canonical_model = options.compose_canonical_model;
     let using_existing_remote_user_image = remote_user_image.is_some();
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
     let mut lookup_base_image = None;
@@ -298,6 +301,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         lookup,
         existing_container_config_hash,
         update_features,
+        compose_canonical_model,
     ))
     .await?;
     if plan.config.features.is_empty() {
@@ -309,6 +313,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         plan,
         &lookup_image,
         update_features,
+        compose_canonical_model,
     ))
     .await?;
 
@@ -333,12 +338,19 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     Ok((plan, image_prepared))
 }
 
+#[derive(Debug, Clone, Copy, Default)]
+pub(in crate::up) struct FinalizeUpPlanMountsOptions<'a> {
+    pub(in crate::up) update_features: bool,
+    pub(in crate::up) compose_canonical_model: Option<&'a JsonValue>,
+}
+
 async fn finalize_mounts_and_resources_for_plan(
     client: &DockerClient,
     workspace: &Workspace,
     mut plan: UpPlan,
     lookup_image: &str,
     update_features: bool,
+    compose_canonical_model: Option<&JsonValue>,
 ) -> Result<UpPlan> {
     let effective_users = resolve_effective_users_from_image(
         client,
@@ -399,6 +411,10 @@ async fn finalize_mounts_and_resources_for_plan(
     if let Some(context) = &plan.build_context {
         hash_input.build = Some(build_hash_input(context)?);
     }
+    if let Some(compose_project) = &plan.compose_project {
+        hash_input.compose_files = compose_project.config_hash_files().to_vec();
+    }
+    hash_input.compose_canonical_model = compose_canonical_model.cloned();
     let devcontainer_file = Path::new(&plan.resources.labels["devcontainer.config_file"]);
     hash_input.feature_locks = match &plan.feature_install {
         Some(feature_install) => feature_install.lock_entries.clone(),
@@ -569,6 +585,7 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
     lookup: ImageLookupPreparation<'_>,
     existing_container_config_hash: Option<&str>,
     update_features: bool,
+    compose_canonical_model: Option<&JsonValue>,
 ) -> Result<UpPlan> {
     if config_has_github_cli_feature(&plan.config) {
         return Ok(plan);
@@ -602,6 +619,7 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
             &lookup,
             existing_container_config_hash,
             update_features,
+            compose_canonical_model,
         ))
         .await;
     }
@@ -632,6 +650,7 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
     lookup: &ImageLookupPreparation<'_>,
     existing_container_config_hash: Option<&str>,
     update_features: bool,
+    compose_canonical_model: Option<&JsonValue>,
 ) -> Result<UpPlan> {
     let Some(existing_container_config_hash) = existing_container_config_hash else {
         return Ok(plan);
@@ -643,6 +662,7 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
         plan.clone(),
         lookup.image,
         update_features,
+        compose_canonical_model,
     ))
     .await?;
     if finalized_plan.resources.config_hash == existing_container_config_hash {
@@ -662,6 +682,7 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
         candidate.clone(),
         lookup.image,
         update_features,
+        compose_canonical_model,
     ))
     .await?;
     if finalized_candidate.resources.config_hash == existing_container_config_hash {

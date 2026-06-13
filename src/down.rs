@@ -282,10 +282,6 @@ async fn compose_lifecycle_config_path(
     workspace: &Workspace,
     client: &DockerClient,
 ) -> Result<Option<PathBuf>> {
-    if has_devcontainer_metadata_hint(workspace) {
-        return Ok(None);
-    }
-
     if let Some(config_file) = load_state_file(workspace.paths().state_dir())
         .ok()
         .flatten()
@@ -460,6 +456,84 @@ mod tests {
         assert!(plan.project.files.iter().any(|file| {
             file.file_name()
                 .is_some_and(|name| name == Path::new("compose.yaml"))
+        }));
+    }
+
+    #[test]
+    fn compose_lifecycle_prefers_state_config_path_with_standard_hint() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let standard_dir = workspace_root.join(".devcontainer");
+        let custom_dir = workspace_root.join("custom-devcontainer");
+        fs::create_dir_all(&standard_dir).unwrap();
+        fs::create_dir_all(&custom_dir).unwrap();
+        fs::write(
+            standard_dir.join("devcontainer.json"),
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "default"
+            }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            standard_dir.join("compose.yaml"),
+            "services:\n  default:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+        fs::write(
+            custom_dir.join("devcontainer.json"),
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app"
+            }
+            "#,
+        )
+        .unwrap();
+        fs::write(
+            custom_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+        let workspace = Workspace::resolve(&workspace_root).unwrap();
+        sync_state_with_container(
+            workspace.paths().state_dir(),
+            workspace.root(),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "decune/project:hash-a".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: Some(custom_dir.join("devcontainer.json").display().to_string()),
+            },
+            LifecycleState::default(),
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let plan = runtime
+            .block_on(async {
+                let client = DockerClient::connect_from_env().unwrap();
+                super::compose_lifecycle_plan(
+                    &workspace,
+                    super::ComposeLifecycleCommand::Down,
+                    &client,
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(plan.project.project_directory, custom_dir);
+        assert!(plan.project.files.iter().any(|file| {
+            file.parent().is_some_and(|parent| parent == custom_dir)
+                && file
+                    .file_name()
+                    .is_some_and(|name| name == Path::new("compose.yaml"))
         }));
     }
 }

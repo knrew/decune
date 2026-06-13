@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Result, anyhow};
 use serde::{Deserialize, Deserializer};
+use serde_json::Value as JsonValue;
 
 use crate::{
     config::{canonical::sha256_hex, hash::ComposeFileHashInput},
@@ -45,6 +46,13 @@ impl DockerComposeCli {
         &self,
         project: &ComposeCommandPlan,
     ) -> Result<ComposeConfigModel> {
+        Ok(self.config_output(project).await?.model)
+    }
+
+    pub(crate) async fn config_output(
+        &self,
+        project: &ComposeCommandPlan,
+    ) -> Result<ComposeConfigOutput> {
         let command = project.command(["config", "--format", "json"]);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
@@ -53,12 +61,23 @@ impl DockerComposeCli {
             &command,
             &output,
         )?;
-        serde_json::from_slice(&output.stdout).map_err(|error| {
+        let canonical_model: JsonValue = serde_json::from_slice(&output.stdout).map_err(|error| {
             anyhow!(
                 "Failed to parse Docker Compose config JSON for project {} from files {}: {error}",
                 project.project_name,
                 project.file_list()
             )
+        })?;
+        let model = serde_json::from_value(canonical_model.clone()).map_err(|error| {
+            anyhow!(
+                "Failed to parse Docker Compose config model for project {} from files {}: {error}",
+                project.project_name,
+                project.file_list()
+            )
+        })?;
+        Ok(ComposeConfigOutput {
+            model,
+            canonical_model,
         })
     }
 
@@ -184,12 +203,20 @@ impl ComposeIntrospector {
         project: &ComposeProjectPlan,
         validation: &ComposeServiceValidation<'_>,
     ) -> Result<ComposeConfigModel> {
-        let model = self
+        Ok(self.user_config(project, validation).await?.model)
+    }
+
+    pub(crate) async fn user_config(
+        &self,
+        project: &ComposeProjectPlan,
+        validation: &ComposeServiceValidation<'_>,
+    ) -> Result<ComposeConfigOutput> {
+        let output = self
             .cli
-            .config_json(&project.command_plan_without_generated_override())
+            .config_output(&project.command_plan_without_generated_override())
             .await?;
-        model.validate_services(validation)?;
-        Ok(model)
+        output.model.validate_services(validation)?;
+        Ok(output)
     }
 
     pub(crate) async fn config_model_with_generated_override(
@@ -197,12 +224,12 @@ impl ComposeIntrospector {
         project: &ComposeProjectPlan,
         validation: &ComposeServiceValidation<'_>,
     ) -> Result<ComposeConfigModel> {
-        let model = self
+        let output = self
             .cli
-            .config_json(&project.command_plan_with_generated_override())
+            .config_output(&project.command_plan_with_generated_override())
             .await?;
-        model.validate_services(validation)?;
-        Ok(model)
+        output.model.validate_services(validation)?;
+        Ok(output.model)
     }
 
     pub(crate) async fn resolve_service_container(
@@ -213,6 +240,12 @@ impl ComposeIntrospector {
         let containers = self.cli.ps_json(project, service).await?;
         resolve_compose_container(&project.project_name, service, containers)
     }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct ComposeConfigOutput {
+    pub(crate) model: ComposeConfigModel,
+    pub(crate) canonical_model: JsonValue,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -478,6 +511,7 @@ pub(crate) struct ComposePullOptions {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct ComposeUpOptions {
     pub(crate) force_recreate: bool,
+    pub(crate) remove_orphans: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -634,6 +668,9 @@ fn compose_up_command(
     let mut command = project.command(["up", "-d"]);
     if options.force_recreate {
         command = command.arg("--force-recreate");
+    }
+    if options.remove_orphans {
+        command = command.arg("--remove-orphans");
     }
     command.args(services)
 }
@@ -893,6 +930,7 @@ mod tests {
             &plan.project,
             ComposeUpOptions {
                 force_recreate: true,
+                remove_orphans: false,
             },
             &plan.services,
         );
@@ -905,6 +943,22 @@ mod tests {
             up.args_vec().iter().rev().take(5).collect::<Vec<_>>(),
             vec!["db", "app", "--force-recreate", "-d", "up"]
         );
+    }
+
+    #[test]
+    fn compose_up_command_can_remove_orphans() {
+        let plan = ComposeLifecyclePlan::up(lifecycle_command_plan(), "app", None);
+        let up = super::compose_up_command(
+            &plan.project,
+            ComposeUpOptions {
+                force_recreate: true,
+                remove_orphans: true,
+            },
+            &plan.services,
+        );
+
+        assert!(up.args_vec().contains(&"--force-recreate".to_owned()));
+        assert!(up.args_vec().contains(&"--remove-orphans".to_owned()));
     }
 
     #[test]
