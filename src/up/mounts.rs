@@ -5,7 +5,9 @@ use anyhow::{Context, Result, bail};
 use crate::{
     config::{
         MountBindOptionsHashInput, MountHashInput, MountVolumeDriverConfigHashInput,
-        MountVolumeOptionsHashInput, layer::LayerDevcontainerMount, resolved::ResolvedConfig,
+        MountVolumeOptionsHashInput,
+        layer::LayerDevcontainerMount,
+        resolved::{ResolvedConfig, ResolvedDevcontainerSource},
         types::MountType,
     },
     docker::{
@@ -52,6 +54,18 @@ pub(super) fn workspace_mounts_from_resolved(
     variables: &crate::config::variables::VariableContext,
     mount_resolution: MountResolution,
 ) -> Result<Vec<DockerMountSpec>> {
+    if matches!(
+        config.devcontainer.source,
+        Some(ResolvedDevcontainerSource::Compose(_))
+    ) {
+        if mount_resolution != MountResolution::Resolve {
+            return Ok(Vec::new());
+        }
+        let mut mounts = config_mount_specs(config, workspace_root, variables)?;
+        mounts.extend(dotfile_mount_specs(config, workspace_root, variables)?);
+        return Ok(mounts);
+    }
+
     let workspace_target = workspace_mount.target.clone();
     let mut mounts = vec![workspace_mount];
     if mount_resolution == MountResolution::Resolve {

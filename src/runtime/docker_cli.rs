@@ -205,16 +205,40 @@ impl DockerCli {
         &self,
         workspace_id: &str,
     ) -> Result<Vec<UpContainerSummary>> {
-        let command = docker_cmd([
-            "ps",
-            "--all",
-            "--filter",
-            "label=decune.managed=true",
-            "--filter",
-            &format!("label=decune.workspace_id={workspace_id}"),
-            "--format",
-            "json",
-        ]);
+        self.list_workspace_containers_with_filters(workspace_id, &[])
+            .await
+    }
+
+    pub(crate) async fn list_compose_service_containers(
+        &self,
+        workspace_id: &str,
+        project_name: &str,
+        service: &str,
+    ) -> Result<Vec<UpContainerSummary>> {
+        self.list_workspace_containers_with_filters(
+            workspace_id,
+            &[
+                format!("label=com.docker.compose.project={project_name}"),
+                format!("label=com.docker.compose.service={service}"),
+            ],
+        )
+        .await
+    }
+
+    async fn list_workspace_containers_with_filters(
+        &self,
+        workspace_id: &str,
+        extra_filters: &[String],
+    ) -> Result<Vec<UpContainerSummary>> {
+        let mut command = docker_cmd(["ps", "--all"])
+            .arg("--filter")
+            .arg("label=decune.managed=true")
+            .arg("--filter")
+            .arg(format!("label=decune.workspace_id={workspace_id}"));
+        for filter in extra_filters {
+            command = command.arg("--filter").arg(filter);
+        }
+        command = command.arg("--format").arg("json");
         let values: Vec<DockerPsRow> = self
             .run_json_lines_command("list Docker containers", workspace_id, command)
             .await?;

@@ -56,6 +56,23 @@ if [ "${1:-}" = exec ]; then
   printf 'root:x:0:0:root:/root:/bin/sh\n'
   exit 0
 fi
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"sha256:alpine","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = ps ]; then
+  exit 0
+fi
+if [ "${1:-}" = create ]; then
+  printf 'lookup-container-id\n'
+  exit 0
+fi
+if [ "${1:-}" = start ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
 if [ "${1:-}" = inspect ]; then
   printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
   exit 0

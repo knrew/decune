@@ -78,6 +78,22 @@ impl DockerComposeCli {
         )
     }
 
+    pub(crate) async fn pull(
+        &self,
+        project: &ComposeCommandPlan,
+        options: ComposePullOptions,
+        services: &[String],
+    ) -> Result<()> {
+        let command = compose_pull_command(project, options, services);
+        let output = self.runner.run_capture(command.clone()).await?;
+        ensure_success(
+            "pull Docker Compose service images",
+            &project.project_name,
+            &command,
+            &output,
+        )
+    }
+
     pub(crate) async fn up(
         &self,
         project: &ComposeCommandPlan,
@@ -453,6 +469,12 @@ pub(crate) struct ComposeBuildOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ComposePullOptions {
+    pub(crate) always: bool,
+    pub(crate) ignore_buildable: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct ComposeUpOptions {
     pub(crate) force_recreate: bool,
 }
@@ -587,6 +609,21 @@ fn compose_build_command(
     command.args(services)
 }
 
+fn compose_pull_command(
+    project: &ComposeCommandPlan,
+    options: ComposePullOptions,
+    services: &[String],
+) -> RuntimeCommand {
+    let mut command = project.command(["pull"]);
+    if options.ignore_buildable {
+        command = command.arg("--ignore-buildable");
+    }
+    if options.always {
+        command = command.arg("--policy").arg("always");
+    }
+    command.args(services)
+}
+
 fn compose_up_command(
     project: &ComposeCommandPlan,
     options: ComposeUpOptions,
@@ -673,7 +710,8 @@ mod tests {
     use super::{
         ComposeBuildOptions, ComposeCommandPlan, ComposeConfigModel, ComposeDownOptions,
         ComposeIntrospector, ComposeLifecyclePlan, ComposeProject, ComposeProjectPlan,
-        ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, resolve_compose_container,
+        ComposePullOptions, ComposeServiceValidation, ComposeUpOptions, DockerComposeCli,
+        resolve_compose_container,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
 
@@ -852,6 +890,32 @@ mod tests {
         assert_eq!(
             up.args_vec().iter().rev().take(5).collect::<Vec<_>>(),
             vec!["db", "app", "--force-recreate", "-d", "up"]
+        );
+    }
+
+    #[test]
+    fn compose_pull_command_updates_image_only_services() {
+        let run_services = vec!["db".to_owned()];
+        let plan = ComposeLifecyclePlan::up(lifecycle_command_plan(), "app", Some(&run_services));
+        let pull = super::compose_pull_command(
+            &plan.project,
+            ComposePullOptions {
+                always: true,
+                ignore_buildable: true,
+            },
+            &plan.services,
+        );
+
+        assert_eq!(
+            pull.args_vec().iter().rev().take(6).collect::<Vec<_>>(),
+            vec![
+                "db",
+                "app",
+                "always",
+                "--policy",
+                "--ignore-buildable",
+                "pull"
+            ]
         );
     }
 
