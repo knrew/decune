@@ -42,11 +42,12 @@ pub(crate) struct DockerBuildOptions {
 pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) -> Result<()> {
     ui::info(&format!("Building Docker image: {}", input.image_tag));
 
+    let tar = tar::create_build_context_tar(&input.context)?;
     let labels = input.labels.clone().into_iter().collect::<BTreeMap<_, _>>();
     let command_input = DockerBuildCliInput {
         image_tag: &input.image_tag,
-        dockerfile: &input.context.dockerfile_path,
-        context_dir: &input.context.context_dir,
+        dockerfile: &input.context.dockerfile_in_context,
+        context_tar: &tar,
         labels: &labels,
         build_args: &input.options.build_args,
         target: input.options.target.as_deref(),
@@ -112,7 +113,7 @@ mod tests {
         let command = docker_build_command(&DockerBuildCliInput {
             image_tag: &input.image_tag,
             dockerfile: &input.context.dockerfile_path,
-            context_dir: &input.context.context_dir,
+            context_tar: b"",
             labels: &labels,
             build_args: &input.options.build_args,
             target: input.options.target.as_deref(),
@@ -143,7 +144,7 @@ mod tests {
         let command = docker_build_command(&DockerBuildCliInput {
             image_tag: &input.image_tag,
             dockerfile: &input.context.dockerfile_path,
-            context_dir: &input.context.context_dir,
+            context_tar: b"",
             labels: &labels,
             build_args: &input.options.build_args,
             target: input.options.target.as_deref(),

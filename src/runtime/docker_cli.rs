@@ -56,7 +56,10 @@ impl DockerCli {
     pub(crate) async fn build(&self, input: DockerBuildCliInput<'_>) -> Result<RuntimeOutput> {
         let target = input.image_tag;
         let command = docker_build_command(&input);
-        let output = self.runner.run_capture(command.clone()).await?;
+        let output = self
+            .runner
+            .run_capture_with_stdin(command.clone(), input.context_tar.to_vec())
+            .await?;
         ensure_success("build Docker image", target, &command, &output)?;
         Ok(output)
     }
@@ -369,7 +372,7 @@ impl DockerCli {
 pub(crate) struct DockerBuildCliInput<'a> {
     pub(crate) image_tag: &'a str,
     pub(crate) dockerfile: &'a Path,
-    pub(crate) context_dir: &'a Path,
+    pub(crate) context_tar: &'a [u8],
     pub(crate) labels: &'a BTreeMap<String, String>,
     pub(crate) build_args: &'a BTreeMap<String, String>,
     pub(crate) target: Option<&'a str>,
@@ -380,7 +383,6 @@ pub(crate) struct DockerBuildCliInput<'a> {
 
 pub(crate) fn docker_build_command(input: &DockerBuildCliInput<'_>) -> RuntimeCommand {
     let dockerfile = input.dockerfile.to_string_lossy().into_owned();
-    let context_dir = input.context_dir.to_string_lossy().into_owned();
     let mut command = docker_cmd(["build", "--tag", input.image_tag, "--file"]).arg(dockerfile);
     command = command.arg("--rm").arg("--force-rm");
     if input.no_cache {
@@ -404,7 +406,7 @@ pub(crate) fn docker_build_command(input: &DockerBuildCliInput<'_>) -> RuntimeCo
     for cache in input.cache_from {
         command = command.arg("--cache-from").arg(cache);
     }
-    command.arg(context_dir)
+    command.arg("-")
 }
 
 pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeCommand {
@@ -726,7 +728,7 @@ mod tests {
         let command = docker_build_command(&DockerBuildCliInput {
             image_tag: "decune/test:hash",
             dockerfile: Path::new("/work/Dockerfile"),
-            context_dir: Path::new("/work"),
+            context_tar: b"",
             labels: &BTreeMap::from([("decune.managed".to_owned(), "true".to_owned())]),
             build_args: &BTreeMap::from([("VARIANT".to_owned(), "bookworm".to_owned())]),
             target: Some("dev"),
@@ -746,7 +748,7 @@ mod tests {
         let command = docker_build_command(&DockerBuildCliInput {
             image_tag: "decune/test:hash",
             dockerfile: Path::new("/work/Dockerfile"),
-            context_dir: Path::new("/work"),
+            context_tar: b"",
             labels: &BTreeMap::new(),
             build_args: &BTreeMap::from([("TOKEN".to_owned(), "test-secret".to_owned())]),
             target: None,
@@ -772,6 +774,50 @@ mod tests {
             command.env_value("TOKEN").map(String::as_str),
             Some("test-secret")
         );
+    }
+
+    #[test]
+    fn docker_build_command_uses_stdin_context_arg_for_tar_context() {
+        let command = docker_build_command(&DockerBuildCliInput {
+            image_tag: "decune/test:hash",
+            dockerfile: Path::new("docker/Dockerfile"),
+            context_tar: b"tar-bytes",
+            labels: &BTreeMap::new(),
+            build_args: &BTreeMap::new(),
+            target: None,
+            cache_from: &[],
+            no_cache: false,
+            pull: false,
+        });
+
+        assert_eq!(arg_after(&command, "--file"), Some("docker/Dockerfile"));
+        assert_eq!(command.args_vec().last().map(String::as_str), Some("-"));
+    }
+
+    #[test]
+    fn docker_build_sends_tar_context_to_stdin() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(output(b"built\n"))]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime
+            .block_on(client.build(DockerBuildCliInput {
+                image_tag: "decune/test:hash",
+                dockerfile: Path::new("Dockerfile"),
+                context_tar: b"tar-bytes",
+                labels: &BTreeMap::new(),
+                build_args: &BTreeMap::new(),
+                target: None,
+                cache_from: &[],
+                no_cache: false,
+                pull: false,
+            }))
+            .unwrap();
+
+        assert_eq!(runner.stdin(), vec![Some(b"tar-bytes".to_vec())]);
     }
 
     #[test]

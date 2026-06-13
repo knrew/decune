@@ -4,6 +4,7 @@ use std::{collections::BTreeMap, future::Future, pin::Pin, process::Stdio, time:
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
+use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -132,6 +133,12 @@ pub(crate) trait RuntimeCommandRunner: Send + Sync {
         command: RuntimeCommand,
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>>;
 
+    fn run_capture_with_stdin<'a>(
+        &'a self,
+        command: RuntimeCommand,
+        stdin: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>>;
+
     fn run_status<'a>(
         &'a self,
         command: RuntimeCommand,
@@ -168,6 +175,64 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
                 process.output().await.with_context(|| {
                     format!("Failed to run command: {}", command.sanitized_display())
                 })?
+            };
+
+            Ok(RuntimeOutput {
+                stdout: output.stdout,
+                stderr: output.stderr,
+                exit_code: output.status.code().unwrap_or(1),
+            })
+        })
+    }
+
+    fn run_capture_with_stdin<'a>(
+        &'a self,
+        command: RuntimeCommand,
+        stdin: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>> {
+        Box::pin(async move {
+            let command_display = command.sanitized_display();
+            let mut process = Command::new(command.program());
+            process.args(command.args_vec());
+            process.envs(command.envs());
+            process.stdin(Stdio::piped());
+            process.stdout(Stdio::piped());
+            process.stderr(Stdio::piped());
+            let mut child = process
+                .spawn()
+                .with_context(|| format!("Failed to run command: {command_display}"))?;
+            let mut child_stdin = child
+                .stdin
+                .take()
+                .with_context(|| format!("Failed to open command stdin: {command_display}"))?;
+            let write_display = command_display.clone();
+            let write_stdin = tokio::spawn(async move {
+                let result = child_stdin
+                    .write_all(&stdin)
+                    .await
+                    .with_context(|| format!("Failed to write command stdin: {write_display}"));
+                drop(child_stdin);
+                result
+            });
+            let run = async {
+                let output = child
+                    .wait_with_output()
+                    .await
+                    .with_context(|| format!("Failed to run command: {command_display}"))?;
+                let write_result = write_stdin
+                    .await
+                    .with_context(|| format!("Failed to join command stdin: {command_display}"))?;
+                if output.status.success() {
+                    write_result?;
+                }
+                Ok::<_, anyhow::Error>(output)
+            };
+            let output = if let Some(timeout) = command.timeout_duration() {
+                tokio::time::timeout(timeout, run)
+                    .await
+                    .with_context(|| format!("Command timed out: {command_display}"))??
+            } else {
+                run.await?
             };
 
             Ok(RuntimeOutput {
@@ -215,6 +280,7 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
 pub(crate) struct FakeRuntimeCommand {
     responses: Arc<std::sync::Mutex<Vec<Result<RuntimeOutput, String>>>>,
     commands: Arc<std::sync::Mutex<Vec<RuntimeCommand>>>,
+    stdin: Arc<std::sync::Mutex<Vec<Option<Vec<u8>>>>>,
 }
 
 #[cfg(test)]
@@ -224,12 +290,18 @@ impl FakeRuntimeCommand {
         Self {
             responses: Arc::new(std::sync::Mutex::new(responses)),
             commands: Arc::default(),
+            stdin: Arc::default(),
         }
     }
 
     #[allow(dead_code)]
     pub(crate) fn commands(&self) -> Vec<RuntimeCommand> {
         self.commands.lock().unwrap().clone()
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn stdin(&self) -> Vec<Option<Vec<u8>>> {
+        self.stdin.lock().unwrap().clone()
     }
 }
 
@@ -241,6 +313,25 @@ impl RuntimeCommandRunner for FakeRuntimeCommand {
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>> {
         Box::pin(async move {
             self.commands.lock().unwrap().push(command);
+            self.stdin.lock().unwrap().push(None);
+            let response = self
+                .responses
+                .lock()
+                .unwrap()
+                .pop()
+                .unwrap_or_else(|| Err("fake runtime command response missing".to_owned()));
+            response.map_err(anyhow::Error::msg)
+        })
+    }
+
+    fn run_capture_with_stdin<'a>(
+        &'a self,
+        command: RuntimeCommand,
+        stdin: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>> {
+        Box::pin(async move {
+            self.commands.lock().unwrap().push(command);
+            self.stdin.lock().unwrap().push(Some(stdin));
             let response = self
                 .responses
                 .lock()
@@ -258,6 +349,7 @@ impl RuntimeCommandRunner for FakeRuntimeCommand {
     ) -> Pin<Box<dyn Future<Output = Result<i32>> + Send + 'a>> {
         Box::pin(async move {
             self.commands.lock().unwrap().push(command);
+            self.stdin.lock().unwrap().push(None);
             Ok(0)
         })
     }
