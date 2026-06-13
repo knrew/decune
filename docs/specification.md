@@ -303,11 +303,11 @@ Compose mode では `workspaceMount` は unsupported error とする。workspace
 decune は Compose project name を必ず明示する。top-level `name:`、`COMPOSE_PROJECT_NAME`、current directory basename に依存しない。
 
 ```text
-decune_<safe_workspace_slug>_<workspace_id>
+decune-<safe_workspace_slug>-<workspace_id>
 ```
 
-- lowercase ASCII、decimal digits、dash、underscore のみ。
-- 先頭は `decune_` 固定。
+- lowercase ASCII、decimal digits、dash のみ。
+- 先頭は `decune-` 固定。
 - `workspace_id = hex(sha256(canonical_workspace_path))[0..12]`。
 - config hash は project name に含めない。同じ workspace の rebuild で project name は安定する。
 
@@ -683,7 +683,7 @@ image/Dockerfile mode の Docker resource name には workspace basename をそ�
 
 Compose mode:
 
-- project: `decune_<safe_workspace_slug>_<workspace_id>`
+- project: `decune-<safe_workspace_slug>-<workspace_id>`
 - generated primary image: `decune/<safe_workspace_slug>-<workspace_id>:<config_hash>`
 - generated Compose override: `$XDG_STATE_HOME/decune/<workspace_id>/compose.override.yaml`
 - state/runtime directory は image/Dockerfile mode と同じ。

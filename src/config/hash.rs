@@ -25,6 +25,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) cli_flags: BTreeMap<String, Value>,
     pub(crate) internal_versions: BTreeMap<String, String>,
     pub(crate) build: Option<BuildHashInput>,
+    pub(crate) compose_files: Vec<ComposeFileHashInput>,
     pub(crate) resolved_mounts: Vec<MountHashInput>,
     pub(crate) startup_command: Option<StartupCommandHashInput>,
     pub(crate) uid_gid_sync: Option<UidGidSyncHashInput>,
@@ -38,11 +39,18 @@ impl<'a> ConfigHashInput<'a> {
             cli_flags: BTreeMap::new(),
             internal_versions: BTreeMap::new(),
             build: None,
+            compose_files: Vec::new(),
             resolved_mounts: Vec::new(),
             startup_command: None,
             uid_gid_sync: None,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeFileHashInput {
+    pub(crate) canonical_path: String,
+    pub(crate) digest: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -140,6 +148,9 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
         Some(build) => write_build_input(writer, build),
         None => writer.none(),
     });
+    writer.field("compose_files", |writer| {
+        write_compose_file_inputs(writer, &input.compose_files);
+    });
     writer.field("resolved_mounts", |writer| {
         write_resolved_mounts(writer, &input.resolved_mounts);
     });
@@ -153,6 +164,17 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
     });
 
     sha256_hex(writer.finish().as_bytes())
+}
+
+fn write_compose_file_inputs(writer: &mut CanonicalWriter, inputs: &[ComposeFileHashInput]) {
+    writer.seq(inputs.iter(), |writer, input| {
+        writer.object("ComposeFile", |writer| {
+            writer.field("canonical_path", |writer| {
+                writer.string(&input.canonical_path)
+            });
+            writer.field("digest", |writer| writer.string(&input.digest));
+        });
+    });
 }
 
 fn write_uid_gid_sync_input(writer: &mut CanonicalWriter, input: &UidGidSyncHashInput) {
@@ -1409,6 +1431,48 @@ shell = false
             feature_locks: vec![FeatureLockHashEntry {
                 feature_id: "feature-a".to_owned(),
                 digest: "sha256:second".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_changes_when_compose_file_digest_changes() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:first".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:second".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_changes_when_compose_file_canonical_path_changes() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
             }],
             ..ConfigHashInput::new(&config)
         });

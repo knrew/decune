@@ -5322,6 +5322,7 @@ user = "root"
                 config_hash: "stable-hash".to_owned(),
             },
             pre_uid_gid_sync_resources: None,
+            compose_project: None,
             config_layers: ConfigMergeInput::default(),
             config,
             effective_users: EffectiveUsers::root(),

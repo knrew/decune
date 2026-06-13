@@ -25,6 +25,7 @@ use crate::{
         resource::DockerResources,
         user::{EffectiveUsers, UidGidSyncPlan},
     },
+    runtime::compose_cli::ComposeProjectPlan,
     workspace::Workspace,
 };
 
@@ -179,6 +180,7 @@ fn build_up_plan_inner(
     let config = resolve_config(config_layers.clone());
     let (build_context, build_options) =
         dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
+    let compose_project = compose_project_plan(workspace, devcontainer_json.path(), &config)?;
     let workspace_validation = match mount_resolution {
         MountResolution::Resolve => WorkspaceLocationValidation::ConfigResolved,
         MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
@@ -201,6 +203,9 @@ fn build_up_plan_inner(
     let mut hash_input = ConfigHashInput::new(&config);
     if let Some(context) = &build_context {
         hash_input.build = Some(build_hash_input(context)?);
+    }
+    if let Some(compose_project) = &compose_project {
+        hash_input.compose_files = compose_project.config_hash_files().to_vec();
     }
     hash_input.feature_locks = feature_lock_hash_inputs(
         workspace,
@@ -244,6 +249,7 @@ fn build_up_plan_inner(
         uid_gid_sync_build_context_dir: None,
         resources,
         pre_uid_gid_sync_resources: None,
+        compose_project,
         config_layers,
         config,
         effective_users: EffectiveUsers::root(),
@@ -253,6 +259,24 @@ fn build_up_plan_inner(
         forward_ports,
         ignored_detached_forwarding,
     })
+}
+
+fn compose_project_plan(
+    workspace: &Workspace,
+    devcontainer_file: &Path,
+    config: &ResolvedConfig,
+) -> Result<Option<ComposeProjectPlan>> {
+    let Some(ResolvedDevcontainerSource::Compose(compose)) = &config.devcontainer.source else {
+        return Ok(None);
+    };
+    let devcontainer_dir = devcontainer_file.parent().ok_or_else(|| {
+        anyhow::anyhow!(
+            "Failed to resolve devcontainer metadata directory: {}",
+            devcontainer_file.display()
+        )
+    })?;
+
+    ComposeProjectPlan::resolve(workspace, devcontainer_dir, &compose.files).map(Some)
 }
 
 fn validate_service_qualified_forward_ports(config: &ResolvedConfig) -> Result<()> {
@@ -352,9 +376,7 @@ pub(super) fn final_image_source(
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
-        Some(ResolvedDevcontainerSource::Compose(_)) => {
-            bail!("Docker Compose runtime planning is not implemented yet")
-        }
+        Some(ResolvedDevcontainerSource::Compose(_)) => Ok(resources.image_tag.clone()),
         None => bail!("Devcontainer image is required"),
     }
 }
@@ -372,9 +394,7 @@ pub(super) fn base_image_source(
             Ok(format!("{}-base", resources.image_tag))
         }
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
-        Some(ResolvedDevcontainerSource::Compose(_)) => {
-            bail!("Docker Compose runtime planning is not implemented yet")
-        }
+        Some(ResolvedDevcontainerSource::Compose(_)) => Ok(resources.image_tag.clone()),
         None => bail!("Devcontainer image is required"),
     }
 }
@@ -445,5 +465,59 @@ mod tests {
         assert_eq!(plan.mounts[0].target, "/workspaces/Image Plan!");
         assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
         assert!(!plan.mounts[0].read_only);
+    }
+
+    #[test]
+    fn build_up_plan_adds_compose_project_plan_for_compose_source() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Compose Plan");
+        fs::create_dir(&root).unwrap();
+        let devcontainer_dir = root.join(".devcontainer");
+        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::write(devcontainer_dir.join("compose.yaml"), "services: {}\n").unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        let compose = plan
+            .compose_project
+            .as_ref()
+            .expect("compose source should produce a compose project plan");
+
+        assert_eq!(
+            compose.project_name(),
+            format!("decune-compose-plan-{}", workspace.id())
+        );
+        assert_eq!(
+            compose.generated_override_path(),
+            workspace.paths().state_dir().join("compose.override.yaml")
+        );
+    }
+
+    #[test]
+    fn build_up_plan_config_hash_changes_when_compose_file_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Compose Hash");
+        fs::create_dir(&root).unwrap();
+        let devcontainer_dir = root.join(".devcontainer");
+        fs::create_dir(&devcontainer_dir).unwrap();
+        let compose_file = devcontainer_dir.join("compose.yaml");
+        fs::write(&compose_file, "services: {}\n").unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+
+        let first = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::write(&compose_file, "services:\n  app:\n    image: alpine:3.20\n").unwrap();
+        let second = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_ne!(first.resources.config_hash, second.resources.config_hash);
     }
 }
