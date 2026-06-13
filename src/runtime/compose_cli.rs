@@ -513,14 +513,10 @@ impl ComposeLifecyclePlan {
         }
     }
 
-    pub(crate) fn down(
-        project: ComposeCommandPlan,
-        primary_service: &str,
-        run_services: Option<&[String]>,
-    ) -> Self {
+    pub(crate) fn down(project: ComposeCommandPlan) -> Self {
         Self {
             project,
-            services: compose_target_services(primary_service, run_services),
+            services: Vec::new(),
             cleanup: ComposeCleanupPlan::keep_all(),
         }
     }
@@ -920,11 +916,24 @@ mod tests {
     }
 
     #[test]
-    fn compose_lifecycle_down_keeps_state_volumes_and_images() {
-        let run_services = vec!["db".to_owned()];
-        let plan = ComposeLifecyclePlan::down(lifecycle_command_plan(), "app", Some(&run_services));
+    fn compose_lifecycle_down_stops_whole_project_and_keeps_state_volumes_and_images() {
+        let plan = ComposeLifecyclePlan::down(lifecycle_command_plan());
+        let command = plan.project.command(["stop"]).args(&plan.services);
 
-        assert_eq!(plan.services, ["app", "db"]);
+        assert!(plan.services.is_empty());
+        assert_eq!(
+            command.args_vec(),
+            &[
+                "compose",
+                "--project-name",
+                "decune-project-abc123def456",
+                "--project-directory",
+                "/workspace",
+                "-f",
+                "/workspace/compose.yaml",
+                "stop",
+            ]
+        );
         assert!(!plan.cleanup.remove_project);
         assert!(!plan.cleanup.remove_volumes);
         assert!(!plan.cleanup.remove_state);

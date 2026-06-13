@@ -184,7 +184,7 @@ decune down [--timeout <SECONDS>] [WORKSPACE]
 ```
 
 - image/Dockerfile mode: decune 管理 container を停止する。volume、state、image は削除しない。
-- Compose mode: decune 管理 Compose project の対象 service を停止する。volume、state、image は削除しない。`runServices` 指定時は primary service と `runServices` の和集合を対象にする。未指定時は project 全体を対象にする。
+- Compose mode: decune 管理 Compose project を停止する。volume、state、image は削除しない。`runServices` 指定時も、Compose が `depends_on` 等で起動した dependency service を残さないよう project 全体を停止対象にする。
 
 明示的な `decune down` は `shutdownAction` に関係なく停止を行う。
 
@@ -350,7 +350,7 @@ Generated override file は user の `dockerComposeFile` より後に `-f` で�
 - `runServices` 未指定: `docker compose up -d` を service 引数なしで実行し、Compose model 上の有効 service を起動対象にする。
 - `runServices` 指定あり: primary `service` と `runServices` の和集合を service 引数として `docker compose up -d <services...>` に渡す。
 - service dependencies の起動順、`depends_on`、healthcheck、profiles の扱いは Compose CLI に委譲する。
-- `down` / attached `up` 終了時の stop 対象も同じ集合にする。ただし `clean` は project 全体を削除対象にする。
+- `down` / attached `up` 終了時の `stopCompose` は、`runServices` の service 引数で対象を狭めず、Compose project 全体を停止する。これは Compose が `depends_on` 等で暗黙に起動した dependency service を残さないためである。`clean` は project 全体を削除対象にする。
 
 ### Build / pull / recreate
 
@@ -378,7 +378,7 @@ attached `up` で shell が終了したとき:
 
 - `none`: container/project を停止しない。
 - `stopContainer`: primary container だけ停止する。
-- `stopCompose`: Compose mode では runServices 対象を停止する。image/Dockerfile mode では `stopContainer` と同じ。
+- `stopCompose`: Compose mode では Compose project 全体を停止する。image/Dockerfile mode では `stopContainer` と同じ。
 
 明示的な `decune down` / `decune clean` は user 操作として扱い、`shutdownAction` によって no-op にはしない。
 

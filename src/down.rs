@@ -244,7 +244,7 @@ fn compose_lifecycle_plan(
     let Some(compose_project) = &plan.compose_project else {
         return Ok(None);
     };
-    let Some(crate::config::resolved::ResolvedDevcontainerSource::Compose(compose)) =
+    let Some(crate::config::resolved::ResolvedDevcontainerSource::Compose(_)) =
         &plan.config.devcontainer.source
     else {
         return Ok(None);
@@ -255,11 +255,7 @@ fn compose_lifecycle_plan(
 
     let command_plan = compose_project.command_plan_without_generated_override();
     let lifecycle = match command {
-        ComposeLifecycleCommand::Down => ComposeLifecyclePlan::down(
-            command_plan,
-            &compose.service,
-            compose.run_services.as_deref(),
-        ),
+        ComposeLifecycleCommand::Down => ComposeLifecyclePlan::down(command_plan),
         ComposeLifecycleCommand::Clean { images } => {
             ComposeLifecyclePlan::clean(command_plan, images)
         }
