@@ -27,6 +27,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) internal_versions: BTreeMap<String, String>,
     pub(crate) build: Option<BuildHashInput>,
     pub(crate) compose_files: Vec<ComposeFileHashInput>,
+    pub(crate) compose_generated_override: Option<ComposeGeneratedOverrideHashInput>,
     pub(crate) compose_canonical_model: Option<JsonValue>,
     pub(crate) resolved_mounts: Vec<MountHashInput>,
     pub(crate) startup_command: Option<StartupCommandHashInput>,
@@ -42,6 +43,7 @@ impl<'a> ConfigHashInput<'a> {
             internal_versions: BTreeMap::new(),
             build: None,
             compose_files: Vec::new(),
+            compose_generated_override: None,
             compose_canonical_model: None,
             resolved_mounts: Vec::new(),
             startup_command: None,
@@ -54,6 +56,12 @@ impl<'a> ConfigHashInput<'a> {
 pub(crate) struct ComposeFileHashInput {
     pub(crate) canonical_path: String,
     pub(crate) digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeGeneratedOverrideHashInput {
+    pub(crate) path: String,
+    pub(crate) content_hash: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +164,11 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
             write_compose_file_inputs(writer, &input.compose_files);
         });
     }
+    if let Some(generated_override) = &input.compose_generated_override {
+        writer.field("compose_generated_override", |writer| {
+            write_compose_generated_override_input(writer, generated_override);
+        });
+    }
     if let Some(model) = &input.compose_canonical_model {
         let model = redact_compose_canonical_model_for_hash(model);
         writer.field("compose_canonical_model", |writer| {
@@ -175,6 +188,16 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
     });
 
     sha256_hex(writer.finish().as_bytes())
+}
+
+fn write_compose_generated_override_input(
+    writer: &mut CanonicalWriter,
+    input: &ComposeGeneratedOverrideHashInput,
+) {
+    writer.object("ComposeGeneratedOverride", |writer| {
+        writer.field("path", |writer| writer.string(&input.path));
+        writer.field("content_hash", |writer| writer.string(&input.content_hash));
+    });
 }
 
 fn write_compose_file_inputs(writer: &mut CanonicalWriter, inputs: &[ComposeFileHashInput]) {
