@@ -599,7 +599,7 @@ async fn start_compose_project(
         existing_compose_containers
             .first()
             .and_then(existing::existing_container_config_hash),
-        Some((false, options.no_cache)),
+        Some((options.pull && !primary_service_has_build, options.no_cache)),
         FinalizeUpPlanMountsOptions {
             update_features: options.update_features,
             compose_canonical_model: Some(&user_config.canonical_model),
@@ -1282,7 +1282,7 @@ async fn prepare_image_for_create(
     if plan_requires_final_image_layer(plan) {
         if !image_prepared {
             prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
-            build_workspace_image_layers(client, plan, no_cache).await?;
+            build_workspace_image_layers(client, plan, no_cache, pull).await?;
         }
     } else if let Some(context) = plan.build_context.clone() {
         if !image_prepared {
