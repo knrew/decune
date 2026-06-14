@@ -9,7 +9,9 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     config::{
-        ConfigHashInput, ConfigLayer, StartupCommandHashInput, config_hash,
+        ComposeGeneratedOverrideHashInput, ConfigHashInput, ConfigLayer, StartupCommandHashInput,
+        canonical::{CanonicalWriter, sha256_hex},
+        config_hash,
         layer::LayerFeature,
         resolve_config,
         resolved::{ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes},
@@ -28,7 +30,7 @@ use crate::{
             image_has_devcontainer_metadata_label_if_present, image_startup_command,
             local_image_presence, remove_image, tag_image,
         },
-        mounts::devcontainer_mount_type,
+        mounts::{DockerMountSpec, devcontainer_mount_type},
         resource::DockerResources,
         user::{
             EffectiveUserResolveInput, HostPlatform, current_host_user_ids, image_config_user,
@@ -468,6 +470,14 @@ async fn finalize_mounts_and_resources_for_plan(
     hash_input.startup_command =
         startup_command_hash_input(client, &plan, lookup_image, options.compose_primary_service)
             .await?;
+    if let Some(compose_project) = &plan.compose_project {
+        hash_input.compose_generated_override = compose_generated_override_hash_input(
+            compose_project.generated_override_path(),
+            &plan,
+            &mounts,
+            hash_input.startup_command.as_ref(),
+        );
+    }
     add_internal_hash_versions(&mut hash_input, &plan.config);
     let config_file = plan
         .resources
@@ -516,6 +526,121 @@ async fn finalize_mounts_and_resources_for_plan(
     plan.mounts = mounts;
 
     Ok(plan)
+}
+
+fn compose_generated_override_hash_input(
+    path: PathBuf,
+    plan: &UpPlan,
+    mounts: &[DockerMountSpec],
+    startup_command: Option<&StartupCommandHashInput>,
+) -> Option<ComposeGeneratedOverrideHashInput> {
+    let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
+    else {
+        return None;
+    };
+
+    let mut writer = CanonicalWriter::default();
+    writer.object("ComposeGeneratedOverrideContent", |writer| {
+        writer.field("primary_service", |writer| writer.string(&compose.service));
+        writer.field("image", |writer| {
+            if plan.image == plan.base_image {
+                writer.string(&plan.image);
+            } else {
+                writer.string("<decune-generated-image>");
+            }
+        });
+        writer.field("pull_policy", |writer| {
+            if plan.image == plan.base_image {
+                writer.none();
+            } else {
+                writer.string("never");
+            }
+        });
+        writer.field("labels", |writer| {
+            let labels = plan
+                .resources
+                .labels
+                .iter()
+                .filter(|(key, _)| {
+                    key.as_str() != "decune.config_hash" && !key.starts_with("com.docker.compose.")
+                })
+                .map(|(key, value)| (key.clone(), value.clone()))
+                .collect::<BTreeMap<_, _>>();
+            writer.map(labels.iter(), |writer, value| writer.string(value));
+        });
+        writer.field("environment", |writer| {
+            writer.map(
+                plan.config.devcontainer.container_env.iter(),
+                |writer, value| {
+                    writer.string(value);
+                },
+            );
+        });
+        writer.field("container_user", |writer| {
+            writer.option_string(plan.config.devcontainer.container_user.as_deref());
+        });
+        writer.field("init", |writer| writer.bool(plan.config.devcontainer.init));
+        writer.field("privileged", |writer| {
+            writer.bool(plan.config.devcontainer.privileged);
+        });
+        writer.field("cap_add", |writer| {
+            writer.seq(plan.config.devcontainer.cap_add.iter(), |writer, value| {
+                writer.string(value);
+            });
+        });
+        writer.field("security_opt", |writer| {
+            writer.seq(
+                plan.config.devcontainer.security_opt.iter(),
+                |writer, value| {
+                    writer.string(value);
+                },
+            );
+        });
+        writer.field("mounts", |writer| {
+            let inputs = crate::up::mount_hash_inputs(mounts);
+            writer.seq(inputs.iter(), |writer, mount| {
+                writer.object("Mount", |writer| {
+                    writer.field("source", |writer| {
+                        writer.option_string(mount.source.as_deref());
+                    });
+                    writer.field("target", |writer| writer.string(&mount.target));
+                    writer.field("type", |writer| {
+                        writer.string(match mount.mount_type {
+                            MountType::Bind => "bind",
+                            MountType::Volume => "volume",
+                            MountType::Tmpfs => "tmpfs",
+                        });
+                    });
+                    writer.field("read_only", |writer| writer.bool(mount.read_only));
+                    writer.field("consistency", |writer| {
+                        writer.option_string(mount.consistency.as_deref());
+                    });
+                });
+            });
+        });
+        writer.field("startup_command", |writer| match startup_command {
+            Some(startup_command) => {
+                writer.object("StartupCommand", |writer| {
+                    writer.field("entrypoint", |writer| {
+                        writer.seq(startup_command.entrypoint.iter(), |writer, value| {
+                            writer.string(value);
+                        });
+                    });
+                    writer.field("command", |writer| {
+                        writer.seq(startup_command.command.iter(), |writer, value| {
+                            writer.string(value);
+                        });
+                    });
+                });
+            }
+            None => writer.none(),
+        });
+    });
+
+    Some(ComposeGeneratedOverrideHashInput {
+        path: path.display().to_string(),
+        content_hash: sha256_hex(writer.finish().as_bytes()),
+    })
 }
 
 async fn resolve_effective_users_for_image(

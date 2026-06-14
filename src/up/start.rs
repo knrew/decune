@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -15,7 +14,6 @@ use futures_util::{
 
 use crate::{
     config::resolved::ResolvedDevcontainerSource,
-    config::types::MountType,
     devcontainer::lifecycle::{LifecycleRunPath, run_host_initialize_lifecycle},
     docker::{
         build::{
@@ -41,8 +39,9 @@ use crate::{
     },
     runtime::compose_cli::{
         ComposeBuildOptions, ComposeConfigModel, ComposeConfigService, ComposeIntrospector,
-        ComposeLifecyclePlan, ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation,
-        ComposeUpOptions, DockerComposeCli,
+        ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverrideServicePatch,
+        ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation, ComposeUpOptions,
+        DockerComposeCli, write_compose_override,
     },
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
@@ -787,23 +786,9 @@ async fn write_generated_compose_override(
     compose_primary_service: Option<&ComposeConfigService>,
 ) -> Result<()> {
     let path = project.generated_override_path();
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).with_context(|| {
-            format!(
-                "Failed to create Docker Compose generated override directory: {}",
-                parent.display()
-            )
-        })?;
-    }
-
     let startup = compose_override_startup(client, plan, compose_primary_service).await?;
-    let content = generated_compose_override_content_with_startup(primary_service, plan, startup)?;
-    fs::write(&path, content).with_context(|| {
-        format!(
-            "Failed to write Docker Compose generated override file: {}",
-            path.display()
-        )
-    })
+    let patch = generated_compose_override_patch(primary_service, plan, startup)?;
+    write_compose_override(&path, &patch)
 }
 
 #[cfg(test)]
@@ -864,54 +849,45 @@ struct ComposeOverrideStartup {
     command: Vec<String>,
 }
 
+#[cfg(test)]
 fn generated_compose_override_content_with_startup(
     primary_service: &str,
     plan: &UpPlan,
     startup: Option<ComposeOverrideStartup>,
 ) -> Result<String> {
-    let mut content = String::new();
-    content.push_str("services:\n");
-    content.push_str("  ");
-    content.push_str(&yaml_quote(primary_service));
-    content.push_str(":\n");
-    append_yaml_scalar(&mut content, 4, "image", &plan.image);
+    generated_compose_override_patch(primary_service, plan, startup)?.to_yaml()
+}
+
+fn generated_compose_override_patch(
+    primary_service: &str,
+    plan: &UpPlan,
+    startup: Option<ComposeOverrideStartup>,
+) -> Result<ComposeOverridePatch> {
+    let mut service = ComposeOverrideServicePatch::new(primary_service)
+        .image(&plan.image)
+        .labels(&plan.resources.labels)
+        .environments(&plan.config.devcontainer.container_env)
+        .cap_add(&plan.config.devcontainer.cap_add)
+        .security_opt(&plan.config.devcontainer.security_opt)
+        .mounts(&plan.mounts);
     if plan.image != plan.base_image {
-        append_yaml_scalar(&mut content, 4, "pull_policy", "never");
+        service = service.pull_policy_never();
     }
-    append_yaml_map(&mut content, 4, "labels", &plan.resources.labels);
-    append_yaml_map(
-        &mut content,
-        4,
-        "environment",
-        &plan.config.devcontainer.container_env,
-    );
     if let Some(user) = compose_override_user(plan)? {
-        append_yaml_scalar(&mut content, 4, "user", &user);
+        service = service.user(user);
     }
     if plan.config.devcontainer.init {
-        append_yaml_bool(&mut content, 4, "init", true);
+        service = service.init(true);
     }
     if plan.config.devcontainer.privileged {
-        append_yaml_bool(&mut content, 4, "privileged", true);
+        service = service.privileged(true);
     }
-    append_yaml_string_list(
-        &mut content,
-        4,
-        "cap_add",
-        &plan.config.devcontainer.cap_add,
-    );
-    append_yaml_string_list(
-        &mut content,
-        4,
-        "security_opt",
-        &plan.config.devcontainer.security_opt,
-    );
-    append_yaml_mounts(&mut content, 4, &plan.mounts);
     if let Some(startup) = startup {
-        append_yaml_string_list(&mut content, 4, "entrypoint", &startup.entrypoint);
-        append_yaml_string_list(&mut content, 4, "command", &startup.command);
+        service = service
+            .entrypoint(startup.entrypoint)
+            .command(startup.command);
     }
-    Ok(content)
+    Ok(ComposeOverridePatch::new(service))
 }
 
 fn compose_override_user(plan: &UpPlan) -> Result<Option<String>> {
@@ -939,166 +915,6 @@ fn compose_override_user(plan: &UpPlan) -> Result<Option<String>> {
     }
 
     Ok(Some(runtime_user))
-}
-
-fn append_yaml_scalar(content: &mut String, indent: usize, key: &str, value: &str) {
-    append_indent(content, indent);
-    content.push_str(key);
-    content.push_str(": ");
-    content.push_str(&yaml_quote(value));
-    content.push('\n');
-}
-
-fn append_yaml_bool(content: &mut String, indent: usize, key: &str, value: bool) {
-    append_indent(content, indent);
-    content.push_str(key);
-    content.push_str(": ");
-    content.push_str(if value { "true" } else { "false" });
-    content.push('\n');
-}
-
-fn append_yaml_map(
-    content: &mut String,
-    indent: usize,
-    key: &str,
-    values: &BTreeMap<String, String>,
-) {
-    if values.is_empty() {
-        return;
-    }
-    append_indent(content, indent);
-    content.push_str(key);
-    content.push_str(":\n");
-    for (name, value) in values {
-        append_indent(content, indent + 2);
-        content.push_str(&yaml_quote(name));
-        content.push_str(": ");
-        content.push_str(&yaml_quote(value));
-        content.push('\n');
-    }
-}
-
-fn append_yaml_string_list(content: &mut String, indent: usize, key: &str, values: &[String]) {
-    if values.is_empty() {
-        return;
-    }
-    append_indent(content, indent);
-    content.push_str(key);
-    content.push_str(":\n");
-    for value in values {
-        append_indent(content, indent + 2);
-        content.push_str("- ");
-        content.push_str(&yaml_quote(value));
-        content.push('\n');
-    }
-}
-
-fn append_yaml_mounts(content: &mut String, indent: usize, mounts: &[DockerMountSpec]) {
-    if mounts.is_empty() {
-        return;
-    }
-    append_indent(content, indent);
-    content.push_str("volumes:\n");
-    for mount in mounts {
-        append_indent(content, indent + 2);
-        content.push_str("- type: ");
-        content.push_str(match mount.mount_type {
-            MountType::Bind => "bind",
-            MountType::Volume => "volume",
-            MountType::Tmpfs => "tmpfs",
-        });
-        content.push('\n');
-        if let Some(source) = &mount.source {
-            append_yaml_scalar(content, indent + 4, "source", source);
-        }
-        append_yaml_scalar(content, indent + 4, "target", &mount.target);
-        if mount.read_only {
-            append_yaml_bool(content, indent + 4, "read_only", true);
-        }
-        if let Some(consistency) = &mount.consistency {
-            append_yaml_scalar(content, indent + 4, "consistency", consistency);
-        }
-        match mount.mount_type {
-            MountType::Bind => append_yaml_bind_mount_options(content, indent + 4, mount),
-            MountType::Volume => append_yaml_volume_mount_options(content, indent + 4, mount),
-            MountType::Tmpfs => {}
-        }
-    }
-}
-
-fn append_yaml_bind_mount_options(content: &mut String, indent: usize, mount: &DockerMountSpec) {
-    append_indent(content, indent);
-    content.push_str("bind:\n");
-    if let Some(propagation) = mount
-        .bind_options
-        .as_ref()
-        .and_then(|options| options.propagation)
-    {
-        append_yaml_scalar(content, indent + 2, "propagation", propagation.as_str());
-    }
-    let create_host_path = mount
-        .bind_options
-        .as_ref()
-        .and_then(|options| options.create_mountpoint)
-        .unwrap_or(false);
-    append_yaml_bool(content, indent + 2, "create_host_path", create_host_path);
-}
-
-fn append_yaml_volume_mount_options(content: &mut String, indent: usize, mount: &DockerMountSpec) {
-    let Some(volume_options) = &mount.volume_options else {
-        return;
-    };
-    if volume_options.no_copy.is_none() && volume_options.subpath.is_none() {
-        return;
-    }
-
-    append_indent(content, indent);
-    content.push_str("volume:\n");
-    if let Some(no_copy) = volume_options.no_copy {
-        append_yaml_bool(content, indent + 2, "nocopy", no_copy);
-    }
-    if let Some(subpath) = &volume_options.subpath {
-        append_yaml_scalar(content, indent + 2, "subpath", subpath);
-    }
-}
-
-fn append_indent(content: &mut String, indent: usize) {
-    for _ in 0..indent {
-        content.push(' ');
-    }
-}
-
-fn yaml_quote(value: &str) -> String {
-    if value
-        .chars()
-        .any(|ch| matches!(ch, '\n' | '\r') || ch.is_control())
-    {
-        return yaml_double_quote(value);
-    }
-
-    format!("'{}'", value.replace('\'', "''"))
-}
-
-fn yaml_double_quote(value: &str) -> String {
-    let mut quoted = String::with_capacity(value.len() + 2);
-    quoted.push('"');
-    for ch in value.chars() {
-        match ch {
-            '"' => quoted.push_str("\\\""),
-            '\\' => quoted.push_str("\\\\"),
-            '\n' => quoted.push_str("\\n"),
-            '\r' => quoted.push_str("\\r"),
-            '\t' => quoted.push_str("\\t"),
-            '\u{08}' => quoted.push_str("\\b"),
-            '\u{0c}' => quoted.push_str("\\f"),
-            ch if ch.is_control() => {
-                quoted.push_str(&format!("\\u{:04x}", ch as u32));
-            }
-            ch => quoted.push(ch),
-        }
-    }
-    quoted.push('"');
-    quoted
 }
 
 async fn validate_compose_canonical_model(plan: &UpPlan) -> Result<()> {
