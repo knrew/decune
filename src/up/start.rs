@@ -599,7 +599,7 @@ async fn start_compose_project(
         existing_compose_containers
             .first()
             .and_then(existing::existing_container_config_hash),
-        Some((false, options.no_cache)),
+        Some((options.pull && !primary_service_has_build, options.no_cache)),
         FinalizeUpPlanMountsOptions {
             update_features: options.update_features,
             compose_canonical_model: Some(&user_config.canonical_model),

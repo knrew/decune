@@ -175,7 +175,7 @@ decune rebuild [OPTIONS] [WORKSPACE]
 - `--update-features`: feature lock より registry/tag の再解決を優先する。
 - `-p, --port <SPEC>`
 
-Compose mode では、`docker compose build` と `docker compose up -d --force-recreate` を使う。`--no-cache` は Compose service build と Feature layer build の両方に適用する。`--pull` は Compose service build/pull と Feature layer build の base image pull に適用する。
+Compose mode では、`docker compose build` と `docker compose up -d --force-recreate` を使う。`--no-cache` は Compose service build と Feature layer build の両方に適用する。`--pull` は Compose service build/pull に適用するが、decune generated local image を親にする Feature / UID/GID / entrypoint shim layer build には適用しない。
 
 ### `down`
 
@@ -369,6 +369,8 @@ Compose mode の image creation は次の順で行う。
 6. generated Compose override に primary service image 差し替えを反映する。decune generated local image に差し替える場合は `pull_policy: never` も反映する。
 7. generated override 込みで `docker compose up -d` を実行する。
 8. `docker compose ps --format json` と `docker inspect` で primary container ID を解決し、lifecycle と shell attach に進む。
+
+`--pull` は user Dockerfile build、base image pull、Compose service build/pull にだけ適用する。Feature、UID/GID sync、entrypoint shim などの decune generated layer は直前に準備した local image tag を `FROM` にすることがあるため、これらの layer build には Docker build の `--pull` を渡さない。
 
 `rebuild` は generated image と Compose service を再作成する。anonymous volume は保持する。`clean --images` 以外で user image や Compose service image を削除してはならない。
 

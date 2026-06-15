@@ -230,6 +230,206 @@ exit 91
 }
 
 #[test]
+fn compose_up_applies_feature_final_image_only_to_primary_and_propagates_build_options() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace
+        .create_dir(".devcontainer/features/primary-tool")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true,
+              "updateRemoteUserUID": false,
+              "features": {
+                "./features/primary-tool": {}
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: "example/app:dev"
+              sidecar:
+                image: "example/sidecar:dev"
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/primary-tool/devcontainer-feature.json",
+            r#"
+            {
+              "id": "primary-tool",
+              "version": "1.0.0",
+              "name": "Primary Tool",
+              "containerEnv": {
+                "FROM_PRIMARY_FEATURE": "yes"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/primary-tool/install.sh",
+            "set -eu\n",
+        )
+        .unwrap();
+    let command_log = host_tools.path().join("commands.log");
+    let override_log = host_tools.path().join("generated-override.yaml");
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" config --format json "*)
+      printf '{"services":{"app":{"image":"example/app:dev"},"sidecar":{"image":"example/sidecar:dev"}}}\n'
+      exit 0
+      ;;
+    *" build "*)
+      case "$*" in
+        *"--no-cache --pull"*) exit 0 ;;
+      esac
+      echo "compose build did not receive --no-cache and --pull: $*" >&2
+      exit 42
+      ;;
+    *" pull "*)
+      exit 0
+      ;;
+    *" up -d "*)
+      previous=
+      generated_override=
+      for argument in "$@"; do
+        if [ "$previous" = "-f" ]; then
+          case "$argument" in
+            *compose.override.yaml) generated_override=$argument ;;
+          esac
+        fi
+        previous=$argument
+      done
+      test -n "$generated_override"
+      cat "$generated_override" > "$DECUNE_FAKE_OVERRIDE_LOG"
+      exit 0
+      ;;
+    *" ps --format json app "*)
+      printf '[{"ID":"compose-app-id","Name":"compose-app-1","Service":"app","State":"running"}]\n'
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = build ]; then
+  case "$*" in
+    *"--tag decune/"*"--pull"*)
+      echo "Generated Feature build must not receive --pull: $*" >&2
+      exit 43
+      ;;
+    *"--tag decune/"*"--no-cache"*) cat >/dev/null; exit 0 ;;
+  esac
+  echo "Feature build did not receive --no-cache: $*" >&2
+  exit 43
+fi
+if [ "${1:-}" = exec ]; then
+  printf 'root:x:0:0:root:/root:/bin/sh\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"sha256:test","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = pull ]; then
+  printf '{"status":"pulled"}\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = pull ]; then
+  printf '{"status":"pulled"}\n'
+  exit 0
+fi
+if [ "${1:-}" = ps ]; then
+  exit 0
+fi
+if [ "${1:-}" = create ]; then
+  printf 'lookup-container-id\n'
+  exit 0
+fi
+if [ "${1:-}" = start ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("DECUNE_FAKE_OVERRIDE_LOG", &override_log)
+        .args(["up", "--detach", "--no-cache", "--pull"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Started dev container: compose-app-1",
+        ));
+
+    let generated_override = fs::read_to_string(override_log).unwrap();
+    assert!(generated_override.contains("'app':"));
+    assert!(generated_override.contains("image: 'decune/"));
+    assert!(generated_override.contains("pull_policy: 'never'"));
+    assert!(generated_override.contains("'FROM_PRIMARY_FEATURE': 'yes'"));
+    assert!(!generated_override.contains("sidecar"));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(commands.contains("compose"));
+    assert!(commands.contains("build --no-cache --pull"));
+    assert!(commands.lines().any(|line| {
+        line.contains("build --tag decune/")
+            && line.contains("--no-cache")
+            && !line.contains("--pull")
+    }));
+    assert!(
+        !commands
+            .lines()
+            .any(|line| line.contains("build --tag decune/") && line.contains("--pull"))
+    );
+}
+
+#[test]
 fn compose_service_user_is_used_for_lifecycle_when_devcontainer_users_are_unset() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
@@ -954,4 +1154,120 @@ exit 91
     assert!(commands.contains("docker network rm missing_project_default"));
     assert!(!commands.contains("compose down"));
     assert!(!commands.contains("image rm"));
+}
+
+#[test]
+fn compose_clean_images_removes_only_decune_generated_workspace_images() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: "example/app:dev"
+              sidecar:
+                image: "example/sidecar:dev"
+            "#,
+        )
+        .unwrap();
+    let command_log = host_tools.path().join("commands.log");
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" down "*)
+      case " $* " in
+        *" --rmi "*) echo "compose down must not remove user images" >&2; exit 44 ;;
+      esac
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = ps ]; then
+  exit 0
+fi
+if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
+  exit 0
+fi
+if [ "${1:-}" = network ] && [ "${2:-}" = ls ]; then
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = ls ]; then
+  reference=
+  for argument in "$@"; do
+    reference=$argument
+  done
+  if [ "$reference" != "$DECUNE_FAKE_IMAGE_REPOSITORY:*" ]; then
+    echo "unexpected image list reference: $reference" >&2
+    exit 45
+  fi
+  printf '{"Repository":"%s","Tag":"final-hash"}\n' "$DECUNE_FAKE_IMAGE_REPOSITORY"
+  printf '{"Repository":"example/sidecar","Tag":"dev"}\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = rm ]; then
+  if [ "${3:-}" = "--no-prune" ] && [ "${4:-}" = "--force" ] && [ "${5:-}" = "$DECUNE_FAKE_IMAGE_REPOSITORY:final-hash" ] && [ "$#" -eq 5 ]; then
+    exit 0
+  fi
+  echo "unexpected image removal: $*" >&2
+  exit 46
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let image_repository = workspace_image_repository(&workspace_root);
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("DECUNE_FAKE_IMAGE_REPOSITORY", &image_repository)
+        .args(["clean", "--force", "--images"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Removed Docker Compose project"))
+        .stderr(predicate::str::contains(format!(
+            "Removed Docker image: {image_repository}:final-hash"
+        )))
+        .stderr(predicate::str::contains("Cleaned dev container resources"));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(commands.contains("compose"));
+    assert!(commands.contains("down --volumes --remove-orphans"));
+    assert!(commands.contains(&format!(
+        "image ls --all --format json {image_repository}:*"
+    )));
+    assert!(commands.contains(&format!(
+        "image rm --no-prune --force {image_repository}:final-hash"
+    )));
+    assert!(!commands.contains("example/sidecar"));
+    assert!(!commands.contains("--rmi"));
 }
