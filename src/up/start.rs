@@ -766,7 +766,10 @@ async fn write_generated_compose_override(
 }
 
 #[cfg(test)]
-fn generated_compose_override_content(primary_service: &str, plan: &UpPlan) -> Result<String> {
+pub(in crate::up) fn generated_compose_override_content(
+    primary_service: &str,
+    plan: &UpPlan,
+) -> Result<String> {
     let startup = if plan.config.devcontainer.override_command {
         let (entrypoint, command) = devcontainer_keepalive_command();
         Some(ComposeOverrideStartup {
