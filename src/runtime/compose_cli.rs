@@ -175,12 +175,7 @@ impl DockerComposeCli {
             &command,
             &output,
         )?;
-        serde_json::from_slice(&output.stdout).map_err(|error| {
-            anyhow!(
-                "Failed to parse Docker Compose ps JSON for project {} service `{service}`: {error}",
-                project.project_name
-            )
-        })
+        parse_compose_ps_json(&output.stdout, &project.project_name, service)
     }
 }
 
@@ -415,6 +410,56 @@ pub(crate) struct ComposePsContainer {
         deserialize_with = "deserialize_null_as_empty_vec"
     )]
     pub(crate) published_ports: Vec<ComposePublishedPort>,
+}
+
+fn parse_compose_ps_json(
+    stdout: &[u8],
+    project_name: &str,
+    service: &str,
+) -> Result<Vec<ComposePsContainer>> {
+    if stdout.iter().all(u8::is_ascii_whitespace) {
+        return Ok(Vec::new());
+    }
+
+    match serde_json::from_slice::<JsonValue>(stdout) {
+        Ok(JsonValue::Array(values)) => values
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(|error| compose_ps_parse_error(project_name, service, error)),
+        Ok(JsonValue::Object(_)) => serde_json::from_slice(stdout)
+            .map(|container| vec![container])
+            .map_err(|error| compose_ps_parse_error(project_name, service, error)),
+        Ok(other) => Err(anyhow!(
+            "Failed to parse Docker Compose ps JSON for project {} service `{service}`: expected object or array, got {other}",
+            project_name
+        )),
+        Err(first_error) => {
+            let lines = String::from_utf8_lossy(stdout);
+            let containers = lines
+                .lines()
+                .filter(|line| !line.trim().is_empty())
+                .map(serde_json::from_str::<ComposePsContainer>)
+                .collect::<std::result::Result<Vec<_>, _>>();
+            containers.map_err(|line_error| {
+                anyhow!(
+                    "Failed to parse Docker Compose ps JSON for project {} service `{service}`: {first_error}; JSON Lines parse failed: {line_error}",
+                    project_name
+                )
+            })
+        }
+    }
+}
+
+fn compose_ps_parse_error(
+    project_name: &str,
+    service: &str,
+    error: serde_json::Error,
+) -> anyhow::Error {
+    anyhow!(
+        "Failed to parse Docker Compose ps JSON for project {} service `{service}`: {error}",
+        project_name
+    )
 }
 
 fn deserialize_null_as_empty_vec<'de, D, T>(
@@ -1296,8 +1341,8 @@ mod tests {
         ComposeDownOptions, ComposeIntrospector, ComposeLifecyclePlan, ComposeOverrideMount,
         ComposeOverridePatch, ComposeOverrideServicePatch, ComposePrimaryImageResolver,
         ComposeProject, ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation,
-        ComposeStopOptions, ComposeUpOptions, DockerComposeCli, resolve_compose_container,
-        write_compose_override,
+        ComposeStopOptions, ComposeUpOptions, DockerComposeCli, parse_compose_ps_json,
+        resolve_compose_container, write_compose_override,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
 
@@ -1374,6 +1419,48 @@ mod tests {
 
         assert_ne!(first_workspace.id(), second_workspace.id());
         assert_ne!(first.project_name(), second.project_name());
+    }
+
+    #[test]
+    fn compose_ps_json_accepts_single_object_output() {
+        let containers = parse_compose_ps_json(
+            br#"{"ID":"app-id","Name":"project-app-1","Service":"app","State":"running","Publishers":null}"#,
+            "decune-project-abc123",
+            "app",
+        )
+        .unwrap();
+
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0].id, "app-id");
+        assert_eq!(containers[0].service, "app");
+        assert!(containers[0].published_ports.is_empty());
+    }
+
+    #[test]
+    fn compose_ps_json_accepts_array_output() {
+        let containers = parse_compose_ps_json(
+            br#"[{"ID":"app-id","Name":"project-app-1","Service":"app","State":"running","Publishers":[]}]"#,
+            "decune-project-abc123",
+            "app",
+        )
+        .unwrap();
+
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0].id, "app-id");
+    }
+
+    #[test]
+    fn compose_ps_json_accepts_json_lines_output() {
+        let containers = parse_compose_ps_json(
+            b"{\"ID\":\"app-id\",\"Name\":\"project-app-1\",\"Service\":\"app\",\"State\":\"running\",\"Publishers\":[]}\n{\"ID\":\"sidecar-id\",\"Name\":\"project-sidecar-1\",\"Service\":\"sidecar\",\"State\":\"running\",\"Publishers\":[]}\n",
+            "decune-project-abc123",
+            "app",
+        )
+        .unwrap();
+
+        assert_eq!(containers.len(), 2);
+        assert_eq!(containers[0].id, "app-id");
+        assert_eq!(containers[1].service, "sidecar");
     }
 
     #[test]
