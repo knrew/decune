@@ -57,7 +57,7 @@ use shell::{first_successful_shell_candidate, shell_command_candidates};
 #[cfg(test)]
 use start::{
     add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-    create_and_start_container, list_workspace_containers,
+    create_and_start_container, generated_compose_override_content, list_workspace_containers,
 };
 pub(crate) use types::{
     ExistingContainerDecision, ForwardingResolution, MountResolution, UpContainerSummary,
@@ -213,8 +213,9 @@ mod tests {
         build_up_plan, build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
         build_up_plan_with_update_features, container_summary, create_and_start_container,
         decide_existing_container, default_workspace_folder, feature_layer_image,
-        finalize_up_plan_mounts, first_successful_shell_candidate, list_workspace_containers,
-        mount_hash_inputs, run_attached_up, run_detached_up, shell_command_candidates,
+        finalize_up_plan_mounts, first_successful_shell_candidate,
+        generated_compose_override_content, list_workspace_containers, mount_hash_inputs,
+        run_attached_up, run_detached_up, shell_command_candidates,
         should_auto_add_github_cli_feature, uid_gid_sync_base_image, uid_gid_sync_warning,
         untrusted_repository_warnings,
     };
@@ -840,6 +841,81 @@ mod tests {
                 .iter()
                 .any(|mount| mount.target == DECUNE_RUNTIME_TARGET)
         );
+    }
+
+    #[test]
+    fn compose_credentials_secret_leak_generated_override_injects_primary_runtime_mounts() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let socket_path = temp.path().join("agent.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        let mut config = ResolvedConfig::default();
+        config
+            .devcontainer
+            .container_env
+            .insert("APP_ENV".to_owned(), "compose-credentials-test".to_owned());
+        let mut plan = test_up_plan_with_config(config);
+        plan.forward_ports = vec![ResolvedForwardPort {
+            service: None,
+            container: 4321,
+            host: 54321,
+            host_ip: "127.0.0.1".to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
+            label: None,
+        }];
+
+        let (plan, _runtime) = add_credential_runtime_mounts_with_inputs(
+            plan,
+            &runtime_dir,
+            Some(&socket_path),
+            Some("compose-github-secret\n"),
+        )
+        .unwrap();
+        let yaml = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(yaml.contains("  'app':\n"));
+        assert!(!yaml.contains("sidecar"));
+        assert!(yaml.contains(DECUNE_RUNTIME_TARGET));
+        assert!(yaml.contains(SSH_AGENT_SOCKET_TARGET));
+        assert!(yaml.contains(GITHUB_CLI_TOKEN_TARGET));
+        assert!(yaml.contains("read_only: true"));
+        assert!(yaml.contains(GITHUB_CLI_CONFIG_TARGET));
+        assert!(yaml.contains("type: tmpfs"));
+        assert!(yaml.contains("'SSH_AUTH_SOCK': '/run/decune/ssh-agent.sock'"));
+        assert!(yaml.contains("'GH_CONFIG_DIR': '/run/decune/gh'"));
+        assert!(!yaml.contains("compose-github-secret"));
+    }
+
+    #[test]
+    fn compose_credentials_generated_override_honors_disabled_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let socket_path = temp.path().join("agent.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+        let plan = test_up_plan_with_config(config);
+
+        let (plan, _runtime) = add_credential_runtime_mounts_with_inputs(
+            plan,
+            &runtime_dir,
+            Some(&socket_path),
+            Some("disabled-github-secret\n"),
+        )
+        .unwrap();
+        let yaml = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(yaml.contains("  'app':\n"));
+        assert!(yaml.contains(DECUNE_RUNTIME_TARGET));
+        assert!(!yaml.contains(SSH_AGENT_SOCKET_TARGET));
+        assert!(!yaml.contains(GITHUB_CLI_TOKEN_TARGET));
+        assert!(!yaml.contains(GITHUB_CLI_CONFIG_TARGET));
+        assert!(!yaml.contains("SSH_AUTH_SOCK"));
+        assert!(!yaml.contains("GH_CONFIG_DIR"));
+        assert!(!yaml.contains("disabled-github-secret"));
     }
 
     #[test]
