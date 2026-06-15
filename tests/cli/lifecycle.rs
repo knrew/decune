@@ -1061,7 +1061,8 @@ fn up_attached_expands_remote_env_from_actual_container_env() {
                 "PATH": "${containerEnv:PATH}:/attach-extra",
                 "DECUNE_IMAGE_ENV": "${containerEnv:DECUNE_FROM_IMAGE}"
               },
-              "userEnvProbe": "none"
+              "userEnvProbe": "none",
+              "shutdownAction": "none"
             }
             "#,
         )
@@ -1108,6 +1109,84 @@ fn up_attached_expands_remote_env_from_actual_container_env() {
             output,
             "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/attach-extra|from-image"
         );
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_attached_defaults_to_stopping_image_container_after_shell_exit() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN printf '%s\n' \
+              '#!/bin/sh' \
+              'printf ok > attached-shutdown-marker' \
+              'exit 0' \
+              >/usr/local/bin/decune-record-attached-shutdown \
+              && chmod +x /usr/local/bin/decune-record-attached-shutdown
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "userEnvProbe": "none"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-record-attached-shutdown"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let marker = workspace_root.join("attached-shutdown-marker");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .arg("up")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        assert_eq!(fs::read_to_string(&marker).unwrap(), "ok");
+        let inspect = runtime
+            .block_on(async { inspect_single_workspace_container(&workspace_root).await })
+            .unwrap();
+        assert_eq!(inspect.state.and_then(|state| state.running), Some(false));
     });
 
     runtime.block_on(async {

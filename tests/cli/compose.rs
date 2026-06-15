@@ -540,7 +540,7 @@ exit 91
 }
 
 #[test]
-fn compose_exec_lifecycle_shell_attach_returns_shell_exit_and_stop_compose_shutdown() {
+fn compose_exec_lifecycle_shell_attach_returns_shell_exit_and_defaults_to_stop_compose_shutdown() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
@@ -555,8 +555,7 @@ fn compose_exec_lifecycle_shell_attach_returns_shell_exit_and_stop_compose_shutd
               "workspaceFolder": "/workspace",
               "userEnvProbe": "none",
               "postStartCommand": "printf post-start",
-              "postAttachCommand": "printf post-attach",
-              "shutdownAction": "stopCompose"
+              "postAttachCommand": "printf post-attach"
             }
             "#,
         )
@@ -682,8 +681,11 @@ exit 91
     assert!(commands.contains(
         "exec --interactive --user root --workdir /workspace compose-app-id /usr/local/bin/decune-shell"
     ));
-    assert!(commands.contains("compose"));
-    assert!(commands.contains("stop"));
+    assert!(
+        commands
+            .lines()
+            .any(|command| command.starts_with("compose ") && command.ends_with(" stop"))
+    );
 }
 
 #[test]
