@@ -97,12 +97,7 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
     let forwarding = start_forwarding_for_up(&started).await?;
     let attach_result = async {
-        if started.plan.compose_project.is_some() {
-            let attach_lifecycle = prepare_up_lifecycle(&started).await?;
-            run_attach_lifecycle_for_up(&attach_lifecycle).await?;
-        } else {
-            run_attach_lifecycle_for_up(&lifecycle).await?;
-        }
+        run_attach_lifecycle_for_up(&lifecycle).await?;
         report_up_success(&started);
 
         attach_shell(
