@@ -65,7 +65,6 @@ pub(in crate::up) async fn build_feature_layer_image(
     client: &DockerClient,
     plan: &UpPlan,
     no_cache: bool,
-    pull: bool,
 ) -> Result<()> {
     if !plan_requires_workspace_layer(plan) {
         return Ok(());
@@ -122,7 +121,6 @@ pub(in crate::up) async fn build_feature_layer_image(
             context,
             options: DockerBuildOptions {
                 no_cache,
-                pull,
                 ..DockerBuildOptions::default()
             },
         },
@@ -134,7 +132,6 @@ async fn build_uid_gid_sync_layer_image(
     client: &DockerClient,
     plan: &UpPlan,
     no_cache: bool,
-    pull: bool,
 ) -> Result<()> {
     let UidGidSyncPlan::Sync { target, container } = &plan.uid_gid_sync_plan else {
         return Ok(());
@@ -166,7 +163,6 @@ async fn build_uid_gid_sync_layer_image(
             context,
             options: DockerBuildOptions {
                 no_cache,
-                pull,
                 ..DockerBuildOptions::default()
             },
         },
@@ -178,13 +174,12 @@ pub(in crate::up) async fn build_workspace_image_layers(
     client: &DockerClient,
     plan: &UpPlan,
     no_cache: bool,
-    pull: bool,
 ) -> Result<()> {
     if plan_requires_workspace_layer(plan) {
-        build_feature_layer_image(client, plan, no_cache, pull).await?;
+        build_feature_layer_image(client, plan, no_cache).await?;
     }
     if plan_requires_uid_gid_sync_layer(plan) {
-        build_uid_gid_sync_layer_image(client, plan, no_cache, pull).await?;
+        build_uid_gid_sync_layer_image(client, plan, no_cache).await?;
     }
     Ok(())
 }

@@ -332,9 +332,13 @@ if [ "${1:-}" = compose ]; then
 fi
 if [ "${1:-}" = build ]; then
   case "$*" in
-    *"--tag decune/"*"--no-cache --pull"*) cat >/dev/null; exit 0 ;;
+    *"--tag decune/"*"--pull"*)
+      echo "Generated Feature build must not receive --pull: $*" >&2
+      exit 43
+      ;;
+    *"--tag decune/"*"--no-cache"*) cat >/dev/null; exit 0 ;;
   esac
-  echo "Feature build did not receive --no-cache and --pull: $*" >&2
+  echo "Feature build did not receive --no-cache: $*" >&2
   exit 43
 fi
 if [ "${1:-}" = exec ]; then
@@ -413,7 +417,16 @@ exit 91
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(commands.contains("compose"));
     assert!(commands.contains("build --no-cache --pull"));
-    assert!(commands.contains("build --tag decune/"));
+    assert!(commands.lines().any(|line| {
+        line.contains("build --tag decune/")
+            && line.contains("--no-cache")
+            && !line.contains("--pull")
+    }));
+    assert!(
+        !commands
+            .lines()
+            .any(|line| line.contains("build --tag decune/") && line.contains("--pull"))
+    );
 }
 
 #[test]

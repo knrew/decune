@@ -1282,7 +1282,7 @@ async fn prepare_image_for_create(
     if plan_requires_final_image_layer(plan) {
         if !image_prepared {
             prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
-            build_workspace_image_layers(client, plan, no_cache, pull).await?;
+            build_workspace_image_layers(client, plan, no_cache).await?;
         }
     } else if let Some(context) = plan.build_context.clone() {
         if !image_prepared {

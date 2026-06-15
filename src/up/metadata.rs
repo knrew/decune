@@ -287,7 +287,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
             };
             prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
             lookup_base_image = Some(plan.base_image.clone());
-            build_feature_layer_image(client, &plan, no_cache, pull).await?;
+            build_feature_layer_image(client, &plan, no_cache).await?;
             lookup_image = Some(plan.image.clone());
             image_prepared = true;
         } else if let Some(context) = plan.build_context.clone() {
@@ -354,7 +354,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     if image_prepared && plan_requires_final_image_layer(&plan) {
         if let Some((pull, no_cache)) = build_for_lookup {
             prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
-            build_workspace_image_layers(client, &plan, no_cache, pull).await?;
+            build_workspace_image_layers(client, &plan, no_cache).await?;
         }
         if plan.image != lookup_image {
             remove_image(client, &lookup_image, false).await?;
@@ -851,7 +851,7 @@ async fn maybe_auto_add_github_cli_feature_to_plan(
     if let Some((pull, no_cache)) = lookup.build_options {
         prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
         *lookup.base_image = Some(plan.base_image.clone());
-        build_feature_layer_image(client, &plan, no_cache, pull).await?;
+        build_feature_layer_image(client, &plan, no_cache).await?;
         *lookup.image = plan.image.clone();
         *lookup.image_prepared = true;
     }
