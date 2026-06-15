@@ -68,13 +68,13 @@ sha256sum -c SHA256SUMS
 
 ```sh
 cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
-DECUNE_CONTAINER_TOOLS_BUNDLE=required cargo build --release --locked
+cargo build --release --locked
 ```
 
-軽い `cargo check` だけを行う場合は、bundle を埋め込まない build も可能です。
+軽い `cargo check` だけを行う場合は、通常の Cargo command を実行できます。
 
 ```sh
-DECUNE_CONTAINER_TOOLS_BUNDLE=off cargo check --workspace --all-targets --all-features
+cargo check --workspace --all-targets --all-features
 ```
 
 ## Quick start
@@ -347,9 +347,9 @@ cargo clippy --workspace --all-features --all-targets -- -D warnings
 Docker / Compose integration test を含む full test:
 
 ```sh
-cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
-cargo run --locked -p xtask -- check-container-tools --dir assets/container-tools
-DECUNE_CONTAINER_TOOLS_BUNDLE=required cargo test --workspace --all-features --no-fail-fast
+docker version
+cargo run --locked -p xtask -- workspace-test
+cargo run --locked -p xtask -- compose-integration
 ```
 
 Compose integration test だけを明示実行する場合:
@@ -357,12 +357,10 @@ Compose integration test だけを明示実行する場合:
 ```sh
 docker version
 docker compose version
-cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
-cargo run --locked -p xtask -- check-container-tools --dir assets/container-tools
 cargo run --locked -p xtask -- compose-integration
 ```
 
-`compose_integration` filter の test は `DECUNE_COMPOSE_INTEGRATION=1` がない場合 skip します。Docker Compose v2 plugin がない環境では通常の unit test を落とさず、`DECUNE_COMPOSE_INTEGRATION=1 cargo test --workspace --all-features --no-fail-fast compose_integration` または xtask 経由の opt-in 実行時に明確な error にします。
+`compose_integration` filter の Docker-backed test は `#[ignore]` として定義します。通常の unit test では実行されず、`cargo run --locked -p xtask -- compose-integration` が Docker daemon と Docker Compose v2 plugin を確認したうえで `cargo test --workspace --all-features --no-fail-fast compose_integration -- --ignored --test-threads=1` を実行します。
 
 配布成果物の生成:
 

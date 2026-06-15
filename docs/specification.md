@@ -116,7 +116,7 @@ container-side tool platform:
 - `linux-amd64`
 - `linux-arm64`
 
-開発・debug 用 override として `DECUNE_CONTAINER_TOOLS_DIR` を残す。build-time の bundle 制御は `DECUNE_CONTAINER_TOOLS_BUNDLE` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` で行う。
+開発・debug 用 override として `DECUNE_CONTAINER_TOOLS_DIR` を残す。build-time の bundle 制御は `DECUNE_CONTAINER_TOOLS_BUNDLE` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` で行うが、通常の local/CI command では `xtask` が内部で設定する。
 
 ## CLI
 
@@ -878,9 +878,9 @@ cargo clippy --workspace --all-features --all-targets -- -D warnings
 Docker / Compose integration test を含む full test:
 
 ```sh
-cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
-cargo run --locked -p xtask -- check-container-tools --dir assets/container-tools
-DECUNE_CONTAINER_TOOLS_BUNDLE=required cargo test --workspace --all-features --no-fail-fast
+docker version
+cargo run --locked -p xtask -- workspace-test
+cargo run --locked -p xtask -- compose-integration
 ```
 
 Compose integration test だけを明示実行する場合:
@@ -888,12 +888,10 @@ Compose integration test だけを明示実行する場合:
 ```sh
 docker version
 docker compose version
-cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
-cargo run --locked -p xtask -- check-container-tools --dir assets/container-tools
 cargo run --locked -p xtask -- compose-integration
 ```
 
-`compose_integration` filter の test は `DECUNE_COMPOSE_INTEGRATION=1` がない場合 skip する。Docker daemon と Docker Compose v2 plugin に接続できない環境では full test と opt-in Compose integration test は失敗として扱う。純粋ロジックだけ確認する場合は、対象 package/module/test 名で filter して実行する。
+`compose_integration` filter の Docker-backed test は `#[ignore]` として定義する。通常の unit test では実行せず、`cargo run --locked -p xtask -- compose-integration` が Docker daemon と Docker Compose v2 plugin を確認したうえで `cargo test --workspace --all-features --no-fail-fast compose_integration -- --ignored --test-threads=1` を実行する。純粋ロジックだけ確認する場合は、対象 package/module/test 名で filter して実行する。
 
 主な integration test 対象:
 

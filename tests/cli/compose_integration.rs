@@ -1,17 +1,12 @@
-use std::{env, path::Path, process::Command};
+use std::{path::Path, process::Command};
 
 use serde::Deserialize;
 
 use crate::harness::*;
 
-const COMPOSE_INTEGRATION_ENV: &str = "DECUNE_COMPOSE_INTEGRATION";
-const COMPOSE_INTEGRATION_SKIP_REASON: &str =
-    "Set DECUNE_COMPOSE_INTEGRATION=1 to run Docker Compose integration tests";
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ComposeIntegrationDecision {
     Run,
-    Skip(&'static str),
     Error(String),
 }
 
@@ -54,21 +49,17 @@ impl Drop for UnrelatedComposeFixture {
 }
 
 #[test]
-fn compose_integration_plugin_detection_skips_without_opt_in() {
+fn compose_integration_plugin_detection_runs_when_tools_are_available() {
     assert_eq!(
-        compose_integration_decision(false, Ok(()), Ok(())),
-        ComposeIntegrationDecision::Skip(COMPOSE_INTEGRATION_SKIP_REASON)
+        compose_integration_decision(Ok(()), Ok(())),
+        ComposeIntegrationDecision::Run
     );
 }
 
 #[test]
-fn compose_integration_plugin_detection_errors_when_docker_is_missing_after_opt_in() {
+fn compose_integration_plugin_detection_errors_when_docker_is_missing() {
     assert_eq!(
-        compose_integration_decision(
-            true,
-            Err("docker executable was not found".to_owned()),
-            Ok(())
-        ),
+        compose_integration_decision(Err("docker executable was not found".to_owned()), Ok(())),
         ComposeIntegrationDecision::Error(
             "Docker Compose integration tests require Docker CLI: docker executable was not found"
                 .to_owned()
@@ -77,10 +68,9 @@ fn compose_integration_plugin_detection_errors_when_docker_is_missing_after_opt_
 }
 
 #[test]
-fn compose_integration_plugin_detection_errors_when_compose_v2_plugin_is_missing_after_opt_in() {
+fn compose_integration_plugin_detection_errors_when_compose_v2_plugin_is_missing() {
     assert_eq!(
         compose_integration_decision(
-            true,
             Ok(()),
             Err("docker compose version exited with 1".to_owned())
         ),
@@ -92,10 +82,9 @@ fn compose_integration_plugin_detection_errors_when_compose_v2_plugin_is_missing
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_minimal_single_service_up_detach() {
-    let Some(workspace) = compose_fixture_workspace("minimal") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("minimal");
 
     run_decune_up_detach(workspace.path(), &[]);
 
@@ -104,10 +93,9 @@ fn compose_integration_minimal_single_service_up_detach() {
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_multi_file_merge_applies_override() {
-    let Some(workspace) = compose_fixture_workspace("multi-file") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("multi-file");
 
     run_decune_up_detach(workspace.path(), &[]);
 
@@ -116,10 +104,9 @@ fn compose_integration_multi_file_merge_applies_override() {
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_run_services_starts_subset_and_primary_service() {
-    let Some(workspace) = compose_fixture_workspace("run-services") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("run-services");
 
     run_decune_up_detach(workspace.path(), &[]);
 
@@ -131,10 +118,9 @@ fn compose_integration_run_services_starts_subset_and_primary_service() {
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_profiles_start_profile_service_when_enabled_by_host_env() {
-    let Some(workspace) = compose_fixture_workspace("profiles") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("profiles");
 
     run_decune_up_detach(workspace.path(), &[("COMPOSE_PROFILES", "debug")]);
 
@@ -143,10 +129,9 @@ fn compose_integration_profiles_start_profile_service_when_enabled_by_host_env()
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_primary_build_service_runs_lifecycle_assertion() {
-    let Some(workspace) = compose_fixture_workspace("primary-build") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("primary-build");
 
     run_decune_up_detach(workspace.path(), &[]);
 
@@ -155,10 +140,9 @@ fn compose_integration_primary_build_service_runs_lifecycle_assertion() {
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_features_apply_to_primary_service() {
-    let Some(workspace) = compose_fixture_workspace("features") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("features");
 
     run_decune_up_detach(workspace.path(), &[]);
 
@@ -167,10 +151,9 @@ fn compose_integration_features_apply_to_primary_service() {
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_credentials_disabled_fixture_runs_without_forwarding_setup() {
-    let Some(workspace) = compose_fixture_workspace("credentials-disabled") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("credentials-disabled");
 
     run_decune_up_detach(workspace.path(), &[]);
 
@@ -179,10 +162,9 @@ fn compose_integration_credentials_disabled_fixture_runs_without_forwarding_setu
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_lifecycle_command_runs_in_primary_service() {
-    let Some(workspace) = compose_fixture_workspace("lifecycle") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("lifecycle");
 
     run_decune_up_detach(workspace.path(), &[]);
 
@@ -193,10 +175,9 @@ fn compose_integration_lifecycle_command_runs_in_primary_service() {
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_cleanup_safety_keeps_unrelated_project_and_user_image() {
-    let Some(workspace) = compose_fixture_workspace("cleanup-safety") else {
-        return;
-    };
+    let workspace = compose_fixture_workspace("cleanup-safety");
     let unrelated = create_unrelated_compose_fixture(workspace.path());
 
     run_decune_up_detach(workspace.path(), &[]);
@@ -219,19 +200,15 @@ fn compose_integration_cleanup_safety_keeps_unrelated_project_and_user_image() {
     );
 }
 
-fn compose_fixture_workspace(name: &str) -> Option<ComposeFixtureWorkspace> {
+fn compose_fixture_workspace(name: &str) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Skip(reason) => {
-            eprintln!("skipping Compose integration test: {reason}");
-            return None;
-        }
         ComposeIntegrationDecision::Error(message) => panic!("{message}"),
     }
 
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.copy_dir_from(compose_fixture_path(name)).unwrap();
-    Some(ComposeFixtureWorkspace { workspace })
+    ComposeFixtureWorkspace { workspace }
 }
 
 fn compose_fixture_path(name: &str) -> std::path::PathBuf {
@@ -241,24 +218,13 @@ fn compose_fixture_path(name: &str) -> std::path::PathBuf {
 }
 
 fn compose_integration_readiness() -> ComposeIntegrationDecision {
-    let opted_in = env::var(COMPOSE_INTEGRATION_ENV)
-        .is_ok_and(|value| matches!(value.as_str(), "1" | "true" | "TRUE" | "yes" | "YES"));
-    compose_integration_decision(
-        opted_in,
-        command_ok(["version"]),
-        command_ok(["compose", "version"]),
-    )
+    compose_integration_decision(command_ok(["version"]), command_ok(["compose", "version"]))
 }
 
 fn compose_integration_decision(
-    opted_in: bool,
     docker: Result<(), String>,
     compose: Result<(), String>,
 ) -> ComposeIntegrationDecision {
-    if !opted_in {
-        return ComposeIntegrationDecision::Skip(COMPOSE_INTEGRATION_SKIP_REASON);
-    }
-
     if let Err(reason) = docker {
         return ComposeIntegrationDecision::Error(format!(
             "Docker Compose integration tests require Docker CLI: {reason}"

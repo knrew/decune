@@ -100,8 +100,6 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
       - name: Cargo check
-        env:
-          DECUNE_CONTAINER_TOOLS_BUNDLE: "off"
         run: cargo check ${{ matrix.release_flag }} --workspace --all-targets --all-features --verbose
 
   cargo-test:
@@ -126,14 +124,8 @@ jobs:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
       - name: Check Docker daemon
         run: docker version
-      - name: Build embedded container tools bundle
-        run: cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
-      - name: Check embedded container tools bundle
-        run: cargo run --locked -p xtask -- check-container-tools --dir assets/container-tools
       - name: Cargo test
-        env:
-          DECUNE_CONTAINER_TOOLS_BUNDLE: required
-        run: cargo test ${{ matrix.release_flag }} --workspace --all-features --no-fail-fast --verbose
+        run: cargo run --locked -p xtask -- workspace-test ${{ matrix.release_flag }}
 
   compose-integration:
     name: compose-integration
@@ -141,8 +133,6 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
-    env:
-      DECUNE_COMPOSE_INTEGRATION: "1"
     steps:
       - uses: actions/checkout@v6
         with:
@@ -154,10 +144,6 @@ jobs:
         run: docker version
       - name: Check Docker Compose v2 plugin
         run: docker compose version
-      - name: Build embedded container tools bundle
-        run: cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
-      - name: Check embedded container tools bundle
-        run: cargo run --locked -p xtask -- check-container-tools --dir assets/container-tools
       - name: Cargo Compose integration test
         run: cargo run --locked -p xtask -- compose-integration
 
