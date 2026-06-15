@@ -210,7 +210,7 @@ pub(crate) enum LifecycleStep {
 #[derive(Clone)]
 pub(crate) struct LifecycleRunContext<'a> {
     pub(crate) client: &'a DockerClient,
-    pub(crate) container: &'a str,
+    pub(crate) container: String,
     pub(crate) config: &'a ResolvedConfig,
     pub(crate) workspace_root: &'a Path,
     pub(crate) workspace_basename: &'a str,
@@ -222,7 +222,7 @@ pub(crate) struct LifecycleRunContext<'a> {
 
 pub(crate) struct PreparedLifecycleRunContext<'a> {
     client: &'a DockerClient,
-    container: &'a str,
+    container: String,
     config: &'a ResolvedConfig,
     workspace_root: &'a Path,
     workspace_folder: &'a str,
@@ -357,7 +357,7 @@ pub(crate) async fn prepare_container_lifecycle(
     let dotfile_variables = dotfile_variable_context(&context);
     let dotfiles_result = setup_dotfiles(
         context.client,
-        context.container,
+        &context.container,
         context.config,
         &context.remote_user,
         &dotfile_variables,
@@ -370,7 +370,7 @@ pub(crate) async fn prepare_container_lifecycle(
 
     let install_result = install_staged_host_gitconfig(
         context.client,
-        context.container,
+        &context.container,
         context.config,
         &context.remote_user,
     )
@@ -381,19 +381,19 @@ pub(crate) async fn prepare_container_lifecycle(
 
     setup_git_credentials(
         context.client,
-        context.container,
+        &context.container,
         context.config,
         &context.remote_user,
     )
     .await?;
     setup_github_cli_credentials(
         context.client,
-        context.container,
+        &context.container,
         context.config,
         &context.remote_user,
     )
     .await?;
-    let container_env = inspect_container_env(context.client, context.container).await?;
+    let container_env = inspect_container_env(context.client, &context.container).await?;
     let remote_env_variables = dotfile_variable_context(&context).with_container_env(container_env);
     let remote_env = expand_remote_env(
         &context.config.devcontainer.remote_env,
@@ -407,7 +407,7 @@ pub(crate) async fn prepare_container_lifecycle(
     })?;
     let remote_process_env = resolve_exec_env(
         context.client,
-        context.container,
+        &context.container,
         &context.remote_user.user,
         context.remote_user.shell.as_deref(),
         &remote_env,
@@ -827,7 +827,7 @@ async fn run_container_process(
     });
     let output = exec_capture_output(
         context.client,
-        context.container,
+        &context.container,
         &ExecCommandSpec {
             command: command.clone(),
             user: Some(user.clone()),

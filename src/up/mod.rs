@@ -2,6 +2,7 @@ use anyhow::Result;
 
 mod attach;
 mod build;
+mod exec_target;
 mod existing;
 mod forwarding;
 mod lifecycle;
@@ -13,6 +14,11 @@ mod start;
 mod types;
 mod uid_gid;
 
+use crate::{
+    config::resolved::{ResolvedDevcontainerSource, ResolvedShutdownAction},
+    docker::container::stop_container,
+    runtime::compose_cli::{ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli},
+};
 use attach::attach_shell;
 use forwarding::{start_forwarding_for_up, stop_forwarding, warn_about_detached_forwarding};
 use lifecycle::{
@@ -61,6 +67,8 @@ pub(in crate::up) use uid_gid::static_uid_gid_sync_hash_input;
 #[cfg(test)]
 use uid_gid::{uid_gid_sync_base_image, uid_gid_sync_warning};
 
+const SHUTDOWN_STOP_TIMEOUT_SECONDS: i32 = 10;
+
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     let started = Box::pin(ensure_container_started(
         options,
@@ -89,7 +97,12 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
     let forwarding = start_forwarding_for_up(&started).await?;
     let attach_result = async {
-        run_attach_lifecycle_for_up(&lifecycle).await?;
+        if started.plan.compose_project.is_some() {
+            let attach_lifecycle = prepare_up_lifecycle(&started).await?;
+            run_attach_lifecycle_for_up(&attach_lifecycle).await?;
+        } else {
+            run_attach_lifecycle_for_up(&lifecycle).await?;
+        }
         report_up_success(&started);
 
         attach_shell(
@@ -104,7 +117,48 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     stop_forwarding(forwarding).await;
 
     let exit_code = attach_result?;
+    apply_shutdown_action_after_attached_up(&started).await?;
     Ok(shell::clamp_exit_code(exit_code))
+}
+
+async fn apply_shutdown_action_after_attached_up(
+    started: &start::StartedUpContainer,
+) -> Result<()> {
+    match started.plan.config.devcontainer.shutdown_action {
+        ResolvedShutdownAction::None => Ok(()),
+        ResolvedShutdownAction::StopContainer => {
+            stop_primary_container_after_attached_up(started).await
+        }
+        ResolvedShutdownAction::StopCompose => {
+            let Some(compose_project) = &started.plan.compose_project else {
+                return stop_primary_container_after_attached_up(started).await;
+            };
+            let Some(ResolvedDevcontainerSource::Compose(_)) =
+                &started.plan.config.devcontainer.source
+            else {
+                return stop_primary_container_after_attached_up(started).await;
+            };
+            let lifecycle =
+                ComposeLifecyclePlan::down(compose_project.command_plan_with_generated_override());
+            DockerComposeCli::default()
+                .stop(
+                    &lifecycle.project,
+                    ComposeStopOptions {
+                        timeout_seconds: None,
+                    },
+                    &lifecycle.services,
+                )
+                .await
+        }
+    }
+}
+
+async fn stop_primary_container_after_attached_up(
+    started: &start::StartedUpContainer,
+) -> Result<()> {
+    let target =
+        exec_target::resolve_up_exec_target(&started.plan, &started.outcome.container_name).await?;
+    stop_container(&started.client, &target.id, SHUTDOWN_STOP_TIMEOUT_SECONDS).await
 }
 
 #[cfg(test)]

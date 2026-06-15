@@ -540,6 +540,295 @@ exit 91
 }
 
 #[test]
+fn compose_exec_lifecycle_shell_attach_returns_shell_exit_and_stop_compose_shutdown() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true,
+              "workspaceFolder": "/workspace",
+              "userEnvProbe": "none",
+              "postStartCommand": "printf post-start",
+              "postAttachCommand": "printf post-attach",
+              "shutdownAction": "stopCompose"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: "alpine:3.20"
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-shell"
+            "#,
+        )
+        .unwrap();
+    let command_log = host_tools.path().join("commands.log");
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" config --format json "*)
+      printf '{"services":{"app":{"image":"alpine:3.20"}}}\n'
+      exit 0
+      ;;
+    *" up -d "*)
+      exit 0
+      ;;
+    *" ps --format json app "*)
+      printf '[{"ID":"compose-app-id","Name":"compose-app-1","Service":"app","State":"running"}]\n'
+      exit 0
+      ;;
+    *" stop "*)
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = exec ]; then
+  case " $* " in
+    *passwd*)
+      printf 'root:x:0:0:root:/root:/bin/sh\n'
+      exit 0
+      ;;
+    *" printf post-start"*|*" printf post-attach"*)
+      exit 0
+      ;;
+    *" /usr/local/bin/decune-shell"*)
+      exit 7
+      ;;
+  esac
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"sha256:alpine","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = ps ]; then
+  exit 0
+fi
+if [ "${1:-}" = create ]; then
+  printf 'lookup-container-id\n'
+  exit 0
+fi
+if [ "${1:-}" = start ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .arg("up")
+        .arg(&workspace_root)
+        .assert()
+        .code(7)
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Started dev container: compose-app-1",
+        ));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(commands.contains("compose"));
+    assert!(commands.contains("ps --format json app"));
+    assert!(commands.contains(
+        "exec --user root --workdir /workspace compose-app-id /bin/sh -lc printf post-start"
+    ));
+    assert!(commands.contains(
+        "exec --user root --workdir /workspace compose-app-id /bin/sh -lc printf post-attach"
+    ));
+    assert!(commands.contains(
+        "exec --interactive --user root --workdir /workspace compose-app-id /usr/local/bin/decune-shell"
+    ));
+    assert!(commands.contains("compose"));
+    assert!(commands.contains("stop"));
+}
+
+#[test]
+fn compose_lifecycle_detach_skips_post_attach_shell_attach_and_shutdown() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true,
+              "workspaceFolder": "/workspace",
+              "userEnvProbe": "none",
+              "postStartCommand": "printf post-start",
+              "postAttachCommand": "printf post-attach",
+              "shutdownAction": "stopCompose"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: "alpine:3.20"
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            shell = "/usr/local/bin/decune-shell"
+            "#,
+        )
+        .unwrap();
+    let command_log = host_tools.path().join("commands.log");
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" config --format json "*)
+      printf '{"services":{"app":{"image":"alpine:3.20"}}}\n'
+      exit 0
+      ;;
+    *" up -d "*)
+      exit 0
+      ;;
+    *" ps --format json app "*)
+      printf '[{"ID":"compose-app-id","Name":"compose-app-1","Service":"app","State":"running"}]\n'
+      exit 0
+      ;;
+    *" stop "*)
+      echo "detached up must not stop compose for shutdownAction" >&2
+      exit 42
+      ;;
+  esac
+fi
+if [ "${1:-}" = exec ]; then
+  case " $* " in
+    *passwd*)
+      printf 'root:x:0:0:root:/root:/bin/sh\n'
+      exit 0
+      ;;
+    *" printf post-start"*)
+      exit 0
+      ;;
+    *" printf post-attach"*|*" /usr/local/bin/decune-shell"*)
+      echo "detached up must not run attach lifecycle or shell" >&2
+      exit 43
+      ;;
+  esac
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"sha256:alpine","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = ps ]; then
+  exit 0
+fi
+if [ "${1:-}" = create ]; then
+  printf 'lookup-container-id\n'
+  exit 0
+fi
+if [ "${1:-}" = start ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Started dev container: compose-app-1",
+        ));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(commands.contains(
+        "exec --user root --workdir /workspace compose-app-id /bin/sh -lc printf post-start"
+    ));
+    assert!(!commands.contains("post-attach"));
+    assert!(!commands.contains("/usr/local/bin/decune-shell"));
+    assert!(!commands.contains(" stop"));
+}
+
+#[test]
 fn compose_up_detects_primary_service_command_exit_before_lifecycle() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
