@@ -20,8 +20,8 @@ use tokio::{
 use super::{
     FORWARD_AGENT_ALLOWED_PORTS_ENV, FORWARD_AGENT_DIAGNOSTIC_NAME,
     FORWARD_AGENT_DIAGNOSTIC_TAIL_BYTES, FORWARD_AGENT_NAME, FORWARD_AGENT_SECRET_ENV,
-    FORWARD_AGENT_SOCKET_NAME, FORWARD_AGENT_SOCKET_TARGET, FORWARD_AGENT_START_DELAY,
-    FORWARD_AGENT_START_RETRIES, FORWARD_AGENT_STATUS_NAME, proc_scan::detect_listen_ports,
+    FORWARD_AGENT_SOCKET_TARGET, FORWARD_AGENT_START_DELAY, FORWARD_AGENT_START_RETRIES,
+    FORWARD_AGENT_STATUS_NAME, proc_scan::detect_listen_ports,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,19 +92,22 @@ pub(crate) async fn run_forward_agent() -> Result<()> {
 
 #[cfg(test)]
 async fn wait_for_forward_agent(runtime_dir: &Path) -> Result<PathBuf> {
-    wait_for_forward_agent_with_status(runtime_dir, || async { Ok(ForwardAgentStatus::Running) })
-        .await
+    wait_for_forward_agent_with_status(runtime_dir, super::FORWARD_AGENT_SOCKET_NAME, || async {
+        Ok(ForwardAgentStatus::Running)
+    })
+    .await
 }
 
 pub(crate) async fn wait_for_forward_agent_with_status<F, Fut>(
     runtime_dir: &Path,
+    socket_name: &str,
     mut agent_status: F,
 ) -> Result<PathBuf>
 where
     F: FnMut() -> Fut,
     Fut: Future<Output = Result<ForwardAgentStatus>>,
 {
-    let socket_path = runtime_dir.join(FORWARD_AGENT_SOCKET_NAME);
+    let socket_path = runtime_dir.join(socket_name);
     for _ in 0..FORWARD_AGENT_START_RETRIES {
         match UnixStream::connect(&socket_path).await {
             Ok(mut stream) => {
@@ -455,6 +458,7 @@ pub(super) mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::time::timeout;
 
+    use super::super::FORWARD_AGENT_SOCKET_NAME;
     use super::*;
 
     #[test]
@@ -496,9 +500,11 @@ pub(super) mod tests {
             )
             .unwrap();
 
-            let error = wait_for_forward_agent_with_status(temp.path(), || async {
-                Ok(ForwardAgentStatus::Running)
-            })
+            let error = wait_for_forward_agent_with_status(
+                temp.path(),
+                FORWARD_AGENT_SOCKET_NAME,
+                || async { Ok(ForwardAgentStatus::Running) },
+            )
             .await
             .unwrap_err();
             let message = format!("{error:#}");
@@ -532,14 +538,43 @@ pub(super) mod tests {
                 let _ = listener.accept().await.unwrap();
             });
 
-            let ready = wait_for_forward_agent_with_status(temp.path(), || async {
+            let ready = wait_for_forward_agent_with_status(
+                temp.path(),
+                FORWARD_AGENT_SOCKET_NAME,
+                || async { Ok(ForwardAgentStatus::Running) },
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(ready, socket_path);
+            chmod_task.await.unwrap();
+            accept_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn wait_for_forward_agent_uses_named_socket() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let socket_name = "forward-agent-db.sock";
+            let socket_path = temp.path().join(socket_name);
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            let accept_task = tokio::spawn(async move {
+                let _ = listener.accept().await.unwrap();
+            });
+
+            let ready = wait_for_forward_agent_with_status(temp.path(), socket_name, || async {
                 Ok(ForwardAgentStatus::Running)
             })
             .await
             .unwrap();
 
             assert_eq!(ready, socket_path);
-            chmod_task.await.unwrap();
             accept_task.await.unwrap();
         });
     }

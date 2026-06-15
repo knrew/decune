@@ -55,9 +55,11 @@ pub(in crate::up) async fn start_forwarding_for_up(
                 target.container_name
             )
         })?;
-        let agent_socket_path = wait_for_forward_agent_with_status(&target.runtime_dir, || async {
-            Ok(ForwardAgentStatus::Running)
-        })
+        let agent_socket_path = wait_for_forward_agent_with_status(
+            &target.runtime_dir,
+            &target.socket_name,
+            || async { Ok(ForwardAgentStatus::Running) },
+        )
         .await
         .with_context(|| {
             format!(
@@ -102,7 +104,6 @@ pub(in crate::up) struct ForwardingAgentTarget {
     pub(in crate::up) service: Option<String>,
     pub(in crate::up) container_name: String,
     pub(in crate::up) runtime_dir: PathBuf,
-    #[cfg(test)]
     pub(in crate::up) socket_name: String,
     socket_target: String,
     pub(in crate::up) forward_ports: Vec<ResolvedForwardPort>,
@@ -191,7 +192,6 @@ pub(in crate::up) fn plan_forwarding_agent_targets(
             service: None,
             container_name: String::new(),
             runtime_dir: primary_runtime_dir.to_path_buf(),
-            #[cfg(test)]
             socket_name: crate::host::forward::forward_agent_socket_name(None),
             socket_target: forward_agent_socket_target(None),
             forward_ports: primary_ports,
@@ -203,7 +203,6 @@ pub(in crate::up) fn plan_forwarding_agent_targets(
             service: Some(service.clone()),
             container_name: String::new(),
             runtime_dir: service_forward_runtime_dir(primary_runtime_dir, &service),
-            #[cfg(test)]
             socket_name: crate::host::forward::forward_agent_socket_name(Some(&service)),
             socket_target: forward_agent_socket_target(Some(&service)),
             forward_ports,
