@@ -245,6 +245,24 @@ impl DockerCli {
         .await
     }
 
+    pub(crate) async fn list_compose_service_containers_by_project(
+        &self,
+        project_name: &str,
+        service: &str,
+    ) -> Result<Vec<UpContainerSummary>> {
+        self.list_container_inspects_with_filters(
+            project_name,
+            &[
+                format!("label=com.docker.compose.project={project_name}"),
+                format!("label=com.docker.compose.service={service}"),
+            ],
+        )
+        .await?
+        .into_iter()
+        .map(up_container_summary_from_inspect)
+        .collect()
+    }
+
     pub(crate) async fn list_compose_project_containers(
         &self,
         workspace_id: &str,
@@ -1406,6 +1424,55 @@ mod tests {
         assert_eq!(
             commands[1].args_vec(),
             ["container", "inspect", "container-id"]
+        );
+    }
+
+    #[test]
+    fn list_compose_service_containers_by_project_uses_compose_labels_only() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(
+                br#"[{
+                    "Id": "db-id",
+                    "Name": "/project-db-1",
+                    "Image": "sha256:image",
+                    "Config": {
+                        "Labels": {
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "db"
+                        }
+                    },
+                    "State": {
+                        "Running": true,
+                        "ExitCode": 0,
+                        "Pid": 1234
+                    },
+                    "Mounts": []
+                }]"#,
+            )),
+            Ok(output(
+                br#"{"ID":"db-id","Names":"project-db-1","ImageID":"sha256:image","State":"running","Labels":"com.docker.compose.project=project,com.docker.compose.service=db"}"#,
+            )),
+        ]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let containers = runtime
+            .block_on(client.list_compose_service_containers_by_project("project", "db"))
+            .unwrap();
+
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0].id, "db-id");
+        let commands = runner.commands();
+        let ps_args = commands[0].args_vec();
+        assert!(ps_args.contains(&"label=com.docker.compose.project=project".to_owned()));
+        assert!(ps_args.contains(&"label=com.docker.compose.service=db".to_owned()));
+        assert!(
+            !ps_args
+                .iter()
+                .any(|arg| arg.contains("decune.managed") || arg.contains("decune.workspace_id"))
         );
     }
 

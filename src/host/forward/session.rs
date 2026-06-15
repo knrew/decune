@@ -117,6 +117,16 @@ pub(super) async fn start_forward_listeners(
 
 impl ForwardSession {
     #[cfg(test)]
+    pub(crate) fn for_test(agent_socket_path: PathBuf, secret: impl Into<String>) -> Self {
+        Self {
+            agent_socket_path,
+            secret: secret.into(),
+            listeners: Vec::new(),
+            auto_task: None,
+        }
+    }
+
+    #[cfg(test)]
     fn local_addr(&self, index: usize) -> std::net::SocketAddr {
         self.listeners[index].local_addr
     }
