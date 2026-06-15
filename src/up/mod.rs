@@ -34,7 +34,9 @@ use build::feature_layer_image;
 #[cfg(test)]
 use existing::{CredentialRuntimeMountPolicy, container_summary, decide_existing_container};
 #[cfg(test)]
-use forwarding::{ForwardAgentStartDecision, decide_forward_agent_start};
+use forwarding::{
+    ForwardAgentStartDecision, decide_forward_agent_start, plan_forwarding_agent_targets,
+};
 #[cfg(test)]
 use metadata::{
     add_github_cli_feature_to_plan, finalize_up_plan_mounts, should_auto_add_github_cli_feature,
@@ -171,7 +173,8 @@ mod tests {
     use super::metadata::FinalizeUpPlanMountsOptions;
 
     use crate::config::layer::{
-        LayerDevcontainerMetadata, LayerDevcontainerSource, LayerUserEnvProbe,
+        LayerDevcontainerCompose, LayerDevcontainerMetadata, LayerDevcontainerSource,
+        LayerUserEnvProbe,
     };
     use crate::config::resolved::{
         ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes, ResolvedPublishPort,
@@ -215,7 +218,7 @@ mod tests {
         decide_existing_container, default_workspace_folder, feature_layer_image,
         finalize_up_plan_mounts, first_successful_shell_candidate,
         generated_compose_override_content, list_workspace_containers, mount_hash_inputs,
-        run_attached_up, run_detached_up, shell_command_candidates,
+        plan_forwarding_agent_targets, run_attached_up, run_detached_up, shell_command_candidates,
         should_auto_add_github_cli_feature, uid_gid_sync_base_image, uid_gid_sync_warning,
         untrusted_repository_warnings,
     };
@@ -1728,6 +1731,55 @@ require_local = true
         assert!(plan.forward_ports.is_empty());
         assert!(plan.config.ports.entries.is_empty());
         assert!(plan.ignored_detached_forwarding);
+    }
+
+    #[test]
+    fn compose_forwarding_targets_split_primary_and_sidecar_services() {
+        let mut plan = test_up_plan_with_config(compose_config("app"));
+        plan.forward_ports = vec![
+            forward_port_for_service(None, 3000),
+            forward_port_for_service(Some("app"), 3001),
+            forward_port_for_service(Some("db"), 5432),
+        ];
+
+        let targets =
+            plan_forwarding_agent_targets(&plan, PathBuf::from("/tmp/decune-runtime").as_path())
+                .unwrap();
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].service.as_deref(), None);
+        assert_eq!(
+            targets[0]
+                .forward_ports
+                .iter()
+                .map(|port| port.container)
+                .collect::<Vec<_>>(),
+            vec![3000, 3001]
+        );
+        assert!(targets[0].auto_forward.is_some());
+        assert_eq!(targets[0].socket_name, "forward-agent.sock");
+        assert_eq!(targets[1].service.as_deref(), Some("db"));
+        assert_eq!(targets[1].forward_ports[0].container, 5432);
+        assert!(targets[1].auto_forward.is_none());
+        assert_eq!(targets[1].socket_name, "forward-agent-db.sock");
+    }
+
+    #[test]
+    fn compose_automatic_forwarding_targets_primary_service_only() {
+        let mut plan = test_up_plan_with_config(compose_config("app"));
+        plan.forward_ports = vec![forward_port_for_service(Some("db"), 5432)];
+
+        let targets =
+            plan_forwarding_agent_targets(&plan, PathBuf::from("/tmp/decune-runtime").as_path())
+                .unwrap();
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].service.as_deref(), None);
+        assert!(targets[0].forward_ports.is_empty());
+        assert!(targets[0].auto_forward.is_some());
+        assert_eq!(targets[1].service.as_deref(), Some("db"));
+        assert_eq!(targets[1].forward_ports[0].container, 5432);
+        assert!(targets[1].auto_forward.is_none());
     }
 
     #[test]
@@ -5575,6 +5627,30 @@ user = "root"
             mounts: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
+        }
+    }
+
+    fn compose_config(primary_service: &str) -> ResolvedConfig {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.source = Some(ResolvedDevcontainerSource::Compose(
+            LayerDevcontainerCompose {
+                files: vec!["compose.yml".to_owned()],
+                service: primary_service.to_owned(),
+                run_services: None,
+            },
+        ));
+        config
+    }
+
+    fn forward_port_for_service(service: Option<&str>, container: u16) -> ResolvedForwardPort {
+        ResolvedForwardPort {
+            service: service.map(str::to_owned),
+            container,
+            host: container,
+            host_ip: "127.0.0.1".to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
+            label: None,
         }
     }
 

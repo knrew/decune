@@ -35,7 +35,10 @@ use crate::{
             DECUNE_RUNTIME_TARGET, GitCredentialRuntime, GithubCliRuntime, SshAgentRuntime,
             prepare_git_credential_runtime, prepare_github_cli_runtime, prepare_ssh_agent_runtime,
         },
-        forward::{ForwardRuntime, prepare_forward_runtime},
+        forward::{
+            ForwardRuntime, ServiceForwardRuntime, prepare_forward_runtime,
+            prepare_service_forward_runtimes,
+        },
     },
     runtime::compose_cli::{
         ComposeBuildOptions, ComposeConfigService, ComposeIntrospector, ComposeLifecyclePlan,
@@ -88,6 +91,7 @@ pub(in crate::up) struct CredentialRuntime {
     _github_cli: GithubCliRuntime,
     _ssh_agent: SshAgentRuntime,
     _forward: ForwardRuntime,
+    service_forward: Vec<ServiceForwardRuntime>,
     mount_policy: CredentialRuntimeMountPolicy,
 }
 
@@ -97,6 +101,7 @@ impl CredentialRuntime {
         github_cli: GithubCliRuntime,
         ssh_agent: SshAgentRuntime,
         forward: ForwardRuntime,
+        service_forward: Vec<ServiceForwardRuntime>,
     ) -> Self {
         let required_mounts = git_credentials
             .mounts()
@@ -117,12 +122,17 @@ impl CredentialRuntime {
             _github_cli: github_cli,
             _ssh_agent: ssh_agent,
             _forward: forward,
+            service_forward,
             mount_policy: CredentialRuntimeMountPolicy::new(required_mounts),
         }
     }
 
     pub(in crate::up) fn mount_policy(&self) -> &CredentialRuntimeMountPolicy {
         &self.mount_policy
+    }
+
+    fn service_forward(&self) -> &[ServiceForwardRuntime] {
+        &self.service_forward
     }
 }
 
@@ -632,6 +642,7 @@ async fn start_compose_project(
         &compose.service,
         &plan,
         compose_primary_service.as_ref(),
+        credentials.service_forward(),
     )
     .await?;
     let runtime_lifecycle = ComposeLifecyclePlan::up(
@@ -652,12 +663,22 @@ async fn start_compose_project(
         credentials.mount_policy(),
         options.rebuild,
     )?;
+    let service_forward_requires_recreate = compose_service_forward_requires_recreate(
+        &client,
+        workspace.id(),
+        compose_project.project_name(),
+        credentials.service_forward(),
+    )
+    .await?;
     let force_recreate = matches!(decision, ExistingContainerDecision::Recreate { .. })
         || options.rebuild
-        || stale_compose_project;
+        || stale_compose_project
+        || service_forward_requires_recreate;
     let remove_orphans = force_recreate || stale_compose_project;
     match decision {
-        ExistingContainerDecision::ReuseRunning { id, name } => {
+        ExistingContainerDecision::ReuseRunning { id, name }
+            if !service_forward_requires_recreate =>
+        {
             let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
@@ -672,7 +693,9 @@ async fn start_compose_project(
                 credentials,
             );
         }
-        ExistingContainerDecision::StartStopped { id, name } => {
+        ExistingContainerDecision::StartStopped { id, name }
+            if !service_forward_requires_recreate =>
+        {
             cli.up(
                 &runtime_lifecycle.project,
                 ComposeUpOptions {
@@ -713,6 +736,8 @@ async fn start_compose_project(
         }
         ExistingContainerDecision::Create => {}
         ExistingContainerDecision::Recreate { .. } => {}
+        ExistingContainerDecision::ReuseRunning { .. }
+        | ExistingContainerDecision::StartStopped { .. } => {}
     }
 
     cli.up(
@@ -758,10 +783,11 @@ async fn write_generated_compose_override(
     primary_service: &str,
     plan: &UpPlan,
     compose_primary_service: Option<&ComposeConfigService>,
+    service_forward: &[ServiceForwardRuntime],
 ) -> Result<()> {
     let path = project.generated_override_path();
     let startup = compose_override_startup(client, plan, compose_primary_service).await?;
-    let patch = generated_compose_override_patch(primary_service, plan, startup)?;
+    let patch = generated_compose_override_patch(primary_service, plan, startup, service_forward)?;
     write_compose_override(&path, &patch)
 }
 
@@ -779,7 +805,7 @@ pub(in crate::up) fn generated_compose_override_content(
     } else {
         None
     };
-    generated_compose_override_content_with_startup(primary_service, plan, startup)
+    generated_compose_override_content_with_startup(primary_service, plan, startup, &[])
 }
 
 async fn compose_override_startup(
@@ -831,14 +857,16 @@ fn generated_compose_override_content_with_startup(
     primary_service: &str,
     plan: &UpPlan,
     startup: Option<ComposeOverrideStartup>,
+    service_forward: &[ServiceForwardRuntime],
 ) -> Result<String> {
-    generated_compose_override_patch(primary_service, plan, startup)?.to_yaml()
+    generated_compose_override_patch(primary_service, plan, startup, service_forward)?.to_yaml()
 }
 
 fn generated_compose_override_patch(
     primary_service: &str,
     plan: &UpPlan,
     startup: Option<ComposeOverrideStartup>,
+    service_forward: &[ServiceForwardRuntime],
 ) -> Result<ComposeOverridePatch> {
     let mut service = ComposeOverrideServicePatch::new(primary_service)
         .image(&plan.image)
@@ -864,7 +892,14 @@ fn generated_compose_override_patch(
             .entrypoint(startup.entrypoint)
             .command(startup.command);
     }
-    Ok(ComposeOverridePatch::new(service))
+    let mut patch = ComposeOverridePatch::new(service);
+    for runtime in service_forward {
+        patch = patch.service(
+            ComposeOverrideServicePatch::new(runtime.service())
+                .mount(runtime.mount().clone().into()),
+        );
+    }
+    Ok(patch)
 }
 
 fn compose_override_user(plan: &UpPlan) -> Result<Option<String>> {
@@ -965,12 +1000,19 @@ fn add_credential_runtime_mounts(
     let ssh_agent = prepare_ssh_agent_runtime(&plan.config)?;
     let github_cli = prepare_github_cli_runtime(&plan.config, runtime_dir)?;
     let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir, platform)?;
+    let service_forward = prepare_service_forward_runtimes(
+        &plan.forward_ports,
+        primary_compose_service(&plan),
+        runtime_dir,
+        platform,
+    )?;
     add_prepared_credential_runtime_mounts(
         plan,
         runtime_dir,
         github_cli,
         ssh_agent,
         forward,
+        service_forward,
         platform,
     )
 }
@@ -992,12 +1034,19 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_ssh_socket(
         None,
     )?;
     let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir, platform)?;
+    let service_forward = prepare_service_forward_runtimes(
+        &plan.forward_ports,
+        primary_compose_service(&plan),
+        runtime_dir,
+        platform,
+    )?;
     add_prepared_credential_runtime_mounts(
         plan,
         runtime_dir,
         github_cli,
         ssh_agent,
         forward,
+        service_forward,
         platform,
     )
 }
@@ -1020,12 +1069,19 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_inputs(
         github_token,
     )?;
     let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir, platform)?;
+    let service_forward = prepare_service_forward_runtimes(
+        &plan.forward_ports,
+        primary_compose_service(&plan),
+        runtime_dir,
+        platform,
+    )?;
     add_prepared_credential_runtime_mounts(
         plan,
         runtime_dir,
         github_cli,
         ssh_agent,
         forward,
+        service_forward,
         platform,
     )
 }
@@ -1036,6 +1092,7 @@ fn add_prepared_credential_runtime_mounts(
     github_cli: GithubCliRuntime,
     ssh_agent: SshAgentRuntime,
     forward: ForwardRuntime,
+    service_forward: Vec<ServiceForwardRuntime>,
     platform: ContainerToolPlatform,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir, platform)?;
@@ -1055,8 +1112,54 @@ fn add_prepared_credential_runtime_mounts(
 
     Ok((
         plan,
-        CredentialRuntime::new(git_credentials, github_cli, ssh_agent, forward),
+        CredentialRuntime::new(
+            git_credentials,
+            github_cli,
+            ssh_agent,
+            forward,
+            service_forward,
+        ),
     ))
+}
+
+fn primary_compose_service(plan: &UpPlan) -> Option<&str> {
+    match &plan.config.devcontainer.source {
+        Some(ResolvedDevcontainerSource::Compose(compose)) => Some(&compose.service),
+        _ => None,
+    }
+}
+
+async fn compose_service_forward_requires_recreate(
+    client: &DockerClient,
+    workspace_id: &str,
+    project_name: &str,
+    service_forward: &[ServiceForwardRuntime],
+) -> Result<bool> {
+    for runtime in service_forward {
+        let containers =
+            list_compose_primary_containers(client, workspace_id, project_name, runtime.service())
+                .await?;
+        let Some(container) = containers.first() else {
+            continue;
+        };
+        if !container_has_mount(container, runtime.mount()) {
+            return Ok(true);
+        }
+    }
+
+    Ok(false)
+}
+
+fn container_has_mount(container: &UpContainerSummary, required: &DockerMountSpec) -> bool {
+    let Some(existing_mounts) = &container.mounts else {
+        return false;
+    };
+    existing_mounts.iter().any(|existing| {
+        existing.source == required.source
+            && existing.target == required.target
+            && existing.mount_type == required.mount_type
+            && existing.read_only == required.read_only
+    })
 }
 
 fn prepare_feature_entrypoint_sentinel_runtime(plan: &UpPlan, runtime_dir: &Path) -> Result<()> {
@@ -1905,6 +2008,7 @@ mod tests {
                 ],
                 command: vec!["/docker-entrypoint.sh".to_owned(), "server".to_owned()],
             }),
+            &[],
         )
         .unwrap();
 
@@ -1956,6 +2060,7 @@ mod tests {
                     "trap 'exit 0' TERM\nwhile sleep 1 & wait $!; do :; done".to_owned(),
                 ],
             }),
+            &[],
         )
         .unwrap();
 

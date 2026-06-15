@@ -629,6 +629,13 @@ impl ComposeOverridePatch {
         }
     }
 
+    pub(crate) fn service(mut self, service: ComposeOverrideServicePatch) -> Self {
+        self.forbidden_secret_values
+            .extend(service.forbidden_secret_values.clone());
+        self.services.insert(service.name.clone(), service);
+        self
+    }
+
     pub(crate) fn to_yaml(&self) -> Result<String> {
         let mut content = String::new();
         content.push_str("services:\n");
