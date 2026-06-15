@@ -156,9 +156,12 @@ async fn apply_shutdown_action_after_attached_up(
 async fn stop_primary_container_after_attached_up(
     started: &start::StartedUpContainer,
 ) -> Result<()> {
-    let target =
-        exec_target::resolve_up_exec_target(&started.plan, &started.outcome.container_name).await?;
-    stop_container(&started.client, &target.id, SHUTDOWN_STOP_TIMEOUT_SECONDS).await
+    stop_container(
+        &started.client,
+        &started.outcome.container_id,
+        SHUTDOWN_STOP_TIMEOUT_SECONDS,
+    )
+    .await
 }
 
 #[cfg(test)]
