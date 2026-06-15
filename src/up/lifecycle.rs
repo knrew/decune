@@ -8,7 +8,7 @@ use crate::{
     docker::user::resolve_remote_user,
     host::daemon::HostDaemon,
     ui,
-    up::start::StartedUpContainer,
+    up::{exec_target::resolve_up_exec_target, start::StartedUpContainer},
 };
 
 pub(in crate::up) fn report_up_success(started: &StartedUpContainer) {
@@ -31,9 +31,10 @@ pub(in crate::up) fn report_up_success(started: &StartedUpContainer) {
 pub(in crate::up) async fn prepare_up_lifecycle(
     started: &StartedUpContainer,
 ) -> Result<PreparedLifecycleRunContext<'_>> {
+    let target = resolve_up_exec_target(&started.plan, &started.outcome.container_name).await?;
     let remote_user = resolve_remote_user(
         &started.client,
-        &started.outcome.container_name,
+        &target.id,
         &started.plan.effective_users,
         &started.plan.uid_gid_sync_plan,
     )
@@ -41,7 +42,7 @@ pub(in crate::up) async fn prepare_up_lifecycle(
 
     prepare_container_lifecycle(LifecycleRunContext {
         client: &started.client,
-        container: &started.outcome.container_name,
+        container: target.id,
         config: &started.plan.config,
         workspace_root: started.workspace.root(),
         workspace_basename: started.workspace.basename(),
@@ -56,9 +57,10 @@ pub(in crate::up) async fn prepare_up_lifecycle(
 pub(in crate::up) async fn start_host_daemon_for_up(
     started: &StartedUpContainer,
 ) -> Result<HostDaemon> {
+    let target = resolve_up_exec_target(&started.plan, &started.outcome.container_name).await?;
     let remote_user = resolve_remote_user(
         &started.client,
-        &started.outcome.container_name,
+        &target.id,
         &started.plan.effective_users,
         &started.plan.uid_gid_sync_plan,
     )

@@ -2,6 +2,7 @@ use anyhow::Result;
 
 mod attach;
 mod build;
+mod exec_target;
 mod existing;
 mod forwarding;
 mod lifecycle;
@@ -13,6 +14,11 @@ mod start;
 mod types;
 mod uid_gid;
 
+use crate::{
+    config::resolved::{ResolvedDevcontainerSource, ResolvedShutdownAction},
+    docker::container::stop_container,
+    runtime::compose_cli::{ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli},
+};
 use attach::attach_shell;
 use forwarding::{start_forwarding_for_up, stop_forwarding, warn_about_detached_forwarding};
 use lifecycle::{
@@ -61,6 +67,8 @@ pub(in crate::up) use uid_gid::static_uid_gid_sync_hash_input;
 #[cfg(test)]
 use uid_gid::{uid_gid_sync_base_image, uid_gid_sync_warning};
 
+const SHUTDOWN_STOP_TIMEOUT_SECONDS: i32 = 10;
+
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     let started = Box::pin(ensure_container_started(
         options,
@@ -104,7 +112,51 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     stop_forwarding(forwarding).await;
 
     let exit_code = attach_result?;
+    apply_shutdown_action_after_attached_up(&started).await?;
     Ok(shell::clamp_exit_code(exit_code))
+}
+
+async fn apply_shutdown_action_after_attached_up(
+    started: &start::StartedUpContainer,
+) -> Result<()> {
+    match started.plan.config.devcontainer.shutdown_action {
+        ResolvedShutdownAction::None => Ok(()),
+        ResolvedShutdownAction::StopContainer => {
+            stop_primary_container_after_attached_up(started).await
+        }
+        ResolvedShutdownAction::StopCompose => {
+            let Some(compose_project) = &started.plan.compose_project else {
+                return stop_primary_container_after_attached_up(started).await;
+            };
+            let Some(ResolvedDevcontainerSource::Compose(_)) =
+                &started.plan.config.devcontainer.source
+            else {
+                return stop_primary_container_after_attached_up(started).await;
+            };
+            let lifecycle =
+                ComposeLifecyclePlan::down(compose_project.command_plan_with_generated_override());
+            DockerComposeCli::default()
+                .stop(
+                    &lifecycle.project,
+                    ComposeStopOptions {
+                        timeout_seconds: None,
+                    },
+                    &lifecycle.services,
+                )
+                .await
+        }
+    }
+}
+
+async fn stop_primary_container_after_attached_up(
+    started: &start::StartedUpContainer,
+) -> Result<()> {
+    stop_container(
+        &started.client,
+        &started.outcome.container_id,
+        SHUTDOWN_STOP_TIMEOUT_SECONDS,
+    )
+    .await
 }
 
 #[cfg(test)]
@@ -4174,14 +4226,14 @@ shell = "/usr/local/bin/decune-shell-check"
     }
 
     #[test]
-    fn up_running_attached_runs_post_attach_each_attach() {
+    fn up_attached_runs_post_attach_each_attach_before_shutdown() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
             .unwrap();
 
         runtime.block_on(async {
-            let workspace = test_workspace("docker-up-running-post-attach-each-attach");
+            let workspace = test_workspace("docker-up-attached-post-attach-each-attach");
             fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
             fs::write(
                 workspace.root().join(".devcontainer/Dockerfile"),
@@ -4199,7 +4251,7 @@ shell = "/usr/local/bin/decune-shell-check"
                   "build": {
                     "dockerfile": "Dockerfile"
                   },
-                  "postAttachCommand": "count=0; if [ -f /tmp/decune-post-attach-count ]; then count=$(cat /tmp/decune-post-attach-count); fi; count=$((count + 1)); printf '%s' \"$count\" >/tmp/decune-post-attach-count"
+                  "postAttachCommand": "count_file=.decune-post-attach-count; count=0; if [ -f \"$count_file\" ]; then count=$(cat \"$count_file\"); fi; count=$((count + 1)); printf '%s' \"$count\" >\"$count_file\""
                 }
                 "#,
             );
@@ -4230,6 +4282,85 @@ shell = "/usr/local/bin/decune-exit-0"
                         rebuild: false,
                         no_cache: false,
                     update_features: false,
+                    })
+                    .await?;
+                    assert_eq!(exit_code, 0);
+                }
+
+                assert_eq!(
+                    fs::read_to_string(workspace.root().join(".decune-post-attach-count"))
+                        .unwrap(),
+                    "2"
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+
+    #[test]
+    fn up_running_attached_runs_post_attach_each_attach_when_shutdown_action_none() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-running-post-attach-each-attach");
+            fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+            fs::write(
+                workspace.root().join(".devcontainer/Dockerfile"),
+                r#"
+                FROM alpine:3.20
+                RUN printf '%s\n' '#!/bin/sh' 'exit 0' >/usr/local/bin/decune-exit-0 \
+                  && chmod +x /usr/local/bin/decune-exit-0
+                "#,
+            )
+            .unwrap();
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "build": {
+                    "dockerfile": "Dockerfile"
+                  },
+                  "postAttachCommand": "count=0; if [ -f /tmp/decune-post-attach-count ]; then count=$(cat /tmp/decune-post-attach-count); fi; count=$((count + 1)); printf '%s' \"$count\" >/tmp/decune-post-attach-count",
+                  "shutdownAction": "none"
+                }
+                "#,
+            );
+            fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+            fs::write(
+                workspace.root().join(".decune/config.toml"),
+                r#"
+version = 1
+shell = "/usr/local/bin/decune-exit-0"
+"#,
+            )
+            .unwrap();
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let image = plan.image.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                for _ in 0..2 {
+                    let exit_code = run_attached_up(UpOptions {
+                        workspace: workspace.root().to_path_buf(),
+                        config_path: None,
+                        cli_layer: ConfigLayer::default(),
+                        pull: false,
+                        rebuild: false,
+                        no_cache: false,
+                        update_features: false,
                     })
                     .await?;
                     assert_eq!(exit_code, 0);

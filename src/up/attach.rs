@@ -9,6 +9,7 @@ use crate::{
         user::resolve_remote_user,
     },
     up::{
+        exec_target::resolve_up_exec_target,
         mounts::mount_variable_context,
         shell::{first_successful_shell_candidate, shell_command_candidates},
         types::UpPlan,
@@ -22,14 +23,15 @@ pub(in crate::up) async fn attach_shell(
     plan: &UpPlan,
     container_name: &str,
 ) -> Result<i64> {
+    let target = resolve_up_exec_target(plan, container_name).await?;
     let remote_user = resolve_remote_user(
         client,
-        container_name,
+        &target.id,
         &plan.effective_users,
         &plan.uid_gid_sync_plan,
     )
     .await?;
-    let container_env = inspect_container_env(client, container_name).await?;
+    let container_env = inspect_container_env(client, &target.id).await?;
     let remote_env_variables = mount_variable_context(
         workspace,
         &plan.workspace_folder,
@@ -38,10 +40,10 @@ pub(in crate::up) async fn attach_shell(
     )
     .with_container_env(container_env);
     let remote_env = expand_remote_env(&plan.config.devcontainer.remote_env, &remote_env_variables)
-        .with_context(|| format!("Failed to expand remoteEnv for container: {container_name}"))?;
+        .with_context(|| format!("Failed to expand remoteEnv for container: {}", target.id))?;
     let env = resolve_exec_env(
         client,
-        container_name,
+        &target.id,
         &remote_user.user,
         remote_user.shell.as_deref(),
         &remote_env,
@@ -59,13 +61,14 @@ pub(in crate::up) async fn attach_shell(
     } else {
         let candidates = shell_command_candidates(None, remote_user.shell.as_deref());
         first_successful_shell_candidate(candidates, |command| {
+            let container_id = target.id.clone();
             let env = env.clone();
             let user = remote_user.user.clone();
 
             async move {
                 let output = exec_capture_output(
                     client,
-                    container_name,
+                    &container_id,
                     &ExecCommandSpec {
                         command: vec![
                             "/bin/sh".to_owned(),
@@ -91,7 +94,10 @@ pub(in crate::up) async fn attach_shell(
         })
         .await
         .with_context(|| {
-            format!("Failed to select an attached shell in container: {container_name}")
+            format!(
+                "Failed to select an attached shell in container: {}",
+                target.display_name
+            )
         })?
     };
     let spec = {
@@ -108,5 +114,5 @@ pub(in crate::up) async fn attach_shell(
         }
     };
 
-    run_attached_exec_stdio(client, container_name, &spec).await
+    run_attached_exec_stdio(client, &target.id, &spec).await
 }
