@@ -705,7 +705,7 @@ Compose mode:
 - `devcontainer.local_folder=<canonical_workspace_path>`
 - `devcontainer.config_file=<path>`
 
-Compose mode では上記 label を primary service に追加する。Compose が付与する `com.docker.compose.project` と `com.docker.compose.service` も container identity に使う。`com.docker.compose.*` prefix を decune の generated override で上書きしてはならない。
+Compose mode では上記 label を primary service に追加する。明示的な sidecar service forwarding 対象 service には、forwarding runtime mount の再作成判定に必要な `decune.managed=true` と `decune.workspace_id=<workspace_id>` を追加する。Compose が付与する `com.docker.compose.project` と `com.docker.compose.service` も container identity に使う。`com.docker.compose.*` prefix を decune の generated override で上書きしてはならない。
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
@@ -837,7 +837,7 @@ Compose mode の service 解決:
 
 `forwardPorts` の `"service:port"` 形式と `[[ports]].service` は Compose mode 専用である。image/Dockerfile mode では service 名で対象 container を解決できないため unsupported error とする。
 
-sidecar service forwarding は、その service の container ID を解決し、必要な container-side tool を runtime install して forward-agent を起動する。service の replica が 2 以上なら error とする。
+sidecar service forwarding は、その service の container ID を解決し、必要な container-side tool を runtime install して forward-agent を起動する。対象 service には forwarding runtime mount と decune identity label だけを generated override で追加し、credentials、dotfiles、GitHub token、SSH agent は自動注入しない。service の replica が 2 以上なら error とする。
 
 automatic forwarding は container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、LISTEN port を検出する。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済み、Docker publish 済み、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose mode の automatic forwarding は primary service のみを対象にする。
 

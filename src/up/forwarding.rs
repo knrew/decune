@@ -42,24 +42,39 @@ pub(in crate::up) async fn start_forwarding_for_up(
 
     let mut sessions = Vec::new();
     for target in targets {
-        let secret = new_forward_agent_secret()?;
-        exec_detached(
-            &started.client,
-            &target.container_name,
-            &forward_agent_command_at(&target.forward_ports, &secret, &target.socket_target),
+        match start_forwarding_target(started, target).await {
+            Ok(session) => sessions.push(session),
+            Err(error) => {
+                stop_started_forward_sessions(sessions).await;
+                return Err(error);
+            }
+        }
+    }
+
+    Ok(Some(ForwardingSession { sessions }))
+}
+
+async fn start_forwarding_target(
+    started: &StartedUpContainer,
+    target: ForwardingAgentTarget,
+) -> Result<ForwardSession> {
+    let secret = new_forward_agent_secret()?;
+    exec_detached(
+        &started.client,
+        &target.container_name,
+        &forward_agent_command_at(&target.forward_ports, &secret, &target.socket_target),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "Failed to start port forwarding agent in container: {}",
+            target.container_name
         )
-        .await
-        .with_context(|| {
-            format!(
-                "Failed to start port forwarding agent in container: {}",
-                target.container_name
-            )
-        })?;
-        let agent_socket_path = wait_for_forward_agent_with_status(
-            &target.runtime_dir,
-            &target.socket_name,
-            || async { Ok(ForwardAgentStatus::Running) },
-        )
+    })?;
+    let agent_socket_path =
+        wait_for_forward_agent_with_status(&target.runtime_dir, &target.socket_name, || async {
+            Ok(ForwardAgentStatus::Running)
+        })
         .await
         .with_context(|| {
             format!(
@@ -67,18 +82,20 @@ pub(in crate::up) async fn start_forwarding_for_up(
                 target.container_name
             )
         })?;
-        let session = start_forward_session_with_auto(
-            &target.forward_ports,
-            target.auto_forward,
-            agent_socket_path,
-            secret,
-        )
-        .await
-        .context("Failed to start port forwarding listeners")?;
-        sessions.push(session);
-    }
+    start_forward_session_with_auto(
+        &target.forward_ports,
+        target.auto_forward,
+        agent_socket_path,
+        secret,
+    )
+    .await
+    .context("Failed to start port forwarding listeners")
+}
 
-    Ok(Some(ForwardingSession { sessions }))
+async fn stop_started_forward_sessions(sessions: Vec<ForwardSession>) {
+    for session in sessions {
+        session.stop().await;
+    }
 }
 
 pub(in crate::up) async fn stop_forwarding(forwarding: Option<ForwardingSession>) {
@@ -299,4 +316,64 @@ async fn detect_container_arch_for_forward_agent(
     .await?;
     let arch = String::from_utf8_lossy(&output.stdout).trim().to_owned();
     Ok((!arch.is_empty()).then_some(arch))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::Path;
+
+    use tempfile::TempDir;
+    use tokio::{
+        io::AsyncReadExt,
+        net::UnixListener,
+        task::JoinHandle,
+        time::{Duration, timeout},
+    };
+
+    use super::*;
+
+    #[test]
+    fn cleanup_started_forward_sessions_sends_agent_shutdown_to_all_sessions() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let first_socket = temp.path().join("first.sock");
+            let second_socket = temp.path().join("second.sock");
+            let first_shutdown = capture_shutdown_request(&first_socket);
+            let second_shutdown = capture_shutdown_request(&second_socket);
+            let sessions = vec![
+                ForwardSession::for_test(first_socket, "first-secret"),
+                ForwardSession::for_test(second_socket, "second-secret"),
+            ];
+
+            stop_started_forward_sessions(sessions).await;
+
+            let first_request = timeout(Duration::from_secs(1), first_shutdown)
+                .await
+                .unwrap()
+                .unwrap();
+            let second_request = timeout(Duration::from_secs(1), second_shutdown)
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(first_request.contains(r#""shutdown":true"#));
+            assert!(first_request.contains(r#""secret":"first-secret""#));
+            assert!(second_request.contains(r#""shutdown":true"#));
+            assert!(second_request.contains(r#""secret":"second-secret""#));
+        });
+    }
+
+    fn capture_shutdown_request(socket_path: &Path) -> JoinHandle<String> {
+        let listener = UnixListener::bind(socket_path).unwrap();
+        tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut bytes = Vec::new();
+            stream.read_to_end(&mut bytes).await.unwrap();
+            String::from_utf8(bytes).unwrap()
+        })
+    }
 }

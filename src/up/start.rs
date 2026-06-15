@@ -1,5 +1,6 @@
 use std::{
     cell::RefCell,
+    collections::BTreeMap,
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -896,10 +897,19 @@ fn generated_compose_override_patch(
     for runtime in service_forward {
         patch = patch.service(
             ComposeOverrideServicePatch::new(runtime.service())
+                .labels(&compose_service_forward_labels(&plan.resources.labels))
                 .mount(runtime.mount().clone().into()),
         );
     }
     Ok(patch)
+}
+
+fn compose_service_forward_labels(labels: &BTreeMap<String, String>) -> BTreeMap<String, String> {
+    let mut service_labels = BTreeMap::from([("decune.managed".to_owned(), "true".to_owned())]);
+    if let Some(workspace_id) = labels.get("decune.workspace_id") {
+        service_labels.insert("decune.workspace_id".to_owned(), workspace_id.clone());
+    }
+    service_labels
 }
 
 fn compose_override_user(plan: &UpPlan) -> Result<Option<String>> {
@@ -1136,18 +1146,29 @@ async fn compose_service_forward_requires_recreate(
     service_forward: &[ServiceForwardRuntime],
 ) -> Result<bool> {
     for runtime in service_forward {
-        let containers =
-            list_compose_primary_containers(client, workspace_id, project_name, runtime.service())
-                .await?;
+        let containers = list_compose_forwarding_service_containers(
+            client,
+            workspace_id,
+            project_name,
+            runtime.service(),
+        )
+        .await?;
         let Some(container) = containers.first() else {
             continue;
         };
-        if !container_has_mount(container, runtime.mount()) {
+        if compose_service_forward_container_requires_recreate(container, runtime.mount()) {
             return Ok(true);
         }
     }
 
     Ok(false)
+}
+
+fn compose_service_forward_container_requires_recreate(
+    container: &UpContainerSummary,
+    required: &DockerMountSpec,
+) -> bool {
+    !container_has_mount(container, required)
 }
 
 fn container_has_mount(container: &UpContainerSummary, required: &DockerMountSpec) -> bool {
@@ -1678,6 +1699,23 @@ async fn list_compose_primary_containers(
         })
 }
 
+async fn list_compose_forwarding_service_containers(
+    client: &DockerClient,
+    workspace_id: &str,
+    project_name: &str,
+    service: &str,
+) -> Result<Vec<UpContainerSummary>> {
+    client
+        .cli()
+        .list_compose_service_containers_by_project(project_name, service)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to list Docker Compose containers for workspace {workspace_id} service `{service}`"
+            )
+        })
+}
+
 async fn list_compose_project_containers(
     client: &DockerClient,
     workspace_id: &str,
@@ -1695,8 +1733,9 @@ async fn list_compose_project_containers(
 #[cfg(test)]
 mod tests {
     use super::{
-        ComposeOverrideStartup, generated_compose_override_content,
-        generated_compose_override_content_with_startup, state_container_snapshot,
+        ComposeOverrideStartup, compose_service_forward_container_requires_recreate,
+        generated_compose_override_content, generated_compose_override_content_with_startup,
+        state_container_snapshot,
     };
     use crate::{
         config::{ConfigMergeInput, resolved::ResolvedConfig, types::MountType},
@@ -1710,7 +1749,8 @@ mod tests {
                 resolve_effective_users_with_compose_service_user,
             },
         },
-        up::UpPlan,
+        host::forward::ServiceForwardRuntime,
+        up::{UpContainerSummary, UpMountSummary, UpPlan},
     };
     use std::collections::BTreeMap;
 
@@ -1768,6 +1808,75 @@ mod tests {
         assert!(content.contains("'decune.managed': 'true'"));
         assert!(content.contains("target: '/cache'"));
         assert!(!content.contains("sidecar"));
+    }
+
+    #[test]
+    fn generated_compose_override_labels_explicit_sidecar_forwarding_service() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.resources.labels = BTreeMap::from([
+            ("decune.managed".to_owned(), "true".to_owned()),
+            ("decune.workspace_id".to_owned(), "workspace-id".to_owned()),
+            ("decune.config_hash".to_owned(), "hash".to_owned()),
+        ]);
+        let service_forward = vec![ServiceForwardRuntime::for_test(
+            "db",
+            DockerMountSpec {
+                source: Some("/tmp/decune-runtime/forward/db".to_owned()),
+                target: "/run/decune".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+                consistency: None,
+                bind_options: None,
+                volume_options: None,
+            },
+        )];
+
+        let content =
+            generated_compose_override_content_with_startup("app", &plan, None, &service_forward)
+                .unwrap();
+
+        assert!(content.contains("  'db':\n"));
+        assert!(content.contains("'decune.managed': 'true'"));
+        assert!(content.contains("'decune.workspace_id': 'workspace-id'"));
+        assert!(content.contains("target: '/run/decune'"));
+    }
+
+    #[test]
+    fn compose_service_forward_requires_recreate_when_runtime_mount_is_missing() {
+        let required = DockerMountSpec {
+            source: Some("/tmp/decune-runtime/forward/db".to_owned()),
+            target: "/run/decune".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        };
+        let missing = UpContainerSummary {
+            id: "db-id".to_owned(),
+            name: "project-db-1".to_owned(),
+            image_id: None,
+            config_hash: None,
+            config_file: None,
+            mounts: None,
+            running: true,
+        };
+        let present = UpContainerSummary {
+            mounts: Some(vec![UpMountSummary {
+                source: Some("/tmp/decune-runtime/forward/db".to_owned()),
+                target: "/run/decune".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+            }]),
+            ..missing.clone()
+        };
+
+        assert!(compose_service_forward_container_requires_recreate(
+            &missing, &required
+        ));
+        assert!(!compose_service_forward_container_requires_recreate(
+            &present, &required
+        ));
     }
 
     #[test]

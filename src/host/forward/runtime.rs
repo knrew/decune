@@ -51,6 +51,18 @@ impl ServiceForwardRuntime {
     pub(crate) fn mount(&self) -> &crate::docker::mounts::DockerMountSpec {
         &self.mount
     }
+
+    #[cfg(test)]
+    pub(crate) fn for_test(
+        service: impl Into<String>,
+        mount: crate::docker::mounts::DockerMountSpec,
+    ) -> Self {
+        Self {
+            service: service.into(),
+            mount,
+            cleanup_paths: Vec::new(),
+        }
+    }
 }
 
 impl Drop for ForwardRuntime {
