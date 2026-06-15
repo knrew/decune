@@ -1,0 +1,10 @@
+{
+  "name": "compose-sidecar",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "forwardPorts": [
+    "db:5432"
+  ],
+  "updateRemoteUserUID": false
+}

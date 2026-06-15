@@ -1,0 +1,7 @@
+version = 1
+
+[credentials.git]
+enabled = false
+
+[credentials.github]
+enabled = false

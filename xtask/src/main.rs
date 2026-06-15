@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    env, fs, io,
+    env,
+    ffi::OsString,
+    fs, io,
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
     process::Command,
@@ -54,6 +56,14 @@ enum XtaskCommand {
         #[arg(long, default_value = "assets/container-tools")]
         dir: PathBuf,
     },
+    ComposeIntegration {
+        #[arg(long)]
+        release: bool,
+    },
+    WorkspaceTest {
+        #[arg(long)]
+        release: bool,
+    },
     Dist {
         #[arg(long)]
         target: String,
@@ -63,6 +73,8 @@ enum XtaskCommand {
         locked: bool,
         #[arg(long)]
         dist_dir: Option<PathBuf>,
+        #[arg(long)]
+        container_tools_dir: Option<PathBuf>,
     },
     Checksum {
         #[arg(long)]
@@ -95,12 +107,22 @@ fn main() -> Result<()> {
             check_container_tools(&workspace_relative(&workspace, &dir)?)?;
             Ok(())
         }
+        XtaskCommand::ComposeIntegration { release } => compose_integration(&workspace, release),
+        XtaskCommand::WorkspaceTest { release } => workspace_test(&workspace, release),
         XtaskCommand::Dist {
             target,
             version,
             locked,
             dist_dir,
-        } => dist(&workspace, &target, &version, locked, dist_dir.as_deref()),
+            container_tools_dir,
+        } => dist(
+            &workspace,
+            &target,
+            &version,
+            locked,
+            dist_dir.as_deref(),
+            container_tools_dir.as_deref(),
+        ),
         XtaskCommand::Checksum { dist_dir, version } => checksum(
             &resolve_dist_dir(&workspace, dist_dir.as_deref())?,
             version.as_deref(),
@@ -319,35 +341,187 @@ fn check_container_tools(dir: &Path) -> Result<Manifest> {
     Ok(manifest)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ChildCommand {
+    program: String,
+    current_dir: Option<PathBuf>,
+    args: Vec<String>,
+    env: BTreeMap<String, OsString>,
+}
+
+impl ChildCommand {
+    fn new(program: impl Into<String>) -> Self {
+        Self {
+            program: program.into(),
+            current_dir: None,
+            args: Vec::new(),
+            env: BTreeMap::new(),
+        }
+    }
+
+    fn current_dir(mut self, path: impl Into<PathBuf>) -> Self {
+        self.current_dir = Some(path.into());
+        self
+    }
+
+    fn arg(mut self, arg: impl Into<String>) -> Self {
+        self.args.push(arg.into());
+        self
+    }
+
+    fn args<I, S>(mut self, args: I) -> Self
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.args.extend(args.into_iter().map(Into::into));
+        self
+    }
+
+    fn env(mut self, key: impl Into<String>, value: impl Into<OsString>) -> Self {
+        self.env.insert(key.into(), value.into());
+        self
+    }
+
+    fn into_command(self) -> Command {
+        let mut command = Command::new(&self.program);
+        if let Some(current_dir) = self.current_dir {
+            command.current_dir(current_dir);
+        }
+        command.args(self.args);
+        for (key, value) in self.env {
+            command.env(key, value);
+        }
+        command
+    }
+}
+
+fn compose_integration(workspace: &Path, release: bool) -> Result<()> {
+    let mut docker_version = Command::new("docker");
+    docker_version.arg("version");
+    run_command(
+        docker_version,
+        "Docker CLI is required for Docker Compose integration tests",
+    )?;
+    let mut compose_version = Command::new("docker");
+    compose_version.args(["compose", "version"]);
+    run_command(
+        compose_version,
+        "Docker Compose v2 plugin is required for Docker Compose integration tests",
+    )?;
+
+    let bundle_dir = prepare_xtask_container_tools_bundle(workspace)?;
+    let command = compose_integration_cargo_command(workspace, release, &bundle_dir);
+
+    run_command_spec(command, "Failed to run Docker Compose integration tests")
+}
+
+fn workspace_test(workspace: &Path, release: bool) -> Result<()> {
+    let bundle_dir = prepare_xtask_container_tools_bundle(workspace)?;
+    let command = workspace_test_cargo_command(workspace, release, &bundle_dir);
+
+    run_command_spec(command, "Failed to run workspace tests")
+}
+
+fn compose_integration_cargo_command(
+    workspace: &Path,
+    release: bool,
+    bundle_dir: &Path,
+) -> ChildCommand {
+    let mut command = cargo_command_with_container_tools(workspace, bundle_dir).arg("test");
+    if release {
+        command = command.arg("--release");
+    }
+    command.args([
+        "--workspace",
+        "--all-features",
+        "--no-fail-fast",
+        "compose_integration",
+        "--",
+        "--ignored",
+        "--test-threads=1",
+    ])
+}
+
+fn workspace_test_cargo_command(
+    workspace: &Path,
+    release: bool,
+    bundle_dir: &Path,
+) -> ChildCommand {
+    let mut command = cargo_command_with_container_tools(workspace, bundle_dir).arg("test");
+    if release {
+        command = command.arg("--release");
+    }
+    command.args([
+        "--workspace",
+        "--all-features",
+        "--no-fail-fast",
+        "--verbose",
+    ])
+}
+
+fn cargo_command_with_container_tools(workspace: &Path, bundle_dir: &Path) -> ChildCommand {
+    ChildCommand::new("cargo")
+        .current_dir(workspace)
+        .env("DECUNE_CONTAINER_TOOLS_BUNDLE", "required")
+        .env("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR", bundle_dir.as_os_str())
+}
+
+fn prepare_xtask_container_tools_bundle(workspace: &Path) -> Result<PathBuf> {
+    let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
+    build_container_tools(workspace, &bundle_dir, true)?;
+    check_container_tools(&bundle_dir)?;
+    Ok(bundle_dir)
+}
+
+fn default_xtask_container_tools_bundle_dir(workspace: &Path) -> PathBuf {
+    target_dir(workspace)
+        .join("decune-xtask")
+        .join("container-tools-bundle")
+}
+
+fn dist_build_command(
+    workspace: &Path,
+    target: &str,
+    locked: bool,
+    bundle_dir: &Path,
+) -> ChildCommand {
+    let mut command = cargo_command_with_container_tools(workspace, bundle_dir).args([
+        "build",
+        "--profile",
+        "dist",
+        "--target",
+        target,
+        "-p",
+        "decune",
+    ]);
+    if locked {
+        command = command.arg("--locked");
+    }
+    command
+}
+
+fn run_command_spec(command: ChildCommand, context: &str) -> Result<()> {
+    run_command(command.into_command(), context)
+}
+
 fn dist(
     workspace: &Path,
     target: &str,
     version: &str,
     locked: bool,
     dist_dir: Option<&Path>,
+    container_tools_dir: Option<&Path>,
 ) -> Result<()> {
-    let bundle_dir = env::var_os("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR")
-        .map(PathBuf::from)
+    let bundle_dir = container_tools_dir
+        .map(Path::to_path_buf)
+        .or_else(|| env::var_os("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR").map(PathBuf::from))
         .unwrap_or_else(|| workspace.join("assets/container-tools"));
     let bundle_dir = workspace_relative(workspace, &bundle_dir)?;
     check_container_tools(&bundle_dir)?;
 
-    let mut command = Command::new("cargo");
-    command
-        .current_dir(workspace)
-        .env("DECUNE_CONTAINER_TOOLS_BUNDLE", "required")
-        .env("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR", &bundle_dir)
-        .arg("build")
-        .arg("--profile")
-        .arg("dist")
-        .arg("--target")
-        .arg(target)
-        .arg("-p")
-        .arg("decune");
-    if locked {
-        command.arg("--locked");
-    }
-    run_command(command, "Failed to build decune release binary")?;
+    let command = dist_build_command(workspace, target, locked, &bundle_dir);
+    run_command_spec(command, "Failed to build decune release binary")?;
 
     let binary = target_dir(workspace)
         .join(target)
@@ -1024,6 +1198,94 @@ mod tests {
         let error = check_container_tools(temp.path()).unwrap_err();
 
         assert!(error.to_string().contains("Failed to read"));
+    }
+
+    #[test]
+    fn compose_integration_cargo_command_runs_ignored_tests_without_env_gate() {
+        let workspace = Path::new("/workspace/decune");
+        let bundle_dir = Path::new("/workspace/decune/target/decune-xtask/container-tools-bundle");
+
+        let command = compose_integration_cargo_command(workspace, false, bundle_dir);
+
+        assert_eq!(command.program, "cargo");
+        assert_eq!(command.current_dir.as_deref(), Some(workspace));
+        assert_eq!(
+            command.args,
+            [
+                "test",
+                "--workspace",
+                "--all-features",
+                "--no-fail-fast",
+                "compose_integration",
+                "--",
+                "--ignored",
+                "--test-threads=1",
+            ]
+        );
+        assert_eq!(
+            command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE"),
+            Some(&std::ffi::OsString::from("required"))
+        );
+        assert_eq!(
+            command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR"),
+            Some(&bundle_dir.as_os_str().to_owned())
+        );
+        assert!(!command.env.contains_key("DECUNE_COMPOSE_INTEGRATION"));
+    }
+
+    #[test]
+    fn workspace_test_cargo_command_hides_container_tool_env_from_ci_yaml() {
+        let workspace = Path::new("/workspace/decune");
+        let bundle_dir = Path::new("/workspace/decune/target/decune-xtask/container-tools-bundle");
+
+        let command = workspace_test_cargo_command(workspace, true, bundle_dir);
+
+        assert_eq!(
+            command.args,
+            [
+                "test",
+                "--release",
+                "--workspace",
+                "--all-features",
+                "--no-fail-fast",
+                "--verbose",
+            ]
+        );
+        assert_eq!(
+            command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE"),
+            Some(&std::ffi::OsString::from("required"))
+        );
+        assert!(!command.env.contains_key("DECUNE_COMPOSE_INTEGRATION"));
+    }
+
+    #[test]
+    fn dist_build_command_accepts_explicit_container_tools_dir() {
+        let workspace = Path::new("/workspace/decune");
+        let bundle_dir = Path::new("/tmp/container-tools-bundle");
+
+        let command = dist_build_command(workspace, "x86_64-unknown-linux-musl", true, bundle_dir);
+
+        assert_eq!(
+            command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE"),
+            Some(&std::ffi::OsString::from("required"))
+        );
+        assert_eq!(
+            command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR"),
+            Some(&bundle_dir.as_os_str().to_owned())
+        );
+        assert_eq!(
+            command.args,
+            [
+                "build",
+                "--profile",
+                "dist",
+                "--target",
+                "x86_64-unknown-linux-musl",
+                "-p",
+                "decune",
+                "--locked",
+            ]
+        );
     }
 
     #[test]

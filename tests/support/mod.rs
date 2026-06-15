@@ -43,6 +43,11 @@ impl TempWorkspace {
         Ok(path)
     }
 
+    #[allow(dead_code)]
+    pub fn copy_dir_from(&self, source: impl AsRef<Path>) -> io::Result<()> {
+        copy_dir_contents(source.as_ref(), self.path())
+    }
+
     fn resolve(&self, relative_path: impl AsRef<Path>) -> io::Result<PathBuf> {
         let relative_path = relative_path.as_ref();
 
@@ -59,4 +64,29 @@ impl TempWorkspace {
 
         Ok(self.path().join(relative_path))
     }
+}
+
+#[allow(dead_code)]
+fn copy_dir_contents(source: &Path, destination: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            fs::create_dir_all(&destination_path)?;
+            copy_dir_contents(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = destination_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&source_path, &destination_path)?;
+        } else if file_type.is_symlink() {
+            let target = fs::read_link(&source_path)?;
+            std::os::unix::fs::symlink(target, &destination_path)?;
+        }
+    }
+
+    Ok(())
 }

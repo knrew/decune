@@ -1,0 +1,8 @@
+{
+  "name": "compose-primary-build",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "updateRemoteUserUID": false,
+  "postStartCommand": "test -f /usr/local/share/decune-primary-build-marker"
+}
