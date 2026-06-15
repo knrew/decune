@@ -1,0 +1,12 @@
+services:
+  app:
+    image: alpine:3.20
+    command: sleep infinity
+    volumes:
+      - ..:/workspace
+  worker:
+    image: alpine:3.20
+    command: sleep infinity
+  idle:
+    image: alpine:3.20
+    command: sleep infinity

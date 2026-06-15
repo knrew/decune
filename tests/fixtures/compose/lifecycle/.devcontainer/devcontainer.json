@@ -1,0 +1,8 @@
+{
+  "name": "compose-lifecycle",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "updateRemoteUserUID": false,
+  "postStartCommand": "printf started > /workspace/lifecycle-marker.txt"
+}

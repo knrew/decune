@@ -1,0 +1,11 @@
+{
+  "name": "compose-multi-file",
+  "dockerComposeFile": [
+    "compose.yaml",
+    "compose.override.yaml"
+  ],
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "updateRemoteUserUID": false,
+  "postStartCommand": "test \"$DECUNE_MULTI_FILE\" = override && test -f /workspace/multi-file-marker.txt"
+}

@@ -1,0 +1,10 @@
+{
+  "name": "compose-run-services",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "runServices": [
+    "worker"
+  ],
+  "workspaceFolder": "/workspace",
+  "updateRemoteUserUID": false
+}

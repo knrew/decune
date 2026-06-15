@@ -1,0 +1,7 @@
+{
+  "name": "compose-credentials-disabled",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "updateRemoteUserUID": false
+}

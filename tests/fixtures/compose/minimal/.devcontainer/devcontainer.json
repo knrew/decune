@@ -1,0 +1,7 @@
+{
+  "name": "compose-minimal",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "updateRemoteUserUID": false
+}

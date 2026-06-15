@@ -883,7 +883,17 @@ cargo run --locked -p xtask -- check-container-tools --dir assets/container-tool
 DECUNE_CONTAINER_TOOLS_BUNDLE=required cargo test --workspace --all-features --no-fail-fast
 ```
 
-Docker daemon と Docker Compose v2 plugin に接続できない環境では full test は失敗として扱う。純粋ロジックだけ確認する場合は、対象 package/module/test 名で filter して実行する。
+Compose integration test だけを明示実行する場合:
+
+```sh
+docker version
+docker compose version
+cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
+cargo run --locked -p xtask -- check-container-tools --dir assets/container-tools
+cargo run --locked -p xtask -- compose-integration
+```
+
+`compose_integration` filter の test は `DECUNE_COMPOSE_INTEGRATION=1` がない場合 skip する。Docker daemon と Docker Compose v2 plugin に接続できない環境では full test と opt-in Compose integration test は失敗として扱う。純粋ロジックだけ確認する場合は、対象 package/module/test 名で filter して実行する。
 
 主な integration test 対象:
 

@@ -1,0 +1,8 @@
+services:
+  app:
+    image: alpine:3.20
+    command: sleep infinity
+    environment:
+      DECUNE_MULTI_FILE: base
+    volumes:
+      - ..:/workspace

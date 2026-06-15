@@ -54,6 +54,10 @@ enum XtaskCommand {
         #[arg(long, default_value = "assets/container-tools")]
         dir: PathBuf,
     },
+    ComposeIntegration {
+        #[arg(long)]
+        release: bool,
+    },
     Dist {
         #[arg(long)]
         target: String,
@@ -95,6 +99,7 @@ fn main() -> Result<()> {
             check_container_tools(&workspace_relative(&workspace, &dir)?)?;
             Ok(())
         }
+        XtaskCommand::ComposeIntegration { release } => compose_integration(&workspace, release),
         XtaskCommand::Dist {
             target,
             version,
@@ -317,6 +322,39 @@ fn check_container_tools(dir: &Path) -> Result<Manifest> {
     }
     check_sha256sums(dir, &manifest_sums)?;
     Ok(manifest)
+}
+
+fn compose_integration(workspace: &Path, release: bool) -> Result<()> {
+    let mut docker_version = Command::new("docker");
+    docker_version.arg("version");
+    run_command(
+        docker_version,
+        "Docker CLI is required for Docker Compose integration tests",
+    )?;
+    let mut compose_version = Command::new("docker");
+    compose_version.args(["compose", "version"]);
+    run_command(
+        compose_version,
+        "Docker Compose v2 plugin is required for Docker Compose integration tests",
+    )?;
+
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(workspace)
+        .env("DECUNE_COMPOSE_INTEGRATION", "1")
+        .env("DECUNE_CONTAINER_TOOLS_BUNDLE", "required")
+        .arg("test");
+    if release {
+        command.arg("--release");
+    }
+    command.args([
+        "--workspace",
+        "--all-features",
+        "--no-fail-fast",
+        "compose_integration",
+    ]);
+
+    run_command(command, "Failed to run Docker Compose integration tests")
 }
 
 fn dist(

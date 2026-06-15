@@ -1,0 +1,11 @@
+{
+  "name": "compose-features",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "updateRemoteUserUID": false,
+  "features": {
+    "./features/local-marker": {}
+  },
+  "postStartCommand": "test -f /usr/local/share/decune-feature-marker"
+}
