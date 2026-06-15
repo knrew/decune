@@ -294,6 +294,53 @@ impl ComposeConfigModel {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposePrimaryImage {
+    pub(crate) base_image: String,
+    pub(crate) has_build: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComposePrimaryImageResolver<'a> {
+    pub(crate) project_name: &'a str,
+    pub(crate) service: &'a str,
+}
+
+impl ComposePrimaryImageResolver<'_> {
+    pub(crate) fn resolve(self, model: &ComposeConfigModel) -> Result<ComposePrimaryImage> {
+        let Some(service_model) = model.service(self.service) else {
+            bail!(
+                "Docker Compose project {} primary service `{}` is missing",
+                self.project_name,
+                self.service
+            );
+        };
+        let has_build = service_model.build.is_some();
+        if let Some(image) = service_model
+            .image
+            .as_ref()
+            .filter(|image| !image.trim().is_empty())
+        {
+            return Ok(ComposePrimaryImage {
+                base_image: image.clone(),
+                has_build,
+            });
+        }
+        if has_build {
+            return Ok(ComposePrimaryImage {
+                base_image: format!("{}-{}", self.project_name, self.service),
+                has_build,
+            });
+        }
+
+        bail!(
+            "Docker Compose project {} primary service `{}` did not resolve an image or build",
+            self.project_name,
+            self.service
+        )
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub(crate) struct ComposeConfigService {
     #[serde(default)]
@@ -1240,9 +1287,10 @@ mod tests {
     use super::{
         ComposeBuildOptions, ComposeCommandPlan, ComposeConfigModel, ComposeConfigService,
         ComposeDownOptions, ComposeIntrospector, ComposeLifecyclePlan, ComposeOverrideMount,
-        ComposeOverridePatch, ComposeOverrideServicePatch, ComposeProject, ComposeProjectPlan,
-        ComposePullOptions, ComposeServiceValidation, ComposeStopOptions, ComposeUpOptions,
-        DockerComposeCli, resolve_compose_container, write_compose_override,
+        ComposeOverridePatch, ComposeOverrideServicePatch, ComposePrimaryImageResolver,
+        ComposeProject, ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation,
+        ComposeStopOptions, ComposeUpOptions, DockerComposeCli, resolve_compose_container,
+        write_compose_override,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
 
@@ -1397,6 +1445,96 @@ mod tests {
                 .service("app")
                 .and_then(|service| service.user.as_deref()),
             Some("1001:1002")
+        );
+    }
+
+    #[test]
+    fn compose_primary_image_resolver_uses_service_image_without_build() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "example/app:dev"
+                }
+            }
+        }))
+        .unwrap();
+
+        let image = ComposePrimaryImageResolver {
+            project_name: "decune-project-abc123def456",
+            service: "app",
+        }
+        .resolve(&model)
+        .unwrap();
+
+        assert_eq!(image.base_image, "example/app:dev");
+        assert!(!image.has_build);
+    }
+
+    #[test]
+    fn compose_primary_image_resolver_uses_compose_build_default_tag_without_image() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "build": {"context": ".", "dockerfile": "Dockerfile"}
+                }
+            }
+        }))
+        .unwrap();
+
+        let image = ComposePrimaryImageResolver {
+            project_name: "decune-project-abc123def456",
+            service: "app",
+        }
+        .resolve(&model)
+        .unwrap();
+
+        assert_eq!(image.base_image, "decune-project-abc123def456-app");
+        assert!(image.has_build);
+    }
+
+    #[test]
+    fn compose_primary_image_resolver_uses_canonical_image_when_build_is_tagged() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "example/app:dev",
+                    "build": {"context": ".", "dockerfile": "Dockerfile"}
+                }
+            }
+        }))
+        .unwrap();
+
+        let image = ComposePrimaryImageResolver {
+            project_name: "decune-project-abc123def456",
+            service: "app",
+        }
+        .resolve(&model)
+        .unwrap();
+
+        assert_eq!(image.base_image, "example/app:dev");
+        assert!(image.has_build);
+    }
+
+    #[test]
+    fn compose_primary_image_resolver_rejects_service_without_image_or_build() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {}
+            }
+        }))
+        .unwrap();
+
+        let error = ComposePrimaryImageResolver {
+            project_name: "decune-project-abc123def456",
+            service: "app",
+        }
+        .resolve(&model)
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("did not resolve an image or build")
         );
     }
 

@@ -38,8 +38,8 @@ use crate::{
         forward::{ForwardRuntime, prepare_forward_runtime},
     },
     runtime::compose_cli::{
-        ComposeBuildOptions, ComposeConfigModel, ComposeConfigService, ComposeIntrospector,
-        ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverrideServicePatch,
+        ComposeBuildOptions, ComposeConfigService, ComposeIntrospector, ComposeLifecyclePlan,
+        ComposeOverridePatch, ComposeOverrideServicePatch, ComposePrimaryImageResolver,
         ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation, ComposeUpOptions,
         DockerComposeCli, write_compose_override,
     },
@@ -516,15 +516,13 @@ async fn start_compose_project(
         )
         .await?;
     let user_model = &user_config.model;
-    let primary_service_has_build = user_model
-        .service(&compose.service)
-        .and_then(|service| service.build.as_ref())
-        .is_some();
-    let compose_primary_image = compose_primary_service_image(
-        user_model,
-        compose_project.project_name(),
-        &compose.service,
-    )?;
+    let compose_primary_image = ComposePrimaryImageResolver {
+        project_name: compose_project.project_name(),
+        service: &compose.service,
+    }
+    .resolve(user_model)?;
+    let primary_service_has_build = compose_primary_image.has_build;
+    let compose_primary_image = compose_primary_image.base_image;
     let compose_primary_service_user = user_model
         .service(&compose.service)
         .and_then(|service| service.user.as_deref());
@@ -752,30 +750,6 @@ async fn start_compose_project(
         credentials,
         state,
     ))
-}
-
-fn compose_primary_service_image(
-    model: &ComposeConfigModel,
-    project_name: &str,
-    service: &str,
-) -> Result<String> {
-    let Some(service_model) = model.service(service) else {
-        bail!("Docker Compose project {project_name} primary service `{service}` is missing");
-    };
-    if let Some(image) = service_model
-        .image
-        .as_ref()
-        .filter(|image| !image.trim().is_empty())
-    {
-        return Ok(image.clone());
-    }
-    if service_model.build.is_some() {
-        return Ok(format!("{project_name}-{service}"));
-    }
-
-    bail!(
-        "Docker Compose project {project_name} primary service `{service}` did not resolve an image or build"
-    )
 }
 
 async fn write_generated_compose_override(
@@ -1615,8 +1589,8 @@ async fn list_compose_project_containers(
 #[cfg(test)]
 mod tests {
     use super::{
-        ComposeOverrideStartup, compose_primary_service_image, generated_compose_override_content,
-        generated_compose_override_content_with_startup,
+        ComposeOverrideStartup, generated_compose_override_content,
+        generated_compose_override_content_with_startup, state_container_snapshot,
     };
     use crate::{
         config::{ConfigMergeInput, resolved::ResolvedConfig, types::MountType},
@@ -1633,49 +1607,6 @@ mod tests {
         up::UpPlan,
     };
     use std::collections::BTreeMap;
-
-    #[test]
-    fn compose_primary_service_image_uses_compose_build_default_tag_without_image() {
-        let model = serde_json::from_str(
-            r#"
-            {
-              "services": {
-                "app": {
-                  "build": {"context": ".", "dockerfile": "Dockerfile"}
-                }
-              }
-            }
-            "#,
-        )
-        .unwrap();
-
-        let image =
-            compose_primary_service_image(&model, "decune-project-abc123def456", "app").unwrap();
-
-        assert_eq!(image, "decune-project-abc123def456-app");
-    }
-
-    #[test]
-    fn compose_primary_service_image_prefers_explicit_image_over_build_default_tag() {
-        let model = serde_json::from_str(
-            r#"
-            {
-              "services": {
-                "app": {
-                  "image": "example/app:dev",
-                  "build": {"context": ".", "dockerfile": "Dockerfile"}
-                }
-              }
-            }
-            "#,
-        )
-        .unwrap();
-
-        let image =
-            compose_primary_service_image(&model, "decune-project-abc123def456", "app").unwrap();
-
-        assert_eq!(image, "example/app:dev");
-    }
 
     #[test]
     fn generated_compose_override_patches_only_primary_service() {
@@ -1743,6 +1674,19 @@ mod tests {
 
         assert!(content.contains("image: 'alpine:3.20'"));
         assert!(!content.contains("pull_policy:"));
+    }
+
+    #[test]
+    fn state_snapshot_records_final_image_tag_for_compose_plan() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.image = "decune/project-abc123:config-hash".to_owned();
+        plan.base_image = "example/app:dev".to_owned();
+        plan.resources.config_hash = "config-hash".to_owned();
+
+        let snapshot = state_container_snapshot(&plan, "container-id".to_owned());
+
+        assert_eq!(snapshot.image, "decune/project-abc123:config-hash");
+        assert_eq!(snapshot.config_hash, "config-hash");
     }
 
     #[test]
