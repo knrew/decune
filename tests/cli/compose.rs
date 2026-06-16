@@ -19,6 +19,13 @@ fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {
     workspace.path().join("container-tools")
 }
 
+fn decune_with_fake_container_tools(workspace: &support::TempWorkspace) -> assert_cmd::Command {
+    let container_tools_dir = fake_container_tools_bundle(workspace);
+    let mut command = decune();
+    command.env("DECUNE_CONTAINER_TOOLS_DIR", container_tools_dir);
+    command
+}
+
 #[test]
 fn compose_validation_runs_after_initialize_command_generated_files_exist() {
     let workspace = support::TempWorkspace::new().unwrap();
@@ -53,6 +60,9 @@ fn compose_validation_runs_after_initialize_command_generated_files_exist() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 if [ "${1:-}" = compose ]; then
   if [ ! -f "$DECUNE_TEST_WORKSPACE/.devcontainer/generated.env" ]; then
     echo "generated env missing before compose config" >&2
@@ -114,7 +124,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_TEST_WORKSPACE", &workspace_root)
         .args(["up", "--detach"])
@@ -162,6 +172,9 @@ fn compose_up_preserves_primary_service_image_when_no_final_layer_is_needed() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
@@ -231,7 +244,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_OVERRIDE_LOG", &override_log)
         .args(["up", "--detach"])
@@ -284,6 +297,9 @@ fn compose_up_passes_local_env_derived_container_env_placeholder_env() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
@@ -353,12 +369,10 @@ exit 91
         std::env::var("PATH").unwrap_or_default()
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let container_tools_dir = fake_container_tools_bundle(&host_tools);
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_OVERRIDE_LOG", &override_log)
-        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .env("NPM_TOKEN", "secret-token")
         .args(["up", "--detach"])
         .arg(&workspace_root)
@@ -437,6 +451,9 @@ fn compose_up_applies_feature_final_image_only_to_primary_and_propagates_build_o
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -538,13 +555,11 @@ exit 91
         std::env::var("PATH").unwrap_or_default()
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let container_tools_dir = fake_container_tools_bundle(&host_tools);
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_OVERRIDE_LOG", &override_log)
-        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .args(["up", "--detach", "--no-cache", "--pull"])
         .arg(&workspace_root)
         .assert()
@@ -611,6 +626,9 @@ fn compose_pull_adds_force_recreate_to_compose_up() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 if [ "${1:-}" = compose ]; then
   printf 'compose %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
   case " $* " in
@@ -682,12 +700,10 @@ exit 91
         std::env::var("PATH").unwrap_or_default()
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let container_tools_dir = fake_container_tools_bundle(&host_tools);
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
-        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .env("XDG_STATE_HOME", state_home.path())
         .args(["up", "--detach", "--pull"])
         .arg(&workspace_root)
@@ -749,6 +765,9 @@ fn compose_up_builds_selected_services_with_dependencies() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -807,7 +826,6 @@ exit 91
         )
         .unwrap();
     fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let container_tools_dir = fake_container_tools_bundle(&host_tools);
     let fake_path = format!(
         "{}:{}",
         docker_path.parent().unwrap().display(),
@@ -815,10 +833,9 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
-        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .args(["up", "--detach"])
         .arg(&workspace_root)
         .assert()
@@ -872,6 +889,9 @@ fn compose_service_user_is_used_for_lifecycle_when_devcontainer_users_are_unset(
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -930,7 +950,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .args(["up", "--detach"])
@@ -992,6 +1012,9 @@ fn compose_exec_lifecycle_shell_attach_returns_shell_exit_and_defaults_to_stop_c
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -1064,7 +1087,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .arg("up")
@@ -1150,6 +1173,9 @@ fn compose_dotfiles_attached_up_prepares_lifecycle_once_before_post_attach() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -1222,7 +1248,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .arg("up")
@@ -1306,6 +1332,9 @@ fn compose_credentials_runs_git_https_helper_setup_in_primary_container() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -1375,7 +1404,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .args(["up", "--detach"])
@@ -1442,6 +1471,9 @@ fn compose_stop_container_shutdown_succeeds_when_primary_is_already_stopped() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -1520,7 +1552,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_STOPPED_MARKER", &stopped_marker)
@@ -1588,6 +1620,9 @@ fn compose_lifecycle_detach_skips_post_attach_shell_attach_and_shutdown() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -1662,7 +1697,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .args(["up", "--detach"])
@@ -1716,6 +1751,9 @@ fn compose_up_detects_primary_service_command_exit_before_lifecycle() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
@@ -1777,7 +1815,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .args(["up", "--detach"])
         .arg(&workspace_root)
@@ -1822,6 +1860,9 @@ fn compose_up_removes_orphans_when_primary_service_was_renamed() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
@@ -1893,7 +1934,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .args(["up", "--detach"])
@@ -1942,6 +1983,9 @@ fn compose_down_also_stops_leftover_image_mode_container() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" stop "*)
@@ -1984,7 +2028,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_PS_COUNT", &ps_count)
@@ -2034,6 +2078,9 @@ fn compose_clean_also_removes_leftover_image_mode_container() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" down "*)
@@ -2086,7 +2133,7 @@ exit 91
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_PS_COUNT", &ps_count)
@@ -2115,6 +2162,9 @@ fn compose_down_stops_existing_project_when_config_files_are_missing() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 project="decune-missing-config-$DECUNE_FAKE_WORKSPACE_ID"
 if [ "${1:-}" = ps ]; then
   case " $* " in
@@ -2160,7 +2210,7 @@ exit 91
     let workspace_root = workspace.path().canonicalize().unwrap();
     let workspace_id = workspace_id(&workspace_root);
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_WORKSPACE_ID", &workspace_id)
@@ -2194,6 +2244,9 @@ fn compose_clean_removes_existing_project_when_config_files_are_missing() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 project="decune-missing-config-$DECUNE_FAKE_WORKSPACE_ID"
 if [ "${1:-}" = ps ]; then
   case " $* " in
@@ -2267,7 +2320,7 @@ exit 91
     let workspace_root = workspace.path().canonicalize().unwrap();
     let workspace_id = workspace_id(&workspace_root);
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_REMOVED_MARKER", &removed_marker)
@@ -2334,6 +2387,9 @@ fn compose_clean_images_removes_only_decune_generated_workspace_images() {
             "bin/docker",
             r#"#!/bin/sh
 set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
 printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
@@ -2388,7 +2444,7 @@ exit 91
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_repository = workspace_image_repository(&workspace_root);
 
-    decune()
+    decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_IMAGE_REPOSITORY", &image_repository)

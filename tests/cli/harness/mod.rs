@@ -9,18 +9,21 @@ pub(crate) use std::{
 
 pub(crate) use crate::support;
 
+mod compose;
 mod docker;
 mod features;
 mod images;
 mod locks;
 mod names;
 
+pub(crate) use compose::*;
 pub(crate) use docker::*;
 pub(crate) use features::*;
 pub(crate) use images::*;
 pub(crate) use names::*;
 
 const DECUNE_DOCKER_RESOURCE_LOCK_ENV: &str = "DECUNE_DOCKER_RESOURCE_LOCK";
+const DECUNE_FAKE_COMPOSE_CAPABILITIES_ENV: &str = "DECUNE_FAKE_COMPOSE_CAPABILITIES";
 
 pub(crate) fn decune() -> Command {
     let gh_config_dir =
@@ -30,6 +33,10 @@ pub(crate) fn decune() -> Command {
     let mut command = Command::cargo_bin("decune").unwrap();
     command
         .env("GH_CONFIG_DIR", gh_config_dir)
+        .env(
+            DECUNE_FAKE_COMPOSE_CAPABILITIES_ENV,
+            fake_compose_capabilities_script_path(),
+        )
         .env(
             DECUNE_DOCKER_RESOURCE_LOCK_ENV,
             locks::docker_resource_lock_path(),
