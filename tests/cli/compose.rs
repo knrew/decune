@@ -451,6 +451,136 @@ exit 91
 }
 
 #[test]
+fn compose_pull_adds_force_recreate_to_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true,
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: "alpine:3.20"
+            "#,
+        )
+        .unwrap();
+    let command_log = host_tools.path().join("commands.log");
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = compose ]; then
+  printf 'compose %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+  case " $* " in
+    *" config --format json "*)
+      printf '{"services":{"app":{"image":"alpine:3.20"}}}\n'
+      exit 0
+      ;;
+    *" pull "*)
+      exit 0
+      ;;
+    *" build "*)
+      exit 0
+      ;;
+    *" up -d "*)
+      exit 0
+      ;;
+    *" ps --format json app "*)
+      printf '[{"ID":"compose-app-id","Name":"compose-app-1","Service":"app","State":"running"}]\n'
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = exec ]; then
+  printf 'root:x:0:0:root:/root:/bin/sh\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"sha256:alpine","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = pull ]; then
+  printf '{"status":"pulled"}\n'
+  exit 0
+fi
+if [ "${1:-}" = pull ]; then
+  printf '{"status":"pulled"}\n'
+  exit 0
+fi
+if [ "${1:-}" = ps ]; then
+  exit 0
+fi
+if [ "${1:-}" = create ]; then
+  printf 'lookup-container-id\n'
+  exit 0
+fi
+if [ "${1:-}" = start ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Image":"sha256:alpine","ImageID":"sha256:alpine","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Image":"sha256:alpine","ImageID":"sha256:alpine","Config":{"Env":[],"Labels":{}},"State":{"Running":true},"Mounts":[]}]\n'
+  exit 0
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&host_tools);
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .env("XDG_STATE_HOME", state_home.path())
+        .args(["up", "--detach", "--pull"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Started dev container: compose-app-1",
+        ));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(
+        commands.contains(" pull --ignore-buildable --policy always"),
+        "{commands}"
+    );
+    assert!(commands.contains(" up -d --force-recreate"));
+}
+
+#[test]
 fn compose_up_builds_selected_services_with_dependencies() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
