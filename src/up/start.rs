@@ -646,8 +646,9 @@ async fn start_compose_project(
         prepare_image_for_create(&client, &plan, false, options.no_cache, false).await?;
     }
     let platform = image_container_tool_platform(&client, &plan.image).await?;
-    let (plan, credentials) =
+    let (mut plan, credentials) =
         add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
+    attach_compose_interpolation_env_to_plan(&mut plan);
     warn_about_deferred_features(&plan.config);
 
     let Some(compose_project) = &plan.compose_project else {
