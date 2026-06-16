@@ -310,6 +310,7 @@ async fn detect_container_arch_for_forward_agent(
             user: Some("0".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
+            redactions: Vec::new(),
             tty: false,
         },
     )

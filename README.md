@@ -333,6 +333,8 @@ enabled = false
 
 GitHub CLI 連携を有効にすると、host の `gh auth token` から得た token は一時 file として container に read-only mount されます。token は Docker label、container env、state、config hash、image layer には保存しませんが、container 内プロセスからは token file に到達できます。
 
+`containerEnv` は container 作成時の環境変数です。container 内プロセスや Docker inspect から見えるため、decune は `containerEnv` を secret storage として扱いません。`${localEnv:VAR}` から展開された `containerEnv` / `remoteEnv` の値は state、config hash、generated Compose override、argv、通常の error 表示に平文保存しないよう redaction します。`containerEnv` は作成時に固定されるため、config hash には平文ではなく非可逆 digest として変更検出情報を含め、host 側の値が変わった既存 container / Compose project は再利用しません。新しい値を反映するには `decune rebuild` で再作成します。literal に書かれた secret 文字列は decune が secret と判定できません。
+
 SSH agent forwarding は `SSH_AUTH_SOCK` を `/run/decune/ssh-agent.sock` として container に渡します。`ssh_agent = "required"` の場合、host 側 socket が使えないと `up` は失敗します。
 
 ## 開発

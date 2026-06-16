@@ -259,6 +259,7 @@ async fn setup_git_credential_helper(
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
             env,
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -325,6 +326,7 @@ async fn setup_git_user_config(
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
             env,
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -471,6 +473,7 @@ async fn git_credential_runtime_accessible(
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
             env: BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]),
+            redactions: Vec::new(),
             tty: false,
         },
     )

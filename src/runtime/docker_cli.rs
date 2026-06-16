@@ -687,6 +687,7 @@ fn docker_exec_command(
             .arg("--env")
             .arg(key.as_str());
     }
+    command = command.redact_values(spec.redactions.clone());
     command.arg(container).args(&spec.command)
 }
 
@@ -1171,6 +1172,7 @@ mod tests {
             user: Some("vscode".to_owned()),
             working_dir: Some("/workspace".to_owned()),
             env: BTreeMap::from([("TERM".to_owned(), "xterm".to_owned())]),
+            redactions: Vec::new(),
             tty: true,
         };
 
@@ -1211,6 +1213,7 @@ mod tests {
                     "test-secret".to_owned(),
                 ),
             ]),
+            redactions: vec!["test-secret".to_owned()],
             tty: false,
         };
 
@@ -1222,6 +1225,7 @@ mod tests {
                 .iter()
                 .any(|arg| arg.contains("test-secret"))
         );
+        assert!(!command.sanitized_display().contains("test-secret"));
         assert!(
             command
                 .args_vec()

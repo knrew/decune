@@ -12,7 +12,7 @@ use crate::{
     config::{
         resolved::{ResolvedConfig, ResolvedHook},
         types::{Command, HookLocation},
-        variables::{VariableContext, expand_remote_env},
+        variables::{VariableContext, expand_remote_env_tracked},
     },
     devcontainer::metadata::LifecycleProperty,
     docker::{
@@ -229,6 +229,7 @@ pub(crate) struct PreparedLifecycleRunContext<'a> {
     remote_user: ResolvedRemoteUser,
     remote_env: BTreeMap<String, String>,
     remote_process_env: BTreeMap<String, String>,
+    remote_env_redactions: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -395,7 +396,7 @@ pub(crate) async fn prepare_container_lifecycle(
     .await?;
     let container_env = inspect_container_env(context.client, &context.container).await?;
     let remote_env_variables = dotfile_variable_context(&context).with_container_env(container_env);
-    let remote_env = expand_remote_env(
+    let remote_env = expand_remote_env_tracked(
         &context.config.devcontainer.remote_env,
         &remote_env_variables,
     )
@@ -405,6 +406,8 @@ pub(crate) async fn prepare_container_lifecycle(
             context.container
         )
     })?;
+    let remote_env_redactions = remote_env.sensitive.redaction_values();
+    let remote_env = remote_env.values;
     let remote_process_env = resolve_exec_env(
         context.client,
         &context.container,
@@ -418,6 +421,7 @@ pub(crate) async fn prepare_container_lifecycle(
     Ok(PreparedLifecycleRunContext {
         remote_env,
         remote_process_env,
+        remote_env_redactions,
         client: context.client,
         container: context.container,
         config: context.config,
@@ -833,13 +837,14 @@ async fn run_container_process(
             user: Some(user.clone()),
             working_dir: Some(working_dir),
             env: lifecycle_process_env(context, &user),
+            redactions: context.remote_env_redactions.clone(),
             tty: false,
         },
     )
     .await
     .with_context(|| format!("Failed to run lifecycle stage {stage_name}"))?;
 
-    ensure_lifecycle_success(stage_name, &command, output)
+    ensure_lifecycle_success(stage_name, &command, output, &context.remote_env_redactions)
 }
 
 fn lifecycle_process_env(
@@ -895,6 +900,7 @@ fn run_host_process(stage_name: &str, argv: &[String], workdir: &Path) -> Result
             stderr: output.stderr,
             exit_code,
         },
+        &[],
     )
 }
 
@@ -961,6 +967,7 @@ fn ensure_lifecycle_success(
     stage_name: &str,
     command: &[String],
     output: ExecOutput,
+    redactions: &[String],
 ) -> Result<()> {
     if output.exit_code == 0 {
         return Ok(());
@@ -968,10 +975,10 @@ fn ensure_lifecycle_success(
 
     bail!(
         "Lifecycle stage {stage_name} failed: command `{}` exited with exit code {}. stdout tail: `{}` stderr tail: `{}`",
-        command_display(command),
+        redact_values(&command_display(command), redactions),
         output.exit_code,
-        output_tail(&output.stdout),
-        output_tail(&output.stderr),
+        redact_values(&output_tail(&output.stdout), redactions),
+        redact_values(&output_tail(&output.stderr), redactions),
     );
 }
 
@@ -984,6 +991,15 @@ fn output_tail(output: &[u8]) -> String {
 
     let start = output.len().saturating_sub(MAX_TAIL_BYTES);
     String::from_utf8_lossy(&output[start..]).trim().to_owned()
+}
+
+fn redact_values(value: &str, redactions: &[String]) -> String {
+    redactions
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .fold(value.to_owned(), |redacted, secret| {
+            redacted.replace(secret, "[REDACTED]")
+        })
 }
 
 impl TryFrom<LifecycleProperty> for LifecycleStage {
@@ -1693,6 +1709,33 @@ mod tests {
         assert!(message.contains("exit code 7"));
         assert!(message.contains("stdout tail: `stdout-sentinel`"));
         assert!(message.contains("stderr tail: `stderr-sentinel`"));
+    }
+
+    #[test]
+    fn lifecycle_failure_redacts_secret_values() {
+        let output = ExecOutput {
+            stdout: b"stdout secret-token".to_vec(),
+            stderr: b"stderr secret-token".to_vec(),
+            exit_code: 7,
+        };
+        let command = vec![
+            "/bin/sh".to_owned(),
+            "-lc".to_owned(),
+            "printf secret-token".to_owned(),
+        ];
+
+        let error = ensure_lifecycle_success(
+            "postStartCommand",
+            &command,
+            output,
+            &["secret-token".to_owned()],
+        )
+        .unwrap_err();
+
+        let message = format!("{error:#}");
+        assert!(!message.contains("secret-token"));
+        assert!(message.contains("[REDACTED]"));
+        assert!(message.contains("exit code 7"));
     }
 
     #[test]

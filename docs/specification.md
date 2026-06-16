@@ -244,8 +244,8 @@ workspace root から以下の順で検出する。
 | `mounts` | partial | partial | partial | bind/volume 対応。Compose mode は primary service に override として追加。tmpfs は v0.1 error |
 | `workspaceMount` | yes | yes | no | Compose mode は Compose file の `volumes` を使う |
 | `workspaceFolder` | yes | yes | yes | Compose mode の既定は `/` |
-| `containerEnv` | yes | yes | yes | Compose mode は primary service `environment` override |
-| `remoteEnv` | yes | yes | yes | exec/lifecycle/shell に適用 |
+| `containerEnv` | yes | yes | yes | Compose mode は primary service `environment` override。secret storage ではない |
+| `remoteEnv` | yes | yes | yes | exec/lifecycle/shell に適用。`${localEnv:...}` 由来 value は argv/log redaction 対象 |
 | `remoteUser` | yes | yes | yes | shell/lifecycle user |
 | `containerUser` | yes | yes | yes | Compose mode は primary service `user` override |
 | `updateRemoteUserUID` | yes | yes | yes | Linux host で既定 true |
@@ -637,6 +637,10 @@ shell = true
 
 `${remoteUserHome}` は `/home/<user>` と推測せず、container/image 内の passwd database から解決する。`containerEnv` 自体の中で `${containerEnv:...}` を使う構成は v0.1 では error とする。
 
+`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` value は secret-sensitive として追跡する。decune はその実値を state、config hash、generated Compose override、Docker/Compose label、argv、通常の error log に平文保存してはならない。config hash では key を保持し、`containerEnv` は container 再作成判定のため実値ではなく非可逆 digest を含め、`remoteEnv` は redacted marker に置き換える。Compose mode の generated override では primary service `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式の placeholder を書き、実値は `docker compose` child process の environment として渡す。placeholder variable name の `<SAFE_KEY>` は `containerEnv` key から ASCII alphanumeric / underscore のみへ正規化した値とする。
+
+`containerEnv` は container 作成時の環境変数であり、container 内プロセスや Docker inspect から見える。decune は `containerEnv` を secret storage として保証しない。literal に書かれた secret 文字列や、decune が `${localEnv:...}` 由来と追跡できない値は自動では secret-sensitive と判定しない。
+
 host bind source の処理順:
 
 1. `~` を展開。
@@ -710,7 +714,7 @@ Compose mode では上記 label を primary service に追加する。明示的�
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
-config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の user Compose files から得た secret-redacted canonical Compose model、Compose file digest、generated override plan を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path、Compose environment / secrets の解決済み value は含めない。Compose mode では `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から secret value を redaction したものを hash に含める。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため canonical model hash 入力にしない。
+config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の user Compose files から得た secret-redacted canonical Compose model、Compose file digest、generated override plan を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose environment / secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose mode では `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から secret value を redaction したものを hash に含める。generated override plan では `${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため canonical model hash 入力にしない。
 
 state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 flag と devcontainer config file path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 

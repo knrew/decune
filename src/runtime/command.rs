@@ -48,6 +48,16 @@ impl RuntimeCommand {
         self
     }
 
+    pub(crate) fn redact_values(
+        mut self,
+        values: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Self {
+        for value in values {
+            self.redactions.push_value(value);
+        }
+        self
+    }
+
     #[allow(dead_code)]
     pub(crate) fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);

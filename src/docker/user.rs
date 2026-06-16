@@ -615,6 +615,7 @@ async fn lookup_container_user(
             user: None,
             working_dir: None,
             env: BTreeMap::from([("DECUNE_REMOTE_USER".to_owned(), user.to_owned())]),
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -778,6 +779,7 @@ async fn resolve_numeric_remote_user_ids(
             user: Some(user.to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
+            redactions: Vec::new(),
             tty: false,
         },
     )

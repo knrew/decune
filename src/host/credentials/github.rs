@@ -258,6 +258,7 @@ pub(crate) async fn setup_github_cli_credentials(
                     format!("{}:{}", remote_user.uid, remote_user.gid),
                 ),
             ]),
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -282,6 +283,7 @@ pub(crate) async fn setup_github_cli_credentials(
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
             env: BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]),
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -318,6 +320,7 @@ async fn prepare_github_cli_config_dir(
             user: Some("root".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -346,6 +349,7 @@ async fn clear_github_cli_config_dir(
             user: Some("root".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -368,6 +372,7 @@ async fn github_token_file_accessible(
             user: Some("root".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -395,6 +400,7 @@ async fn resolve_github_cli_path(
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
             env: BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]),
+            redactions: Vec::new(),
             tty: false,
         },
     )

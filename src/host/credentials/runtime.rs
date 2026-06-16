@@ -181,6 +181,7 @@ pub(crate) async fn install_staged_host_gitconfig(
             user: Some("root".to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
+            redactions: Vec::new(),
             tty: false,
         },
     )

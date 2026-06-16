@@ -634,6 +634,7 @@ mod tests {
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+                        redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -655,6 +656,7 @@ mod tests {
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+                        redactions: Vec::new(),
                         tty: false,
                     },
                 )

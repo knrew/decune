@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::{
-    config::variables::expand_remote_env,
+    config::variables::expand_remote_env_tracked,
     docker::{
         client::DockerClient,
         container::inspect_container_env,
@@ -39,8 +39,11 @@ pub(in crate::up) async fn attach_shell(
         remote_user.home.clone(),
     )
     .with_container_env(container_env);
-    let remote_env = expand_remote_env(&plan.config.devcontainer.remote_env, &remote_env_variables)
-        .with_context(|| format!("Failed to expand remoteEnv for container: {}", target.id))?;
+    let remote_env =
+        expand_remote_env_tracked(&plan.config.devcontainer.remote_env, &remote_env_variables)
+            .with_context(|| format!("Failed to expand remoteEnv for container: {}", target.id))?;
+    let remote_env_redactions = remote_env.sensitive.redaction_values();
+    let remote_env = remote_env.values;
     let env = resolve_exec_env(
         client,
         &target.id,
@@ -63,6 +66,7 @@ pub(in crate::up) async fn attach_shell(
         first_successful_shell_candidate(candidates, |command| {
             let container_id = target.id.clone();
             let env = env.clone();
+            let redactions = remote_env_redactions.clone();
             let user = remote_user.user.clone();
 
             async move {
@@ -80,6 +84,7 @@ pub(in crate::up) async fn attach_shell(
                         user: Some(user),
                         working_dir: None,
                         env,
+                        redactions,
                         tty: false,
                     },
                 )
@@ -102,6 +107,7 @@ pub(in crate::up) async fn attach_shell(
     };
     let spec = {
         let env = env.clone();
+        let redactions = remote_env_redactions.clone();
         let user = remote_user.user.clone();
         let working_dir = plan.workspace_folder.clone();
 
@@ -110,6 +116,7 @@ pub(in crate::up) async fn attach_shell(
             user: Some(user),
             working_dir: Some(working_dir),
             env,
+            redactions,
             tty: true,
         }
     };

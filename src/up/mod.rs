@@ -2705,6 +2705,7 @@ type = "bind"
                         user: Some("olduser".to_owned()),
                         working_dir: None,
                         env: BTreeMap::new(),
+                        redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -2784,6 +2785,7 @@ type = "bind"
                         user: Some("syncuser".to_owned()),
                         working_dir: None,
                         env: BTreeMap::new(),
+                        redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -2875,6 +2877,7 @@ type = "bind"
                         user: Some("root".to_owned()),
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -2968,6 +2971,7 @@ type = "bind"
                         user: Some("root".to_owned()),
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -2989,6 +2993,7 @@ type = "bind"
                         user: Some("root".to_owned()),
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -3073,6 +3078,7 @@ type = "bind"
                         user: Some("root".to_owned()),
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -3486,6 +3492,7 @@ type = "bind"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+                        redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -3577,6 +3584,7 @@ type = "bind"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+                        redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -3663,6 +3671,7 @@ type = "bind"
                         user: Some("root".to_owned()),
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -4129,6 +4138,7 @@ type = "bind"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+                        redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -4200,6 +4210,7 @@ type = "bind"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+                        redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -4264,6 +4275,7 @@ type = "bind"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -4506,6 +4518,7 @@ shell = "/usr/local/bin/decune-exit-0"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -4672,6 +4685,7 @@ shell = "/usr/local/bin/decune-shell-check"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -4830,6 +4844,7 @@ shell = "/usr/local/bin/decune-shell-check"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -4917,6 +4932,7 @@ shell = "/usr/local/bin/decune-shell-check"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -5019,6 +5035,7 @@ user = "root"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -5108,6 +5125,7 @@ user = "root"
                         user: None,
                         working_dir: None,
                         env: BTreeMap::new(),
+            redactions: Vec::new(),
                         tty: false,
                     },
                 )
@@ -5621,6 +5639,9 @@ user = "root"
             compose_project: None,
             config_layers: ConfigMergeInput::default(),
             config,
+            sensitive_container_env: Default::default(),
+            compose_interpolation_env: Default::default(),
+            compose_interpolation_redactions: Vec::new(),
             effective_users: EffectiveUsers::root(),
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspaces/project".to_owned(),

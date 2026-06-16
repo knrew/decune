@@ -16,7 +16,7 @@ use crate::{
         resolve_config,
         resolved::{ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes},
         types::{GitHttpsMode, GithubCredentialsMode, MountType, SshAgentMode},
-        variables::expand_container_env,
+        variables::expand_container_env_tracked,
     },
     devcontainer::features::{prepare_feature_install_plan, remove_feature_lock_file},
     docker::{
@@ -439,8 +439,10 @@ async fn finalize_mounts_and_resources_for_plan(
         remote_user_name,
         remote_user_home,
     );
-    plan.config.devcontainer.container_env =
-        expand_container_env(&plan.config.devcontainer.container_env, &mount_variables)?;
+    let expanded_container_env =
+        expand_container_env_tracked(&plan.config.devcontainer.container_env, &mount_variables)?;
+    plan.config.devcontainer.container_env = expanded_container_env.values;
+    plan.sensitive_container_env = expanded_container_env.sensitive;
     let mounts = workspace_mounts_from_resolved(
         workspace_location.workspace_mount,
         workspace.root(),
@@ -455,6 +457,11 @@ async fn finalize_mounts_and_resources_for_plan(
     if let Some(compose_project) = &plan.compose_project {
         hash_input.compose_files = compose_project.config_hash_files().to_vec();
     }
+    hash_input.sensitive_container_env_keys = plan
+        .sensitive_container_env
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect();
     hash_input.compose_canonical_model = options.compose_canonical_model.cloned();
     let devcontainer_file = Path::new(&plan.resources.labels["devcontainer.config_file"]);
     hash_input.feature_locks = match &plan.feature_install {
@@ -569,12 +576,23 @@ fn compose_generated_override_hash_input(
             writer.map(labels.iter(), |writer, value| writer.string(value));
         });
         writer.field("environment", |writer| {
-            writer.map(
-                plan.config.devcontainer.container_env.iter(),
-                |writer, value| {
-                    writer.string(value);
-                },
-            );
+            let environment = plan
+                .config
+                .devcontainer
+                .container_env
+                .iter()
+                .map(|(key, value)| {
+                    let value = if plan.sensitive_container_env.contains_key(key) {
+                        "<localEnv-derived-value>".to_owned()
+                    } else {
+                        value.clone()
+                    };
+                    (key.clone(), value)
+                })
+                .collect::<BTreeMap<_, _>>();
+            writer.map(environment.iter(), |writer, value| {
+                writer.string(value);
+            });
         });
         writer.field("container_user", |writer| {
             writer.option_string(plan.config.devcontainer.container_user.as_deref());
@@ -942,7 +960,8 @@ async fn command_probe_container_env(
         remote_user.home,
     );
 
-    expand_container_env(&plan.config.devcontainer.container_env, &mount_variables)
+    expand_container_env_tracked(&plan.config.devcontainer.container_env, &mount_variables)
+        .map(|expanded| expanded.values)
 }
 
 pub(in crate::up) fn should_auto_add_github_cli_feature(

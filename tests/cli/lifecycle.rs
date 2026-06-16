@@ -1,5 +1,24 @@
 use crate::harness::*;
 
+fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {
+    workspace
+        .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")
+        .unwrap();
+    workspace
+        .write_file(
+            "container-tools/linux-amd64/git-credential-decune",
+            b"helper",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            "container-tools/manifest.json",
+            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
+        )
+        .unwrap();
+    workspace.path().join("container-tools")
+}
+
 #[test]
 fn up_detach_creates_and_reuses_image_container() {
     let workspace = support::TempWorkspace::new().unwrap();
@@ -52,6 +71,118 @@ fn up_detach_creates_and_reuses_image_container() {
             );
         });
     });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
+fn up_detach_rejects_reuse_when_local_env_derived_container_env_changes() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "containerEnv": {
+                "NPM_TOKEN": "${localEnv:DECUNE_TEST_NPM_TOKEN}"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result =
+        std::panic::catch_unwind(|| {
+            decune()
+                .args(["up", "--detach"])
+                .arg(&workspace_root)
+                .env("DECUNE_TEST_NPM_TOKEN", "first-secret")
+                .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+                .assert()
+                .success()
+                .stdout(predicate::str::is_empty())
+                .stderr(predicate::str::contains("Started dev container"))
+                .stderr(predicate::str::contains("first-secret").not());
+
+            let first = runtime
+                .block_on(async { inspect_single_workspace_container(&workspace_root).await })
+                .unwrap();
+            let first_id = first.id.clone().unwrap();
+            let first_labels = first.config.as_ref().unwrap().labels.as_ref().unwrap();
+            let first_hash = first_labels.get("decune.config_hash").unwrap().clone();
+            assert!(inspect_has_env(&first, "NPM_TOKEN=first-secret"));
+            assert!(!inspect_has_env(&first, "NPM_TOKEN=second-secret"));
+            assert!(
+                first_labels
+                    .values()
+                    .all(|value| !value.contains("first-secret"))
+            );
+
+            decune()
+                .args(["up", "--detach"])
+                .arg(&workspace_root)
+                .env("DECUNE_TEST_NPM_TOKEN", "second-secret")
+                .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+                .assert()
+                .failure()
+                .stdout(predicate::str::is_empty())
+                .stderr(predicate::str::contains(
+                    "Dev container configuration changed. Run decune rebuild to recreate it.",
+                ))
+                .stderr(predicate::str::contains("second-secret").not());
+
+            let unchanged = runtime
+                .block_on(async { inspect_single_workspace_container(&workspace_root).await })
+                .unwrap();
+            assert_eq!(unchanged.id.as_deref(), Some(first_id.as_str()));
+            assert!(inspect_has_env(&unchanged, "NPM_TOKEN=first-secret"));
+
+            decune()
+                .args(["rebuild", "--detach"])
+                .arg(&workspace_root)
+                .env("DECUNE_TEST_NPM_TOKEN", "second-secret")
+                .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+                .assert()
+                .success()
+                .stdout(predicate::str::is_empty())
+                .stderr(predicate::str::contains(
+                    "Removed existing dev container for rebuild",
+                ))
+                .stderr(predicate::str::contains("Started dev container"))
+                .stderr(predicate::str::contains("second-secret").not());
+
+            let second = runtime
+                .block_on(async { inspect_single_workspace_container(&workspace_root).await })
+                .unwrap();
+            let second_id = second.id.clone().unwrap();
+            let second_labels = second.config.as_ref().unwrap().labels.as_ref().unwrap();
+            let second_hash = second_labels.get("decune.config_hash").unwrap();
+            assert_ne!(first_id, second_id);
+            assert_ne!(&first_hash, second_hash);
+            assert!(inspect_has_env(&second, "NPM_TOKEN=second-secret"));
+            assert!(!inspect_has_env(&second, "NPM_TOKEN=first-secret"));
+            assert!(second_labels.values().all(|value| {
+                !value.contains("first-secret") && !value.contains("second-secret")
+            }));
+        });
 
     runtime.block_on(async {
         cleanup_workspace_containers(&workspace_root).await.unwrap();
