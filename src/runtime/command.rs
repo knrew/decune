@@ -49,8 +49,7 @@ impl RuntimeCommand {
         self.env.insert(key.into(), value.into());
         self
     }
-
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn redact_value(mut self, value: impl Into<String>) -> Self {
         self.redactions.push_value(value);
         self
@@ -65,8 +64,13 @@ impl RuntimeCommand {
         }
         self
     }
-
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "Runtime command timeouts are specified and covered by tests, but no production caller is wired yet."
+        )
+    )]
     pub(crate) fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
@@ -111,7 +115,6 @@ pub(crate) struct RedactionRules {
 }
 
 impl RedactionRules {
-    #[allow(dead_code)]
     pub(crate) fn push_value(&mut self, value: impl Into<String>) {
         let value = value.into();
         if !value.is_empty() {
@@ -166,8 +169,6 @@ pub(crate) trait RuntimeCommandRunner: Send + Sync {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RuntimeStdio {
-    #[allow(dead_code)]
-    Capture,
     Inherit,
 }
 
@@ -193,27 +194,17 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
     fn run_status<'a>(
         &'a self,
         command: RuntimeCommand,
-        stdio: RuntimeStdio,
+        _stdio: RuntimeStdio,
     ) -> Pin<Box<dyn Future<Output = Result<i32>> + Send + 'a>> {
         Box::pin(async move {
             let command_display = command.sanitized_display();
             let mut process = Command::new(command.program());
             process.args(command.args_vec());
             process.envs(command.envs());
-            match stdio {
-                RuntimeStdio::Capture => {
-                    process
-                        .stdin(Stdio::null())
-                        .stdout(Stdio::null())
-                        .stderr(Stdio::null());
-                }
-                RuntimeStdio::Inherit => {
-                    process
-                        .stdin(Stdio::inherit())
-                        .stdout(Stdio::inherit())
-                        .stderr(Stdio::inherit());
-                }
-            }
+            process
+                .stdin(Stdio::inherit())
+                .stdout(Stdio::inherit())
+                .stderr(Stdio::inherit());
             let mut child = process
                 .spawn()
                 .with_context(|| format!("Failed to run command: {command_display}"))?;
@@ -458,7 +449,6 @@ fn spawn_stdin_task(
 }
 
 #[cfg(test)]
-#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub(crate) struct FakeRuntimeCommand {
     responses: Arc<std::sync::Mutex<Vec<Result<RuntimeOutput, String>>>>,
@@ -468,7 +458,6 @@ pub(crate) struct FakeRuntimeCommand {
 
 #[cfg(test)]
 impl FakeRuntimeCommand {
-    #[allow(dead_code)]
     pub(crate) fn new(responses: Vec<Result<RuntimeOutput, String>>) -> Self {
         Self {
             responses: Arc::new(std::sync::Mutex::new(responses)),
@@ -476,13 +465,9 @@ impl FakeRuntimeCommand {
             stdin: Arc::default(),
         }
     }
-
-    #[allow(dead_code)]
     pub(crate) fn commands(&self) -> Vec<RuntimeCommand> {
         self.commands.lock().unwrap().clone()
     }
-
-    #[allow(dead_code)]
     pub(crate) fn stdin(&self) -> Vec<Option<Vec<u8>>> {
         self.stdin.lock().unwrap().clone()
     }
@@ -623,7 +608,6 @@ mod tests {
             "[REDACTED] is hidden"
         );
     }
-
     #[cfg(unix)]
     #[test]
     fn runtime_command_timeout_kills_and_reaps_child_process() {

@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command, thread, time::Duration};
+use std::{fs, io, path::Path, process::Command, thread, time::Duration};
 
 use serde::Deserialize;
 
@@ -348,8 +348,32 @@ fn compose_fixture_workspace(name: &str) -> ComposeFixtureWorkspace {
     }
 
     let workspace = support::TempWorkspace::new().unwrap();
-    workspace.copy_dir_from(compose_fixture_path(name)).unwrap();
+    copy_dir_contents(&compose_fixture_path(name), workspace.path()).unwrap();
     ComposeFixtureWorkspace { workspace }
+}
+
+fn copy_dir_contents(source: &Path, destination: &Path) -> io::Result<()> {
+    for entry in fs::read_dir(source)? {
+        let entry = entry?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry.file_type()?;
+
+        if file_type.is_dir() {
+            fs::create_dir_all(&destination_path)?;
+            copy_dir_contents(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            if let Some(parent) = destination_path.parent() {
+                fs::create_dir_all(parent)?;
+            }
+            fs::copy(&source_path, &destination_path)?;
+        } else if file_type.is_symlink() {
+            let target = fs::read_link(&source_path)?;
+            std::os::unix::fs::symlink(target, &destination_path)?;
+        }
+    }
+
+    Ok(())
 }
 
 fn compose_pull_registry_workspace() -> ComposeFixtureWorkspace {

@@ -319,21 +319,21 @@ mod tests {
         path::ConfigPathOrigin,
         resolved::{ResolvedConfig, ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry},
         types::{DotfileConflict, MountType},
-        variables::VariableContext,
+        variables::{VariableContext, VariableContextInput},
     };
 
     fn variables(workspace_root: &Path) -> VariableContext {
-        VariableContext::new(
-            workspace_root.to_path_buf(),
-            "project".to_owned(),
-            "/workspaces/project".to_owned(),
-            "project".to_owned(),
-            "abc123def456".to_owned(),
-            1000,
-            1000,
-            "vscode".to_owned(),
-            Some("/home/vscode".to_owned()),
-        )
+        VariableContext::new(VariableContextInput {
+            local_workspace_folder: workspace_root.to_path_buf(),
+            local_workspace_folder_basename: "project".to_owned(),
+            container_workspace_folder: "/workspaces/project".to_owned(),
+            container_workspace_folder_basename: "project".to_owned(),
+            devcontainer_id: "abc123def456".to_owned(),
+            uid: 1000,
+            gid: 1000,
+            remote_user: "vscode".to_owned(),
+            remote_user_home: Some("/home/vscode".to_owned()),
+        })
     }
 
     #[test]

@@ -10,8 +10,6 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 const STATE_VERSION: u32 = 1;
-
-#[allow(dead_code)]
 pub(crate) fn state_file_path(state_dir: impl AsRef<Path>) -> PathBuf {
     state_dir.as_ref().join("state.toml")
 }
@@ -52,6 +50,7 @@ pub(crate) struct LifecycleState {
 }
 
 impl LifecycleState {
+    #[cfg(test)]
     pub(crate) fn all_completed() -> Self {
         Self {
             on_create_completed: true,
