@@ -32,7 +32,7 @@ v0.1 は image-based / Dockerfile-based / Docker Compose-based devcontainer を�
 - Windows host 向け公式配布
 - `cargo install` / `cargo install --git` を公式インストール手段として扱うこと
 
-詳細な仕様は [docs/specification.md](docs/specification.md) を参照してください。Compose 対応を実装する PR 単位の作業分解は [docs/issues/](docs/issues/) にあります。
+詳細な仕様は [docs/specification.md](docs/specification.md) を参照してください。
 
 ## 必要なもの
 
@@ -377,8 +377,6 @@ cargo run --locked -p xtask -- release-manifest --dist-dir target/dist --version
 ## ドキュメント
 
 - [docs/specification.md](docs/specification.md): v0.1 の共有仕様、設定、セキュリティ境界、検証方針
-- [docs/issues/](docs/issues/): Docker Compose 完全サポートと bollard 廃止を実装する PR 単位の issue 文書
-- [AGENTS.md](AGENTS.md): AI coding agent 向けの作業規約
 
 ## License
 
