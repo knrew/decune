@@ -244,16 +244,42 @@ async fn run_capture_process(
     let mut child = process
         .spawn()
         .with_context(|| format!("Failed to run command: {command_display}"))?;
-    let tasks = CaptureTasks::spawn(&mut child, stdin, &command_display)?;
-    let status =
-        match wait_for_child(&mut child, command.timeout_duration(), &command_display).await {
-            Ok(status) => status,
-            Err(err) => {
-                tasks.abort_and_join().await;
-                return Err(err);
+    let mut tasks = CaptureTasks::spawn(&mut child, stdin, &command_display)?;
+    let output = match command.timeout_duration() {
+        Some(timeout) => {
+            let result = tokio::time::timeout(
+                timeout,
+                wait_for_child_and_capture(&mut child, &mut tasks, &command_display),
+            )
+            .await;
+            match result {
+                Ok(output) => output?,
+                Err(_) => {
+                    kill_and_wait_child(&mut child, &command_display).await?;
+                    tasks.abort_and_join().await;
+                    return Err(timeout_error(&command_display));
+                }
             }
-        };
-    let (stdout, stderr) = tasks.join(status.success(), &command_display).await?;
+        }
+        None => wait_for_child_and_capture(&mut child, &mut tasks, &command_display).await?,
+    };
+
+    Ok(output)
+}
+
+async fn wait_for_child_and_capture(
+    child: &mut Child,
+    tasks: &mut CaptureTasks,
+    command_display: &str,
+) -> Result<RuntimeOutput> {
+    let status = match wait_for_child(child, None, command_display).await {
+        Ok(status) => status,
+        Err(err) => {
+            tasks.abort_and_join().await;
+            return Err(err);
+        }
+    };
+    let (stdout, stderr) = tasks.join(status.success(), command_display).await?;
 
     Ok(RuntimeOutput {
         stdout,
@@ -305,8 +331,8 @@ fn timeout_error(command_display: &str) -> anyhow::Error {
 }
 
 struct CaptureTasks {
-    stdout: JoinHandle<Result<Vec<u8>>>,
-    stderr: JoinHandle<Result<Vec<u8>>>,
+    stdout: Option<JoinHandle<Result<Vec<u8>>>>,
+    stderr: Option<JoinHandle<Result<Vec<u8>>>>,
     stdin: Option<JoinHandle<Result<()>>>,
 }
 
@@ -335,23 +361,35 @@ impl CaptureTasks {
         };
 
         Ok(Self {
-            stdout: spawn_read_task(stdout, "stdout", command_display.to_owned()),
-            stderr: spawn_read_task(stderr, "stderr", command_display.to_owned()),
+            stdout: Some(spawn_read_task(
+                stdout,
+                "stdout",
+                command_display.to_owned(),
+            )),
+            stderr: Some(spawn_read_task(
+                stderr,
+                "stderr",
+                command_display.to_owned(),
+            )),
             stdin,
         })
     }
 
-    async fn join(self, success: bool, command_display: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+    async fn join(&mut self, success: bool, command_display: &str) -> Result<(Vec<u8>, Vec<u8>)> {
         let stdout = self
             .stdout
+            .take()
+            .with_context(|| format!("Command stdout task was already joined: {command_display}"))?
             .await
             .with_context(|| format!("Failed to join command stdout: {command_display}"))??;
         let stderr = self
             .stderr
+            .take()
+            .with_context(|| format!("Command stderr task was already joined: {command_display}"))?
             .await
             .with_context(|| format!("Failed to join command stderr: {command_display}"))??;
 
-        if let Some(stdin) = self.stdin {
+        if let Some(stdin) = self.stdin.take() {
             let write_result = stdin
                 .await
                 .with_context(|| format!("Failed to join command stdin: {command_display}"))?;
@@ -363,16 +401,24 @@ impl CaptureTasks {
         Ok((stdout, stderr))
     }
 
-    async fn abort_and_join(self) {
-        self.stdout.abort();
-        self.stderr.abort();
+    async fn abort_and_join(&mut self) {
+        if let Some(stdout) = &self.stdout {
+            stdout.abort();
+        }
+        if let Some(stderr) = &self.stderr {
+            stderr.abort();
+        }
         if let Some(stdin) = &self.stdin {
             stdin.abort();
         }
 
-        let _ = self.stdout.await;
-        let _ = self.stderr.await;
-        if let Some(stdin) = self.stdin {
+        if let Some(stdout) = self.stdout.take() {
+            let _ = stdout.await;
+        }
+        if let Some(stderr) = self.stderr.take() {
+            let _ = stderr.await;
+        }
+        if let Some(stdin) = self.stdin.take() {
             let _ = stdin.await;
         }
     }
@@ -516,7 +562,11 @@ mod tests {
     use super::{RedactionRules, RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand};
 
     #[cfg(unix)]
-    use std::{fs, path::Path, time::Duration};
+    use std::{
+        fs,
+        path::Path,
+        time::{Duration, Instant},
+    };
 
     #[test]
     fn runtime_command_keeps_program_and_argv_without_shell_string() {
@@ -635,6 +685,26 @@ mod tests {
 
         assert!(message.contains("Command timed out"));
         assert!(!message.contains(secret));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_timeout_covers_capture_task_join_when_descendant_keeps_pipe_open() {
+        let command = RuntimeCommand::new("sh")
+            .args(["-c", "printf parent-done; sleep 1 &"])
+            .timeout(Duration::from_millis(50));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let start = Instant::now();
+        let err = runtime
+            .block_on(TokioRuntimeCommand.run_capture(command))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Command timed out"));
+        assert!(start.elapsed() < Duration::from_millis(500));
     }
 
     #[cfg(unix)]
