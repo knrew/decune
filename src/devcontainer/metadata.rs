@@ -521,7 +521,9 @@ impl RawDevcontainerMetadata {
 
         let lifecycle = self.lifecycle_values();
         let docker_compose_file = parse_docker_compose_file(self.docker_compose_file.take())?;
-        let is_compose_mode = docker_compose_file.is_some() || self.service.is_some();
+        validate_compose_only_properties(&self, docker_compose_file.is_some())?;
+        let is_compose_mode =
+            docker_compose_file.is_some() || self.service.is_some() || self.run_services.is_some();
         let (source, run_args) = if is_compose_mode {
             validate_compose_unsupported_properties(&self)?;
             if self.image.is_some() {
@@ -642,6 +644,32 @@ impl RawDevcontainerMetadata {
     }
 }
 
+fn validate_compose_only_properties(
+    raw: &RawDevcontainerMetadata,
+    has_docker_compose_file: bool,
+) -> Result<()> {
+    if raw.run_services.is_none() {
+        return Ok(());
+    }
+
+    let mut missing = Vec::new();
+    if !has_docker_compose_file {
+        missing.push("dockerComposeFile");
+    }
+    if raw.service.is_none() {
+        missing.push("service");
+    }
+
+    if !missing.is_empty() {
+        return Err(anyhow!(
+            "runServices is only supported in Docker Compose mode and requires {}",
+            human_join(&missing)
+        ));
+    }
+
+    Ok(())
+}
+
 fn validate_compose_unsupported_properties(raw: &RawDevcontainerMetadata) -> Result<()> {
     if raw.workspace_mount.is_some() {
         return Err(anyhow!(
@@ -688,6 +716,15 @@ fn parse_docker_compose_file(value: Option<Value>) -> Result<Option<Vec<String>>
     }
 
     Ok(Some(files))
+}
+
+fn human_join(values: &[&str]) -> String {
+    match values {
+        [] => String::new(),
+        [value] => (*value).to_owned(),
+        [left, right] => format!("{left} and {right}"),
+        [head @ .., tail] => format!("{}, and {tail}", head.join(", ")),
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1128,6 +1165,53 @@ mod tests {
             };
 
             assert_eq!(compose.run_services, expected);
+        }
+    }
+
+    #[test]
+    fn run_services_requires_compose_metadata() {
+        for (value, expected) in [
+            (
+                json!({
+                    "image": "ubuntu:24.04",
+                    "runServices": ["app"]
+                }),
+                "runServices is only supported in Docker Compose mode and requires dockerComposeFile and service",
+            ),
+            (
+                json!({
+                    "build": {"dockerfile": "Dockerfile"},
+                    "runServices": ["app"]
+                }),
+                "runServices is only supported in Docker Compose mode and requires dockerComposeFile and service",
+            ),
+            (
+                json!({
+                    "runServices": ["app"]
+                }),
+                "runServices is only supported in Docker Compose mode and requires dockerComposeFile and service",
+            ),
+            (
+                json!({
+                    "dockerComposeFile": "compose.yml",
+                    "runServices": ["app"]
+                }),
+                "runServices is only supported in Docker Compose mode and requires service",
+            ),
+            (
+                json!({
+                    "service": "app",
+                    "runServices": ["app"]
+                }),
+                "runServices is only supported in Docker Compose mode and requires dockerComposeFile",
+            ),
+        ] {
+            let error = parse_metadata(value).unwrap_err();
+
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?} in {error}"
+            );
         }
     }
 

@@ -223,7 +223,7 @@ workspace root から以下の順で検出する。
 | Dockerfile | `build.dockerfile` | `image`, `dockerComposeFile`, `service` | Dockerfile を build して container を作る |
 | Docker Compose | `dockerComposeFile`, `service` | `image`, `build` | Compose が image/build を持つ |
 
-`dockerComposeFile` と `service` は片方だけ指定してはならない。Compose mode では `runServices` を任意で指定できる。
+`dockerComposeFile` と `service` は片方だけ指定してはならない。`runServices` は Compose mode 専用であり、指定する場合は `dockerComposeFile` と `service` も必須である。
 
 ### 対応プロパティ
 
@@ -354,6 +354,7 @@ Generated override file は user の `dockerComposeFile` より後に `-f` で�
 
 - `runServices` 未指定: `docker compose up -d` を service 引数なしで実行し、Compose model 上の有効 service を起動対象にする。
 - `runServices` 指定あり: primary `service` と `runServices` の和集合を service 引数として `docker compose up -d <services...>` に渡す。
+- image / Dockerfile mode、または `dockerComposeFile` と `service` が揃っていない構成で `runServices` を指定した場合は error とする。
 - service dependencies の起動順、`depends_on`、healthcheck、profiles の扱いは Compose CLI に委譲する。
 - `down` / attached `up` 終了時の `stopCompose` は、`runServices` の service 引数で対象を狭めず、Compose project 全体を停止する。これは Compose が `depends_on` 等で暗黙に起動した dependency service を残さないためである。`clean` は project 全体を削除対象にする。
 
