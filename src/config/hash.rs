@@ -580,7 +580,7 @@ fn write_devcontainer(
         });
         writer.field("container_env", |writer| {
             let environment =
-                redacted_env_for_hash(&devcontainer.container_env, sensitive_container_env_keys);
+                container_env_for_hash(&devcontainer.container_env, sensitive_container_env_keys);
             writer.map(environment.iter(), |writer, value| writer.string(value));
         });
         writer.field("remote_env", |writer| {
@@ -637,6 +637,37 @@ fn write_devcontainer(
             None => writer.none(),
         });
     });
+}
+
+fn container_env_for_hash(
+    env: &BTreeMap<String, String>,
+    sensitive_keys: &[String],
+) -> BTreeMap<String, String> {
+    env.iter()
+        .map(|(key, value)| {
+            let value = if sensitive_keys.iter().any(|sensitive| sensitive == key) {
+                local_env_derived_container_env_digest(key, value)
+            } else {
+                value.clone()
+            };
+            (key.clone(), value)
+        })
+        .collect()
+}
+
+fn local_env_derived_container_env_digest(key: &str, value: &str) -> String {
+    let mut writer = CanonicalWriter::default();
+    writer.object("LocalEnvDerivedContainerEnvDigest", |writer| {
+        writer.field("version", |writer| {
+            writer.string("decune-container-env-digest-v1")
+        });
+        writer.field("key", |writer| writer.string(key));
+        writer.field("value", |writer| writer.string(value));
+    });
+    format!(
+        "<localEnv-derived-value-sha256:{}>",
+        sha256_hex(writer.finish().as_bytes())
+    )
 }
 
 fn redacted_env_for_hash(
@@ -1767,7 +1798,7 @@ shell = false
     }
 
     #[test]
-    fn config_hash_redacts_local_env_derived_container_env_values() {
+    fn config_hash_changes_for_local_env_container_env_digest() {
         let mut first = ResolvedConfig::default();
         first.devcontainer.container_env = BTreeMap::from([
             ("NPM_TOKEN".to_owned(), "first-secret".to_owned()),
@@ -1795,9 +1826,44 @@ shell = false
             ..ConfigHashInput::new(&second)
         });
 
-        assert_eq!(redacted_first, redacted_second);
+        assert_ne!(redacted_first, redacted_second);
         assert_ne!(redacted_first, non_sensitive_changed);
         assert_ne!(hash_for(&first), hash_for(&second));
+        assert_eq!(
+            local_env_derived_container_env_digest("NPM_TOKEN", "first-secret"),
+            local_env_derived_container_env_digest("NPM_TOKEN", "first-secret")
+        );
+        assert_ne!(
+            local_env_derived_container_env_digest("NPM_TOKEN", "first-secret"),
+            local_env_derived_container_env_digest("NPM_TOKEN", "second-secret")
+        );
+        assert!(
+            !local_env_derived_container_env_digest("NPM_TOKEN", "first-secret")
+                .contains("first-secret")
+        );
+    }
+
+    #[test]
+    fn config_hash_still_redacts_local_env_derived_remote_env_values() {
+        let mut first = ResolvedConfig::default();
+        first.devcontainer.remote_env =
+            BTreeMap::from([("NPM_TOKEN".to_owned(), "first-secret".to_owned())]);
+        let mut second = first.clone();
+        second
+            .devcontainer
+            .remote_env
+            .insert("NPM_TOKEN".to_owned(), "second-secret".to_owned());
+
+        let redacted_first = config_hash(&ConfigHashInput {
+            sensitive_remote_env_keys: vec!["NPM_TOKEN".to_owned()],
+            ..ConfigHashInput::new(&first)
+        });
+        let redacted_second = config_hash(&ConfigHashInput {
+            sensitive_remote_env_keys: vec!["NPM_TOKEN".to_owned()],
+            ..ConfigHashInput::new(&second)
+        });
+
+        assert_eq!(redacted_first, redacted_second);
     }
 
     #[test]
