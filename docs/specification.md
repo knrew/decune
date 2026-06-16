@@ -153,7 +153,7 @@ decune up [OPTIONS] [WORKSPACE]
 - `--detach`: shell に接続せず起動だけ行う。
 - `--rebuild`: 既存 container/project を破棄または再作成する。decune 管理 volume は保持する。
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
-- `--pull`: base image または Compose service image を pull してから build/create する。
+- `--pull`: base image または Compose service image を pull してから build/create する。Compose mode では config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
 - `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000:3000`, `127.0.0.1:8080:3000`。複数指定可。Compose mode で service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
 
@@ -368,7 +368,7 @@ Compose mode の image creation は次の順で行う。
 4. primary service の base image を特定する。Compose service に `build` がある場合は Compose が tag した service image を使う。`image` がない build-only service では Compose の既定 tag `<project-name>-<service>` を使う。service に `image` のみがある場合はその image を使い、metadata 解決前に missing image を pull する。
 5. Feature、UID/GID sync、entrypoint shim が必要な場合、base image に decune generated layer を重ね、decune generated image tag を作る。
 6. generated Compose override に primary service image 差し替えを反映する。decune generated local image に差し替える場合は `pull_policy: never` も反映する。
-7. generated override 込みで `docker compose up -d` を実行する。
+7. generated override 込みで `docker compose up -d` を実行する。`--pull` または `rebuild` の場合は `--force-recreate` を渡す。
 8. `docker compose ps --format json` と `docker inspect` で primary container ID を解決し、lifecycle と shell attach に進む。
 
 `--pull` は user Dockerfile build、base image pull、Compose service build/pull にだけ適用する。Feature、UID/GID sync、entrypoint shim などの decune generated layer は直前に準備した local image tag を `FROM` にすることがあるため、これらの layer build には Docker build の `--pull` を渡さない。

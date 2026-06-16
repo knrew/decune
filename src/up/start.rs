@@ -261,6 +261,24 @@ fn state_matches_container_snapshot(
     state.container_id == container.container_id && state.config_hash == container.config_hash
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+struct ExistingContainerReusePolicy {
+    pull: bool,
+    service_forward_requires_recreate: bool,
+}
+
+fn should_reuse_existing_container(
+    decision: &ExistingContainerDecision,
+    policy: ExistingContainerReusePolicy,
+) -> bool {
+    matches!(
+        decision,
+        ExistingContainerDecision::ReuseRunning { .. }
+            | ExistingContainerDecision::StartStopped { .. }
+    ) && !policy.pull
+        && !policy.service_forward_requires_recreate
+}
+
 pub(in crate::up) async fn ensure_container_started(
     options: UpOptions,
     forwarding_resolution: ForwardingResolution,
@@ -672,15 +690,24 @@ async fn start_compose_project(
         credentials.service_forward(),
     )
     .await?;
+    let should_reuse = should_reuse_existing_container(
+        &decision,
+        ExistingContainerReusePolicy {
+            pull: options.pull,
+            service_forward_requires_recreate,
+        },
+    );
     let force_recreate = matches!(decision, ExistingContainerDecision::Recreate { .. })
+        || options.rebuild
+        || options.pull
+        || stale_compose_project
+        || service_forward_requires_recreate;
+    let remove_orphans = matches!(decision, ExistingContainerDecision::Recreate { .. })
         || options.rebuild
         || stale_compose_project
         || service_forward_requires_recreate;
-    let remove_orphans = force_recreate || stale_compose_project;
     match decision {
-        ExistingContainerDecision::ReuseRunning { id, name }
-            if !service_forward_requires_recreate =>
-        {
+        ExistingContainerDecision::ReuseRunning { id, name } if should_reuse => {
             let outcome = UpOutcome {
                 container_id: id,
                 container_name: name,
@@ -695,9 +722,7 @@ async fn start_compose_project(
                 credentials,
             );
         }
-        ExistingContainerDecision::StartStopped { id, name }
-            if !service_forward_requires_recreate =>
-        {
+        ExistingContainerDecision::StartStopped { id, name } if should_reuse => {
             cli.up(
                 &runtime_lifecycle.project,
                 ComposeUpOptions {
@@ -1734,8 +1759,9 @@ async fn list_compose_project_containers(
 #[cfg(test)]
 mod tests {
     use super::{
-        ComposeOverrideStartup, compose_service_forward_container_requires_recreate,
-        generated_compose_override_content, generated_compose_override_content_with_startup,
+        ComposeOverrideStartup, ExistingContainerReusePolicy,
+        compose_service_forward_container_requires_recreate, generated_compose_override_content,
+        generated_compose_override_content_with_startup, should_reuse_existing_container,
         state_container_snapshot,
     };
     use crate::{
@@ -1751,7 +1777,10 @@ mod tests {
             },
         },
         host::forward::ServiceForwardRuntime,
-        up::{UpContainerSummary, UpMountSummary, UpPlan},
+        up::{
+            CredentialRuntimeMountPolicy, ExistingContainerDecision, UpContainerSummary,
+            UpMountSummary, UpPlan, decide_existing_container,
+        },
     };
     use std::collections::BTreeMap;
 
@@ -1906,6 +1935,119 @@ mod tests {
     }
 
     #[test]
+    fn compose_reuse_policy_allows_running_container_without_pull() {
+        let container = reusable_container("stable-hash");
+        let decision = decide_existing_container(
+            std::slice::from_ref(&container),
+            "stable-hash",
+            &mount_policy(&[]),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::ReuseRunning {
+                id: "container-id".to_owned(),
+                name: "project-app-1".to_owned()
+            }
+        );
+        assert!(should_reuse_existing_container(
+            &decision,
+            ExistingContainerReusePolicy::default()
+        ));
+    }
+
+    #[test]
+    fn compose_reuse_policy_blocks_running_container_when_pull_is_requested() {
+        let container = reusable_container("stable-hash");
+        let decision = decide_existing_container(
+            std::slice::from_ref(&container),
+            "stable-hash",
+            &mount_policy(&[]),
+            false,
+        )
+        .unwrap();
+
+        assert!(!should_reuse_existing_container(
+            &decision,
+            ExistingContainerReusePolicy {
+                pull: true,
+                service_forward_requires_recreate: false,
+            }
+        ));
+    }
+
+    #[test]
+    fn compose_reuse_policy_blocks_rebuild_decision() {
+        let container = reusable_container("stable-hash");
+        let decision = decide_existing_container(
+            std::slice::from_ref(&container),
+            "stable-hash",
+            &mount_policy(&[]),
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+        assert!(!should_reuse_existing_container(
+            &decision,
+            ExistingContainerReusePolicy::default()
+        ));
+    }
+
+    #[test]
+    fn compose_reuse_policy_rejects_changed_config_hash() {
+        let container = reusable_container("old-hash");
+        let error = decide_existing_container(
+            std::slice::from_ref(&container),
+            "stable-hash",
+            &mount_policy(&[]),
+            false,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Run decune rebuild"));
+    }
+
+    #[test]
+    fn compose_reuse_policy_blocks_credential_mount_recreate() {
+        let container = UpContainerSummary {
+            mounts: Some(Vec::new()),
+            ..reusable_container("stable-hash")
+        };
+        let required_mount = UpMountSummary {
+            source: Some("/tmp/decune/gh".to_owned()),
+            target: "/run/decune/gh".to_owned(),
+            mount_type: MountType::Bind,
+            read_only: true,
+        };
+        let decision = decide_existing_container(
+            std::slice::from_ref(&container),
+            "stable-hash",
+            &mount_policy(&[required_mount]),
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container]
+            }
+        );
+        assert!(!should_reuse_existing_container(
+            &decision,
+            ExistingContainerReusePolicy::default()
+        ));
+    }
+
+    #[test]
     fn generated_compose_override_writes_synced_container_user() {
         let mut plan = generated_override_test_plan(Vec::new());
         plan.config.devcontainer.container_user = Some("2001:2001".to_owned());
@@ -2056,6 +2198,22 @@ mod tests {
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         }
+    }
+
+    fn reusable_container(config_hash: &str) -> UpContainerSummary {
+        UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "project-app-1".to_owned(),
+            image_id: Some("sha256:image".to_owned()),
+            config_hash: Some(config_hash.to_owned()),
+            config_file: None,
+            mounts: Some(Vec::new()),
+            running: true,
+        }
+    }
+
+    fn mount_policy(required_mounts: &[UpMountSummary]) -> CredentialRuntimeMountPolicy {
+        CredentialRuntimeMountPolicy::new(required_mounts.to_vec())
     }
 
     fn sync_plan() -> UidGidSyncPlan {

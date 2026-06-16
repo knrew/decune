@@ -1,4 +1,4 @@
-use std::{path::Path, process::Command};
+use std::{path::Path, process::Command, thread, time::Duration};
 
 use serde::Deserialize;
 
@@ -45,6 +45,11 @@ struct ComposeImageCleanup {
     image: String,
 }
 
+struct ComposeRegistryFixture {
+    container_name: String,
+    image: String,
+}
+
 impl Drop for UnrelatedComposeFixture {
     fn drop(&mut self) {
         let _ = docker_status(["rm", "--force", "--volumes", &self.container_name]);
@@ -54,6 +59,13 @@ impl Drop for UnrelatedComposeFixture {
 
 impl Drop for ComposeImageCleanup {
     fn drop(&mut self) {
+        let _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
+    }
+}
+
+impl Drop for ComposeRegistryFixture {
+    fn drop(&mut self) {
+        let _ = docker_status(["rm", "--force", "--volumes", &self.container_name]);
         let _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
     }
 }
@@ -241,6 +253,34 @@ fn compose_integration_cleanup_safety_keeps_unrelated_project_and_user_image() {
     );
 }
 
+#[test]
+#[ignore = "requires Docker daemon, Docker Compose v2 plugin, and local registry image"]
+fn compose_integration_up_pull_recreates_image_only_service_for_updated_tag() {
+    let workspace = compose_pull_registry_workspace();
+    let registry = create_compose_registry_fixture(workspace.path());
+
+    build_and_push_compose_registry_image(&registry.image, "v1");
+    run_decune_up_detach(workspace.path(), &[]);
+    assert_eq!(
+        compose_primary_container_output(workspace.path(), ["cat", "/decune-version"]).trim(),
+        "v1"
+    );
+
+    build_and_push_compose_registry_image(&registry.image, "v2");
+    decune()
+        .args(["up", "--pull", "--detach"])
+        .arg(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    assert_eq!(
+        compose_primary_container_output(workspace.path(), ["cat", "/decune-version"]).trim(),
+        "v2"
+    );
+}
+
 fn compose_fixture_workspace(name: &str) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
@@ -249,6 +289,47 @@ fn compose_fixture_workspace(name: &str) -> ComposeFixtureWorkspace {
 
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.copy_dir_from(compose_fixture_path(name)).unwrap();
+    ComposeFixtureWorkspace { workspace }
+}
+
+fn compose_pull_registry_workspace() -> ComposeFixtureWorkspace {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true,
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .unwrap();
+    let image = format!(
+        "127.0.0.1:5000/decune-placeholder-{}:latest",
+        workspace_id(workspace.path())
+    );
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            format!(
+                r#"
+            services:
+              app:
+                image: "{image}"
+            "#
+            ),
+        )
+        .unwrap();
+
     ComposeFixtureWorkspace { workspace }
 }
 
@@ -309,6 +390,23 @@ fn run_decune_up_detach(workspace: &Path, envs: &[(&str, &str)]) {
         .success()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("Started dev container"));
+}
+
+fn compose_primary_container_output<const N: usize>(
+    workspace: &Path,
+    command: [&str; N],
+) -> String {
+    let containers = compose_project_containers(workspace).unwrap();
+    let container_id = containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .map(|container| container.id.as_str())
+        .expect("primary Compose container was not found");
+    let mut args = vec!["exec", container_id];
+    args.extend(command);
+    docker_output(args).unwrap()
 }
 
 fn compose_project_containers(workspace: &Path) -> anyhow::Result<Vec<ComposeContainer>> {
@@ -386,6 +484,94 @@ fn cleanup_compose_workspace(workspace: &Path) {
         "--filter",
         &format!("label=com.docker.compose.project={project}"),
     ]);
+}
+
+fn create_compose_registry_fixture(workspace: &Path) -> ComposeRegistryFixture {
+    let container_name = format!("decune-compose-registry-{}", workspace_id(workspace));
+    let _ = docker_status(["rm", "--force", "--volumes", &container_name]);
+    docker_status(["image", "inspect", "registry:2"])
+        .or_else(|_| docker_status(["pull", "registry:2"]))
+        .unwrap();
+    docker_status([
+        "run",
+        "--detach",
+        "--name",
+        &container_name,
+        "--publish",
+        "127.0.0.1::5000",
+        "registry:2",
+    ])
+    .unwrap();
+    let port = docker_output(["port", &container_name, "5000/tcp"]).unwrap();
+    let port = port
+        .trim()
+        .rsplit(':')
+        .next()
+        .expect("registry port output was empty");
+    let image = format!(
+        "127.0.0.1:{port}/decune-compose-pull-{}:latest",
+        workspace_id(workspace)
+    );
+    rewrite_compose_image(workspace, &image);
+
+    ComposeRegistryFixture {
+        container_name,
+        image,
+    }
+}
+
+fn rewrite_compose_image(workspace: &Path, image: &str) {
+    fs::write(
+        workspace.join(".devcontainer/compose.yaml"),
+        format!(
+            r#"
+services:
+  app:
+    image: "{image}"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn build_and_push_compose_registry_image(image: &str, version: &str) {
+    let context = tempfile::tempdir().unwrap();
+    fs::write(
+        context.path().join("Dockerfile"),
+        format!(
+            r#"FROM alpine:3.20
+RUN printf '%s\n' '{version}' >/decune-version
+"#
+        ),
+    )
+    .unwrap();
+    docker_status([
+        "build",
+        "--tag",
+        image,
+        context.path().to_string_lossy().as_ref(),
+    ])
+    .unwrap();
+    push_image_with_retry(image);
+    docker_status(["image", "rm", "--force", "--no-prune", image]).unwrap();
+}
+
+fn push_image_with_retry(image: &str) {
+    let mut last_error = None;
+    for _ in 0..20 {
+        match docker_status(["push", image]) {
+            Ok(()) => return,
+            Err(error) => {
+                last_error = Some(error);
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+
+    panic!(
+        "failed to push test image to local registry: {}",
+        last_error.unwrap()
+    );
 }
 
 fn create_unrelated_compose_fixture(workspace: &Path) -> UnrelatedComposeFixture {
