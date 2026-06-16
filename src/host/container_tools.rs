@@ -68,9 +68,36 @@ pub(crate) fn stage_container_tool(
         platform,
         runtime_dir,
         &container_tool_override_dirs(),
-        EMBEDDED_CONTAINER_TOOLS,
+        default_embedded_container_tools(),
     )
 }
+
+fn default_embedded_container_tools() -> &'static [EmbeddedContainerToolArtifact] {
+    #[cfg(test)]
+    {
+        if EMBEDDED_CONTAINER_TOOLS.is_empty() {
+            return TEST_EMBEDDED_CONTAINER_TOOLS;
+        }
+    }
+
+    EMBEDDED_CONTAINER_TOOLS
+}
+
+#[cfg(test)]
+const TEST_EMBEDDED_CONTAINER_TOOLS: &[EmbeddedContainerToolArtifact] = &[
+    EmbeddedContainerToolArtifact {
+        name: "decune-forward-agent",
+        platform: "linux-amd64",
+        sha256: "e43fad88995343d19035dbc9b9a181c46454c4305d0b19ce54addbacb31723e2",
+        bytes: b"test-forward-agent",
+    },
+    EmbeddedContainerToolArtifact {
+        name: "git-credential-decune",
+        platform: "linux-amd64",
+        sha256: "8449cd1f1a78299ef5aa03f9f7b62f657e0c028dd841a06a96755685221044a4",
+        bytes: b"test-git-credential-helper",
+    },
+];
 
 pub(crate) fn stage_container_tool_from_dirs(
     tool: ContainerTool,

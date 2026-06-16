@@ -1681,6 +1681,27 @@ shell = false
     }
 
     #[test]
+    fn config_hash_changes_when_generated_override_semantic_hash_changes() {
+        let config = resolved_config("version = 1\n");
+        let first = config_hash(&ConfigHashInput {
+            compose_generated_override: Some(ComposeGeneratedOverrideHashInput {
+                path: "/state/decune/workspace/compose.override.yaml".to_owned(),
+                content_hash: "sha256:first".to_owned(),
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_generated_override: Some(ComposeGeneratedOverrideHashInput {
+                path: "/state/decune/workspace/compose.override.yaml".to_owned(),
+                content_hash: "sha256:second".to_owned(),
+            }),
+            ..ConfigHashInput::new(&config)
+        });
+
+        assert_ne!(first, second);
+    }
+
+    #[test]
     fn config_hash_changes_when_compose_canonical_model_non_secret_changes() {
         let config = resolved_config("version = 1\n");
         let first = config_hash(&ConfigHashInput {
