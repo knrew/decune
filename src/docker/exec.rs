@@ -21,6 +21,7 @@ pub(crate) struct ExecOutput {
     pub(crate) exit_code: i64,
 }
 
+/// Runs exec to completion and returns captured output after requiring a zero exit code.
 pub(crate) async fn exec_capture(
     client: &DockerClient,
     container: &str,
@@ -33,6 +34,7 @@ pub(crate) async fn exec_capture(
     Ok(output)
 }
 
+/// Runs exec to completion and returns captured output with its exit code.
 pub(crate) async fn exec_capture_output(
     client: &DockerClient,
     container: &str,
@@ -43,6 +45,7 @@ pub(crate) async fn exec_capture_output(
     client.cli().exec_capture(container, spec).await
 }
 
+/// Runs exec attached to this process stdio and returns the command exit status.
 pub(crate) async fn exec_attach_stdio(
     client: &DockerClient,
     container: &str,
@@ -50,14 +53,15 @@ pub(crate) async fn exec_attach_stdio(
 ) -> Result<i64> {
     validate_exec_spec(spec)?;
 
-    client.cli().exec_status(container, spec).await
+    client.cli().exec_attached_status(container, spec).await
 }
 
+/// Starts exec in detached mode and returns only whether Docker accepted the start request.
 pub(crate) async fn exec_detached(
     client: &DockerClient,
     container: &str,
     spec: &ExecCommandSpec,
-) -> Result<String> {
+) -> Result<()> {
     validate_exec_spec(spec)?;
 
     client.cli().exec_detached(container, spec).await

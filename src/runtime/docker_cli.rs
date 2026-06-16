@@ -434,19 +434,13 @@ impl DockerCli {
         &self,
         container: &str,
         spec: &crate::docker::exec::ExecCommandSpec,
-    ) -> Result<String> {
+    ) -> Result<()> {
         let command = docker_exec_command(container, spec, false, false, true);
         let output = self.runner.run_capture(command.clone()).await?;
-        ensure_success("start detached Docker exec", container, &command, &output)?;
-        let inspect = self.inspect_container(container).await?;
-        Ok(inspect
-            .state
-            .and_then(|state| state.pid)
-            .unwrap_or_default()
-            .to_string())
+        ensure_success("start detached Docker exec", container, &command, &output)
     }
 
-    pub(crate) async fn exec_status(
+    pub(crate) async fn exec_attached_status(
         &self,
         container: &str,
         spec: &crate::docker::exec::ExecCommandSpec,
@@ -915,6 +909,7 @@ mod tests {
         config::types::{MountType, PortProtocol},
         docker::{
             container::{ContainerCreateSpec, ContainerHostConfig},
+            exec::ExecCommandSpec,
             mounts::{DockerMountSpec, MountBindOptions, MountVolumeOptions},
             ports::DockerPublishPort,
         },
@@ -1237,6 +1232,41 @@ mod tests {
                 .env_value("DECUNE_FORWARD_AGENT_SECRET")
                 .map(String::as_str),
             Some("test-secret")
+        );
+    }
+
+    #[test]
+    fn exec_detached_returns_success_without_inspecting_container() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(output(b""))]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let spec = ExecCommandSpec {
+            command: vec!["/run/decune/decune-forward-agent".to_owned()],
+            user: Some("0".to_owned()),
+            working_dir: None,
+            env: BTreeMap::new(),
+            redactions: Vec::new(),
+            tty: false,
+        };
+
+        let result: anyhow::Result<()> = runtime.block_on(client.exec_detached("container", &spec));
+
+        result.unwrap();
+        let commands = runner.commands();
+        assert_eq!(commands.len(), 1);
+        assert_eq!(
+            commands[0].args_vec(),
+            [
+                "exec",
+                "--detach",
+                "--user",
+                "0",
+                "container",
+                "/run/decune/decune-forward-agent"
+            ]
         );
     }
 
