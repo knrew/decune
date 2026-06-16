@@ -38,7 +38,14 @@ v0.1 は image-based / Dockerfile-based / Docker Compose-based devcontainer を�
 
 - Linux または macOS host
 - Docker CLI `docker`
-- Docker Compose v2 plugin（`docker compose version` が成功すること）
+- Docker Compose v2 plugin（`docker compose version` が成功し、以下の capability があること）
+  - `docker compose config --format json`
+  - `docker compose ps --format json`
+  - `docker compose build --with-dependencies`
+  - `docker compose pull --policy always`
+  - `docker compose pull --ignore-buildable`
+  - `docker compose up --force-recreate`
+  - `docker compose up --remove-orphans`
 - Docker daemon へ接続できる権限
 - Git 認証連携を使う場合: host 側の `git`、必要に応じて `SSH_AUTH_SOCK`
 - GitHub CLI 連携を使う場合: host 側の `gh` と `gh auth token` が成功する状態

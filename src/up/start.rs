@@ -533,6 +533,7 @@ async fn start_compose_project(
         compose.run_services.as_deref(),
     );
     let cli = DockerComposeCli::default();
+    cli.ensure_required_capabilities().await?;
 
     let user_config = ComposeIntrospector::new(cli.clone())
         .user_config(
