@@ -221,6 +221,7 @@ pub(crate) fn forward_agent_command_at(
                 socket_target.to_owned(),
             ),
         ]),
+        redactions: vec![secret.to_owned()],
         tty: false,
     }
 }

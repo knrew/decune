@@ -1,7 +1,12 @@
 use std::path::PathBuf;
 
+use std::collections::BTreeMap;
+
 use crate::{
-    config::{ConfigLayer, ConfigMergeInput, resolved::ResolvedConfig, types::MountType},
+    config::{
+        ConfigLayer, ConfigMergeInput, resolved::ResolvedConfig, types::MountType,
+        variables::SensitiveEnvMap,
+    },
     devcontainer::features::PreparedFeatureInstallPlan,
     docker::{
         build::{DockerBuildOptions, ResolvedBuildContext},
@@ -93,6 +98,9 @@ pub(crate) struct UpPlan {
     pub(crate) compose_project: Option<ComposeProjectPlan>,
     pub(crate) config_layers: ConfigMergeInput,
     pub(crate) config: ResolvedConfig,
+    pub(crate) sensitive_container_env: SensitiveEnvMap,
+    pub(crate) compose_interpolation_env: BTreeMap<String, String>,
+    pub(crate) compose_interpolation_redactions: Vec<String>,
     pub(crate) effective_users: EffectiveUsers,
     pub(crate) uid_gid_sync_plan: UidGidSyncPlan,
     pub(crate) workspace_folder: String,

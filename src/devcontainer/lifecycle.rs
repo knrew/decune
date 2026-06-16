@@ -12,7 +12,7 @@ use crate::{
     config::{
         resolved::{ResolvedConfig, ResolvedHook},
         types::{Command, HookLocation},
-        variables::{VariableContext, expand_remote_env},
+        variables::{VariableContext, expand_remote_env_tracked},
     },
     devcontainer::metadata::LifecycleProperty,
     docker::{
@@ -229,6 +229,7 @@ pub(crate) struct PreparedLifecycleRunContext<'a> {
     remote_user: ResolvedRemoteUser,
     remote_env: BTreeMap<String, String>,
     remote_process_env: BTreeMap<String, String>,
+    remote_env_redactions: Vec<String>,
 }
 
 #[allow(dead_code)]
@@ -395,7 +396,7 @@ pub(crate) async fn prepare_container_lifecycle(
     .await?;
     let container_env = inspect_container_env(context.client, &context.container).await?;
     let remote_env_variables = dotfile_variable_context(&context).with_container_env(container_env);
-    let remote_env = expand_remote_env(
+    let remote_env = expand_remote_env_tracked(
         &context.config.devcontainer.remote_env,
         &remote_env_variables,
     )
@@ -405,6 +406,8 @@ pub(crate) async fn prepare_container_lifecycle(
             context.container
         )
     })?;
+    let remote_env_redactions = remote_env.sensitive.redaction_values();
+    let remote_env = remote_env.values;
     let remote_process_env = resolve_exec_env(
         context.client,
         &context.container,
@@ -418,6 +421,7 @@ pub(crate) async fn prepare_container_lifecycle(
     Ok(PreparedLifecycleRunContext {
         remote_env,
         remote_process_env,
+        remote_env_redactions,
         client: context.client,
         container: context.container,
         config: context.config,
@@ -833,6 +837,7 @@ async fn run_container_process(
             user: Some(user.clone()),
             working_dir: Some(working_dir),
             env: lifecycle_process_env(context, &user),
+            redactions: context.remote_env_redactions.clone(),
             tty: false,
         },
     )

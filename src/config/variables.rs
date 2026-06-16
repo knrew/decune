@@ -2,6 +2,54 @@ use std::{collections::BTreeMap, env, path::PathBuf};
 
 use anyhow::{Result, anyhow};
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct SensitiveEnvMap {
+    entries: BTreeMap<String, SensitiveEnvValue>,
+}
+
+impl SensitiveEnvMap {
+    pub(crate) fn insert(&mut self, key: impl Into<String>, value: SensitiveEnvValue) {
+        self.entries.insert(key.into(), value);
+    }
+
+    pub(crate) fn contains_key(&self, key: &str) -> bool {
+        self.entries.contains_key(key)
+    }
+
+    pub(crate) fn get(&self, key: &str) -> Option<&SensitiveEnvValue> {
+        self.entries.get(key)
+    }
+
+    pub(crate) fn iter(&self) -> impl Iterator<Item = (&String, &SensitiveEnvValue)> {
+        self.entries.iter()
+    }
+
+    pub(crate) fn redaction_values(&self) -> Vec<String> {
+        self.entries
+            .values()
+            .flat_map(|value| value.redactions.iter().cloned())
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SensitiveEnvValue {
+    pub(crate) value: String,
+    pub(crate) redactions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExpandedEnvMap {
+    pub(crate) values: BTreeMap<String, String>,
+    pub(crate) sensitive: SensitiveEnvMap,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ExpandedString {
+    value: String,
+    local_env_fragments: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct VariableContext {
     local_workspace_folder: PathBuf,
@@ -59,35 +107,69 @@ pub(crate) fn expand_variables(input: &str, context: &VariableContext) -> Result
     })
 }
 
-pub(crate) fn expand_remote_env(
+pub(crate) fn expand_remote_env_tracked(
     remote_env: &BTreeMap<String, String>,
     context: &VariableContext,
-) -> Result<BTreeMap<String, String>> {
-    expand_env_map(remote_env, context)
+) -> Result<ExpandedEnvMap> {
+    expand_env_map_tracked(remote_env, context)
 }
 
-pub(crate) fn expand_container_env(
+pub(crate) fn expand_container_env_tracked(
     container_env: &BTreeMap<String, String>,
     context: &VariableContext,
-) -> Result<BTreeMap<String, String>> {
+) -> Result<ExpandedEnvMap> {
     reject_container_env_references(container_env)?;
-    expand_env_map(container_env, context)
+    expand_env_map_tracked(container_env, context)
 }
 
-fn expand_env_map(
+fn expand_env_map_tracked(
     values: &BTreeMap<String, String>,
     context: &VariableContext,
-) -> Result<BTreeMap<String, String>> {
-    values
-        .iter()
-        .map(|(key, value)| {
-            expand_variables(value, context)
-                .map(|expanded| (key.clone(), expanded))
-                .map_err(|error| {
-                    error.context(format!("Failed to expand environment variable: {key}"))
-                })
-        })
-        .collect()
+) -> Result<ExpandedEnvMap> {
+    expand_env_map_tracked_with(values, context, |name| match env::var(name) {
+        Ok(value) => Ok(Some(value)),
+        Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => Err(anyhow!(
+            "Local environment variable is not valid Unicode: {name}"
+        )),
+    })
+}
+
+fn expand_env_map_tracked_with<F>(
+    values: &BTreeMap<String, String>,
+    context: &VariableContext,
+    mut local_env: F,
+) -> Result<ExpandedEnvMap>
+where
+    F: FnMut(&str) -> Result<Option<String>>,
+{
+    let mut expanded = BTreeMap::new();
+    let mut sensitive = SensitiveEnvMap::default();
+    for (key, value) in values {
+        let value =
+            expand_variables_tracked_with(value, context, &mut local_env).map_err(|error| {
+                error.context(format!("Failed to expand environment variable: {key}"))
+            })?;
+        if !value.local_env_fragments.is_empty() {
+            let mut redactions = value.local_env_fragments;
+            if !redactions.iter().any(|redaction| redaction == &value.value) {
+                redactions.push(value.value.clone());
+            }
+            sensitive.insert(
+                key.clone(),
+                SensitiveEnvValue {
+                    value: value.value.clone(),
+                    redactions,
+                },
+            );
+        }
+        expanded.insert(key.clone(), value.value);
+    }
+
+    Ok(ExpandedEnvMap {
+        values: expanded,
+        sensitive,
+    })
 }
 
 fn expand_variables_with<F>(
@@ -115,6 +197,39 @@ where
 
     output.push_str(rest);
     Ok(output)
+}
+
+fn expand_variables_tracked_with<F>(
+    input: &str,
+    context: &VariableContext,
+    mut local_env: F,
+) -> Result<ExpandedString>
+where
+    F: FnMut(&str) -> Result<Option<String>>,
+{
+    let mut output = String::with_capacity(input.len());
+    let mut local_env_fragments = Vec::new();
+    let mut rest = input;
+
+    while let Some(start) = rest.find("${") {
+        output.push_str(&rest[..start]);
+        let variable_start = start + 2;
+        let after_start = &rest[variable_start..];
+        let end = after_start
+            .find('}')
+            .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
+        let expression = &after_start[..end];
+        let resolved = resolve_expression_tracked(expression, context, &mut local_env)?;
+        output.push_str(&resolved.value);
+        local_env_fragments.extend(resolved.local_env_fragments);
+        rest = &after_start[end + 1..];
+    }
+
+    output.push_str(rest);
+    Ok(ExpandedString {
+        value: output,
+        local_env_fragments,
+    })
 }
 
 fn resolve_expression<F>(
@@ -155,6 +270,24 @@ where
     }
 }
 
+fn resolve_expression_tracked<F>(
+    expression: &str,
+    context: &VariableContext,
+    local_env: &mut F,
+) -> Result<ExpandedString>
+where
+    F: FnMut(&str) -> Result<Option<String>>,
+{
+    if let Some(rest) = expression.strip_prefix("localEnv:") {
+        return resolve_local_env_tracked(rest, local_env);
+    }
+
+    Ok(ExpandedString {
+        value: resolve_expression(expression, context, local_env)?,
+        local_env_fragments: Vec::new(),
+    })
+}
+
 fn resolve_container_env(expression: &str, context: &VariableContext) -> Result<String> {
     let mut parts = expression.splitn(2, ':');
     let name = parts.next().unwrap_or_default();
@@ -169,6 +302,32 @@ fn resolve_container_env(expression: &str, context: &VariableContext) -> Result<
         None => default
             .map(str::to_owned)
             .ok_or_else(|| anyhow!("Container environment variable is not set: {name}")),
+    }
+}
+
+fn resolve_local_env_tracked<F>(expression: &str, local_env: &mut F) -> Result<ExpandedString>
+where
+    F: FnMut(&str) -> Result<Option<String>>,
+{
+    let mut parts = expression.splitn(2, ':');
+    let name = parts.next().unwrap_or_default();
+    let default = parts.next();
+
+    if name.is_empty() {
+        return Err(anyhow!("localEnv variable name must not be empty"));
+    }
+
+    match local_env(name)? {
+        Some(value) => Ok(ExpandedString {
+            value: value.clone(),
+            local_env_fragments: vec![value],
+        }),
+        None => default
+            .map(|value| ExpandedString {
+                value: value.to_owned(),
+                local_env_fragments: Vec::new(),
+            })
+            .ok_or_else(|| anyhow!("Local environment variable is not set: {name}")),
     }
 }
 
@@ -318,6 +477,35 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
     }
 
     #[test]
+    fn tracked_env_marks_values_derived_from_local_env() {
+        let values = BTreeMap::from([
+            (
+                "NPM_TOKEN".to_owned(),
+                "prefix-${localEnv:NPM_TOKEN}".to_owned(),
+            ),
+            (
+                "DEFAULTED".to_owned(),
+                "${localEnv:DECUNE_MISSING:fallback}".to_owned(),
+            ),
+        ]);
+        let local_env = BTreeMap::from([("NPM_TOKEN".to_owned(), "secret-token".to_owned())]);
+        let expanded = expand_env_map_tracked_with(&values, &context(), |name| {
+            Ok(local_env.get(name).cloned())
+        })
+        .unwrap();
+
+        assert_eq!(
+            expanded.values.get("NPM_TOKEN").map(String::as_str),
+            Some("prefix-secret-token")
+        );
+        assert_eq!(
+            expanded.sensitive.get("NPM_TOKEN").unwrap().redactions,
+            vec!["secret-token".to_owned(), "prefix-secret-token".to_owned()]
+        );
+        assert!(!expanded.sensitive.contains_key("DEFAULTED"));
+    }
+
+    #[test]
     fn local_env_default_is_used_when_missing() {
         let expanded = expand_with_env("${localEnv:DECUNE_MISSING:fallback}", &[]).unwrap();
 
@@ -364,7 +552,7 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
     fn container_env_value_must_not_reference_container_env() {
         let values =
             BTreeMap::from([("PATH".to_owned(), "${containerEnv:PATH}:/extra".to_owned())]);
-        let error = expand_container_env(&values, &context()).unwrap_err();
+        let error = expand_container_env_tracked(&values, &context()).unwrap_err();
 
         assert!(
             error

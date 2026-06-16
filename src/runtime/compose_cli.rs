@@ -526,6 +526,8 @@ pub(crate) struct ComposeProjectPlan {
     files: Vec<ComposeFilePlan>,
     generated_override_path: PathBuf,
     config_hash_files: Vec<ComposeFileHashInput>,
+    generated_override_env: BTreeMap<String, String>,
+    generated_override_redactions: Vec<String>,
 }
 
 impl ComposeProjectPlan {
@@ -569,6 +571,8 @@ impl ComposeProjectPlan {
             files,
             generated_override_path: workspace.paths().state_dir().join("compose.override.yaml"),
             config_hash_files,
+            generated_override_env: BTreeMap::new(),
+            generated_override_redactions: Vec::new(),
         })
     }
 
@@ -588,6 +592,16 @@ impl ComposeProjectPlan {
         &self.config_hash_files
     }
 
+    pub(crate) fn with_generated_override_env(
+        mut self,
+        env: BTreeMap<String, String>,
+        redactions: Vec<String>,
+    ) -> Self {
+        self.generated_override_env = env;
+        self.generated_override_redactions = redactions;
+        self
+    }
+
     pub(crate) fn command_plan_without_generated_override(&self) -> ComposeCommandPlan {
         ComposeCommandPlan {
             project_name: self.project_name.clone(),
@@ -597,6 +611,8 @@ impl ComposeProjectPlan {
                 .iter()
                 .map(|file| file.canonical_path.clone())
                 .collect(),
+            env: BTreeMap::new(),
+            redactions: Vec::new(),
         }
     }
 
@@ -612,6 +628,8 @@ impl ComposeProjectPlan {
             project_name: self.project_name.clone(),
             project_directory: self.project_directory.clone(),
             files,
+            env: self.generated_override_env.clone(),
+            redactions: self.generated_override_redactions.clone(),
         }
     }
 }
@@ -628,6 +646,8 @@ pub(crate) struct ComposeCommandPlan {
     pub(crate) project_name: String,
     pub(crate) project_directory: PathBuf,
     pub(crate) files: Vec<PathBuf>,
+    pub(crate) env: BTreeMap<String, String>,
+    pub(crate) redactions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -642,7 +662,7 @@ pub(crate) struct ComposeOverrideServicePatch {
     image: Option<String>,
     pull_policy: Option<String>,
     labels: BTreeMap<String, String>,
-    environment: BTreeMap<String, String>,
+    environment: BTreeMap<String, ComposeOverrideEnvironmentValue>,
     user: Option<String>,
     init: Option<bool>,
     privileged: Option<bool>,
@@ -652,6 +672,15 @@ pub(crate) struct ComposeOverrideServicePatch {
     entrypoint: Vec<String>,
     command: Vec<String>,
     forbidden_secret_values: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum ComposeOverrideEnvironmentValue {
+    Literal(String),
+    Interpolated {
+        placeholder: String,
+        redactions: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -667,7 +696,7 @@ pub(crate) struct ComposeOverrideMount {
 
 impl ComposeOverridePatch {
     pub(crate) fn new(primary: ComposeOverrideServicePatch) -> Self {
-        let forbidden_secret_values = primary.forbidden_secret_values.clone();
+        let forbidden_secret_values = primary.forbidden_secret_values();
         Self {
             services: BTreeMap::from([(primary.name.clone(), primary)]),
             forbidden_secret_values,
@@ -676,7 +705,7 @@ impl ComposeOverridePatch {
 
     pub(crate) fn service(mut self, service: ComposeOverrideServicePatch) -> Self {
         self.forbidden_secret_values
-            .extend(service.forbidden_secret_values.clone());
+            .extend(service.forbidden_secret_values());
         self.services.insert(service.name.clone(), service);
         self
     }
@@ -756,12 +785,37 @@ impl ComposeOverrideServicePatch {
     }
 
     pub(crate) fn environment(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
-        self.environment.insert(key.into(), value.into());
+        self.environment.insert(
+            key.into(),
+            ComposeOverrideEnvironmentValue::Literal(value.into()),
+        );
         self
     }
 
     pub(crate) fn environments(mut self, environment: &BTreeMap<String, String>) -> Self {
-        self.environment.extend(environment.clone());
+        self.environment
+            .extend(environment.iter().map(|(key, value)| {
+                (
+                    key.clone(),
+                    ComposeOverrideEnvironmentValue::Literal(value.clone()),
+                )
+            }));
+        self
+    }
+
+    pub(crate) fn interpolated_environment(
+        mut self,
+        key: impl Into<String>,
+        placeholder: impl Into<String>,
+        redactions: Vec<String>,
+    ) -> Self {
+        self.environment.insert(
+            key.into(),
+            ComposeOverrideEnvironmentValue::Interpolated {
+                placeholder: placeholder.into(),
+                redactions,
+            },
+        );
         self
     }
 
@@ -823,6 +877,16 @@ impl ComposeOverrideServicePatch {
         self
     }
 
+    fn forbidden_secret_values(&self) -> Vec<String> {
+        let mut values = self.forbidden_secret_values.clone();
+        for value in self.environment.values() {
+            if let ComposeOverrideEnvironmentValue::Interpolated { redactions, .. } = value {
+                values.extend(redactions.clone());
+            }
+        }
+        values
+    }
+
     fn append_yaml(&self, content: &mut String) {
         if let Some(image) = &self.image {
             append_yaml_scalar(content, 4, "image", image);
@@ -831,7 +895,7 @@ impl ComposeOverrideServicePatch {
             append_yaml_scalar(content, 4, "pull_policy", pull_policy);
         }
         append_yaml_map(content, 4, "labels", &self.labels);
-        append_yaml_map(content, 4, "environment", &self.environment);
+        append_yaml_environment(content, 4, &self.environment);
         if let Some(user) = &self.user {
             append_yaml_scalar(content, 4, "user", user);
         }
@@ -1004,6 +1068,10 @@ impl ComposeCommandPlan {
             .arg(&self.project_name)
             .arg("--project-directory")
             .arg(self.project_directory.display().to_string());
+        for (key, value) in &self.env {
+            command = command.env(key.clone(), value.clone());
+        }
+        command = command.redact_values(self.redactions.clone());
         for file in &self.files {
             command = command.arg("-f").arg(file.display().to_string());
         }
@@ -1032,6 +1100,8 @@ impl ComposeProject {
             project_name: self.name.clone(),
             project_directory: self.project_directory.clone(),
             files: self.files.clone(),
+            env: BTreeMap::new(),
+            redactions: Vec::new(),
         }
         .command(args)
     }
@@ -1203,6 +1273,32 @@ fn append_yaml_map(
     }
 }
 
+fn append_yaml_environment(
+    content: &mut String,
+    indent: usize,
+    values: &BTreeMap<String, ComposeOverrideEnvironmentValue>,
+) {
+    if values.is_empty() {
+        return;
+    }
+    append_indent(content, indent);
+    content.push_str("environment:\n");
+    for (name, value) in values {
+        append_indent(content, indent + 2);
+        content.push_str(&yaml_quote(name));
+        content.push_str(": ");
+        match value {
+            ComposeOverrideEnvironmentValue::Literal(value) => {
+                content.push_str(&yaml_quote(value));
+            }
+            ComposeOverrideEnvironmentValue::Interpolated { placeholder, .. } => {
+                content.push_str(&yaml_quote(&format!("${{{placeholder}}}")));
+            }
+        }
+        content.push('\n');
+    }
+}
+
 fn append_yaml_string_list(content: &mut String, indent: usize, key: &str, values: &[String]) {
     if values.is_empty() {
         return;
@@ -1336,7 +1432,7 @@ fn yaml_double_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::PathBuf};
+    use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use crate::workspace::Workspace;
 
@@ -1473,6 +1569,8 @@ mod tests {
             project_name: "decune-project-abc123def456".to_owned(),
             project_directory: PathBuf::from("/workspace"),
             files: vec![PathBuf::from("/workspace/compose.yaml")],
+            env: BTreeMap::new(),
+            redactions: Vec::new(),
         };
 
         let command = command_plan.command(["config", "--format", "json"]);
@@ -1495,11 +1593,43 @@ mod tests {
         assert_eq!(command.env_value("COMPOSE_PROJECT_NAME"), None);
     }
 
+    #[test]
+    fn compose_plan_passes_generated_override_env_as_child_env() {
+        let command_plan = ComposeCommandPlan {
+            project_name: "decune-project-abc123def456".to_owned(),
+            project_directory: PathBuf::from("/workspace"),
+            files: vec![PathBuf::from("/workspace/compose.yaml")],
+            env: BTreeMap::from([(
+                "DECUNE_CONTAINER_ENV_NPM_TOKEN".to_owned(),
+                "secret-token".to_owned(),
+            )]),
+            redactions: vec!["secret-token".to_owned()],
+        };
+
+        let command = command_plan.command(["up", "-d"]);
+
+        assert_eq!(
+            command
+                .env_value("DECUNE_CONTAINER_ENV_NPM_TOKEN")
+                .map(String::as_str),
+            Some("secret-token")
+        );
+        assert!(
+            !command
+                .args_vec()
+                .iter()
+                .any(|arg| arg.contains("secret-token"))
+        );
+        assert!(!command.sanitized_display().contains("secret-token"));
+    }
+
     fn lifecycle_command_plan() -> ComposeCommandPlan {
         ComposeCommandPlan {
             project_name: "decune-project-abc123def456".to_owned(),
             project_directory: PathBuf::from("/workspace"),
             files: vec![PathBuf::from("/workspace/compose.yaml")],
+            env: BTreeMap::new(),
+            redactions: Vec::new(),
         }
     }
 
@@ -2081,6 +2211,22 @@ mod tests {
     }
 
     #[test]
+    fn compose_override_yaml_uses_placeholder_for_interpolated_environment() {
+        let patch = ComposeOverridePatch::new(
+            ComposeOverrideServicePatch::new("app").interpolated_environment(
+                "NPM_TOKEN",
+                "DECUNE_CONTAINER_ENV_NPM_TOKEN",
+                vec!["secret-token".to_owned()],
+            ),
+        );
+
+        let yaml = patch.to_yaml().unwrap();
+
+        assert!(yaml.contains("'NPM_TOKEN': '${DECUNE_CONTAINER_ENV_NPM_TOKEN}'"));
+        assert!(!yaml.contains("secret-token"));
+    }
+
+    #[test]
     fn generated_override_file_is_passed_after_user_compose_files() {
         let (_temp, workspace) = fixture_workspace("generated-override-order");
         let devcontainer_dir = workspace.root().join(".devcontainer");
@@ -2355,6 +2501,8 @@ mod tests {
             project_name: "decune-project-abc123def456".to_owned(),
             project_directory: PathBuf::from("/workspace"),
             files: vec![PathBuf::from("/workspace/compose.yaml")],
+            env: BTreeMap::new(),
+            redactions: Vec::new(),
         };
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()

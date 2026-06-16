@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
@@ -433,8 +433,9 @@ pub(in crate::up) async fn ensure_container_started(
     }
     let image_prepared = true;
     let platform = image_container_tool_platform(&client, &plan.image).await?;
-    let (plan, credentials) =
+    let (mut plan, credentials) =
         add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
+    attach_compose_interpolation_env_to_plan(&mut plan);
     warn_about_deferred_features(&plan.config);
 
     match decide_existing_container(
@@ -898,10 +899,19 @@ fn generated_compose_override_patch(
     let mut service = ComposeOverrideServicePatch::new(primary_service)
         .image(&plan.image)
         .labels(&plan.resources.labels)
-        .environments(&plan.config.devcontainer.container_env)
         .cap_add(&plan.config.devcontainer.cap_add)
         .security_opt(&plan.config.devcontainer.security_opt)
         .mounts(&plan.mounts);
+    let mut used_placeholders = BTreeSet::new();
+    for (key, value) in &plan.config.devcontainer.container_env {
+        if let Some(sensitive) = plan.sensitive_container_env.get(key) {
+            let placeholder = compose_container_env_placeholder(key, &mut used_placeholders);
+            service =
+                service.interpolated_environment(key, placeholder, sensitive.redactions.clone());
+        } else {
+            service = service.environment(key, value);
+        }
+    }
     if plan.image != plan.base_image {
         service = service.pull_policy_never();
     }
@@ -928,6 +938,56 @@ fn generated_compose_override_patch(
         );
     }
     Ok(patch)
+}
+
+fn attach_compose_interpolation_env_to_plan(plan: &mut UpPlan) {
+    let (env, redactions) = compose_interpolation_env(&plan.sensitive_container_env);
+    plan.compose_interpolation_env = env.clone();
+    plan.compose_interpolation_redactions = redactions.clone();
+    if let Some(project) = plan.compose_project.take() {
+        plan.compose_project = Some(project.with_generated_override_env(env, redactions));
+    }
+}
+
+fn compose_interpolation_env(
+    sensitive_env: &crate::config::variables::SensitiveEnvMap,
+) -> (BTreeMap<String, String>, Vec<String>) {
+    let mut env = BTreeMap::new();
+    let mut redactions = Vec::new();
+    let mut used_placeholders = BTreeSet::new();
+    for (key, value) in sensitive_env.iter() {
+        let placeholder = compose_container_env_placeholder(key, &mut used_placeholders);
+        env.insert(placeholder, value.value.clone());
+        redactions.extend(value.redactions.clone());
+    }
+
+    (env, redactions)
+}
+
+fn compose_container_env_placeholder(key: &str, used: &mut BTreeSet<String>) -> String {
+    let mut safe = String::new();
+    for ch in key.chars() {
+        if ch.is_ascii_alphanumeric() {
+            safe.push(ch.to_ascii_uppercase());
+        } else {
+            safe.push('_');
+        }
+    }
+    if safe.is_empty() || safe.as_bytes()[0].is_ascii_digit() {
+        safe.insert(0, '_');
+    }
+
+    let base = format!("DECUNE_CONTAINER_ENV_{safe}");
+    if used.insert(base.clone()) {
+        return base;
+    }
+    for index in 2.. {
+        let candidate = format!("{base}_{index}");
+        if used.insert(candidate.clone()) {
+            return candidate;
+        }
+    }
+    unreachable!("placeholder collision loop always returns");
 }
 
 fn compose_service_forward_labels(labels: &BTreeMap<String, String>) -> BTreeMap<String, String> {
@@ -1632,6 +1692,7 @@ test -n "$startup_id" && test -f {sentinel} && test "$(cat {sentinel})" = "$star
             user: None,
             working_dir: None,
             env: std::collections::BTreeMap::new(),
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -1760,6 +1821,7 @@ async fn list_compose_project_containers(
 mod tests {
     use super::{
         ComposeOverrideStartup, ExistingContainerReusePolicy,
+        attach_compose_interpolation_env_to_plan,
         compose_service_forward_container_requires_recreate, generated_compose_override_content,
         generated_compose_override_content_with_startup, should_reuse_existing_container,
         state_container_snapshot,
@@ -1813,6 +1875,9 @@ mod tests {
             compose_project: None,
             config_layers: ConfigMergeInput::default(),
             config,
+            sensitive_container_env: Default::default(),
+            compose_interpolation_env: Default::default(),
+            compose_interpolation_redactions: Vec::new(),
             effective_users: EffectiveUsers::root(),
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspace".to_owned(),
@@ -2167,6 +2232,68 @@ mod tests {
         assert!(content.contains("subpath: 'deps'"));
     }
 
+    #[test]
+    fn generated_compose_override_redacts_local_env_derived_container_env() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.config.devcontainer.container_env =
+            BTreeMap::from([("NPM_TOKEN".to_owned(), "secret-token".to_owned())]);
+        plan.sensitive_container_env.insert(
+            "NPM_TOKEN",
+            crate::config::variables::SensitiveEnvValue {
+                value: "secret-token".to_owned(),
+                redactions: vec!["secret-token".to_owned()],
+            },
+        );
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("'NPM_TOKEN': '${DECUNE_CONTAINER_ENV_NPM_TOKEN}'"));
+        assert!(!content.contains("secret-token"));
+    }
+
+    #[test]
+    fn compose_interpolation_env_is_attached_to_generated_override_command_plan() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("workspace");
+        std::fs::create_dir(&root).unwrap();
+        let devcontainer_dir = root.join(".devcontainer");
+        std::fs::create_dir(&devcontainer_dir).unwrap();
+        std::fs::write(devcontainer_dir.join("compose.yaml"), "services: {}\n").unwrap();
+        let workspace = crate::workspace::Workspace::resolve(&root).unwrap();
+        plan.compose_project = Some(
+            crate::runtime::compose_cli::ComposeProjectPlan::resolve(
+                &workspace,
+                &devcontainer_dir,
+                &["compose.yaml".to_owned()],
+            )
+            .unwrap(),
+        );
+        plan.sensitive_container_env.insert(
+            "NPM_TOKEN",
+            crate::config::variables::SensitiveEnvValue {
+                value: "secret-token".to_owned(),
+                redactions: vec!["secret-token".to_owned()],
+            },
+        );
+        attach_compose_interpolation_env_to_plan(&mut plan);
+
+        let command = plan
+            .compose_project
+            .as_ref()
+            .unwrap()
+            .command_plan_with_generated_override()
+            .command(["up", "-d"]);
+
+        assert_eq!(
+            command
+                .env_value("DECUNE_CONTAINER_ENV_NPM_TOKEN")
+                .map(String::as_str),
+            Some("secret-token")
+        );
+        assert!(!command.sanitized_display().contains("secret-token"));
+    }
+
     fn generated_override_test_plan(mounts: Vec<DockerMountSpec>) -> UpPlan {
         let mut config = ResolvedConfig::default();
         config.devcontainer.override_command = false;
@@ -2191,6 +2318,9 @@ mod tests {
             compose_project: None,
             config_layers: ConfigMergeInput::default(),
             config,
+            sensitive_container_env: Default::default(),
+            compose_interpolation_env: Default::default(),
+            compose_interpolation_redactions: Vec::new(),
             effective_users: EffectiveUsers::root(),
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspace".to_owned(),
@@ -2259,6 +2389,9 @@ mod tests {
             compose_project: None,
             config_layers: ConfigMergeInput::default(),
             config,
+            sensitive_container_env: Default::default(),
+            compose_interpolation_env: Default::default(),
+            compose_interpolation_redactions: Vec::new(),
             effective_users: EffectiveUsers::root(),
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspace".to_owned(),
@@ -2310,6 +2443,9 @@ mod tests {
             compose_project: None,
             config_layers: ConfigMergeInput::default(),
             config,
+            sensitive_container_env: Default::default(),
+            compose_interpolation_env: Default::default(),
+            compose_interpolation_redactions: Vec::new(),
             effective_users: EffectiveUsers::root(),
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspace".to_owned(),

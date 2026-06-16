@@ -32,6 +32,8 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) resolved_mounts: Vec<MountHashInput>,
     pub(crate) startup_command: Option<StartupCommandHashInput>,
     pub(crate) uid_gid_sync: Option<UidGidSyncHashInput>,
+    pub(crate) sensitive_container_env_keys: Vec<String>,
+    pub(crate) sensitive_remote_env_keys: Vec<String>,
 }
 
 impl<'a> ConfigHashInput<'a> {
@@ -48,6 +50,8 @@ impl<'a> ConfigHashInput<'a> {
             resolved_mounts: Vec::new(),
             startup_command: None,
             uid_gid_sync: None,
+            sensitive_container_env_keys: Vec::new(),
+            sensitive_remote_env_keys: Vec::new(),
         }
     }
 }
@@ -140,7 +144,7 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
 
     writer.field("version", |writer| writer.string("decune-config-hash-v1"));
     writer.field("resolved_config", |writer| {
-        write_resolved_config(writer, input.config);
+        write_resolved_config(writer, input);
     });
     writer.field("feature_locks", |writer| {
         write_feature_locks(writer, &input.feature_locks);
@@ -376,7 +380,8 @@ fn write_mount_volume_driver_config(
     });
 }
 
-fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
+fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'_>) {
+    let config = input.config;
     writer.object("ResolvedConfig", |writer| {
         writer.field("shell", |writer| {
             writer.option_string(config.shell.as_deref())
@@ -440,7 +445,12 @@ fn write_resolved_config(writer: &mut CanonicalWriter, config: &ResolvedConfig) 
         // forwarding は up 実行時の runtime 設定であり，container/image の再作成条件ではない．
         let _ = &config.ports;
         writer.field("devcontainer", |writer| {
-            write_devcontainer(writer, &config.devcontainer);
+            write_devcontainer(
+                writer,
+                &config.devcontainer,
+                &input.sensitive_container_env_keys,
+                &input.sensitive_remote_env_keys,
+            );
         });
         writer.field("credentials", |writer| {
             writer.object("Credentials", |writer| {
@@ -540,7 +550,12 @@ fn write_enabled_dotfile(writer: &mut CanonicalWriter, dotfile: &ResolvedDotfile
     });
 }
 
-fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevcontainer) {
+fn write_devcontainer(
+    writer: &mut CanonicalWriter,
+    devcontainer: &ResolvedDevcontainer,
+    sensitive_container_env_keys: &[String],
+    sensitive_remote_env_keys: &[String],
+) {
     writer.object("Devcontainer", |writer| {
         writer.field("source", |writer| match &devcontainer.source {
             Some(source) => write_devcontainer_source(writer, source),
@@ -564,14 +579,14 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
             writer.option_string(devcontainer.workspace_folder.as_deref());
         });
         writer.field("container_env", |writer| {
-            writer.map(devcontainer.container_env.iter(), |writer, value| {
-                writer.string(value);
-            });
+            let environment =
+                redacted_env_for_hash(&devcontainer.container_env, sensitive_container_env_keys);
+            writer.map(environment.iter(), |writer, value| writer.string(value));
         });
         writer.field("remote_env", |writer| {
-            writer.map(devcontainer.remote_env.iter(), |writer, value| {
-                writer.string(value);
-            });
+            let environment =
+                redacted_env_for_hash(&devcontainer.remote_env, sensitive_remote_env_keys);
+            writer.map(environment.iter(), |writer, value| writer.string(value));
         });
         writer.field("remote_user", |writer| {
             writer.option_string(devcontainer.remote_user.as_deref());
@@ -622,6 +637,22 @@ fn write_devcontainer(writer: &mut CanonicalWriter, devcontainer: &ResolvedDevco
             None => writer.none(),
         });
     });
+}
+
+fn redacted_env_for_hash(
+    env: &BTreeMap<String, String>,
+    sensitive_keys: &[String],
+) -> BTreeMap<String, String> {
+    env.iter()
+        .map(|(key, value)| {
+            let value = if sensitive_keys.iter().any(|sensitive| sensitive == key) {
+                "<localEnv-derived-value>".to_owned()
+            } else {
+                value.clone()
+            };
+            (key.clone(), value)
+        })
+        .collect()
 }
 
 fn write_devcontainer_mount(writer: &mut CanonicalWriter, mount: &ResolvedDevcontainerMount) {
@@ -991,7 +1022,7 @@ mod tests {
 
         writer.field("version", |writer| writer.string("decune-config-hash-v1"));
         writer.field("resolved_config", |writer| {
-            write_resolved_config(writer, input.config);
+            write_resolved_config(writer, input);
         });
         writer.field("feature_locks", |writer| {
             write_feature_locks(writer, &input.feature_locks);
@@ -1733,6 +1764,40 @@ shell = false
         });
 
         assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_redacts_local_env_derived_container_env_values() {
+        let mut first = ResolvedConfig::default();
+        first.devcontainer.container_env = BTreeMap::from([
+            ("NPM_TOKEN".to_owned(), "first-secret".to_owned()),
+            ("NODE_ENV".to_owned(), "development".to_owned()),
+        ]);
+        let mut second = first.clone();
+        second
+            .devcontainer
+            .container_env
+            .insert("NPM_TOKEN".to_owned(), "second-secret".to_owned());
+        let redacted_first = config_hash(&ConfigHashInput {
+            sensitive_container_env_keys: vec!["NPM_TOKEN".to_owned()],
+            ..ConfigHashInput::new(&first)
+        });
+        let redacted_second = config_hash(&ConfigHashInput {
+            sensitive_container_env_keys: vec!["NPM_TOKEN".to_owned()],
+            ..ConfigHashInput::new(&second)
+        });
+        second
+            .devcontainer
+            .container_env
+            .insert("NODE_ENV".to_owned(), "production".to_owned());
+        let non_sensitive_changed = config_hash(&ConfigHashInput {
+            sensitive_container_env_keys: vec!["NPM_TOKEN".to_owned()],
+            ..ConfigHashInput::new(&second)
+        });
+
+        assert_eq!(redacted_first, redacted_second);
+        assert_ne!(redacted_first, non_sensitive_changed);
+        assert_ne!(hash_for(&first), hash_for(&second));
     }
 
     #[test]

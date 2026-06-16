@@ -10,6 +10,7 @@ pub(crate) struct ExecCommandSpec {
     pub(crate) user: Option<String>,
     pub(crate) working_dir: Option<String>,
     pub(crate) env: BTreeMap<String, String>,
+    pub(crate) redactions: Vec<String>,
     pub(crate) tty: bool,
 }
 
@@ -27,7 +28,7 @@ pub(crate) async fn exec_capture(
 ) -> Result<ExecOutput> {
     let output = exec_capture_output(client, container, spec).await?;
 
-    ensure_success_output(container, &spec.command, &output)?;
+    ensure_success_output_with_redactions(container, &spec.command, &spec.redactions, &output)?;
 
     Ok(output)
 }
@@ -92,6 +93,7 @@ pub(crate) async fn resolve_exec_env(
             user: Some(user.to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
+            redactions: Vec::new(),
             tty: false,
         },
     )
@@ -138,12 +140,22 @@ pub(crate) fn ensure_success_output(
     command: &[String],
     output: &ExecOutput,
 ) -> Result<()> {
-    ensure_success_exit_code(container, command, output.exit_code, output)
+    ensure_success_exit_code(container, command, &[], output.exit_code, output)
+}
+
+fn ensure_success_output_with_redactions(
+    container: &str,
+    command: &[String],
+    redactions: &[String],
+    output: &ExecOutput,
+) -> Result<()> {
+    ensure_success_exit_code(container, command, redactions, output.exit_code, output)
 }
 
 fn ensure_success_exit_code(
     container: &str,
     command: &[String],
+    redactions: &[String],
     exit_code: i64,
     output: &ExecOutput,
 ) -> Result<()> {
@@ -153,9 +165,9 @@ fn ensure_success_exit_code(
 
     bail!(
         "Docker exec failed in container {container}: command `{}` exited with exit code {exit_code}. stdout tail: `{}` stderr tail: `{}`",
-        command_display(command),
-        output_tail(&output.stdout),
-        output_tail(&output.stderr),
+        redact_values(&command_display(command), redactions),
+        redact_values(&output_tail(&output.stdout), redactions),
+        redact_values(&output_tail(&output.stderr), redactions),
     );
 }
 
@@ -220,6 +232,15 @@ fn output_tail(output: &[u8]) -> String {
     String::from_utf8_lossy(&output[start..]).trim().to_owned()
 }
 
+fn redact_values(value: &str, redactions: &[String]) -> String {
+    redactions
+        .iter()
+        .filter(|secret| !secret.is_empty())
+        .fold(value.to_owned(), |redacted, secret| {
+            redacted.replace(secret, "[REDACTED]")
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -282,5 +303,30 @@ mod tests {
         assert!(error.to_string().contains("Docker exec failed"));
         assert!(error.to_string().contains("false"));
         assert!(error.to_string().contains("bad"));
+    }
+
+    #[test]
+    fn failed_exec_output_redacts_secret_values() {
+        let output = ExecOutput {
+            stdout: b"stdout secret-token".to_vec(),
+            stderr: b"stderr secret-token".to_vec(),
+            exit_code: 2,
+        };
+        let command = vec![
+            "/bin/sh".to_owned(),
+            "-lc".to_owned(),
+            "echo secret-token".to_owned(),
+        ];
+        let error = super::ensure_success_output_with_redactions(
+            "container",
+            &command,
+            &["secret-token".to_owned()],
+            &output,
+        )
+        .unwrap_err();
+        let message = error.to_string();
+
+        assert!(!message.contains("secret-token"));
+        assert!(message.contains("[REDACTED]"));
     }
 }

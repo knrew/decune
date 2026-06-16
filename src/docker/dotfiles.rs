@@ -55,6 +55,7 @@ pub(crate) async fn setup_dotfiles(
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
             env: Default::default(),
+            redactions: Vec::new(),
             tty: false,
         },
     )
