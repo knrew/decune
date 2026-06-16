@@ -1,0 +1,3 @@
+FROM alpine:3.20
+RUN mkdir -p /usr/local/share/decune \
+    && printf 'base built\n' >/usr/local/share/decune/build-dependency-marker

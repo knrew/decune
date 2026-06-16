@@ -571,6 +571,7 @@ async fn start_compose_project(
         cli.build(
             &user_lifecycle.project,
             ComposeBuildOptions {
+                with_dependencies: true,
                 no_cache: options.no_cache,
                 pull: options.pull,
             },

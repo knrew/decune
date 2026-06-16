@@ -1,0 +1,17 @@
+services:
+  base:
+    image: ${DECUNE_BUILD_DEPS_BASE_IMAGE:?DECUNE_BUILD_DEPS_BASE_IMAGE is required}
+    build:
+      context: .
+      dockerfile: Dockerfile.base
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.app
+      args:
+        BASE_IMAGE: ${DECUNE_BUILD_DEPS_BASE_IMAGE:?DECUNE_BUILD_DEPS_BASE_IMAGE is required}
+    depends_on:
+      - base
+    command: sleep infinity
+    volumes:
+      - ..:/workspace
