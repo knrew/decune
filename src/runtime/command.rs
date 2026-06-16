@@ -1,11 +1,19 @@
-use std::{collections::BTreeMap, future::Future, pin::Pin, process::Stdio, time::Duration};
+use std::{
+    collections::BTreeMap,
+    future::Future,
+    io::ErrorKind,
+    pin::Pin,
+    process::{ExitStatus, Stdio},
+    time::Duration,
+};
 
 #[cfg(test)]
 use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
-use tokio::io::AsyncWriteExt;
-use tokio::process::Command;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::process::{Child, Command};
+use tokio::task::JoinHandle;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RuntimeCommand {
@@ -171,28 +179,7 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
         &'a self,
         command: RuntimeCommand,
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>> {
-        Box::pin(async move {
-            let mut process = Command::new(command.program());
-            process.args(command.args_vec());
-            process.envs(command.envs());
-            let output = if let Some(timeout) = command.timeout_duration() {
-                tokio::time::timeout(timeout, process.output())
-                    .await
-                    .with_context(|| {
-                        format!("Command timed out: {}", command.sanitized_display())
-                    })??
-            } else {
-                process.output().await.with_context(|| {
-                    format!("Failed to run command: {}", command.sanitized_display())
-                })?
-            };
-
-            Ok(RuntimeOutput {
-                stdout: output.stdout,
-                stderr: output.stderr,
-                exit_code: output.status.code().unwrap_or(1),
-            })
-        })
+        Box::pin(async move { run_capture_process(command, None).await })
     }
 
     fn run_capture_with_stdin<'a>(
@@ -200,57 +187,7 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
         command: RuntimeCommand,
         stdin: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>> {
-        Box::pin(async move {
-            let command_display = command.sanitized_display();
-            let mut process = Command::new(command.program());
-            process.args(command.args_vec());
-            process.envs(command.envs());
-            process.stdin(Stdio::piped());
-            process.stdout(Stdio::piped());
-            process.stderr(Stdio::piped());
-            let mut child = process
-                .spawn()
-                .with_context(|| format!("Failed to run command: {command_display}"))?;
-            let mut child_stdin = child
-                .stdin
-                .take()
-                .with_context(|| format!("Failed to open command stdin: {command_display}"))?;
-            let write_display = command_display.clone();
-            let write_stdin = tokio::spawn(async move {
-                let result = child_stdin
-                    .write_all(&stdin)
-                    .await
-                    .with_context(|| format!("Failed to write command stdin: {write_display}"));
-                drop(child_stdin);
-                result
-            });
-            let run = async {
-                let output = child
-                    .wait_with_output()
-                    .await
-                    .with_context(|| format!("Failed to run command: {command_display}"))?;
-                let write_result = write_stdin
-                    .await
-                    .with_context(|| format!("Failed to join command stdin: {command_display}"))?;
-                if output.status.success() {
-                    write_result?;
-                }
-                Ok::<_, anyhow::Error>(output)
-            };
-            let output = if let Some(timeout) = command.timeout_duration() {
-                tokio::time::timeout(timeout, run)
-                    .await
-                    .with_context(|| format!("Command timed out: {command_display}"))??
-            } else {
-                run.await?
-            };
-
-            Ok(RuntimeOutput {
-                stdout: output.stdout,
-                stderr: output.stderr,
-                exit_code: output.status.code().unwrap_or(1),
-            })
-        })
+        Box::pin(async move { run_capture_process(command, Some(stdin)).await })
     }
 
     fn run_status<'a>(
@@ -259,6 +196,7 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
         stdio: RuntimeStdio,
     ) -> Pin<Box<dyn Future<Output = Result<i32>> + Send + 'a>> {
         Box::pin(async move {
+            let command_display = command.sanitized_display();
             let mut process = Command::new(command.program());
             process.args(command.args_vec());
             process.envs(command.envs());
@@ -276,12 +214,247 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
                         .stderr(Stdio::inherit());
                 }
             }
-            let status = process.status().await.with_context(|| {
-                format!("Failed to run command: {}", command.sanitized_display())
-            })?;
+            let mut child = process
+                .spawn()
+                .with_context(|| format!("Failed to run command: {command_display}"))?;
+            let status =
+                wait_for_child(&mut child, command.timeout_duration(), &command_display).await?;
             Ok(status.code().unwrap_or(1))
         })
     }
+}
+
+async fn run_capture_process(
+    command: RuntimeCommand,
+    stdin: Option<Vec<u8>>,
+) -> Result<RuntimeOutput> {
+    let command_display = command.sanitized_display();
+    let mut process = Command::new(command.program());
+    process.args(command.args_vec());
+    process.envs(command.envs());
+    process
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    let mut child = process
+        .spawn()
+        .with_context(|| format!("Failed to run command: {command_display}"))?;
+    let mut tasks = CaptureTasks::spawn(&mut child, stdin, &command_display)?;
+    let output = match command.timeout_duration() {
+        Some(timeout) => {
+            let result = tokio::time::timeout(
+                timeout,
+                wait_for_child_and_capture(&mut child, &mut tasks, &command_display),
+            )
+            .await;
+            match result {
+                Ok(output) => output?,
+                Err(_) => {
+                    kill_and_wait_child(&mut child, &command_display).await?;
+                    tasks.abort_and_join().await;
+                    return Err(timeout_error(&command_display));
+                }
+            }
+        }
+        None => wait_for_child_and_capture(&mut child, &mut tasks, &command_display).await?,
+    };
+
+    Ok(output)
+}
+
+async fn wait_for_child_and_capture(
+    child: &mut Child,
+    tasks: &mut CaptureTasks,
+    command_display: &str,
+) -> Result<RuntimeOutput> {
+    let status = match wait_for_child(child, None, command_display).await {
+        Ok(status) => status,
+        Err(err) => {
+            tasks.abort_and_join().await;
+            return Err(err);
+        }
+    };
+    let (stdout, stderr) = tasks.join(status.success(), command_display).await?;
+
+    Ok(RuntimeOutput {
+        stdout,
+        stderr,
+        exit_code: status.code().unwrap_or(1),
+    })
+}
+
+async fn wait_for_child(
+    child: &mut Child,
+    timeout: Option<Duration>,
+    command_display: &str,
+) -> Result<ExitStatus> {
+    let wait = child.wait();
+    if let Some(timeout) = timeout {
+        match tokio::time::timeout(timeout, wait).await {
+            Ok(status) => {
+                status.with_context(|| format!("Failed to run command: {command_display}"))
+            }
+            Err(_) => {
+                kill_and_wait_child(child, command_display).await?;
+                Err(timeout_error(command_display))
+            }
+        }
+    } else {
+        wait.await
+            .with_context(|| format!("Failed to run command: {command_display}"))
+    }
+}
+
+async fn kill_and_wait_child(child: &mut Child, command_display: &str) -> Result<()> {
+    match child.kill().await {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::InvalidInput => {}
+        Err(err) => {
+            return Err(err)
+                .with_context(|| format!("Failed to kill timed out command: {command_display}"));
+        }
+    }
+    child
+        .wait()
+        .await
+        .with_context(|| format!("Failed to reap timed out command: {command_display}"))?;
+    Ok(())
+}
+
+fn timeout_error(command_display: &str) -> anyhow::Error {
+    anyhow::anyhow!("Command timed out: {command_display}")
+}
+
+struct CaptureTasks {
+    stdout: Option<JoinHandle<Result<Vec<u8>>>>,
+    stderr: Option<JoinHandle<Result<Vec<u8>>>>,
+    stdin: Option<JoinHandle<Result<()>>>,
+}
+
+impl CaptureTasks {
+    fn spawn(child: &mut Child, stdin: Option<Vec<u8>>, command_display: &str) -> Result<Self> {
+        let stdout = child
+            .stdout
+            .take()
+            .with_context(|| format!("Failed to open command stdout: {command_display}"))?;
+        let stderr = child
+            .stderr
+            .take()
+            .with_context(|| format!("Failed to open command stderr: {command_display}"))?;
+        let stdin = if let Some(stdin) = stdin {
+            let child_stdin = child
+                .stdin
+                .take()
+                .with_context(|| format!("Failed to open command stdin: {command_display}"))?;
+            Some(spawn_stdin_task(
+                child_stdin,
+                stdin,
+                command_display.to_owned(),
+            ))
+        } else {
+            None
+        };
+
+        Ok(Self {
+            stdout: Some(spawn_read_task(
+                stdout,
+                "stdout",
+                command_display.to_owned(),
+            )),
+            stderr: Some(spawn_read_task(
+                stderr,
+                "stderr",
+                command_display.to_owned(),
+            )),
+            stdin,
+        })
+    }
+
+    async fn join(&mut self, success: bool, command_display: &str) -> Result<(Vec<u8>, Vec<u8>)> {
+        let stdout = self
+            .stdout
+            .take()
+            .with_context(|| format!("Command stdout task was already joined: {command_display}"))?
+            .await
+            .with_context(|| format!("Failed to join command stdout: {command_display}"))??;
+        let stderr = self
+            .stderr
+            .take()
+            .with_context(|| format!("Command stderr task was already joined: {command_display}"))?
+            .await
+            .with_context(|| format!("Failed to join command stderr: {command_display}"))??;
+
+        if let Some(stdin) = self.stdin.take() {
+            let write_result = stdin
+                .await
+                .with_context(|| format!("Failed to join command stdin: {command_display}"))?;
+            if success {
+                write_result?;
+            }
+        }
+
+        Ok((stdout, stderr))
+    }
+
+    async fn abort_and_join(&mut self) {
+        if let Some(stdout) = &self.stdout {
+            stdout.abort();
+        }
+        if let Some(stderr) = &self.stderr {
+            stderr.abort();
+        }
+        if let Some(stdin) = &self.stdin {
+            stdin.abort();
+        }
+
+        if let Some(stdout) = self.stdout.take() {
+            let _ = stdout.await;
+        }
+        if let Some(stderr) = self.stderr.take() {
+            let _ = stderr.await;
+        }
+        if let Some(stdin) = self.stdin.take() {
+            let _ = stdin.await;
+        }
+    }
+}
+
+fn spawn_read_task<R>(
+    mut reader: R,
+    stream_name: &'static str,
+    command_display: String,
+) -> JoinHandle<Result<Vec<u8>>>
+where
+    R: AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut output = Vec::new();
+        reader
+            .read_to_end(&mut output)
+            .await
+            .with_context(|| format!("Failed to read command {stream_name}: {command_display}"))?;
+        Ok(output)
+    })
+}
+
+fn spawn_stdin_task(
+    mut child_stdin: tokio::process::ChildStdin,
+    stdin: Vec<u8>,
+    command_display: String,
+) -> JoinHandle<Result<()>> {
+    tokio::spawn(async move {
+        let result = child_stdin
+            .write_all(&stdin)
+            .await
+            .with_context(|| format!("Failed to write command stdin: {command_display}"));
+        drop(child_stdin);
+        result
+    })
 }
 
 #[cfg(test)]
@@ -388,6 +561,13 @@ pub(crate) fn ensure_success(
 mod tests {
     use super::{RedactionRules, RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand};
 
+    #[cfg(unix)]
+    use std::{
+        fs,
+        path::Path,
+        time::{Duration, Instant},
+    };
+
     #[test]
     fn runtime_command_keeps_program_and_argv_without_shell_string() {
         let command = RuntimeCommand::new("docker").args(["inspect", "container"]);
@@ -442,5 +622,111 @@ mod tests {
             rules.redact("secret-token is hidden"),
             "[REDACTED] is hidden"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_timeout_kills_and_reaps_child_process() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let pid_path = tempdir.path().join("sleep.pid");
+        let command = sleeper_command(&pid_path).timeout(Duration::from_millis(50));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let err = runtime
+            .block_on(TokioRuntimeCommand.run_capture(command))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Command timed out"));
+        let pid = read_pid(&pid_path);
+        assert!(!process_exists(pid), "process {pid} was still running");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_timeout_cleans_up_stdin_writer_task_and_child() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let pid_path = tempdir.path().join("sleep.pid");
+        let command = sleeper_command(&pid_path).timeout(Duration::from_millis(50));
+        let stdin = vec![b'x'; 16 * 1024 * 1024];
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let err = runtime
+            .block_on(TokioRuntimeCommand.run_capture_with_stdin(command, stdin))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Command timed out"));
+        let pid = read_pid(&pid_path);
+        assert!(!process_exists(pid), "process {pid} was still running");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_timeout_error_uses_sanitized_display() {
+        let secret = "secret-token-008";
+        let command = RuntimeCommand::new("sh")
+            .args(["-c", "sleep 30"])
+            .env("DECUNE_SECRET", secret)
+            .timeout(Duration::from_millis(50));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let err = runtime
+            .block_on(TokioRuntimeCommand.run_capture(command))
+            .unwrap_err();
+        let message = err.to_string();
+
+        assert!(message.contains("Command timed out"));
+        assert!(!message.contains(secret));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_timeout_covers_capture_task_join_when_descendant_keeps_pipe_open() {
+        let command = RuntimeCommand::new("sh")
+            .args(["-c", "printf parent-done; sleep 1 &"])
+            .timeout(Duration::from_millis(50));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let start = Instant::now();
+        let err = runtime
+            .block_on(TokioRuntimeCommand.run_capture(command))
+            .unwrap_err();
+
+        assert!(err.to_string().contains("Command timed out"));
+        assert!(start.elapsed() < Duration::from_millis(500));
+    }
+
+    #[cfg(unix)]
+    fn sleeper_command(pid_path: &Path) -> RuntimeCommand {
+        RuntimeCommand::new("sh")
+            .args([
+                "-c",
+                "printf '%s' \"$$\" > \"$DECUNE_PID_FILE\"; exec sleep 30",
+            ])
+            .env("DECUNE_PID_FILE", pid_path.display().to_string())
+    }
+
+    #[cfg(unix)]
+    fn read_pid(pid_path: &Path) -> libc::pid_t {
+        fs::read_to_string(pid_path)
+            .unwrap()
+            .parse::<libc::pid_t>()
+            .unwrap()
+    }
+
+    #[cfg(unix)]
+    fn process_exists(pid: libc::pid_t) -> bool {
+        unsafe { libc::kill(pid, 0) == 0 }
     }
 }
