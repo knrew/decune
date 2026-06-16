@@ -116,6 +116,46 @@ fn compose_integration_minimal_single_service_up_detach() {
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_generated_override_is_valid_final_compose_config() {
+    let workspace = compose_fixture_workspace("minimal");
+    let state_home = support::TempWorkspace::new().unwrap();
+    let state_home_value = state_home.path().to_string_lossy().into_owned();
+
+    run_decune_up_detach(workspace.path(), &[("XDG_STATE_HOME", &state_home_value)]);
+
+    let devcontainer_dir = workspace.path().join(".devcontainer");
+    let generated_override = state_home
+        .path()
+        .join("decune")
+        .join(workspace_id(workspace.path()))
+        .join("compose.override.yaml");
+    assert!(
+        generated_override.is_file(),
+        "generated Compose override was not written at {}",
+        generated_override.display()
+    );
+
+    let output = docker_output(vec![
+        "compose".to_owned(),
+        "--project-name".to_owned(),
+        compose_project_name(workspace.path()),
+        "--project-directory".to_owned(),
+        devcontainer_dir.display().to_string(),
+        "-f".to_owned(),
+        devcontainer_dir.join("compose.yaml").display().to_string(),
+        "-f".to_owned(),
+        generated_override.display().to_string(),
+        "config".to_owned(),
+        "--format".to_owned(),
+        "json".to_owned(),
+    ])
+    .unwrap();
+
+    assert!(output.contains("\"services\""));
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_multi_file_merge_applies_override() {
     let workspace = compose_fixture_workspace("multi-file");
 

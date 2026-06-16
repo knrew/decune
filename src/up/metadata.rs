@@ -550,29 +550,17 @@ fn compose_generated_override_hash_input(
     writer.object("ComposeGeneratedOverrideContent", |writer| {
         writer.field("primary_service", |writer| writer.string(&compose.service));
         writer.field("image", |writer| {
-            if plan.image == plan.base_image {
-                writer.string(&plan.image);
-            } else {
-                writer.string("<decune-generated-image>");
-            }
+            writer.string(generated_override_semantic_image(plan));
         });
         writer.field("pull_policy", |writer| {
-            if plan.image == plan.base_image {
-                writer.none();
-            } else {
+            if generated_override_semantic_pull_policy_never(plan) {
                 writer.string("never");
+            } else {
+                writer.none();
             }
         });
         writer.field("labels", |writer| {
-            let labels = plan
-                .resources
-                .labels
-                .iter()
-                .filter(|(key, _)| {
-                    key.as_str() != "decune.config_hash" && !key.starts_with("com.docker.compose.")
-                })
-                .map(|(key, value)| (key.clone(), value.clone()))
-                .collect::<BTreeMap<_, _>>();
+            let labels = generated_override_semantic_labels(&plan.resources.labels);
             writer.map(labels.iter(), |writer, value| writer.string(value));
         });
         writer.field("environment", |writer| {
@@ -659,6 +647,32 @@ fn compose_generated_override_hash_input(
         path: path.display().to_string(),
         content_hash: sha256_hex(writer.finish().as_bytes()),
     })
+}
+
+fn generated_override_semantic_image(plan: &UpPlan) -> &str {
+    if plan.image == plan.base_image {
+        &plan.image
+    } else {
+        "<decune-generated-image>"
+    }
+}
+
+fn generated_override_semantic_pull_policy_never(plan: &UpPlan) -> bool {
+    plan.image != plan.base_image
+}
+
+fn generated_override_semantic_labels(
+    labels: &BTreeMap<String, String>,
+) -> BTreeMap<String, String> {
+    labels
+        .iter()
+        .filter(|(key, _)| generated_override_label_is_semantic_hash_input(key))
+        .map(|(key, value)| (key.clone(), value.clone()))
+        .collect()
+}
+
+fn generated_override_label_is_semantic_hash_input(key: &str) -> bool {
+    key != "decune.config_hash" && !key.starts_with("com.docker.compose.")
 }
 
 async fn resolve_effective_users_for_image(
@@ -1271,6 +1285,15 @@ pub(in crate::up) async fn warn_about_unsupported_dockerfile_image_metadata(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{
+        config::{ConfigMergeInput, layer::LayerDevcontainerCompose},
+        docker::{
+            build::DockerBuildOptions,
+            resource::DockerResources,
+            user::{EffectiveUsers, UidGidSyncPlan},
+        },
+        up::types::UpPlan,
+    };
 
     #[test]
     fn effective_startup_command_uses_compose_overrides() {
@@ -1308,5 +1331,95 @@ mod tests {
 
         assert_eq!(startup.entrypoint, vec!["/image-entrypoint.sh".to_owned()]);
         assert_eq!(startup.command, vec!["service-cmd".to_owned()]);
+    }
+
+    #[test]
+    fn generated_override_semantic_hash_changes_for_meaningful_override_change() {
+        let first = compose_generated_override_hash_input(
+            PathBuf::from("/state/compose.override.yaml"),
+            &compose_hash_plan("stable-hash", "decune/test:first", "1.0.0"),
+            &[],
+            None,
+        )
+        .unwrap();
+        let second = compose_generated_override_hash_input(
+            PathBuf::from("/state/compose.override.yaml"),
+            &compose_hash_plan("stable-hash", "decune/test:first", "1.0.1"),
+            &[],
+            None,
+        )
+        .unwrap();
+
+        assert_ne!(first.content_hash, second.content_hash);
+    }
+
+    #[test]
+    fn generated_override_semantic_hash_excludes_hash_derived_values() {
+        let first = compose_generated_override_hash_input(
+            PathBuf::from("/state/compose.override.yaml"),
+            &compose_hash_plan("first-hash", "decune/test:first-hash", "1.0.0"),
+            &[],
+            None,
+        )
+        .unwrap();
+        let second = compose_generated_override_hash_input(
+            PathBuf::from("/state/compose.override.yaml"),
+            &compose_hash_plan("second-hash", "decune/test:second-hash", "1.0.0"),
+            &[],
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(first.content_hash, second.content_hash);
+    }
+
+    fn compose_hash_plan(config_hash: &str, image: &str, version: &str) -> UpPlan {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.source = Some(ResolvedDevcontainerSource::Compose(
+            LayerDevcontainerCompose {
+                files: vec!["compose.yaml".to_owned()],
+                service: "app".to_owned(),
+                run_services: None,
+            },
+        ));
+
+        UpPlan {
+            image: image.to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources: DockerResources {
+                container_name: "decune-test".to_owned(),
+                image_tag: image.to_owned(),
+                workspace_volume_name: "decune-test-workspace".to_owned(),
+                labels: BTreeMap::from([
+                    ("decune.managed".to_owned(), "true".to_owned()),
+                    ("decune.workspace_id".to_owned(), "workspace-id".to_owned()),
+                    ("decune.config_hash".to_owned(), config_hash.to_owned()),
+                    ("decune.version".to_owned(), version.to_owned()),
+                    (
+                        "com.docker.compose.project".to_owned(),
+                        "user-project".to_owned(),
+                    ),
+                ]),
+                config_hash: config_hash.to_owned(),
+            },
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers: ConfigMergeInput::default(),
+            config,
+            sensitive_container_env: Default::default(),
+            compose_interpolation_env: Default::default(),
+            compose_interpolation_redactions: Vec::new(),
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspace".to_owned(),
+            mounts: Vec::new(),
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
+        }
     }
 }
