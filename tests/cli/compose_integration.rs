@@ -160,6 +160,7 @@ fn compose_integration_run_services_builds_dependencies_for_selected_service() {
     let _cleanup = ComposeImageCleanup {
         image: base_image.clone(),
     };
+    let _ = docker_status(["image", "rm", "--force", "--no-prune", &base_image]);
 
     run_decune_up_detach(
         workspace.path(),
@@ -168,10 +169,15 @@ fn compose_integration_run_services_builds_dependencies_for_selected_service() {
 
     let containers = compose_project_containers(workspace.path()).unwrap();
     assert_eq!(running_services(&containers), vec!["app"]);
-    assert!(
-        docker_status(["image", "inspect", &base_image]).is_ok(),
-        "dependency service image must be built"
-    );
+    let dependency_label = docker_output([
+        "image",
+        "inspect",
+        "--format",
+        "{{ index .Config.Labels \"org.decune.test.build-dependency\" }}",
+        &base_image,
+    ])
+    .unwrap();
+    assert_eq!(dependency_label.trim(), "true");
 }
 
 #[test]
