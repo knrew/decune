@@ -908,6 +908,7 @@ pub(crate) fn write_compose_override(path: &Path, patch: &ComposeOverridePatch) 
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct ComposeBuildOptions {
+    pub(crate) with_dependencies: bool,
     pub(crate) no_cache: bool,
     pub(crate) pull: bool,
 }
@@ -1046,6 +1047,9 @@ fn compose_build_command(
     services: &[String],
 ) -> RuntimeCommand {
     let mut command = project.command(["build"]);
+    if options.with_dependencies {
+        command = command.arg("--with-dependencies");
+    }
     if options.no_cache {
         command = command.arg("--no-cache");
     }
@@ -1647,12 +1651,38 @@ mod tests {
     }
 
     #[test]
+    fn compose_build_command_with_dependencies_combines_no_cache_and_pull() {
+        let services = vec!["app".to_owned()];
+        let command = super::compose_build_command(
+            &lifecycle_command_plan(),
+            ComposeBuildOptions {
+                with_dependencies: true,
+                no_cache: true,
+                pull: true,
+            },
+            &services,
+        );
+
+        assert_eq!(
+            command.args_vec().iter().rev().take(5).collect::<Vec<_>>(),
+            vec![
+                "app",
+                "--pull",
+                "--no-cache",
+                "--with-dependencies",
+                "build"
+            ]
+        );
+    }
+
+    #[test]
     fn compose_lifecycle_rebuild_maps_no_cache_pull_and_force_recreate() {
         let run_services = vec!["db".to_owned()];
         let plan = ComposeLifecyclePlan::up(lifecycle_command_plan(), "app", Some(&run_services));
         let build = super::compose_build_command(
             &plan.project,
             ComposeBuildOptions {
+                with_dependencies: true,
                 no_cache: true,
                 pull: true,
             },
@@ -1668,8 +1698,15 @@ mod tests {
         );
 
         assert_eq!(
-            build.args_vec().iter().rev().take(5).collect::<Vec<_>>(),
-            vec!["db", "app", "--pull", "--no-cache", "build"]
+            build.args_vec().iter().rev().take(6).collect::<Vec<_>>(),
+            vec![
+                "db",
+                "app",
+                "--pull",
+                "--no-cache",
+                "--with-dependencies",
+                "build"
+            ]
         );
         assert_eq!(
             up.args_vec().iter().rev().take(5).collect::<Vec<_>>(),

@@ -1,0 +1,11 @@
+{
+  "name": "compose-build-dependencies",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "runServices": [
+    "app"
+  ],
+  "workspaceFolder": "/workspace",
+  "overrideCommand": true,
+  "updateRemoteUserUID": false
+}

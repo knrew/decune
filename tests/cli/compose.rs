@@ -1,5 +1,24 @@
 use crate::harness::*;
 
+fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {
+    workspace
+        .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")
+        .unwrap();
+    workspace
+        .write_file(
+            "container-tools/linux-amd64/git-credential-decune",
+            b"helper",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            "container-tools/manifest.json",
+            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
+        )
+        .unwrap();
+    workspace.path().join("container-tools")
+}
+
 #[test]
 fn compose_validation_runs_after_initialize_command_generated_files_exist() {
     let workspace = support::TempWorkspace::new().unwrap();
@@ -301,9 +320,9 @@ if [ "${1:-}" = compose ]; then
       ;;
     *" build "*)
       case "$*" in
-        *"--no-cache --pull"*) exit 0 ;;
+        *"--with-dependencies --no-cache --pull"*) exit 0 ;;
       esac
-      echo "compose build did not receive --no-cache and --pull: $*" >&2
+      echo "compose build did not receive --with-dependencies, --no-cache, and --pull: $*" >&2
       exit 42
       ;;
     *" pull "*)
@@ -393,11 +412,13 @@ exit 91
         std::env::var("PATH").unwrap_or_default()
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&host_tools);
 
     decune()
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_OVERRIDE_LOG", &override_log)
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .args(["up", "--detach", "--no-cache", "--pull"])
         .arg(&workspace_root)
         .assert()
@@ -416,7 +437,7 @@ exit 91
 
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(commands.contains("compose"));
-    assert!(commands.contains("build --no-cache --pull"));
+    assert!(commands.contains("build --with-dependencies --no-cache --pull"));
     assert!(commands.lines().any(|line| {
         line.contains("build --tag decune/")
             && line.contains("--no-cache")
@@ -427,6 +448,136 @@ exit 91
             .lines()
             .any(|line| line.contains("build --tag decune/") && line.contains("--pull"))
     );
+}
+
+#[test]
+fn compose_up_builds_selected_services_with_dependencies() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "runServices": ["app"],
+              "overrideCommand": true,
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              base:
+                build:
+                  context: .
+                  dockerfile: Dockerfile.base
+              app:
+                build:
+                  context: .
+                  dockerfile: Dockerfile.app
+                depends_on:
+                  - base
+            "#,
+        )
+        .unwrap();
+    let command_log = host_tools.path().join("commands.log");
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" config --format json "*)
+      printf '{"services":{"base":{"build":{"context":".","dockerfile":"Dockerfile.base"}},"app":{"build":{"context":".","dockerfile":"Dockerfile.app"},"depends_on":["base"]}}}\n'
+      exit 0
+      ;;
+    *" build "*)
+      case "$*" in
+        *" build --with-dependencies app") exit 0 ;;
+      esac
+      echo "compose selected-service build did not receive --with-dependencies: $*" >&2
+      exit 42
+      ;;
+    *" up -d "*)
+      exit 0
+      ;;
+    *" ps --format json app "*)
+      printf '[{"ID":"compose-app-id","Name":"compose-app-1","Service":"app","State":"running"}]\n'
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = exec ]; then
+  printf 'root:x:0:0:root:/root:/bin/sh\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"sha256:test","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = ps ]; then
+  exit 0
+fi
+if [ "${1:-}" = create ]; then
+  printf 'lookup-container-id\n'
+  exit 0
+fi
+if [ "${1:-}" = start ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&host_tools);
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Started dev container: compose-app-1",
+        ));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(commands.lines().any(|line| {
+        line.starts_with("compose ")
+            && line.ends_with(" build --with-dependencies app")
+            && !line.ends_with(" build --with-dependencies app app")
+    }));
 }
 
 #[test]

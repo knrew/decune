@@ -41,9 +41,19 @@ struct UnrelatedComposeFixture {
     image: String,
 }
 
+struct ComposeImageCleanup {
+    image: String,
+}
+
 impl Drop for UnrelatedComposeFixture {
     fn drop(&mut self) {
         let _ = docker_status(["rm", "--force", "--volumes", &self.container_name]);
+        let _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
+    }
+}
+
+impl Drop for ComposeImageCleanup {
+    fn drop(&mut self) {
         let _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
     }
 }
@@ -137,6 +147,37 @@ fn compose_integration_primary_build_service_runs_lifecycle_assertion() {
 
     let containers = compose_project_containers(workspace.path()).unwrap();
     assert_eq!(running_services(&containers), vec!["app"]);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_run_services_builds_dependencies_for_selected_service() {
+    let workspace = compose_fixture_workspace("build-dependencies");
+    let base_image = format!(
+        "decune-compose-build-dependencies-base-{}:latest",
+        workspace_id(workspace.path())
+    );
+    let _cleanup = ComposeImageCleanup {
+        image: base_image.clone(),
+    };
+    let _ = docker_status(["image", "rm", "--force", "--no-prune", &base_image]);
+
+    run_decune_up_detach(
+        workspace.path(),
+        &[("DECUNE_BUILD_DEPS_BASE_IMAGE", &base_image)],
+    );
+
+    let containers = compose_project_containers(workspace.path()).unwrap();
+    assert_eq!(running_services(&containers), vec!["app"]);
+    let dependency_label = docker_output([
+        "image",
+        "inspect",
+        "--format",
+        "{{ index .Config.Labels \"org.decune.test.build-dependency\" }}",
+        &base_image,
+    ])
+    .unwrap();
+    assert_eq!(dependency_label.trim(), "true");
 }
 
 #[test]
