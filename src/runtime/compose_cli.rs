@@ -44,6 +44,66 @@ impl DockerComposeCli {
         Ok(output)
     }
 
+    pub(crate) async fn capabilities(&self) -> Result<ComposeCliCapabilities> {
+        let version_short = self.probe_version_short().await?;
+        let config_help = self.probe_help("config").await?;
+        let ps_help = self.probe_help("ps").await?;
+        let build_help = self.probe_help("build").await?;
+        let pull_help = self.probe_help("pull").await?;
+        let up_help = self.probe_help("up").await?;
+
+        Ok(ComposeCliCapabilities::from_help_outputs(
+            version_short,
+            &config_help,
+            &ps_help,
+            &build_help,
+            &pull_help,
+            &up_help,
+        ))
+    }
+
+    pub(crate) async fn ensure_required_capabilities(&self) -> Result<ComposeCliCapabilities> {
+        let capabilities = self.capabilities().await?;
+        capabilities.ensure_required()?;
+        Ok(capabilities)
+    }
+
+    async fn probe_version_short(&self) -> Result<Option<String>> {
+        let command = compose_cmd(["version", "--short"]);
+        let output = self.runner.run_capture(command).await?;
+        if output.exit_code == 0 {
+            let version = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            return Ok((!version.is_empty()).then_some(version));
+        }
+
+        let fallback = compose_cmd(["version"]);
+        let fallback_output = self.runner.run_capture(fallback.clone()).await?;
+        ensure_success(
+            "read Docker Compose version",
+            "compose",
+            &fallback,
+            &fallback_output,
+        )?;
+        Ok(None)
+    }
+
+    async fn probe_help(&self, subcommand: &str) -> Result<String> {
+        let command = compose_cmd([]).arg(subcommand).arg("--help");
+        let output = self.runner.run_capture(command.clone()).await?;
+        ensure_success(
+            "probe Docker Compose required capabilities",
+            subcommand,
+            &command,
+            &output,
+        )?;
+        let mut help = String::from_utf8_lossy(&output.stdout).into_owned();
+        if !output.stderr.is_empty() {
+            help.push('\n');
+            help.push_str(&String::from_utf8_lossy(&output.stderr));
+        }
+        Ok(help)
+    }
+
     pub(crate) async fn config_json(
         &self,
         project: &ComposeCommandPlan,
@@ -177,6 +237,90 @@ impl DockerComposeCli {
         )?;
         parse_compose_ps_json(&output.stdout, &project.project_name, service)
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeCliCapabilities {
+    pub(crate) version_short: Option<String>,
+    pub(crate) config_format_json: bool,
+    pub(crate) ps_format_json: bool,
+    pub(crate) build_with_dependencies: bool,
+    pub(crate) pull_policy_always: bool,
+    pub(crate) pull_ignore_buildable: bool,
+    pub(crate) up_force_recreate: bool,
+    pub(crate) up_remove_orphans: bool,
+}
+
+impl ComposeCliCapabilities {
+    pub(crate) fn from_help_outputs(
+        version_short: Option<String>,
+        config_help: &str,
+        ps_help: &str,
+        build_help: &str,
+        pull_help: &str,
+        up_help: &str,
+    ) -> Self {
+        Self {
+            version_short,
+            config_format_json: help_contains_option(config_help, "--format"),
+            ps_format_json: help_contains_option(ps_help, "--format"),
+            build_with_dependencies: help_contains_option(build_help, "--with-dependencies"),
+            pull_policy_always: help_contains_option(pull_help, "--policy"),
+            pull_ignore_buildable: help_contains_option(pull_help, "--ignore-buildable"),
+            up_force_recreate: help_contains_option(up_help, "--force-recreate"),
+            up_remove_orphans: help_contains_option(up_help, "--remove-orphans"),
+        }
+    }
+
+    pub(crate) fn ensure_required(&self) -> Result<()> {
+        let mut missing = Vec::new();
+        if !self.config_format_json {
+            missing
+                .push("docker compose config --format json (config --help does not list --format)");
+        }
+        if !self.ps_format_json {
+            missing.push("docker compose ps --format json (ps --help does not list --format)");
+        }
+        if !self.build_with_dependencies {
+            missing.push(
+                "docker compose build --with-dependencies (build --help does not list --with-dependencies)",
+            );
+        }
+        if !self.pull_policy_always {
+            missing
+                .push("docker compose pull --policy always (pull --help does not list --policy)");
+        }
+        if !self.pull_ignore_buildable {
+            missing.push(
+                "docker compose pull --ignore-buildable (pull --help does not list --ignore-buildable)",
+            );
+        }
+        if !self.up_force_recreate {
+            missing.push(
+                "docker compose up --force-recreate (up --help does not list --force-recreate)",
+            );
+        }
+        if !self.up_remove_orphans {
+            missing.push(
+                "docker compose up --remove-orphans (up --help does not list --remove-orphans)",
+            );
+        }
+        if missing.is_empty() {
+            return Ok(());
+        }
+
+        bail!(
+            "Docker Compose v2 plugin is missing required capabilities: {}. Update Docker Compose v2 plugin to a newer release.",
+            missing.join("; ")
+        )
+    }
+}
+
+fn help_contains_option(help: &str, option: &str) -> bool {
+    help.split(|ch: char| {
+        ch.is_ascii_whitespace() || matches!(ch, ',' | ';' | '[' | ']' | '(' | ')' | '{' | '}')
+    })
+    .any(|token| token == option || token.starts_with(&format!("{option}=")))
 }
 
 #[derive(Clone)]
@@ -1437,12 +1581,12 @@ mod tests {
     use crate::workspace::Workspace;
 
     use super::{
-        ComposeBuildOptions, ComposeCommandPlan, ComposeConfigModel, ComposeConfigService,
-        ComposeDownOptions, ComposeIntrospector, ComposeLifecyclePlan, ComposeOverrideMount,
-        ComposeOverridePatch, ComposeOverrideServicePatch, ComposePrimaryImageResolver,
-        ComposeProject, ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation,
-        ComposeStopOptions, ComposeUpOptions, DockerComposeCli, parse_compose_ps_json,
-        resolve_compose_container, write_compose_override,
+        ComposeBuildOptions, ComposeCliCapabilities, ComposeCommandPlan, ComposeConfigModel,
+        ComposeConfigService, ComposeDownOptions, ComposeIntrospector, ComposeLifecyclePlan,
+        ComposeOverrideMount, ComposeOverridePatch, ComposeOverrideServicePatch,
+        ComposePrimaryImageResolver, ComposeProject, ComposeProjectPlan, ComposePullOptions,
+        ComposeServiceValidation, ComposeStopOptions, ComposeUpOptions, DockerComposeCli,
+        parse_compose_ps_json, resolve_compose_container, write_compose_override,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
 
@@ -1631,6 +1775,33 @@ mod tests {
             env: BTreeMap::new(),
             redactions: Vec::new(),
         }
+    }
+
+    fn runtime_output(stdout: impl AsRef<[u8]>) -> RuntimeOutput {
+        RuntimeOutput {
+            stdout: stdout.as_ref().to_vec(),
+            stderr: Vec::new(),
+            exit_code: 0,
+        }
+    }
+
+    fn runtime_error_output(stderr: impl AsRef<[u8]>) -> RuntimeOutput {
+        RuntimeOutput {
+            stdout: Vec::new(),
+            stderr: stderr.as_ref().to_vec(),
+            exit_code: 1,
+        }
+    }
+
+    fn valid_compose_capabilities() -> ComposeCliCapabilities {
+        ComposeCliCapabilities::from_help_outputs(
+            Some("2.40.0".to_owned()),
+            "Usage: docker compose config [OPTIONS]\n      --format string",
+            "Usage: docker compose ps [OPTIONS]\n      --format string",
+            "Usage: docker compose build [OPTIONS]\n      --with-dependencies --no-cache --pull",
+            "Usage: docker compose pull [OPTIONS]\n      --policy string --ignore-buildable",
+            "Usage: docker compose up [OPTIONS]\n      --force-recreate --remove-orphans",
+        )
     }
 
     #[test]
@@ -1884,6 +2055,132 @@ mod tests {
                 "pull"
             ]
         );
+    }
+
+    #[test]
+    fn compose_capability_valid_help_output_detects_required_options() {
+        let capabilities = valid_compose_capabilities();
+
+        assert_eq!(capabilities.version_short.as_deref(), Some("2.40.0"));
+        assert!(capabilities.config_format_json);
+        assert!(capabilities.ps_format_json);
+        assert!(capabilities.build_with_dependencies);
+        assert!(capabilities.pull_policy_always);
+        assert!(capabilities.pull_ignore_buildable);
+        assert!(capabilities.up_force_recreate);
+        assert!(capabilities.up_remove_orphans);
+        capabilities.ensure_required().unwrap();
+    }
+
+    #[test]
+    fn compose_capability_missing_build_with_dependencies_errors_clearly() {
+        let capabilities = ComposeCliCapabilities::from_help_outputs(
+            Some("2.3.0".to_owned()),
+            "--format string",
+            "--format string",
+            "--no-cache --pull",
+            "--policy string --ignore-buildable",
+            "--force-recreate --remove-orphans",
+        );
+
+        let error = capabilities.ensure_required().unwrap_err().to_string();
+
+        assert!(error.contains("docker compose build --with-dependencies"));
+        assert!(error.contains("build --help does not list --with-dependencies"));
+        assert!(error.contains("Update Docker Compose v2 plugin"));
+    }
+
+    #[test]
+    fn compose_capability_missing_config_format_mentions_config_format_json() {
+        let capabilities = ComposeCliCapabilities::from_help_outputs(
+            Some("2.3.0".to_owned()),
+            "--services",
+            "--format string",
+            "--with-dependencies",
+            "--policy string --ignore-buildable",
+            "--force-recreate --remove-orphans",
+        );
+
+        let error = capabilities.ensure_required().unwrap_err().to_string();
+
+        assert!(error.contains("docker compose config --format json"));
+        assert!(error.contains("config --help does not list --format"));
+    }
+
+    #[test]
+    fn compose_capability_missing_up_options_prompts_compose_plugin_update() {
+        let capabilities = ComposeCliCapabilities::from_help_outputs(
+            Some("2.3.0".to_owned()),
+            "--format string",
+            "--format string",
+            "--with-dependencies",
+            "--policy string --ignore-buildable",
+            "--detach",
+        );
+
+        let error = capabilities.ensure_required().unwrap_err().to_string();
+
+        assert!(error.contains("docker compose up --force-recreate"));
+        assert!(error.contains("docker compose up --remove-orphans"));
+        assert!(error.contains("Update Docker Compose v2 plugin"));
+    }
+
+    #[test]
+    fn compose_capability_probe_runs_version_and_help_commands() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(runtime_output("--force-recreate --remove-orphans")),
+            Ok(runtime_output("--policy string --ignore-buildable")),
+            Ok(runtime_output("--with-dependencies")),
+            Ok(runtime_output("--format string")),
+            Ok(runtime_output("--format string")),
+            Ok(runtime_output("2.40.0\n")),
+        ]);
+        let cli = DockerComposeCli::new(std::sync::Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let capabilities = runtime
+            .block_on(cli.ensure_required_capabilities())
+            .unwrap();
+        let commands = runner.commands();
+
+        assert!(capabilities.build_with_dependencies);
+        assert_eq!(commands[0].args_vec(), &["compose", "version", "--short"]);
+        assert_eq!(commands[1].args_vec(), &["compose", "config", "--help"]);
+        assert_eq!(commands[2].args_vec(), &["compose", "ps", "--help"]);
+        assert_eq!(commands[3].args_vec(), &["compose", "build", "--help"]);
+        assert_eq!(commands[4].args_vec(), &["compose", "pull", "--help"]);
+        assert_eq!(commands[5].args_vec(), &["compose", "up", "--help"]);
+    }
+
+    #[test]
+    fn compose_capability_probe_does_not_require_version_short() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(runtime_output("--force-recreate --remove-orphans")),
+            Ok(runtime_output("--policy string --ignore-buildable")),
+            Ok(runtime_output("--with-dependencies")),
+            Ok(runtime_output("--format string")),
+            Ok(runtime_output("--format string")),
+            Ok(runtime_output("Docker Compose version v2.40.0\n")),
+            Ok(runtime_error_output("unknown flag: --short")),
+        ]);
+        let cli = DockerComposeCli::new(std::sync::Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let capabilities = runtime
+            .block_on(cli.ensure_required_capabilities())
+            .unwrap();
+        let commands = runner.commands();
+
+        assert_eq!(capabilities.version_short, None);
+        assert_eq!(commands[0].args_vec(), &["compose", "version", "--short"]);
+        assert_eq!(commands[1].args_vec(), &["compose", "version"]);
+        assert_eq!(commands[2].args_vec(), &["compose", "config", "--help"]);
     }
 
     #[test]

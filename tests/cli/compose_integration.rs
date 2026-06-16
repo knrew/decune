@@ -73,7 +73,7 @@ impl Drop for ComposeRegistryFixture {
 #[test]
 fn compose_integration_plugin_detection_runs_when_tools_are_available() {
     assert_eq!(
-        compose_integration_decision(Ok(()), Ok(())),
+        compose_integration_decision(Ok(()), Ok(()), Ok(())),
         ComposeIntegrationDecision::Run
     );
 }
@@ -81,7 +81,11 @@ fn compose_integration_plugin_detection_runs_when_tools_are_available() {
 #[test]
 fn compose_integration_plugin_detection_errors_when_docker_is_missing() {
     assert_eq!(
-        compose_integration_decision(Err("docker executable was not found".to_owned()), Ok(())),
+        compose_integration_decision(
+            Err("docker executable was not found".to_owned()),
+            Ok(()),
+            Ok(())
+        ),
         ComposeIntegrationDecision::Error(
             "Docker Compose integration tests require Docker CLI: docker executable was not found"
                 .to_owned()
@@ -94,10 +98,26 @@ fn compose_integration_plugin_detection_errors_when_compose_v2_plugin_is_missing
     assert_eq!(
         compose_integration_decision(
             Ok(()),
-            Err("docker compose version exited with 1".to_owned())
+            Err("docker compose version exited with 1".to_owned()),
+            Ok(())
         ),
         ComposeIntegrationDecision::Error(
             "Docker Compose integration tests require Docker Compose v2 plugin: docker compose version exited with 1"
+                .to_owned()
+        )
+    );
+}
+
+#[test]
+fn compose_integration_plugin_detection_errors_when_capability_is_missing() {
+    assert_eq!(
+        compose_integration_decision(
+            Ok(()),
+            Ok(()),
+            Err("missing docker compose build --with-dependencies".to_owned())
+        ),
+        ComposeIntegrationDecision::Error(
+            "Docker Compose integration tests require newer Docker Compose v2 plugin capabilities: missing docker compose build --with-dependencies"
                 .to_owned()
         )
     );
@@ -380,12 +400,17 @@ fn compose_fixture_path(name: &str) -> std::path::PathBuf {
 }
 
 fn compose_integration_readiness() -> ComposeIntegrationDecision {
-    compose_integration_decision(command_ok(["version"]), command_ok(["compose", "version"]))
+    compose_integration_decision(
+        command_ok(["version"]),
+        command_ok(["compose", "version"]),
+        compose_capabilities_ok(),
+    )
 }
 
 fn compose_integration_decision(
     docker: Result<(), String>,
     compose: Result<(), String>,
+    capabilities: Result<(), String>,
 ) -> ComposeIntegrationDecision {
     if let Err(reason) = docker {
         return ComposeIntegrationDecision::Error(format!(
@@ -399,16 +424,66 @@ fn compose_integration_decision(
         ));
     }
 
+    if let Err(reason) = capabilities {
+        return ComposeIntegrationDecision::Error(format!(
+            "Docker Compose integration tests require newer Docker Compose v2 plugin capabilities: {reason}"
+        ));
+    }
+
     ComposeIntegrationDecision::Run
 }
 
+fn compose_capabilities_ok() -> Result<(), String> {
+    let requirements = [
+        ("config", "--format", "docker compose config --format json"),
+        ("ps", "--format", "docker compose ps --format json"),
+        (
+            "build",
+            "--with-dependencies",
+            "docker compose build --with-dependencies",
+        ),
+        ("pull", "--policy", "docker compose pull --policy always"),
+        (
+            "pull",
+            "--ignore-buildable",
+            "docker compose pull --ignore-buildable",
+        ),
+        (
+            "up",
+            "--force-recreate",
+            "docker compose up --force-recreate",
+        ),
+        (
+            "up",
+            "--remove-orphans",
+            "docker compose up --remove-orphans",
+        ),
+    ];
+    for (subcommand, option, capability) in requirements {
+        let help = command_output(["compose", subcommand, "--help"])?;
+        if !help_contains_option(&help, option) {
+            return Err(format!("missing {capability}"));
+        }
+    }
+    Ok(())
+}
+
 fn command_ok<const N: usize>(args: [&str; N]) -> Result<(), String> {
+    command_output(args).map(|_| ())
+}
+
+fn command_output<const N: usize>(args: [&str; N]) -> Result<String, String> {
     let output = Command::new("docker")
         .args(args)
         .output()
         .map_err(|error| format!("failed to spawn docker: {error}"))?;
     if output.status.success() {
-        Ok(())
+        let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+        if !output.stderr.is_empty() {
+            text.push('\n');
+            text.push_str(&String::from_utf8_lossy(&output.stderr));
+        }
+        Ok(text)
     } else {
         Err(format!(
             "docker {} exited with {}: {}",
@@ -417,6 +492,13 @@ fn command_ok<const N: usize>(args: [&str; N]) -> Result<(), String> {
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
+}
+
+fn help_contains_option(help: &str, option: &str) -> bool {
+    help.split(|ch: char| {
+        ch.is_ascii_whitespace() || matches!(ch, ',' | ';' | '[' | ']' | '(' | ')' | '{' | '}')
+    })
+    .any(|token| token == option || token.starts_with(&format!("{option}=")))
 }
 
 fn run_decune_up_detach(workspace: &Path, envs: &[(&str, &str)]) {

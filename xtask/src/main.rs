@@ -36,6 +36,50 @@ const PLATFORMS: [ContainerToolPlatform; 2] = [
         rust_target: "aarch64-unknown-linux-musl",
     },
 ];
+const COMPOSE_CAPABILITIES: [ComposeCapabilityRequirement; 7] = [
+    ComposeCapabilityRequirement {
+        subcommand: "config",
+        option: "--format",
+        capability: "docker compose config --format json",
+    },
+    ComposeCapabilityRequirement {
+        subcommand: "ps",
+        option: "--format",
+        capability: "docker compose ps --format json",
+    },
+    ComposeCapabilityRequirement {
+        subcommand: "build",
+        option: "--with-dependencies",
+        capability: "docker compose build --with-dependencies",
+    },
+    ComposeCapabilityRequirement {
+        subcommand: "pull",
+        option: "--policy",
+        capability: "docker compose pull --policy always",
+    },
+    ComposeCapabilityRequirement {
+        subcommand: "pull",
+        option: "--ignore-buildable",
+        capability: "docker compose pull --ignore-buildable",
+    },
+    ComposeCapabilityRequirement {
+        subcommand: "up",
+        option: "--force-recreate",
+        capability: "docker compose up --force-recreate",
+    },
+    ComposeCapabilityRequirement {
+        subcommand: "up",
+        option: "--remove-orphans",
+        capability: "docker compose up --remove-orphans",
+    },
+];
+
+#[derive(Debug, Clone, Copy)]
+struct ComposeCapabilityRequirement {
+    subcommand: &'static str,
+    option: &'static str,
+    capability: &'static str,
+}
 
 #[derive(Debug, Parser)]
 #[command(author, version, about)]
@@ -403,17 +447,44 @@ fn compose_integration(workspace: &Path, release: bool) -> Result<()> {
         docker_version,
         "Docker CLI is required for Docker Compose integration tests",
     )?;
-    let mut compose_version = Command::new("docker");
-    compose_version.args(["compose", "version"]);
-    run_command(
-        compose_version,
-        "Docker Compose v2 plugin is required for Docker Compose integration tests",
-    )?;
+    compose_integration_preflight()?;
 
     let bundle_dir = prepare_xtask_container_tools_bundle(workspace)?;
     let command = compose_integration_cargo_command(workspace, release, &bundle_dir);
 
     run_command_spec(command, "Failed to run Docker Compose integration tests")
+}
+
+fn compose_integration_preflight() -> Result<()> {
+    let version = docker_output_text(&["compose", "version"])
+        .context("Docker Compose v2 plugin is required for Docker Compose integration tests")?;
+    let version_short = docker_output_text(&["compose", "version", "--short"])
+        .ok()
+        .map(|value| value.trim().to_owned())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| version.trim().to_owned());
+    eprintln!("Docker Compose version: {version_short}");
+
+    for requirement in COMPOSE_CAPABILITIES {
+        let help = docker_output_text(&["compose", requirement.subcommand, "--help"])
+            .with_context(|| {
+                format!(
+                    "Failed to probe Docker Compose capability: {}",
+                    requirement.capability
+                )
+            })?;
+        if !help_contains_option(&help, requirement.option) {
+            bail!(
+                "Docker Compose v2 plugin is missing required capability: {} ({} --help does not list {}). Update Docker Compose v2 plugin to a newer release.",
+                requirement.capability,
+                requirement.subcommand,
+                requirement.option
+            );
+        }
+        eprintln!("Docker Compose capability OK: {}", requirement.capability);
+    }
+
+    Ok(())
 }
 
 fn workspace_test(workspace: &Path, release: bool) -> Result<()> {
@@ -918,6 +989,34 @@ fn run_command(mut command: Command, context: &str) -> Result<()> {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn docker_output_text(args: &[&str]) -> Result<String> {
+    let output = Command::new("docker")
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to spawn docker {}", args.join(" ")))?;
+    if !output.status.success() {
+        bail!(
+            "docker {} exited with {}: {}",
+            args.join(" "),
+            output.status.code().unwrap_or(-1),
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let mut text = String::from_utf8_lossy(&output.stdout).into_owned();
+    if !output.stderr.is_empty() {
+        text.push('\n');
+        text.push_str(&String::from_utf8_lossy(&output.stderr));
+    }
+    Ok(text)
+}
+
+fn help_contains_option(help: &str, option: &str) -> bool {
+    help.split(|ch: char| {
+        ch.is_ascii_whitespace() || matches!(ch, ',' | ';' | '[' | ']' | '(' | ')' | '{' | '}')
+    })
+    .any(|token| token == option || token.starts_with(&format!("{option}=")))
 }
 
 fn sha256_file(path: &Path) -> Result<String> {

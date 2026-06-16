@@ -81,7 +81,14 @@ v0.1 における「Docker Compose 完全サポート」とは、Dev Containers 
 
 - Linux または macOS host。
 - Docker CLI `docker`。
-- Docker Compose v2 plugin。`docker compose version` が成功すること。
+- Docker Compose v2 plugin。`docker compose version` が成功し、以下の capability があること。
+  - `docker compose config --format json`
+  - `docker compose ps --format json`
+  - `docker compose build --with-dependencies`
+  - `docker compose pull --policy always`
+  - `docker compose pull --ignore-buildable`
+  - `docker compose up --force-recreate`
+  - `docker compose up --remove-orphans`
 - Docker daemon へ接続できる権限。
 - Git 認証連携を使う場合: host 側の `git`、必要に応じて `SSH_AUTH_SOCK`。
 - GitHub CLI 連携を使う場合: host 側の `gh` と `gh auth token` が成功する状態。
@@ -661,7 +668,7 @@ Compose file 内の environment interpolation は Docker Compose CLI に委譲�
 adapter:
 
 - `DockerCli`: `docker` の存在確認、version、image/container/exec/cp/inspect/build/pull/rm/stop/start/wait/port 相当。
-- `DockerComposeCli`: `docker compose` の存在確認、version、config/build/up/stop/down/ps/logs/pull 相当。
+- `DockerComposeCli`: `docker compose` の存在確認、`version --short`、required capability probe、config/build/up/stop/down/ps/logs/pull 相当。
 - `RuntimeCommand`: command 実行、stdout/stderr capture、streaming、exit status、timeout、signal handling、redaction の共通基盤。
 
 JSON を読む操作は、CLI の JSON 出力を serde 型へ parse する。
