@@ -360,6 +360,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -398,6 +399,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -424,6 +426,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -449,6 +452,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -476,6 +480,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -507,6 +512,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -543,6 +549,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -574,6 +581,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };

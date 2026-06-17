@@ -338,6 +338,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -368,6 +369,7 @@ mod tests {
             dockerfile: "../docker/Dockerfile".to_owned(),
             context: Some("..".to_owned()),
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -402,6 +404,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -429,6 +432,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -459,6 +463,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -486,6 +491,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -513,6 +519,7 @@ mod tests {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };
@@ -542,6 +549,7 @@ mod tests {
             dockerfile: "../.devcontainer/Dockerfile".to_owned(),
             context: Some("../app".to_owned()),
             args: Default::default(),
+            options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
         };

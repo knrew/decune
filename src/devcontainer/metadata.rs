@@ -310,6 +310,7 @@ fn devcontainer_source_to_layer(source: &DevcontainerSource) -> LayerDevcontaine
                 dockerfile: build.dockerfile.clone(),
                 context: build.context.clone(),
                 args: build.args.clone(),
+                options: build.options.clone(),
                 target: build.target.clone(),
                 cache_from: build.cache_from.clone(),
             })
@@ -409,6 +410,7 @@ pub(crate) struct DevcontainerBuild {
     pub(crate) dockerfile: String,
     pub(crate) context: Option<String>,
     pub(crate) args: std::collections::BTreeMap<String, String>,
+    pub(crate) options: Vec<String>,
     pub(crate) target: Option<String>,
     pub(crate) cache_from: Vec<String>,
 }
@@ -754,6 +756,8 @@ struct RawDevcontainerBuild {
     context: Option<String>,
     #[serde(default, deserialize_with = "deserialize_build_args")]
     args: BTreeMap<String, String>,
+    #[serde(default)]
+    options: Vec<String>,
     target: Option<String>,
     #[serde(default, deserialize_with = "deserialize_string_or_strings")]
     cache_from: Vec<String>,
@@ -761,14 +765,111 @@ struct RawDevcontainerBuild {
 
 impl RawDevcontainerBuild {
     fn validate(self) -> Result<DevcontainerBuild> {
+        validate_build_options(&self.options)?;
         Ok(DevcontainerBuild {
             dockerfile: self.dockerfile,
             context: self.context,
             args: self.args,
+            options: self.options,
             target: self.target,
             cache_from: self.cache_from,
         })
     }
+}
+
+fn validate_build_options(values: &[String]) -> Result<()> {
+    let mut index = 0;
+
+    while index < values.len() {
+        let current = &values[index];
+        if current.is_empty() {
+            return Err(anyhow!("build.options entries must not be empty"));
+        }
+        if current == "--" {
+            return Err(anyhow!("build.options must not contain --"));
+        }
+        if !current.starts_with('-') {
+            return Err(anyhow!(
+                "build.options entries must be Docker build options, not context paths or values: {current}"
+            ));
+        }
+
+        let option = current
+            .split_once('=')
+            .map_or(current.as_str(), |(option, _)| option);
+        if is_reserved_build_option(option) {
+            return Err(anyhow!(
+                "build.options must not specify decune-managed Docker build option: {option}"
+            ));
+        }
+        if current.contains('=') {
+            if current.ends_with('=') {
+                return Err(anyhow!(
+                    "build.options option value must not be empty: {option}"
+                ));
+            }
+            index += 1;
+            continue;
+        }
+
+        if build_option_allows_separate_value(option) {
+            let value = values
+                .get(index + 1)
+                .ok_or_else(|| anyhow!("build.options option requires a value: {option}"))?;
+            if value.is_empty() || value == "--" || value.starts_with('-') {
+                return Err(anyhow!(
+                    "build.options option requires a value before another option: {option}"
+                ));
+            }
+            index += 2;
+            continue;
+        }
+
+        index += 1;
+    }
+
+    Ok(())
+}
+
+fn is_reserved_build_option(option: &str) -> bool {
+    matches!(
+        option,
+        "-f" | "-t"
+            | "-o"
+            | "--file"
+            | "--tag"
+            | "--label"
+            | "--build-arg"
+            | "--target"
+            | "--cache-from"
+            | "--rm"
+            | "--force-rm"
+            | "--no-cache"
+            | "--pull"
+            | "--iidfile"
+            | "--metadata-file"
+            | "--output"
+    ) || option.starts_with("-f")
+        || option.starts_with("-t")
+        || option.starts_with("-o")
+}
+
+fn build_option_allows_separate_value(option: &str) -> bool {
+    matches!(
+        option,
+        "--add-host"
+            | "--allow"
+            | "--attest"
+            | "--build-context"
+            | "--cache-to"
+            | "--cgroup-parent"
+            | "--network"
+            | "--platform"
+            | "--progress"
+            | "--secret"
+            | "--shm-size"
+            | "--ssh"
+    )
 }
 
 fn normalize_run_args(values: &[String]) -> Result<Vec<DevcontainerRunArg>> {
@@ -967,6 +1068,15 @@ mod tests {
                 "args": {
                     "VARIANT": "bookworm"
                 },
+                "options": [
+                    "--platform=linux/amd64",
+                    "--ssh=default",
+                    "--secret",
+                    "id=npm,env=NPM_TOKEN",
+                    "--add-host=host.docker.internal:host-gateway",
+                    "--network",
+                    "host"
+                ],
                 "target": "dev",
                 "cacheFrom": ["type=registry,ref=example.test/cache"]
             },
@@ -983,6 +1093,15 @@ mod tests {
                 dockerfile: "Dockerfile".to_owned(),
                 context: Some("..".to_owned()),
                 args: [("VARIANT".to_owned(), "bookworm".to_owned())].into(),
+                options: vec![
+                    "--platform=linux/amd64".to_owned(),
+                    "--ssh=default".to_owned(),
+                    "--secret".to_owned(),
+                    "id=npm,env=NPM_TOKEN".to_owned(),
+                    "--add-host=host.docker.internal:host-gateway".to_owned(),
+                    "--network".to_owned(),
+                    "host".to_owned(),
+                ],
                 target: Some("dev".to_owned()),
                 cache_from: vec!["type=registry,ref=example.test/cache".to_owned()],
             }))
@@ -997,6 +1116,67 @@ mod tests {
                 "source=decune-cache,target=/cache,type=volume".to_owned()
             )]
         );
+    }
+
+    #[test]
+    fn rejects_reserved_dockerfile_build_options() {
+        for option in [
+            "-f",
+            "--file=Dockerfile",
+            "--file",
+            "-texample:test",
+            "--tag=example:test",
+            "--label",
+            "--build-arg=TOKEN=value",
+            "--target",
+            "--cache-from=example/cache",
+            "--rm",
+            "--force-rm",
+            "--no-cache",
+            "--pull",
+            "--output=type=local,dest=out",
+            "--metadata-file",
+        ] {
+            let error = parse_metadata(json!({
+                "build": {
+                    "dockerfile": "Dockerfile",
+                    "options": [option]
+                }
+            }))
+            .unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("decune-managed Docker build option"),
+                "unexpected error for {option}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_build_options_context_paths_and_missing_values() {
+        for options in [
+            json!(["."]),
+            json!(["--network"]),
+            json!(["--network", "--pull"]),
+            json!(["--platform="]),
+            json!(["--"]),
+            json!([""]),
+        ] {
+            let error = parse_metadata(json!({
+                "build": {
+                    "dockerfile": "Dockerfile",
+                    "options": options
+                }
+            }))
+            .unwrap_err();
+
+            assert!(
+                error.to_string().contains("build.options"),
+                "unexpected error: {error}"
+            );
+        }
     }
 
     #[test]

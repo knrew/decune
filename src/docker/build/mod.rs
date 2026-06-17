@@ -33,6 +33,7 @@ pub(crate) struct DockerBuildInput {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct DockerBuildOptions {
     pub(crate) build_args: BTreeMap<String, String>,
+    pub(crate) options: Vec<String>,
     pub(crate) target: Option<String>,
     pub(crate) cache_from: Vec<String>,
     pub(crate) no_cache: bool,
@@ -50,6 +51,7 @@ pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) 
         context_tar: &tar,
         labels: &labels,
         build_args: &input.options.build_args,
+        options: &input.options.options,
         target: input.options.target.as_deref(),
         cache_from: &input.options.cache_from,
         no_cache: input.options.no_cache,
@@ -103,6 +105,11 @@ mod tests {
     fn build_image_options_include_devcontainer_build_options() {
         let input = docker_build_input(DockerBuildOptions {
             build_args: [("VARIANT".to_owned(), "bookworm".to_owned())].into(),
+            options: vec![
+                "--platform=linux/amd64".to_owned(),
+                "--network".to_owned(),
+                "host".to_owned(),
+            ],
             target: Some("dev".to_owned()),
             cache_from: vec!["type=registry,ref=example.test/cache:latest".to_owned()],
             no_cache: true,
@@ -116,6 +123,7 @@ mod tests {
             context_tar: b"",
             labels: &labels,
             build_args: &input.options.build_args,
+            options: &input.options.options,
             target: input.options.target.as_deref(),
             cache_from: &input.options.cache_from,
             no_cache: input.options.no_cache,
@@ -134,6 +142,17 @@ mod tests {
         assert!(command.args_vec().contains(&"--cache-from".to_owned()));
         assert!(command.args_vec().contains(&"--no-cache".to_owned()));
         assert!(command.args_vec().contains(&"--pull".to_owned()));
+        assert!(
+            command
+                .args_vec()
+                .windows(2)
+                .any(|args| args[0] == "--network" && args[1] == "host")
+        );
+        assert!(
+            command
+                .args_vec()
+                .contains(&"--platform=linux/amd64".to_owned())
+        );
     }
 
     #[test]
@@ -147,6 +166,7 @@ mod tests {
             context_tar: b"",
             labels: &labels,
             build_args: &input.options.build_args,
+            options: &input.options.options,
             target: input.options.target.as_deref(),
             cache_from: &input.options.cache_from,
             no_cache: input.options.no_cache,

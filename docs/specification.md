@@ -241,6 +241,7 @@ workspace root から以下の順で検出する。
 | `build.dockerfile` | no | yes | no | Dockerfile-based mode |
 | `build.context` | no | yes | no | `devcontainer.json` からの相対 path |
 | `build.args` | no | yes | no | string value のみ |
+| `build.options` | no | partial | no | Docker build argv に渡す。decune 管理 option と context path は不可 |
 | `build.target` | no | yes | no | multi-stage build target |
 | `build.cacheFrom` | no | partial | no | Docker CLI で扱える形式 |
 | `dockerComposeFile` | no | no | yes | string / string array。local path のみ |
@@ -380,6 +381,10 @@ Compose mode の image creation は次の順で行う。
 8. `docker compose ps --format json` と `docker inspect` で primary container ID を解決し、lifecycle と shell attach に進む。
 
 `--pull` は user Dockerfile build、base image pull、Compose service build/pull にだけ適用する。Feature、UID/GID sync、entrypoint shim などの decune generated layer は直前に準備した local image tag を `FROM` にすることがあるため、これらの layer build には Docker build の `--pull` を渡さない。
+
+Dockerfile-based mode の `build.options` は、Docker build の context 引数 `-` より前に argv として渡す。shell 文字列には連結しない。decune が管理する `-f` / `--file`、`-t` / `--tag`、`--label`、`--build-arg`、`--target`、`--cache-from`、`--no-cache`、`--pull`、`--rm` / `--force-rm`、`--iidfile`、`--metadata-file`、`--output` などの option は `build.options` では指定できない。`build.options` は option だけを受け付け、build context path は decune が stdin tar と最後の `-` で管理する。
+
+`--platform`、`--ssh`、`--secret`、`--add-host`、`--network` など Docker CLI に委譲できる build option は指定できる。ただし `build.options` の値は argv に出るため、secret 文字列そのものを直接書かない。secret は `--secret id=npm,env=NPM_TOKEN` のように host 環境変数や file path を参照する形にする。
 
 `rebuild` は generated image と Compose service を再作成する。anonymous volume は保持する。`clean --images` 以外で user image や Compose service image を削除してはならない。
 
@@ -722,7 +727,7 @@ Compose mode では上記 label を primary service に追加する。明示的�
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
-config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose mode では user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
+config hash には、resolved metadata/config、Feature lock、relevant CLI flags、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose mode の user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose mode では user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
 
 state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 flag と devcontainer config file path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 

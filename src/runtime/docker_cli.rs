@@ -533,6 +533,7 @@ pub(crate) struct DockerBuildCliInput<'a> {
     pub(crate) context_tar: &'a [u8],
     pub(crate) labels: &'a BTreeMap<String, String>,
     pub(crate) build_args: &'a BTreeMap<String, String>,
+    pub(crate) options: &'a [String],
     pub(crate) target: Option<&'a str>,
     pub(crate) cache_from: &'a [String],
     pub(crate) no_cache: bool,
@@ -548,6 +549,9 @@ pub(crate) fn docker_build_command(input: &DockerBuildCliInput<'_>) -> RuntimeCo
     }
     if input.pull {
         command = command.arg("--pull");
+    }
+    for option in input.options {
+        command = command.arg(option);
     }
     for (key, value) in input.labels {
         command = command.arg("--label").arg(format!("{key}={value}"));
@@ -930,6 +934,10 @@ mod tests {
             context_tar: b"",
             labels: &BTreeMap::from([("decune.managed".to_owned(), "true".to_owned())]),
             build_args: &BTreeMap::from([("VARIANT".to_owned(), "bookworm".to_owned())]),
+            options: &[
+                "--platform=linux/amd64".to_owned(),
+                "--ssh=default".to_owned(),
+            ],
             target: Some("dev"),
             cache_from: &["type=registry,ref=example/cache:latest".to_owned()],
             no_cache: true,
@@ -940,6 +948,11 @@ mod tests {
         assert!(command.current_dir_path().is_none());
         assert!(command.args_vec().contains(&"build".to_owned()));
         assert!(command.args_vec().contains(&"--build-arg".to_owned()));
+        assert!(
+            command
+                .args_vec()
+                .contains(&"--platform=linux/amd64".to_owned())
+        );
         assert!(!command.sanitized_display().contains("sh -c"));
     }
 
@@ -951,6 +964,7 @@ mod tests {
             context_tar: b"",
             labels: &BTreeMap::new(),
             build_args: &BTreeMap::from([("TOKEN".to_owned(), "test-secret".to_owned())]),
+            options: &[],
             target: None,
             cache_from: &[],
             no_cache: false,
@@ -984,6 +998,7 @@ mod tests {
             context_tar: b"tar-bytes",
             labels: &BTreeMap::new(),
             build_args: &BTreeMap::new(),
+            options: &["--network".to_owned(), "host".to_owned()],
             target: None,
             cache_from: &[],
             no_cache: false,
@@ -991,6 +1006,13 @@ mod tests {
         });
 
         assert_eq!(arg_after(&command, "--file"), Some("docker/Dockerfile"));
+        let network_index = command
+            .args_vec()
+            .iter()
+            .position(|arg| arg == "--network")
+            .unwrap();
+        let context_index = command.args_vec().len() - 1;
+        assert!(network_index < context_index);
         assert_eq!(command.args_vec().last().map(String::as_str), Some("-"));
     }
 
@@ -1010,6 +1032,7 @@ mod tests {
                 context_tar: b"tar-bytes",
                 labels: &BTreeMap::new(),
                 build_args: &BTreeMap::new(),
+                options: &[],
                 target: None,
                 cache_from: &[],
                 no_cache: false,
