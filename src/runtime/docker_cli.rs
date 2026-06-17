@@ -937,6 +937,7 @@ mod tests {
         });
 
         assert_eq!(command.program(), "docker");
+        assert!(command.current_dir_path().is_none());
         assert!(command.args_vec().contains(&"build".to_owned()));
         assert!(command.args_vec().contains(&"--build-arg".to_owned()));
         assert!(!command.sanitized_display().contains("sh -c"));

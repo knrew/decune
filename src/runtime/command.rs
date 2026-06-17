@@ -2,6 +2,7 @@ use std::{
     collections::BTreeMap,
     future::Future,
     io::ErrorKind,
+    path::{Path, PathBuf},
     pin::Pin,
     process::{ExitStatus, Stdio},
     time::Duration,
@@ -20,6 +21,7 @@ pub(crate) struct RuntimeCommand {
     program: String,
     args: Vec<String>,
     env: BTreeMap<String, String>,
+    current_dir: Option<PathBuf>,
     redactions: RedactionRules,
     timeout: Option<Duration>,
 }
@@ -30,6 +32,7 @@ impl RuntimeCommand {
             program: program.into(),
             args: Vec::new(),
             env: BTreeMap::new(),
+            current_dir: None,
             redactions: RedactionRules::default(),
             timeout: None,
         }
@@ -49,6 +52,12 @@ impl RuntimeCommand {
         self.env.insert(key.into(), value.into());
         self
     }
+
+    pub(crate) fn current_dir(mut self, dir: impl Into<PathBuf>) -> Self {
+        self.current_dir = Some(dir.into());
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn redact_value(mut self, value: impl Into<String>) -> Self {
         self.redactions.push_value(value);
@@ -86,6 +95,10 @@ impl RuntimeCommand {
 
     pub(crate) fn envs(&self) -> &BTreeMap<String, String> {
         &self.env
+    }
+
+    pub(crate) fn current_dir_path(&self) -> Option<&Path> {
+        self.current_dir.as_deref()
     }
 
     #[cfg(test)]
@@ -201,6 +214,9 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
             let mut process = Command::new(command.program());
             process.args(command.args_vec());
             process.envs(command.envs());
+            if let Some(current_dir) = command.current_dir_path() {
+                process.current_dir(current_dir);
+            }
             process
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
@@ -223,6 +239,9 @@ async fn run_capture_process(
     let mut process = Command::new(command.program());
     process.args(command.args_vec());
     process.envs(command.envs());
+    if let Some(current_dir) = command.current_dir_path() {
+        process.current_dir(current_dir);
+    }
     process
         .stdin(if stdin.is_some() {
             Stdio::piped()
@@ -546,10 +565,11 @@ pub(crate) fn ensure_success(
 mod tests {
     use super::{RedactionRules, RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand};
 
+    use std::path::Path;
+
     #[cfg(unix)]
     use std::{
         fs,
-        path::Path,
         time::{Duration, Instant},
     };
 
@@ -573,6 +593,35 @@ mod tests {
             Some("secret-token")
         );
         assert!(!command.sanitized_display().contains("secret-token"));
+    }
+
+    #[test]
+    fn runtime_command_records_current_dir_without_adding_it_to_display() {
+        let command = RuntimeCommand::new("docker")
+            .arg("ps")
+            .current_dir("/workspace");
+
+        assert_eq!(command.current_dir_path(), Some(Path::new("/workspace")));
+        assert_eq!(command.sanitized_display(), "docker ps");
+        assert!(!command.sanitized_display().contains("/workspace"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_runner_applies_current_dir_to_process() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let command = RuntimeCommand::new("pwd").current_dir(tempdir.path());
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let output = runtime
+            .block_on(TokioRuntimeCommand.run_capture(command))
+            .unwrap();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+
+        assert_eq!(Path::new(stdout.trim()), tempdir.path());
     }
 
     #[test]
