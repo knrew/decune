@@ -33,6 +33,7 @@ pub(crate) struct DockerBuildInput {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct DockerBuildOptions {
     pub(crate) build_args: BTreeMap<String, String>,
+    pub(crate) build_arg_redactions: Vec<String>,
     pub(crate) options: Vec<String>,
     pub(crate) target: Option<String>,
     pub(crate) cache_from: Vec<String>,
@@ -51,6 +52,7 @@ pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) 
         context_tar: &tar,
         labels: &labels,
         build_args: &input.options.build_args,
+        build_arg_redactions: &input.options.build_arg_redactions,
         options: &input.options.options,
         target: input.options.target.as_deref(),
         cache_from: &input.options.cache_from,
@@ -105,6 +107,7 @@ mod tests {
     fn build_image_options_include_devcontainer_build_options() {
         let input = docker_build_input(DockerBuildOptions {
             build_args: [("VARIANT".to_owned(), "bookworm".to_owned())].into(),
+            build_arg_redactions: Vec::new(),
             options: vec![
                 "--platform=linux/amd64".to_owned(),
                 "--network".to_owned(),
@@ -123,6 +126,7 @@ mod tests {
             context_tar: b"",
             labels: &labels,
             build_args: &input.options.build_args,
+            build_arg_redactions: &input.options.build_arg_redactions,
             options: &input.options.options,
             target: input.options.target.as_deref(),
             cache_from: &input.options.cache_from,
@@ -166,6 +170,7 @@ mod tests {
             context_tar: b"",
             labels: &labels,
             build_args: &input.options.build_args,
+            build_arg_redactions: &input.options.build_arg_redactions,
             options: &input.options.options,
             target: input.options.target.as_deref(),
             cache_from: &input.options.cache_from,

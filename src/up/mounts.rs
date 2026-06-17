@@ -9,6 +9,7 @@ use crate::{
         layer::LayerDevcontainerMount,
         resolved::{ResolvedConfig, ResolvedDevcontainerSource},
         types::MountType,
+        variables::expand_variables,
     },
     docker::{
         dotfiles::dotfile_mount_specs,
@@ -111,11 +112,12 @@ pub(super) fn resolve_workspace_location<F>(
 where
     F: Fn(&str) -> crate::config::variables::VariableContext,
 {
+    let default_folder = default_workspace_folder(workspace);
     let seed_workspace_folder = config
         .devcontainer
         .workspace_folder
         .clone()
-        .unwrap_or_else(|| default_workspace_folder(workspace));
+        .unwrap_or_else(|| default_folder.clone());
     let explicit_workspace_folder = config.devcontainer.workspace_folder.as_deref();
     if config.devcontainer.workspace_mount.is_some()
         && explicit_workspace_folder.is_none()
@@ -124,7 +126,10 @@ where
         bail!("workspaceFolder is required when workspaceMount is specified");
     }
 
-    let workspace_folder = validate_workspace_folder(&seed_workspace_folder)?;
+    let pre_variables = variables_for_workspace_folder(&default_folder);
+    let expanded_workspace_folder = expand_variables(&seed_workspace_folder, &pre_variables)
+        .context("Failed to expand workspaceFolder")?;
+    let workspace_folder = validate_workspace_folder(&expanded_workspace_folder)?;
     let variables = variables_for_workspace_folder(&workspace_folder);
     let workspace_mount = workspace_mount_spec(workspace, config, &variables)?;
     let workspace_folder = if explicit_workspace_folder.is_some() {

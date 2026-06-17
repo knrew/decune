@@ -533,6 +533,7 @@ pub(crate) struct DockerBuildCliInput<'a> {
     pub(crate) context_tar: &'a [u8],
     pub(crate) labels: &'a BTreeMap<String, String>,
     pub(crate) build_args: &'a BTreeMap<String, String>,
+    pub(crate) build_arg_redactions: &'a [String],
     pub(crate) options: &'a [String],
     pub(crate) target: Option<&'a str>,
     pub(crate) cache_from: &'a [String],
@@ -568,7 +569,9 @@ pub(crate) fn docker_build_command(input: &DockerBuildCliInput<'_>) -> RuntimeCo
     for cache in input.cache_from {
         command = command.arg("--cache-from").arg(cache);
     }
-    command.arg("-")
+    command
+        .arg("-")
+        .redact_values(input.build_arg_redactions.iter().cloned())
 }
 
 pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeCommand {
@@ -934,6 +937,7 @@ mod tests {
             context_tar: b"",
             labels: &BTreeMap::from([("decune.managed".to_owned(), "true".to_owned())]),
             build_args: &BTreeMap::from([("VARIANT".to_owned(), "bookworm".to_owned())]),
+            build_arg_redactions: &[],
             options: &[
                 "--platform=linux/amd64".to_owned(),
                 "--ssh=default".to_owned(),
@@ -964,6 +968,7 @@ mod tests {
             context_tar: b"",
             labels: &BTreeMap::new(),
             build_args: &BTreeMap::from([("TOKEN".to_owned(), "test-secret".to_owned())]),
+            build_arg_redactions: &["test-secret".to_owned()],
             options: &[],
             target: None,
             cache_from: &[],
@@ -998,6 +1003,7 @@ mod tests {
             context_tar: b"tar-bytes",
             labels: &BTreeMap::new(),
             build_args: &BTreeMap::new(),
+            build_arg_redactions: &[],
             options: &["--network".to_owned(), "host".to_owned()],
             target: None,
             cache_from: &[],
@@ -1032,6 +1038,7 @@ mod tests {
                 context_tar: b"tar-bytes",
                 labels: &BTreeMap::new(),
                 build_args: &BTreeMap::new(),
+                build_arg_redactions: &[],
                 options: &[],
                 target: None,
                 cache_from: &[],

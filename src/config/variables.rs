@@ -116,6 +116,13 @@ pub(crate) fn expand_remote_env_tracked(
     expand_env_map_tracked(remote_env, context)
 }
 
+pub(crate) fn expand_string_map_tracked(
+    values: &BTreeMap<String, String>,
+    context: &VariableContext,
+) -> Result<ExpandedEnvMap> {
+    expand_env_map_tracked(values, context)
+}
+
 pub(crate) fn expand_container_env_tracked(
     container_env: &BTreeMap<String, String>,
     context: &VariableContext,

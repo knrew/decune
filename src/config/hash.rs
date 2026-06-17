@@ -34,6 +34,7 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) uid_gid_sync: Option<UidGidSyncHashInput>,
     pub(crate) sensitive_container_env_keys: Vec<String>,
     pub(crate) sensitive_remote_env_keys: Vec<String>,
+    pub(crate) sensitive_build_arg_keys: Vec<String>,
 }
 
 impl<'a> ConfigHashInput<'a> {
@@ -52,6 +53,7 @@ impl<'a> ConfigHashInput<'a> {
             uid_gid_sync: None,
             sensitive_container_env_keys: Vec::new(),
             sensitive_remote_env_keys: Vec::new(),
+            sensitive_build_arg_keys: Vec::new(),
         }
     }
 }
@@ -494,6 +496,7 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
                 &config.devcontainer,
                 &input.sensitive_container_env_keys,
                 &input.sensitive_remote_env_keys,
+                &input.sensitive_build_arg_keys,
             );
         });
         writer.field("credentials", |writer| {
@@ -599,10 +602,11 @@ fn write_devcontainer(
     devcontainer: &ResolvedDevcontainer,
     sensitive_container_env_keys: &[String],
     sensitive_remote_env_keys: &[String],
+    sensitive_build_arg_keys: &[String],
 ) {
     writer.object("Devcontainer", |writer| {
         writer.field("source", |writer| match &devcontainer.source {
-            Some(source) => write_devcontainer_source(writer, source),
+            Some(source) => write_devcontainer_source(writer, source, sensitive_build_arg_keys),
             None => writer.none(),
         });
         writer.field("override_feature_install_order", |writer| {
@@ -747,7 +751,11 @@ fn write_devcontainer_mount(writer: &mut CanonicalWriter, mount: &ResolvedDevcon
     }
 }
 
-fn write_devcontainer_source(writer: &mut CanonicalWriter, source: &ResolvedDevcontainerSource) {
+fn write_devcontainer_source(
+    writer: &mut CanonicalWriter,
+    source: &ResolvedDevcontainerSource,
+    sensitive_build_arg_keys: &[String],
+) {
     match source {
         ResolvedDevcontainerSource::Image(image) => {
             writer.object("ImageSource", |writer| {
@@ -761,7 +769,8 @@ fn write_devcontainer_source(writer: &mut CanonicalWriter, source: &ResolvedDevc
                     writer.option_string(build.context.as_deref());
                 });
                 writer.field("args", |writer| {
-                    writer.map(build.args.iter(), |writer, value| writer.string(value));
+                    let args = build_args_for_hash(&build.args, sensitive_build_arg_keys);
+                    writer.map(args.iter(), |writer, value| writer.string(value));
                 });
                 writer.field("options", |writer| {
                     writer.seq(build.options.iter(), |writer, option| writer.string(option));
@@ -793,6 +802,37 @@ fn write_devcontainer_source(writer: &mut CanonicalWriter, source: &ResolvedDevc
             });
         }
     }
+}
+
+fn build_args_for_hash(
+    args: &BTreeMap<String, String>,
+    sensitive_keys: &[String],
+) -> BTreeMap<String, String> {
+    args.iter()
+        .map(|(key, value)| {
+            let value = if sensitive_keys.iter().any(|sensitive| sensitive == key) {
+                local_env_derived_build_arg_digest(key, value)
+            } else {
+                value.clone()
+            };
+            (key.clone(), value)
+        })
+        .collect()
+}
+
+fn local_env_derived_build_arg_digest(key: &str, value: &str) -> String {
+    let mut writer = CanonicalWriter::default();
+    writer.object("LocalEnvDerivedBuildArgDigest", |writer| {
+        writer.field("version", |writer| {
+            writer.string("decune-build-arg-digest-v1")
+        });
+        writer.field("key", |writer| writer.string(key));
+        writer.field("value", |writer| writer.string(value));
+    });
+    format!(
+        "<localEnv-derived-build-arg-sha256:{}>",
+        sha256_hex(writer.finish().as_bytes())
+    )
 }
 
 fn write_publish_port(writer: &mut CanonicalWriter, port: &ResolvedPublishPort) {
@@ -1093,6 +1133,27 @@ mod tests {
 
     fn hash_for(config: &ResolvedConfig) -> String {
         config_hash(&ConfigHashInput::new(config))
+    }
+
+    #[test]
+    fn local_env_derived_build_args_hash_as_digest_markers() {
+        let args = BTreeMap::from([
+            ("TOKEN".to_owned(), "secret-token".to_owned()),
+            ("VARIANT".to_owned(), "bookworm".to_owned()),
+        ]);
+
+        let hashed = build_args_for_hash(&args, &["TOKEN".to_owned()]);
+
+        let token = hashed.get("TOKEN").unwrap();
+        assert!(token.starts_with("<localEnv-derived-build-arg-sha256:"));
+        assert!(!token.contains("secret-token"));
+        assert_eq!(hashed.get("VARIANT").map(String::as_str), Some("bookworm"));
+
+        let changed = build_args_for_hash(
+            &BTreeMap::from([("TOKEN".to_owned(), "other-secret".to_owned())]),
+            &["TOKEN".to_owned()],
+        );
+        assert_ne!(token, changed.get("TOKEN").unwrap());
     }
 
     fn legacy_hash_without_compose_files_field(input: &ConfigHashInput<'_>) -> String {

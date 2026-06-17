@@ -463,6 +463,11 @@ async fn finalize_mounts_and_resources_for_plan(
         .iter()
         .map(|(key, _)| key.clone())
         .collect();
+    hash_input.sensitive_build_arg_keys = plan
+        .sensitive_build_args
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect();
     hash_input.compose_canonical_model = options.compose_canonical_model.cloned();
     let devcontainer_file = Path::new(&plan.resources.labels["devcontainer.config_file"]);
     hash_input.feature_locks = match &plan.feature_install {
@@ -1413,6 +1418,7 @@ mod tests {
             config_layers: ConfigMergeInput::default(),
             config,
             sensitive_container_env: Default::default(),
+            sensitive_build_args: Default::default(),
             compose_interpolation_env: Default::default(),
             compose_interpolation_redactions: Vec::new(),
             effective_users: EffectiveUsers::root(),

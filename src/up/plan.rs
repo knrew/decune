@@ -5,9 +5,13 @@ use anyhow::{Context, Result, bail};
 use crate::{
     config::{
         ConfigHashInput, ConfigLayer, ConfigMergeInput, FeatureLockHashEntry, config_hash,
+        layer::LayerRunArg,
         load::load_config_file,
         resolve_config,
         resolved::{ResolvedConfig, ResolvedDevcontainerSource},
+        variables::{
+            SensitiveEnvMap, VariableContext, expand_string_map_tracked, expand_variables,
+        },
     },
     devcontainer::{
         features::{
@@ -29,6 +33,7 @@ use crate::{
     workspace::Workspace,
 };
 
+use super::mounts::default_workspace_folder;
 use super::{
     ForwardingResolution, MountResolution, UpPlan, UpPlanResolution, WorkspaceLocationValidation,
     mount_hash_inputs, resolve_workspace_location, static_mount_variable_context,
@@ -177,10 +182,10 @@ fn build_up_plan_inner(
         cli: Some(cli_layer),
         ..ConfigMergeInput::default()
     };
-    let config = resolve_config(config_layers.clone());
-    let (build_context, build_options) =
-        dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
-    let compose_project = compose_project_plan(workspace, devcontainer_json.path(), &config)?;
+    let mut config = resolve_config(config_layers.clone());
+    let preliminary_variables =
+        static_mount_variable_context(workspace, &default_workspace_folder(workspace), &config);
+    expand_static_user_fields(&mut config, &preliminary_variables)?;
     let workspace_validation = match mount_resolution {
         MountResolution::Resolve => WorkspaceLocationValidation::ConfigResolved,
         MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
@@ -191,8 +196,14 @@ fn build_up_plan_inner(
         workspace_validation,
         |workspace_folder| static_mount_variable_context(workspace, workspace_folder, &config),
     )?;
+    config.devcontainer.workspace_folder = Some(workspace_location.workspace_folder.clone());
     let mount_variables =
         static_mount_variable_context(workspace, &workspace_location.workspace_folder, &config);
+    let static_expansion = expand_static_devcontainer_fields(&mut config, &mount_variables)?;
+    let (build_context, mut build_options) =
+        dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
+    build_options.build_arg_redactions = static_expansion.sensitive_build_args.redaction_values();
+    let compose_project = compose_project_plan(workspace, devcontainer_json.path(), &config)?;
     let mounts = workspace_mounts_from_resolved(
         workspace_location.workspace_mount,
         workspace.root(),
@@ -205,6 +216,11 @@ fn build_up_plan_inner(
     if let Some(context) = &build_context {
         hash_input.build = Some(build_hash_input(context)?);
     }
+    hash_input.sensitive_build_arg_keys = static_expansion
+        .sensitive_build_args
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect();
     if let Some(compose_project) = &compose_project {
         hash_input.compose_files = compose_project.config_hash_files().to_vec();
     }
@@ -254,6 +270,7 @@ fn build_up_plan_inner(
         config_layers,
         config,
         sensitive_container_env: Default::default(),
+        sensitive_build_args: static_expansion.sensitive_build_args,
         compose_interpolation_env: Default::default(),
         compose_interpolation_redactions: Vec::new(),
         effective_users: EffectiveUsers::root(),
@@ -263,6 +280,89 @@ fn build_up_plan_inner(
         forward_ports,
         ignored_detached_forwarding,
     })
+}
+
+struct StaticVariableExpansion {
+    sensitive_build_args: SensitiveEnvMap,
+}
+
+fn expand_static_user_fields(
+    config: &mut ResolvedConfig,
+    variables: &VariableContext,
+) -> Result<()> {
+    if let Some(remote_user) = &mut config.devcontainer.remote_user {
+        *remote_user =
+            expand_variables(remote_user, variables).context("Failed to expand remoteUser")?;
+    }
+    if let Some(container_user) = &mut config.devcontainer.container_user {
+        *container_user = expand_variables(container_user, variables)
+            .context("Failed to expand containerUser")?;
+    }
+
+    Ok(())
+}
+
+fn expand_static_devcontainer_fields(
+    config: &mut ResolvedConfig,
+    variables: &VariableContext,
+) -> Result<StaticVariableExpansion> {
+    let mut sensitive_build_args = SensitiveEnvMap::default();
+
+    if let Some(ResolvedDevcontainerSource::Dockerfile(build)) = &mut config.devcontainer.source {
+        let expanded_args = expand_string_map_tracked(&build.args, variables)
+            .context("Failed to expand build.args")?;
+        build.args = expanded_args.values;
+        sensitive_build_args = expanded_args.sensitive;
+
+        if let Some(target) = &mut build.target {
+            *target =
+                expand_variables(target, variables).context("Failed to expand build.target")?;
+        }
+        for cache in &mut build.cache_from {
+            *cache =
+                expand_variables(cache, variables).context("Failed to expand build.cacheFrom")?;
+        }
+    }
+
+    expand_string_values(&mut config.devcontainer.cap_add, variables, "runArgs value")?;
+    expand_string_values(
+        &mut config.devcontainer.security_opt,
+        variables,
+        "runArgs value",
+    )?;
+    expand_run_args(&mut config.devcontainer.run_args, variables)?;
+
+    Ok(StaticVariableExpansion {
+        sensitive_build_args,
+    })
+}
+
+fn expand_run_args(run_args: &mut [LayerRunArg], variables: &VariableContext) -> Result<()> {
+    for run_arg in run_args {
+        match run_arg {
+            LayerRunArg::AddHost(value)
+            | LayerRunArg::Dns(value)
+            | LayerRunArg::DnsSearch(value) => {
+                *value =
+                    expand_variables(value, variables).context("Failed to expand runArgs value")?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn expand_string_values(
+    values: &mut [String],
+    variables: &VariableContext,
+    field: &str,
+) -> Result<()> {
+    for value in values {
+        *value = expand_variables(value, variables)
+            .with_context(|| format!("Failed to expand {field}"))?;
+    }
+
+    Ok(())
 }
 
 fn compose_project_plan(
@@ -439,9 +539,45 @@ fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> bool {
 mod tests {
     use std::fs;
 
-    use crate::{config::ConfigLayer, config::types::MountType, workspace::Workspace};
+    use crate::{
+        config::{ConfigLayer, layer::LayerRunArg, types::MountType},
+        workspace::Workspace,
+    };
 
     use super::build_up_plan;
+
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn capture(name: &'static str) -> Self {
+            Self {
+                name,
+                previous: std::env::var_os(name),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe {
+                    std::env::set_var(self.name, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.name);
+                },
+            }
+        }
+    }
+
+    fn write_devcontainer(workspace: &Workspace, contents: &str) {
+        let devcontainer_dir = workspace.root().join(".devcontainer");
+        fs::create_dir_all(&devcontainer_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), contents).unwrap();
+    }
 
     #[test]
     fn build_up_plan_uses_image_source_and_default_workspace_mount() {
@@ -470,6 +606,181 @@ mod tests {
         assert_eq!(plan.mounts[0].target, "/workspaces/Image Plan!");
         assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
         assert!(!plan.mounts[0].read_only);
+    }
+
+    #[test]
+    fn build_up_plan_expands_build_args_and_hashes_local_env_values() {
+        let env_name = "DECUNE_TEST_PLAN_BUILD_ARG_SCOPE";
+        let _guard = EnvVarGuard::capture(env_name);
+        unsafe {
+            std::env::remove_var(env_name);
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Build Arg Variables");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        let devcontainer_dir = root.join(".devcontainer");
+        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::write(
+            devcontainer_dir.join("Dockerfile"),
+            "FROM alpine\nARG VARIANT\n",
+        )
+        .unwrap();
+        write_devcontainer(
+            &workspace,
+            &format!(
+                r#"
+                {{
+                  "build": {{
+                    "dockerfile": "Dockerfile",
+                    "args": {{
+                      "VARIANT": "${{localEnv:{env_name}:bookworm}}"
+                    }},
+                    "target": "stage-${{localWorkspaceFolderBasename}}",
+                    "cacheFrom": "type=registry,ref=example.test/${{localWorkspaceFolderBasename}}:cache"
+                  }}
+                }}
+                "#,
+            ),
+        );
+
+        let defaulted = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        assert_eq!(
+            defaulted
+                .build_options
+                .build_args
+                .get("VARIANT")
+                .map(String::as_str),
+            Some("bookworm")
+        );
+        assert!(!defaulted.sensitive_build_args.contains_key("VARIANT"));
+        assert_eq!(
+            defaulted.build_options.target.as_deref(),
+            Some("stage-Build Arg Variables")
+        );
+        assert_eq!(
+            defaulted.build_options.cache_from,
+            vec!["type=registry,ref=example.test/Build Arg Variables:cache"]
+        );
+
+        unsafe {
+            std::env::set_var(env_name, "secret-bookworm");
+        }
+        let from_env = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        assert_eq!(
+            from_env
+                .build_options
+                .build_args
+                .get("VARIANT")
+                .map(String::as_str),
+            Some("secret-bookworm")
+        );
+        assert!(from_env.sensitive_build_args.contains_key("VARIANT"));
+        assert!(
+            from_env
+                .build_options
+                .build_arg_redactions
+                .iter()
+                .any(|value| value == "secret-bookworm")
+        );
+        assert_ne!(
+            defaulted.resources.config_hash,
+            from_env.resources.config_hash
+        );
+
+        unsafe {
+            std::env::set_var(env_name, "secret-trixie");
+        }
+        let changed_env = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        assert_ne!(
+            from_env.resources.config_hash,
+            changed_env.resources.config_hash
+        );
+    }
+
+    #[test]
+    fn build_up_plan_expands_workspace_folder_variables_before_validation() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Workspace Variables");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceFolder": "/workspaces/${localWorkspaceFolderBasename}"
+            }
+            "#,
+        );
+        let basename = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        assert_eq!(basename.workspace_folder, "/workspaces/Workspace Variables");
+
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceFolder": "${containerWorkspaceFolder}/subdir"
+            }
+            "#,
+        );
+        let container_workspace = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        assert_eq!(
+            container_workspace.workspace_folder,
+            "/workspaces/Workspace Variables/subdir"
+        );
+    }
+
+    #[test]
+    fn build_up_plan_expands_user_fields_and_run_args_values() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("User Run Args");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "remoteUser": "${localWorkspaceFolderBasename}-remote",
+              "containerUser": "${localWorkspaceFolderBasename}-container",
+              "runArgs": [
+                "--cap-add=SYS_${localWorkspaceFolderBasename}",
+                "--security-opt", "label=${localWorkspaceFolderBasename}",
+                "--add-host", "api.${localWorkspaceFolderBasename}:127.0.0.1",
+                "--dns", "dns-${localWorkspaceFolderBasename}",
+                "--dns-search=${localWorkspaceFolderBasename}.test"
+              ]
+            }
+            "#,
+        );
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(
+            plan.config.devcontainer.remote_user.as_deref(),
+            Some("User Run Args-remote")
+        );
+        assert_eq!(
+            plan.config.devcontainer.container_user.as_deref(),
+            Some("User Run Args-container")
+        );
+        assert_eq!(plan.config.devcontainer.cap_add, vec!["SYS_User Run Args"]);
+        assert_eq!(
+            plan.config.devcontainer.security_opt,
+            vec!["label=User Run Args"]
+        );
+        assert_eq!(
+            plan.config.devcontainer.run_args,
+            vec![
+                LayerRunArg::AddHost("api.User Run Args:127.0.0.1".to_owned()),
+                LayerRunArg::Dns("dns-User Run Args".to_owned()),
+                LayerRunArg::DnsSearch("User Run Args.test".to_owned()),
+            ]
+        );
     }
 
     #[test]
