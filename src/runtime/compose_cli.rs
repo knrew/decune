@@ -229,6 +229,7 @@ pub(crate) struct ComposeCliCapabilities {
     pub(crate) build_with_dependencies: bool,
     pub(crate) pull_policy_always: bool,
     pub(crate) pull_ignore_buildable: bool,
+    pub(crate) pull_include_deps: bool,
     pub(crate) up_force_recreate: bool,
     pub(crate) up_remove_orphans: bool,
 }
@@ -249,6 +250,7 @@ impl ComposeCliCapabilities {
             build_with_dependencies: help_contains_option(build_help, "--with-dependencies"),
             pull_policy_always: help_contains_option(pull_help, "--policy"),
             pull_ignore_buildable: help_contains_option(pull_help, "--ignore-buildable"),
+            pull_include_deps: help_contains_option(pull_help, "--include-deps"),
             up_force_recreate: help_contains_option(up_help, "--force-recreate"),
             up_remove_orphans: help_contains_option(up_help, "--remove-orphans"),
         }
@@ -275,6 +277,11 @@ impl ComposeCliCapabilities {
         if !self.pull_ignore_buildable {
             missing.push(
                 "docker compose pull --ignore-buildable (pull --help does not list --ignore-buildable)",
+            );
+        }
+        if !self.pull_include_deps {
+            missing.push(
+                "docker compose pull --include-deps (pull --help does not list --include-deps)",
             );
         }
         if !self.up_force_recreate {
@@ -1102,6 +1109,7 @@ pub(crate) struct ComposeBuildOptions {
 pub(crate) struct ComposePullOptions {
     pub(crate) always: bool,
     pub(crate) ignore_buildable: bool,
+    pub(crate) include_deps: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1238,6 +1246,9 @@ fn compose_pull_command(
     let mut command = project.command(["pull"]);
     if options.ignore_buildable {
         command = command.arg("--ignore-buildable");
+    }
+    if options.include_deps {
+        command = command.arg("--include-deps");
     }
     if options.always {
         command = command.arg("--policy").arg("always");
@@ -1758,7 +1769,7 @@ mod tests {
             "Usage: docker compose config [OPTIONS]\n      --format string",
             "Usage: docker compose ps [OPTIONS]\n      --format string",
             "Usage: docker compose build [OPTIONS]\n      --with-dependencies --no-cache --pull",
-            "Usage: docker compose pull [OPTIONS]\n      --policy string --ignore-buildable",
+            "Usage: docker compose pull [OPTIONS]\n      --policy string --ignore-buildable --include-deps",
             "Usage: docker compose up [OPTIONS]\n      --force-recreate --remove-orphans",
         )
     }
@@ -1999,17 +2010,19 @@ mod tests {
             ComposePullOptions {
                 always: true,
                 ignore_buildable: true,
+                include_deps: true,
             },
             &plan.services,
         );
 
         assert_eq!(
-            pull.args_vec().iter().rev().take(6).collect::<Vec<_>>(),
+            pull.args_vec().iter().rev().take(7).collect::<Vec<_>>(),
             vec![
                 "db",
                 "app",
                 "always",
                 "--policy",
+                "--include-deps",
                 "--ignore-buildable",
                 "pull"
             ]
@@ -2026,6 +2039,7 @@ mod tests {
         assert!(capabilities.build_with_dependencies);
         assert!(capabilities.pull_policy_always);
         assert!(capabilities.pull_ignore_buildable);
+        assert!(capabilities.pull_include_deps);
         assert!(capabilities.up_force_recreate);
         assert!(capabilities.up_remove_orphans);
         capabilities.ensure_required().unwrap();
@@ -2038,7 +2052,7 @@ mod tests {
             "--format string",
             "--format string",
             "--no-cache --pull",
-            "--policy string --ignore-buildable",
+            "--policy string --ignore-buildable --include-deps",
             "--force-recreate --remove-orphans",
         );
 
@@ -2050,13 +2064,31 @@ mod tests {
     }
 
     #[test]
+    fn compose_capability_missing_pull_include_deps_errors_clearly() {
+        let capabilities = ComposeCliCapabilities::from_help_outputs(
+            Some("2.3.0".to_owned()),
+            "--format string",
+            "--format string",
+            "--with-dependencies",
+            "--policy string --ignore-buildable",
+            "--force-recreate --remove-orphans",
+        );
+
+        let error = capabilities.ensure_required().unwrap_err().to_string();
+
+        assert!(error.contains("docker compose pull --include-deps"));
+        assert!(error.contains("pull --help does not list --include-deps"));
+        assert!(error.contains("Update Docker Compose v2 plugin"));
+    }
+
+    #[test]
     fn compose_capability_missing_config_format_mentions_config_format_json() {
         let capabilities = ComposeCliCapabilities::from_help_outputs(
             Some("2.3.0".to_owned()),
             "--services",
             "--format string",
             "--with-dependencies",
-            "--policy string --ignore-buildable",
+            "--policy string --ignore-buildable --include-deps",
             "--force-recreate --remove-orphans",
         );
 
@@ -2073,7 +2105,7 @@ mod tests {
             "--format string",
             "--format string",
             "--with-dependencies",
-            "--policy string --ignore-buildable",
+            "--policy string --ignore-buildable --include-deps",
             "--detach",
         );
 
@@ -2088,7 +2120,9 @@ mod tests {
     fn compose_capability_probe_runs_version_and_help_commands() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(runtime_output("--force-recreate --remove-orphans")),
-            Ok(runtime_output("--policy string --ignore-buildable")),
+            Ok(runtime_output(
+                "--policy string --ignore-buildable --include-deps",
+            )),
             Ok(runtime_output("--with-dependencies")),
             Ok(runtime_output("--format string")),
             Ok(runtime_output("--format string")),
@@ -2118,7 +2152,9 @@ mod tests {
     fn compose_capability_probe_does_not_require_version_short() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(runtime_output("--force-recreate --remove-orphans")),
-            Ok(runtime_output("--policy string --ignore-buildable")),
+            Ok(runtime_output(
+                "--policy string --ignore-buildable --include-deps",
+            )),
             Ok(runtime_output("--with-dependencies")),
             Ok(runtime_output("--format string")),
             Ok(runtime_output("--format string")),

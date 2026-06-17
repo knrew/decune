@@ -44,6 +44,7 @@ v0.1 は image-based / Dockerfile-based / Docker Compose-based devcontainer を�
   - `docker compose build --with-dependencies`
   - `docker compose pull --policy always`
   - `docker compose pull --ignore-buildable`
+  - `docker compose pull --include-deps`
   - `docker compose up --force-recreate`
   - `docker compose up --remove-orphans`
 - Docker daemon へ接続できる権限

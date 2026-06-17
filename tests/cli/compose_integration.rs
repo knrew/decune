@@ -48,6 +48,7 @@ struct ComposeImageCleanup {
 struct ComposeRegistryFixture {
     container_name: String,
     image: String,
+    extra_images: Vec<String>,
 }
 
 impl Drop for UnrelatedComposeFixture {
@@ -67,6 +68,9 @@ impl Drop for ComposeRegistryFixture {
     fn drop(&mut self) {
         let _ = docker_status(["rm", "--force", "--volumes", &self.container_name]);
         let _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
+        for image in &self.extra_images {
+            let _ = docker_status(["image", "rm", "--force", "--no-prune", image]);
+        }
     }
 }
 
@@ -381,6 +385,50 @@ fn compose_integration_up_pull_recreates_image_only_service_for_updated_tag() {
     );
 }
 
+#[test]
+#[ignore = "requires Docker daemon, Docker Compose v2 plugin, and local registry image"]
+fn compose_integration_up_pull_updates_dependency_service_image() {
+    let workspace = compose_pull_dependency_registry_workspace();
+    let registry = create_compose_dependency_registry_fixture(workspace.path());
+    let db_image = registry
+        .extra_images
+        .first()
+        .expect("dependency registry fixture must include a db image");
+
+    build_and_push_compose_registry_image(&registry.image, "v1");
+    build_and_push_compose_registry_image(db_image, "v1");
+    run_decune_up_detach(workspace.path(), &[]);
+    assert_eq!(
+        compose_service_container_output(workspace.path(), "app", ["cat", "/decune-version"])
+            .trim(),
+        "v1"
+    );
+    assert_eq!(
+        compose_service_container_output(workspace.path(), "db", ["cat", "/decune-version"]).trim(),
+        "v1"
+    );
+
+    build_and_push_compose_registry_image(&registry.image, "v2");
+    build_and_push_compose_registry_image(db_image, "v2");
+    decune()
+        .args(["up", "--pull", "--detach"])
+        .arg(workspace.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    assert_eq!(
+        compose_service_container_output(workspace.path(), "app", ["cat", "/decune-version"])
+            .trim(),
+        "v2"
+    );
+    assert_eq!(
+        compose_service_container_output(workspace.path(), "db", ["cat", "/decune-version"]).trim(),
+        "v2"
+    );
+}
+
 fn compose_fixture_workspace(name: &str) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
@@ -457,6 +505,41 @@ fn compose_pull_registry_workspace() -> ComposeFixtureWorkspace {
     ComposeFixtureWorkspace { workspace }
 }
 
+fn compose_pull_dependency_registry_workspace() -> ComposeFixtureWorkspace {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "runServices": ["app"],
+              "overrideCommand": true,
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .unwrap();
+    let app_image = format!(
+        "127.0.0.1:5000/decune-placeholder-app-{}:latest",
+        workspace_id(workspace.path())
+    );
+    let db_image = format!(
+        "127.0.0.1:5000/decune-placeholder-db-{}:latest",
+        workspace_id(workspace.path())
+    );
+    rewrite_compose_dependency_images(workspace.path(), &app_image, &db_image);
+
+    ComposeFixtureWorkspace { workspace }
+}
+
 fn compose_fixture_path(name: &str) -> std::path::PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures/compose")
@@ -511,6 +594,11 @@ fn compose_capabilities_ok() -> Result<(), String> {
             "pull",
             "--ignore-buildable",
             "docker compose pull --ignore-buildable",
+        ),
+        (
+            "pull",
+            "--include-deps",
+            "docker compose pull --include-deps",
         ),
         (
             "up",
@@ -582,14 +670,22 @@ fn compose_primary_container_output<const N: usize>(
     workspace: &Path,
     command: [&str; N],
 ) -> String {
+    compose_service_container_output(workspace, "app", command)
+}
+
+fn compose_service_container_output<const N: usize>(
+    workspace: &Path,
+    service: &str,
+    command: [&str; N],
+) -> String {
     let containers = compose_project_containers(workspace).unwrap();
     let container_id = containers
         .iter()
         .find(|container| {
-            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+            compose_label(&container.labels, "com.docker.compose.service") == Some(service)
         })
         .map(|container| container.id.as_str())
-        .expect("primary Compose container was not found");
+        .unwrap_or_else(|| panic!("Compose service container was not found: {service}"));
     let mut args = vec!["exec", container_id];
     args.extend(command);
     docker_output(args).unwrap()
@@ -673,6 +769,40 @@ fn cleanup_compose_workspace(workspace: &Path) {
 }
 
 fn create_compose_registry_fixture(workspace: &Path) -> ComposeRegistryFixture {
+    let (container_name, port) = start_compose_registry(workspace);
+    let image = format!(
+        "127.0.0.1:{port}/decune-compose-pull-{}:latest",
+        workspace_id(workspace)
+    );
+    rewrite_compose_image(workspace, &image);
+
+    ComposeRegistryFixture {
+        container_name,
+        image,
+        extra_images: Vec::new(),
+    }
+}
+
+fn create_compose_dependency_registry_fixture(workspace: &Path) -> ComposeRegistryFixture {
+    let (container_name, port) = start_compose_registry(workspace);
+    let image = format!(
+        "127.0.0.1:{port}/decune-compose-pull-app-{}:latest",
+        workspace_id(workspace)
+    );
+    let db_image = format!(
+        "127.0.0.1:{port}/decune-compose-pull-db-{}:latest",
+        workspace_id(workspace)
+    );
+    rewrite_compose_dependency_images(workspace, &image, &db_image);
+
+    ComposeRegistryFixture {
+        container_name,
+        image,
+        extra_images: vec![db_image],
+    }
+}
+
+fn start_compose_registry(workspace: &Path) -> (String, String) {
     let container_name = format!("decune-compose-registry-{}", workspace_id(workspace));
     let _ = docker_status(["rm", "--force", "--volumes", &container_name]);
     docker_status(["image", "inspect", "registry:2"])
@@ -693,17 +823,9 @@ fn create_compose_registry_fixture(workspace: &Path) -> ComposeRegistryFixture {
         .trim()
         .rsplit(':')
         .next()
-        .expect("registry port output was empty");
-    let image = format!(
-        "127.0.0.1:{port}/decune-compose-pull-{}:latest",
-        workspace_id(workspace)
-    );
-    rewrite_compose_image(workspace, &image);
-
-    ComposeRegistryFixture {
-        container_name,
-        image,
-    }
+        .expect("registry port output was empty")
+        .to_owned();
+    (container_name, port)
 }
 
 fn rewrite_compose_image(workspace: &Path, image: &str) {
@@ -714,6 +836,25 @@ fn rewrite_compose_image(workspace: &Path, image: &str) {
 services:
   app:
     image: "{image}"
+"#
+        ),
+    )
+    .unwrap();
+}
+
+fn rewrite_compose_dependency_images(workspace: &Path, app_image: &str, db_image: &str) {
+    fs::write(
+        workspace.join(".devcontainer/compose.yaml"),
+        format!(
+            r#"
+services:
+  app:
+    image: "{app_image}"
+    depends_on:
+      - db
+  db:
+    image: "{db_image}"
+    command: ["sleep", "infinity"]
 "#
         ),
     )
