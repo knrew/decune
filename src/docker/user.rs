@@ -352,21 +352,6 @@ pub(crate) fn uid_gid_sync_runtime_user(user: &str, plan: &UidGidSyncPlan) -> Re
 
     Ok(runtime_user)
 }
-
-#[allow(dead_code)]
-pub(crate) async fn remote_user_home(
-    client: &DockerClient,
-    container: &str,
-    user: &str,
-) -> Result<String> {
-    let lookup_user = docker_user_lookup_key(user);
-    let record = lookup_container_user(client, container, lookup_user)
-        .await?
-        .with_context(|| format!("Remote user does not exist in container {container}: {user}"))?;
-
-    Ok(record.home)
-}
-
 pub(crate) fn resolve_effective_users(
     input: EffectiveUserResolveInput<'_>,
 ) -> Result<EffectiveUsers> {
@@ -1373,7 +1358,6 @@ mod tests {
                 assert_eq!(user.home.as_deref(), Some("/root"));
                 assert_eq!(user.source, RemoteUserSource::RootFallback);
                 assert_eq!(user.fallback_from, None);
-                assert_eq!(remote_user_home(&client, &name, "root").await?, "/root");
 
                 Ok::<_, anyhow::Error>(())
             }

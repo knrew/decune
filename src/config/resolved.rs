@@ -4,9 +4,8 @@ use toml::Value;
 
 use crate::config::{
     layer::{
-        LayerDevcontainerBuild, LayerDevcontainerMount, LayerDevcontainerSource, LayerHook,
-        LayerHooks, LayerPort, LayerPortAttributes, LayerPublishPort, LayerRunArg,
-        LayerShutdownAction, LayerUserEnvProbe,
+        LayerDevcontainerMount, LayerDevcontainerSource, LayerHook, LayerHooks, LayerPort,
+        LayerPortAttributes, LayerPublishPort, LayerRunArg, LayerShutdownAction, LayerUserEnvProbe,
     },
     path::ConfigPathOrigin,
     types::{
@@ -156,8 +155,6 @@ impl Default for ResolvedDevcontainer {
 
 pub(crate) type ResolvedDevcontainerSource = LayerDevcontainerSource;
 pub(crate) type ResolvedShutdownAction = LayerShutdownAction;
-#[allow(dead_code)]
-pub(crate) type ResolvedDevcontainerBuild = LayerDevcontainerBuild;
 pub(crate) type ResolvedDevcontainerMount = LayerDevcontainerMount;
 pub(crate) type ResolvedUserEnvProbe = LayerUserEnvProbe;
 pub(crate) type ResolvedPublishPort = LayerPublishPort;

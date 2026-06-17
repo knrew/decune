@@ -71,53 +71,53 @@ pub(crate) struct DevcontainerMetadata {
     customizations: Option<Value>,
     unsupported_properties: BTreeMap<String, Value>,
 }
-
-#[allow(dead_code)]
 impl DevcontainerMetadata {
+    #[cfg(test)]
     pub(crate) fn source(&self) -> Option<&DevcontainerSource> {
         self.source.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn mounts(&self) -> &[DevcontainerMount] {
         &self.mounts
     }
 
-    pub(crate) fn features(&self) -> &BTreeMap<String, Value> {
-        &self.features
-    }
-
-    pub(crate) fn override_feature_install_order(&self) -> &[String] {
-        &self.override_feature_install_order
-    }
-
+    #[cfg(test)]
     pub(crate) fn workspace_mount(&self) -> Option<&str> {
         self.workspace_mount.as_deref()
     }
 
+    #[cfg(test)]
     pub(crate) fn workspace_folder(&self) -> Option<&str> {
         self.workspace_folder.as_deref()
     }
 
+    #[cfg(test)]
     pub(crate) fn container_env(&self) -> &BTreeMap<String, String> {
         &self.container_env
     }
 
+    #[cfg(test)]
     pub(crate) fn remote_env(&self) -> &BTreeMap<String, String> {
         &self.remote_env
     }
 
+    #[cfg(test)]
     pub(crate) fn remote_user(&self) -> Option<&str> {
         self.remote_user.as_deref()
     }
 
+    #[cfg(test)]
     pub(crate) fn container_user(&self) -> Option<&str> {
         self.container_user.as_deref()
     }
 
+    #[cfg(test)]
     pub(crate) fn update_remote_user_uid(&self) -> Option<bool> {
         self.update_remote_user_uid
     }
 
+    #[cfg(test)]
     pub(crate) fn user_env_probe(&self) -> Option<&UserEnvProbe> {
         self.user_env_probe.as_ref()
     }
@@ -126,50 +126,57 @@ impl DevcontainerMetadata {
         &self.forward_ports
     }
 
+    #[cfg(test)]
     pub(crate) fn ports_attributes(&self) -> &BTreeMap<String, DevcontainerPortAttributes> {
         &self.ports_attributes
     }
 
+    #[cfg(test)]
     pub(crate) fn other_ports_attributes(&self) -> Option<&DevcontainerPortAttributes> {
         self.other_ports_attributes.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn app_port(&self) -> &[DevcontainerPort] {
         &self.app_port
     }
 
+    #[cfg(test)]
     pub(crate) fn run_args(&self) -> &[DevcontainerRunArg] {
         &self.run_args
     }
 
+    #[cfg(test)]
     pub(crate) fn init(&self) -> Option<bool> {
         self.init
     }
 
+    #[cfg(test)]
     pub(crate) fn privileged(&self) -> Option<bool> {
         self.privileged
     }
 
+    #[cfg(test)]
     pub(crate) fn cap_add(&self) -> &[String] {
         &self.cap_add
     }
 
+    #[cfg(test)]
     pub(crate) fn security_opt(&self) -> &[String] {
         &self.security_opt
     }
 
-    pub(crate) fn shutdown_action(&self) -> Option<&DevcontainerShutdownAction> {
-        self.shutdown_action.as_ref()
-    }
-
+    #[cfg(test)]
     pub(crate) fn lifecycle(&self) -> &BTreeMap<LifecycleProperty, Value> {
         &self.lifecycle
     }
 
+    #[cfg(test)]
     pub(crate) fn customizations(&self) -> Option<&Value> {
         self.customizations.as_ref()
     }
 
+    #[cfg(test)]
     pub(crate) fn unsupported_properties(&self) -> &BTreeMap<String, Value> {
         &self.unsupported_properties
     }

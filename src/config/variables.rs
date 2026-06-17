@@ -64,29 +64,31 @@ pub(crate) struct VariableContext {
     container_env: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VariableContextInput {
+    pub(crate) local_workspace_folder: PathBuf,
+    pub(crate) local_workspace_folder_basename: String,
+    pub(crate) container_workspace_folder: String,
+    pub(crate) container_workspace_folder_basename: String,
+    pub(crate) devcontainer_id: String,
+    pub(crate) uid: u32,
+    pub(crate) gid: u32,
+    pub(crate) remote_user: String,
+    pub(crate) remote_user_home: Option<String>,
+}
+
 impl VariableContext {
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) fn new(
-        local_workspace_folder: PathBuf,
-        local_workspace_folder_basename: String,
-        container_workspace_folder: String,
-        container_workspace_folder_basename: String,
-        devcontainer_id: String,
-        uid: u32,
-        gid: u32,
-        remote_user: String,
-        remote_user_home: Option<String>,
-    ) -> Self {
+    pub(crate) fn new(input: VariableContextInput) -> Self {
         Self {
-            local_workspace_folder,
-            local_workspace_folder_basename,
-            container_workspace_folder,
-            container_workspace_folder_basename,
-            devcontainer_id,
-            uid,
-            gid,
-            remote_user,
-            remote_user_home,
+            local_workspace_folder: input.local_workspace_folder,
+            local_workspace_folder_basename: input.local_workspace_folder_basename,
+            container_workspace_folder: input.container_workspace_folder,
+            container_workspace_folder_basename: input.container_workspace_folder_basename,
+            devcontainer_id: input.devcontainer_id,
+            uid: input.uid,
+            gid: input.gid,
+            remote_user: input.remote_user,
+            remote_user_home: input.remote_user_home,
             container_env: BTreeMap::new(),
         }
     }
@@ -391,17 +393,17 @@ mod tests {
     use super::*;
 
     fn context() -> VariableContext {
-        VariableContext::new(
-            PathBuf::from("/workspace/project"),
-            "project".to_owned(),
-            "/workspaces/project".to_owned(),
-            "project".to_owned(),
-            "abc123def456".to_owned(),
-            1000,
-            1001,
-            "vscode".to_owned(),
-            Some("/home/vscode".to_owned()),
-        )
+        VariableContext::new(VariableContextInput {
+            local_workspace_folder: PathBuf::from("/workspace/project"),
+            local_workspace_folder_basename: "project".to_owned(),
+            container_workspace_folder: "/workspaces/project".to_owned(),
+            container_workspace_folder_basename: "project".to_owned(),
+            devcontainer_id: "abc123def456".to_owned(),
+            uid: 1000,
+            gid: 1001,
+            remote_user: "vscode".to_owned(),
+            remote_user_home: Some("/home/vscode".to_owned()),
+        })
     }
 
     fn expand_with_env(input: &str, values: &[(&str, &str)]) -> Result<String> {
@@ -423,17 +425,17 @@ mod tests {
     }
 
     fn context_without_remote_user_home() -> VariableContext {
-        VariableContext::new(
-            PathBuf::from("/workspace/project"),
-            "project".to_owned(),
-            "/workspaces/project".to_owned(),
-            "project".to_owned(),
-            "abc123def456".to_owned(),
-            1000,
-            1001,
-            "1001:1001".to_owned(),
-            None,
-        )
+        VariableContext::new(VariableContextInput {
+            local_workspace_folder: PathBuf::from("/workspace/project"),
+            local_workspace_folder_basename: "project".to_owned(),
+            container_workspace_folder: "/workspaces/project".to_owned(),
+            container_workspace_folder_basename: "project".to_owned(),
+            devcontainer_id: "abc123def456".to_owned(),
+            uid: 1000,
+            gid: 1001,
+            remote_user: "1001:1001".to_owned(),
+            remote_user_home: None,
+        })
     }
 
     #[test]

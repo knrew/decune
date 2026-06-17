@@ -42,11 +42,6 @@ pub(crate) struct FeatureMetadataDocument {
     pub(crate) layer: ConfigLayer,
 }
 
-#[allow(dead_code)]
-pub(crate) fn read_feature_metadata(path: &Path) -> Result<FeatureMetadata> {
-    read_feature_metadata_document(path).map(|document| document.metadata)
-}
-
 pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetadataDocument> {
     let content = fs::read_to_string(path)
         .with_context(|| format!("Failed to read Feature metadata: {}", path.display()))?;

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use std::{
     collections::BTreeMap,
     fs,
@@ -15,9 +13,7 @@ use crate::{
     config::{canonical::sha256_hex, hash::ComposeFileHashInput, types::MountType},
     docker::mounts::{DockerMountSpec, MountBindOptions, MountVolumeOptions},
     error::ResultExt,
-    runtime::command::{
-        RuntimeCommand, RuntimeCommandRunner, RuntimeOutput, TokioRuntimeCommand, ensure_success,
-    },
+    runtime::command::{RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand, ensure_success},
     workspace::Workspace,
 };
 
@@ -35,13 +31,6 @@ impl Default for DockerComposeCli {
 impl DockerComposeCli {
     pub(crate) fn new(runner: Arc<dyn RuntimeCommandRunner>) -> Self {
         Self { runner }
-    }
-
-    pub(crate) async fn version(&self) -> Result<RuntimeOutput> {
-        let command = compose_cmd([]).arg("version");
-        let output = self.runner.run_capture(command.clone()).await?;
-        ensure_success("read Docker Compose version", "compose", &command, &output)?;
-        Ok(output)
     }
 
     pub(crate) async fn capabilities(&self) -> Result<ComposeCliCapabilities> {
@@ -102,13 +91,6 @@ impl DockerComposeCli {
             help.push_str(&String::from_utf8_lossy(&output.stderr));
         }
         Ok(help)
-    }
-
-    pub(crate) async fn config_json(
-        &self,
-        project: &ComposeCommandPlan,
-    ) -> Result<ComposeConfigModel> {
-        Ok(self.config_output(project).await?.model)
     }
 
     pub(crate) async fn config_output(
@@ -360,6 +342,7 @@ impl ComposeIntrospector {
         Ok(output)
     }
 
+    #[cfg(test)]
     pub(crate) async fn config_model_with_generated_override(
         &self,
         project: &ComposeProjectPlan,
@@ -724,6 +707,7 @@ impl ComposeProjectPlan {
         &self.project_name
     }
 
+    #[cfg(test)]
     pub(crate) fn project_directory(&self) -> &Path {
         &self.project_directory
     }
@@ -911,6 +895,7 @@ impl ComposeOverrideServicePatch {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn label(mut self, key: impl Into<String>, value: impl Into<String>) -> Self {
         let key = key.into();
         if !key.starts_with("com.docker.compose.") {
@@ -933,17 +918,6 @@ impl ComposeOverrideServicePatch {
             key.into(),
             ComposeOverrideEnvironmentValue::Literal(value.into()),
         );
-        self
-    }
-
-    pub(crate) fn environments(mut self, environment: &BTreeMap<String, String>) -> Self {
-        self.environment
-            .extend(environment.iter().map(|(key, value)| {
-                (
-                    key.clone(),
-                    ComposeOverrideEnvironmentValue::Literal(value.clone()),
-                )
-            }));
         self
     }
 
@@ -1009,6 +983,7 @@ impl ComposeOverrideServicePatch {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn keepalive_command(mut self, enabled: bool) -> Self {
         if enabled {
             self.command = vec!["sleep".to_owned(), "infinity".to_owned()];
@@ -1016,6 +991,7 @@ impl ComposeOverrideServicePatch {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn secret_value_forbidden(mut self, value: impl Into<String>) -> Self {
         self.forbidden_secret_values.push(value.into());
         self
@@ -1058,6 +1034,7 @@ impl ComposeOverrideServicePatch {
 }
 
 impl ComposeOverrideMount {
+    #[cfg(test)]
     pub(crate) fn bind(
         source: impl Into<String>,
         target: impl Into<String>,
@@ -1228,26 +1205,6 @@ impl ComposeCommandPlan {
             .map(|file| file.display().to_string())
             .collect::<Vec<_>>()
             .join(", ")
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ComposeProject {
-    pub(crate) name: String,
-    pub(crate) project_directory: PathBuf,
-    pub(crate) files: Vec<PathBuf>,
-}
-
-impl ComposeProject {
-    fn command<const N: usize>(&self, args: [&str; N]) -> RuntimeCommand {
-        ComposeCommandPlan {
-            project_name: self.name.clone(),
-            project_directory: self.project_directory.clone(),
-            files: self.files.clone(),
-            env: BTreeMap::new(),
-            redactions: Vec::new(),
-        }
-        .command(args)
     }
 }
 
@@ -1584,7 +1541,7 @@ mod tests {
         ComposeBuildOptions, ComposeCliCapabilities, ComposeCommandPlan, ComposeConfigModel,
         ComposeConfigService, ComposeDownOptions, ComposeIntrospector, ComposeLifecyclePlan,
         ComposeOverrideMount, ComposeOverridePatch, ComposeOverrideServicePatch,
-        ComposePrimaryImageResolver, ComposeProject, ComposeProjectPlan, ComposePullOptions,
+        ComposePrimaryImageResolver, ComposeProjectPlan, ComposePullOptions,
         ComposeServiceValidation, ComposeStopOptions, ComposeUpOptions, DockerComposeCli,
         parse_compose_ps_json, resolve_compose_container, write_compose_override,
     };
@@ -1603,10 +1560,12 @@ mod tests {
 
     #[test]
     fn compose_project_command_uses_docker_compose_plugin_argv() {
-        let project = ComposeProject {
-            name: "decune-project-abc123".to_owned(),
+        let project = ComposeCommandPlan {
+            project_name: "decune-project-abc123".to_owned(),
             project_directory: PathBuf::from("/workspace"),
             files: vec![PathBuf::from("/workspace/compose.yml")],
+            env: BTreeMap::new(),
+            redactions: Vec::new(),
         };
 
         let command = project.command(["config", "--format", "json"]);
@@ -2806,7 +2765,10 @@ mod tests {
             .build()
             .unwrap();
 
-        let config = runtime.block_on(cli.config_json(&command_plan)).unwrap();
+        let config = runtime
+            .block_on(cli.config_output(&command_plan))
+            .unwrap()
+            .model;
         let ps = runtime.block_on(cli.ps_json(&command_plan, "app")).unwrap();
         let commands = runner.commands();
 

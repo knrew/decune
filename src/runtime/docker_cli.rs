@@ -34,25 +34,6 @@ impl DockerCli {
     pub(crate) fn new(runner: Arc<dyn RuntimeCommandRunner>) -> Self {
         Self { runner }
     }
-
-    #[allow(dead_code)]
-    pub(crate) async fn ping(&self) -> Result<()> {
-        self.run_ok("ping Docker daemon", "daemon", docker_cmd(["version"]))
-            .await
-    }
-
-    #[allow(dead_code)]
-    pub(crate) async fn version_json(&self) -> Result<serde_json::Value> {
-        let output = self
-            .run_json_command(
-                "read Docker version",
-                "daemon",
-                docker_cmd(["version", "--format", "json"]),
-            )
-            .await?;
-        Ok(output)
-    }
-
     pub(crate) async fn build(&self, input: DockerBuildCliInput<'_>) -> Result<RuntimeOutput> {
         let target = input.image_tag;
         let command = docker_build_command(&input);

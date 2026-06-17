@@ -261,17 +261,20 @@ pub(super) fn mount_variable_context(
     remote_user: String,
     remote_user_home: Option<String>,
 ) -> crate::config::variables::VariableContext {
-    crate::config::variables::VariableContext::new(
-        workspace.root().to_path_buf(),
-        workspace.basename().to_owned(),
-        workspace_folder.to_owned(),
-        container_workspace_folder_basename(workspace_folder, workspace),
-        workspace.id().to_owned(),
-        current_uid(),
-        current_gid(),
+    crate::config::variables::VariableContext::new(crate::config::variables::VariableContextInput {
+        local_workspace_folder: workspace.root().to_path_buf(),
+        local_workspace_folder_basename: workspace.basename().to_owned(),
+        container_workspace_folder: workspace_folder.to_owned(),
+        container_workspace_folder_basename: container_workspace_folder_basename(
+            workspace_folder,
+            workspace,
+        ),
+        devcontainer_id: workspace.id().to_owned(),
+        uid: current_uid(),
+        gid: current_gid(),
         remote_user,
         remote_user_home,
-    )
+    })
 }
 
 fn container_workspace_folder_basename(workspace_folder: &str, workspace: &Workspace) -> String {

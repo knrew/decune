@@ -12,7 +12,7 @@ use crate::{
     config::{
         resolved::{ResolvedConfig, ResolvedHook},
         types::{Command, HookLocation},
-        variables::{VariableContext, expand_remote_env_tracked},
+        variables::{VariableContext, VariableContextInput, expand_remote_env_tracked},
     },
     devcontainer::metadata::LifecycleProperty,
     docker::{
@@ -28,8 +28,6 @@ use crate::{
     },
     state::{LifecycleCompletion, LifecycleState},
 };
-
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum LifecycleCommand {
     Shell(String),
@@ -44,7 +42,7 @@ pub(crate) struct LifecycleDefinition {
 }
 
 impl LifecycleDefinition {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn command(&self, stage: LifecycleStage) -> Option<&LifecycleCommand> {
         self.commands
             .get(&stage)
@@ -111,7 +109,7 @@ pub(crate) enum LifecycleStage {
 }
 
 impl LifecycleStage {
-    #[allow(dead_code)]
+    #[cfg(test)]
     pub(crate) fn execution_location(self) -> LifecycleExecutionLocation {
         match self {
             Self::Initialize => LifecycleExecutionLocation::Host,
@@ -192,8 +190,7 @@ impl HookStage {
         }
     }
 }
-
-#[allow(dead_code)]
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum LifecycleStep {
     Hooks(HookStage),
@@ -231,15 +228,13 @@ pub(crate) struct PreparedLifecycleRunContext<'a> {
     remote_process_env: BTreeMap<String, String>,
     remote_env_redactions: Vec<String>,
 }
-
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
     let mut plan = container_start_lifecycle_plan(path);
     plan.extend(attach_lifecycle_plan());
     plan
 }
-
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<LifecycleStep> {
     let state = match path {
         LifecycleRunPath::New => LifecycleState::default(),
@@ -248,6 +243,7 @@ pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<Life
     container_start_lifecycle_plan_with_state(path, &state)
 }
 
+#[cfg(test)]
 pub(crate) fn container_start_lifecycle_plan_with_state(
     path: LifecycleRunPath,
     state: &LifecycleState,
@@ -294,6 +290,7 @@ pub(crate) fn container_start_lifecycle_plan_with_state(
     steps
 }
 
+#[cfg(test)]
 fn push_pending_creation_lifecycle_steps(steps: &mut Vec<LifecycleStep>, state: LifecycleState) {
     for stage in CREATION_LIFECYCLE_STAGES {
         push_creation_lifecycle_steps(
@@ -306,6 +303,7 @@ fn push_pending_creation_lifecycle_steps(steps: &mut Vec<LifecycleStep>, state: 
     }
 }
 
+#[cfg(test)]
 fn push_creation_lifecycle_steps(
     steps: &mut Vec<LifecycleStep>,
     state: LifecycleState,
@@ -329,8 +327,7 @@ fn push_creation_lifecycle_steps(
         ));
     }
 }
-
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn attach_lifecycle_plan() -> Vec<LifecycleStep> {
     vec![
         LifecycleStep::PortForwardingStart,
@@ -432,17 +429,20 @@ pub(crate) async fn prepare_container_lifecycle(
 }
 
 fn dotfile_variable_context(context: &LifecycleRunContext<'_>) -> VariableContext {
-    VariableContext::new(
-        context.workspace_root.to_path_buf(),
-        context.workspace_basename.to_owned(),
-        context.workspace_folder.to_owned(),
-        container_workspace_folder_basename(context.workspace_folder, context.workspace_basename),
-        context.workspace_id.to_owned(),
-        current_uid(),
-        current_gid(),
-        context.remote_user.user.clone(),
-        context.remote_user.home.clone(),
-    )
+    VariableContext::new(VariableContextInput {
+        local_workspace_folder: context.workspace_root.to_path_buf(),
+        local_workspace_folder_basename: context.workspace_basename.to_owned(),
+        container_workspace_folder: context.workspace_folder.to_owned(),
+        container_workspace_folder_basename: container_workspace_folder_basename(
+            context.workspace_folder,
+            context.workspace_basename,
+        ),
+        devcontainer_id: context.workspace_id.to_owned(),
+        uid: current_uid(),
+        gid: current_gid(),
+        remote_user: context.remote_user.user.clone(),
+        remote_user_home: context.remote_user.home.clone(),
+    })
 }
 
 fn container_workspace_folder_basename(workspace_folder: &str, workspace_basename: &str) -> String {
@@ -1018,8 +1018,8 @@ impl TryFrom<LifecycleProperty> for LifecycleStage {
     }
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum LifecycleExecutionLocation {
     Host,
     Container,
@@ -1049,8 +1049,7 @@ pub(crate) fn parse_lifecycle_command(
         )),
     }
 }
-
-#[allow(dead_code)]
+#[cfg(test)]
 pub(crate) fn parse_lifecycle_definition(
     values: &BTreeMap<LifecycleProperty, Value>,
 ) -> Result<LifecycleDefinition> {

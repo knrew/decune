@@ -68,8 +68,6 @@ pub(crate) struct HostConfig {
     pub(crate) mounts: Option<Vec<MountSpec>>,
     pub(crate) extra_hosts: Option<Vec<String>>,
     pub(crate) dns: Option<Vec<String>>,
-    #[allow(dead_code)]
-    pub(crate) dns_search: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -101,9 +99,6 @@ pub(crate) struct NetworkSettings {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct PortBinding {
-    #[serde(rename = "HostIp")]
-    #[allow(dead_code)]
-    pub(crate) host_ip: Option<String>,
     pub(crate) host_port: Option<String>,
 }
 

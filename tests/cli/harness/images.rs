@@ -1,11 +1,10 @@
-use sha2::{Digest, Sha256};
 use std::{collections::HashMap, fs, path::Path};
 
 use super::{
     Docker,
     docker::{docker_status, ensure_alpine_image},
     locks::{acquire_exclusive_docker_resource_lock, acquire_shared_docker_resource_lock},
-    names::{hex_lower, workspace_id, workspace_image_repository},
+    names::{workspace_id, workspace_image_repository},
 };
 
 pub(crate) async fn create_workspace_image_tag(
@@ -249,12 +248,4 @@ fn dockerfile_for_config(config: &DockerfileImageConfig) -> anyhow::Result<Strin
 
 fn dockerfile_label_value(value: &str) -> anyhow::Result<String> {
     Ok(serde_json::to_string(value)?.replace('$', "\\$"))
-}
-
-#[allow(dead_code)]
-fn fixture_name(prefix: &str, value: &str) -> String {
-    format!(
-        "{prefix}-{}",
-        &hex_lower(&Sha256::digest(value.as_bytes()))[..12]
-    )
 }

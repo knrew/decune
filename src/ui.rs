@@ -16,12 +16,6 @@ pub(crate) fn done(message: &str) {
     write_stderr("Done", message);
 }
 
-#[allow(dead_code)]
-pub(crate) fn value(message: &str) {
-    let mut stdout = io::stdout().lock();
-    let _ = write_line(&mut stdout, message);
-}
-
 fn write_stderr(level: &str, message: &str) {
     let mut stderr = io::stderr().lock();
     let _ = write_prefixed(&mut stderr, level, message);

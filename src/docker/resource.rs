@@ -68,27 +68,6 @@ pub(crate) fn managed_workspace_label_filters(workspace_id: &str) -> BTreeMap<St
     );
     filters
 }
-
-#[allow(dead_code)]
-pub(crate) fn is_managed_workspace_container(
-    labels: &BTreeMap<String, String>,
-    workspace_id: &str,
-) -> bool {
-    labels
-        .get(MANAGED_LABEL)
-        .is_some_and(|value| value == "true")
-        && labels
-            .get(WORKSPACE_ID_LABEL)
-            .is_some_and(|value| value == workspace_id)
-}
-
-#[allow(dead_code)]
-pub(crate) fn has_config_hash(labels: &BTreeMap<String, String>, config_hash: &str) -> bool {
-    labels
-        .get(CONFIG_HASH_LABEL)
-        .is_some_and(|value| value == config_hash)
-}
-
 fn labels(entries: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, String> {
     entries
         .into_iter()
@@ -126,7 +105,6 @@ fn truncate_docker_name_segment(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
-        collections::BTreeMap,
         fs,
         path::PathBuf,
         sync::atomic::{AtomicUsize, Ordering},
@@ -134,10 +112,7 @@ mod tests {
 
     use crate::workspace::Workspace;
 
-    use super::{
-        DockerResources, has_config_hash, is_managed_workspace_container,
-        managed_workspace_label_filters,
-    };
+    use super::{DockerResources, managed_workspace_label_filters};
 
     static NEXT_FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -335,60 +310,5 @@ mod tests {
                 "decune.workspace_id=abc123def456".to_owned(),
             ])
         );
-    }
-
-    #[test]
-    fn managed_workspace_container_predicate_rejects_other_tools_and_workspaces() {
-        let managed_labels = labels([
-            ("decune.managed", "true"),
-            ("decune.workspace_id", "abc123def456"),
-            ("com.example.owner", "other"),
-        ]);
-
-        assert!(is_managed_workspace_container(
-            &managed_labels,
-            "abc123def456"
-        ));
-
-        let unmanaged = labels([("decune.workspace_id", "abc123def456")]);
-        assert!(!is_managed_workspace_container(&unmanaged, "abc123def456"));
-
-        let different_workspace = labels([
-            ("decune.managed", "true"),
-            ("decune.workspace_id", "different"),
-        ]);
-        assert!(!is_managed_workspace_container(
-            &different_workspace,
-            "abc123def456"
-        ));
-    }
-
-    #[test]
-    fn config_hash_predicate_is_separate_from_workspace_ownership() {
-        let managed_labels = labels([
-            ("decune.managed", "true"),
-            ("decune.workspace_id", "abc123def456"),
-            ("decune.config_hash", "config-a"),
-        ]);
-
-        assert!(is_managed_workspace_container(
-            &managed_labels,
-            "abc123def456"
-        ));
-        assert!(has_config_hash(&managed_labels, "config-a"));
-        assert!(!has_config_hash(&managed_labels, "config-b"));
-        assert!(!has_config_hash(
-            &labels([("decune.managed", "true")]),
-            "config-a"
-        ));
-    }
-
-    fn labels(
-        entries: impl IntoIterator<Item = (&'static str, &'static str)>,
-    ) -> BTreeMap<String, String> {
-        entries
-            .into_iter()
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
-            .collect()
     }
 }
