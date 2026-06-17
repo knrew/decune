@@ -36,7 +36,7 @@ const PLATFORMS: [ContainerToolPlatform; 2] = [
         rust_target: "aarch64-unknown-linux-musl",
     },
 ];
-const COMPOSE_CAPABILITIES: [ComposeCapabilityRequirement; 7] = [
+const COMPOSE_CAPABILITIES: [ComposeCapabilityRequirement; 8] = [
     ComposeCapabilityRequirement {
         subcommand: "config",
         option: "--format",
@@ -61,6 +61,11 @@ const COMPOSE_CAPABILITIES: [ComposeCapabilityRequirement; 7] = [
         subcommand: "pull",
         option: "--ignore-buildable",
         capability: "docker compose pull --ignore-buildable",
+    },
+    ComposeCapabilityRequirement {
+        subcommand: "pull",
+        option: "--include-deps",
+        capability: "docker compose pull --include-deps",
     },
     ComposeCapabilityRequirement {
         subcommand: "up",

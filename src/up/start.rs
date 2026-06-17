@@ -578,6 +578,9 @@ async fn start_compose_project(
             ComposePullOptions {
                 always: true,
                 ignore_buildable: true,
+                // When runServices narrows the explicit pull targets, dependency images
+                // are still delegated to Docker Compose instead of parsing depends_on.
+                include_deps: true,
             },
             &user_lifecycle.services,
         )

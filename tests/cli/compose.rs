@@ -716,7 +716,7 @@ exit 91
 
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(
-        commands.contains(" pull --ignore-buildable --policy always"),
+        commands.contains(" pull --ignore-buildable --include-deps --policy always"),
         "{commands}"
     );
     assert!(commands.contains(" up -d --force-recreate"));

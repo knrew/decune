@@ -87,6 +87,7 @@ v0.1 における「Docker Compose 完全サポート」とは、Dev Containers 
   - `docker compose build --with-dependencies`
   - `docker compose pull --policy always`
   - `docker compose pull --ignore-buildable`
+  - `docker compose pull --include-deps`
   - `docker compose up --force-recreate`
   - `docker compose up --remove-orphans`
 - Docker daemon へ接続できる権限。

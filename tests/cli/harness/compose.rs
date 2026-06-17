@@ -24,7 +24,7 @@ const FAKE_COMPOSE_CAPABILITIES_SCRIPT: &str = r#"case " $* " in
     exit 0
     ;;
   *" pull --help "*)
-    printf '%s\n' 'Usage: docker compose pull [OPTIONS]' '      --policy string' '      --ignore-buildable'
+    printf '%s\n' 'Usage: docker compose pull [OPTIONS]' '      --policy string' '      --ignore-buildable' '      --include-deps'
     exit 0
     ;;
   *" up --help "*)
