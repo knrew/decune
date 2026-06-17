@@ -1193,6 +1193,7 @@ impl ComposeCleanupPlan {
 impl ComposeCommandPlan {
     pub(crate) fn command<const N: usize>(&self, args: [&str; N]) -> RuntimeCommand {
         let mut command = compose_cmd([])
+            .current_dir(self.project_directory.clone())
             .arg("--project-name")
             .arg(&self.project_name)
             .arg("--project-directory")
@@ -1544,7 +1545,11 @@ fn yaml_double_quote(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        path::{Path, PathBuf},
+    };
 
     use crate::workspace::Workspace;
 
@@ -1583,6 +1588,7 @@ mod tests {
 
         assert_eq!(command.program(), "docker");
         assert_eq!(command.args_vec()[0], "compose");
+        assert_eq!(command.current_dir_path(), Some(Path::new("/workspace")));
         assert!(command.args_vec().contains(&"--project-name".to_owned()));
         assert!(command.args_vec().contains(&"config".to_owned()));
     }
@@ -2146,6 +2152,11 @@ mod tests {
         assert_eq!(commands[3].args_vec(), &["compose", "build", "--help"]);
         assert_eq!(commands[4].args_vec(), &["compose", "pull", "--help"]);
         assert_eq!(commands[5].args_vec(), &["compose", "up", "--help"]);
+        assert!(
+            commands
+                .iter()
+                .all(|command| command.current_dir_path().is_none())
+        );
     }
 
     #[test]
