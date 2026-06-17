@@ -1,0 +1,8 @@
+{
+  "name": "compose-env-interpolation",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "overrideCommand": true,
+  "workspaceFolder": "/workspace",
+  "updateRemoteUserUID": false
+}

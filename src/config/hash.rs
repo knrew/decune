@@ -174,7 +174,7 @@ pub(crate) fn config_hash(input: &ConfigHashInput<'_>) -> String {
         });
     }
     if let Some(model) = &input.compose_canonical_model {
-        let model = redact_compose_canonical_model_for_hash(model);
+        let model = sanitize_compose_canonical_model_for_hash(model);
         writer.field("compose_canonical_model", |writer| {
             writer.json_value(&model);
         });
@@ -215,28 +215,32 @@ fn write_compose_file_inputs(writer: &mut CanonicalWriter, inputs: &[ComposeFile
     });
 }
 
-fn redact_compose_canonical_model_for_hash(model: &JsonValue) -> JsonValue {
+const COMPOSE_ENV_VALUE_HASH_VERSION: &str = "decune-compose-env-value-hash-v1";
+
+fn sanitize_compose_canonical_model_for_hash(model: &JsonValue) -> JsonValue {
     let mut model = model.clone();
-    redact_compose_canonical_model_value(&mut model, &mut Vec::new());
+    sanitize_compose_canonical_model_value(&mut model, &mut Vec::new());
     model
 }
 
-fn redact_compose_canonical_model_value(value: &mut JsonValue, path: &mut Vec<String>) {
+fn sanitize_compose_canonical_model_value(value: &mut JsonValue, path: &mut Vec<String>) {
     match value {
         JsonValue::Object(map) => {
             if is_compose_service_environment_path(path) {
-                redact_json_leaf_values(value);
+                digest_json_leaf_values(value, path);
                 return;
             }
             for (child_key, child_value) in map {
-                path.push(child_key.clone());
-                redact_compose_canonical_model_value(child_value, path);
+                path.push(format!("key:{child_key}"));
+                sanitize_compose_canonical_model_value(child_value, path);
                 path.pop();
             }
         }
         JsonValue::Array(values) => {
-            for value in values {
-                redact_compose_canonical_model_value(value, path);
+            for (index, value) in values.iter_mut().enumerate() {
+                path.push(format!("index:{index}"));
+                sanitize_compose_canonical_model_value(value, path);
+                path.pop();
             }
         }
         _ => {}
@@ -244,23 +248,63 @@ fn redact_compose_canonical_model_value(value: &mut JsonValue, path: &mut Vec<St
 }
 
 fn is_compose_service_environment_path(path: &[String]) -> bool {
-    path.len() == 3 && path[0] == "services" && path[2] == "environment"
+    path.len() == 3 && path[0] == "key:services" && path[2] == "key:environment"
 }
 
-fn redact_json_leaf_values(value: &mut JsonValue) {
+fn digest_json_leaf_values(value: &mut JsonValue, path: &mut Vec<String>) {
     match value {
         JsonValue::Object(map) => {
-            for value in map.values_mut() {
-                redact_json_leaf_values(value);
+            for (child_key, child_value) in map {
+                path.push(format!("key:{child_key}"));
+                digest_json_leaf_values(child_value, path);
+                path.pop();
             }
         }
         JsonValue::Array(values) => {
-            for value in values {
-                redact_json_leaf_values(value);
+            for (index, value) in values.iter_mut().enumerate() {
+                path.push(format!("index:{index}"));
+                digest_json_leaf_values(value, path);
+                path.pop();
             }
         }
-        JsonValue::Null => {}
-        _ => *value = JsonValue::String("<redacted>".to_owned()),
+        _ => {
+            *value = JsonValue::String(compose_environment_value_hash_marker(path, value));
+        }
+    }
+}
+
+fn compose_environment_value_hash_marker(path: &[String], value: &JsonValue) -> String {
+    let digest = compose_environment_value_digest(path, value);
+    format!("{COMPOSE_ENV_VALUE_HASH_VERSION}:sha256:{digest}")
+}
+
+fn compose_environment_value_digest(path: &[String], value: &JsonValue) -> String {
+    let mut writer = CanonicalWriter::default();
+
+    writer.field("version", |writer| {
+        writer.string(COMPOSE_ENV_VALUE_HASH_VERSION)
+    });
+    writer.field("json_path", |writer| {
+        writer.seq(path.iter(), |writer, segment| writer.string(segment));
+    });
+    writer.field("json_value_type", |writer| {
+        writer.string(json_value_type_name(value));
+    });
+    writer.field("canonical_json_value", |writer| {
+        writer.json_value(value);
+    });
+
+    sha256_hex(writer.finish().as_bytes())
+}
+
+fn json_value_type_name(value: &JsonValue) -> &'static str {
+    match value {
+        JsonValue::Null => "null",
+        JsonValue::Bool(_) => "boolean",
+        JsonValue::Number(_) => "number",
+        JsonValue::String(_) => "string",
+        JsonValue::Array(_) => "array",
+        JsonValue::Object(_) => "object",
     }
 }
 
@@ -1737,7 +1781,7 @@ shell = false
     }
 
     #[test]
-    fn config_hash_redacts_compose_environment_values() {
+    fn config_hash_changes_when_compose_environment_value_changes() {
         let config = resolved_config("version = 1\n");
         let first = config_hash(&ConfigHashInput {
             compose_files: vec![ComposeFileHashInput {
@@ -1774,7 +1818,97 @@ shell = false
             ..ConfigHashInput::new(&config)
         });
 
+        assert_ne!(first, second);
+    }
+
+    #[test]
+    fn config_hash_is_stable_when_compose_environment_value_is_unchanged() {
+        let config = resolved_config("version = 1\n");
+        let model = serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "environment": {
+                        "TOKEN": "same-secret"
+                    }
+                }
+            }
+        });
+        let first = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(model.clone()),
+            ..ConfigHashInput::new(&config)
+        });
+        let second = config_hash(&ConfigHashInput {
+            compose_files: vec![ComposeFileHashInput {
+                canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                digest: "sha256:same".to_owned(),
+            }],
+            compose_canonical_model: Some(model),
+            ..ConfigHashInput::new(&config)
+        });
+
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn config_hash_does_not_expose_compose_environment_values() {
+        let model = serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "environment": {
+                        "TOKEN": "first-secret",
+                        "EMPTY": "",
+                        "NULLISH": null,
+                        "ENABLED": true,
+                        "COUNT": 1
+                    }
+                }
+            }
+        });
+
+        let sanitized = sanitize_compose_canonical_model_for_hash(&model);
+        let sanitized = serde_json::to_string(&sanitized).unwrap();
+
+        assert!(sanitized.contains(COMPOSE_ENV_VALUE_HASH_VERSION));
+        assert!(!sanitized.contains("first-secret"));
+        assert!(!sanitized.contains("\"TOKEN\":\"first-secret\""));
+        assert!(!sanitized.contains("\"EMPTY\":\"\""));
+        assert!(!sanitized.contains("\"NULLISH\":null"));
+        assert!(!sanitized.contains("\"ENABLED\":true"));
+        assert!(!sanitized.contains("\"COUNT\":1"));
+    }
+
+    #[test]
+    fn config_hash_distinguishes_compose_environment_value_types() {
+        let config = resolved_config("version = 1\n");
+        let hash = |value: JsonValue| {
+            config_hash(&ConfigHashInput {
+                compose_files: vec![ComposeFileHashInput {
+                    canonical_path: "/workspace/.devcontainer/compose.yaml".to_owned(),
+                    digest: "sha256:same".to_owned(),
+                }],
+                compose_canonical_model: Some(serde_json::json!({
+                    "services": {
+                        "app": {
+                            "image": "alpine:3.20",
+                            "environment": {
+                                "VALUE": value
+                            }
+                        }
+                    }
+                })),
+                ..ConfigHashInput::new(&config)
+            })
+        };
+
+        assert_ne!(hash(JsonValue::Null), hash(serde_json::json!("")));
+        assert_ne!(hash(serde_json::json!("1")), hash(serde_json::json!(1)));
+        assert_ne!(hash(serde_json::json!(1)), hash(serde_json::json!(true)));
     }
 
     #[test]

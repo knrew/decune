@@ -74,6 +74,28 @@ impl Drop for ComposeRegistryFixture {
     }
 }
 
+fn fake_container_tools_bundle(workspace: &ComposeFixtureWorkspace) -> PathBuf {
+    workspace
+        .workspace
+        .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")
+        .unwrap();
+    workspace
+        .workspace
+        .write_file(
+            "container-tools/linux-amd64/git-credential-decune",
+            b"helper",
+        )
+        .unwrap();
+    workspace
+        .workspace
+        .write_file(
+            "container-tools/manifest.json",
+            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
+        )
+        .unwrap();
+    workspace.path().join("container-tools")
+}
+
 #[test]
 fn compose_integration_plugin_detection_runs_when_tools_are_available() {
     assert_eq!(
@@ -252,6 +274,91 @@ fn compose_integration_localenv_container_env_is_expanded() {
             .any(|container| container.labels.contains("secret-token"))
     );
     assert!(!stderr.contains("secret-token"));
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_rejects_reuse_when_compose_env_interpolation_changes() {
+    let workspace = compose_fixture_workspace("env-interpolation");
+    let state_home = support::TempWorkspace::new().unwrap();
+    let state_home_value = state_home.path().to_string_lossy().into_owned();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+
+    let first = decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("XDG_STATE_HOME", &state_home_value)
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .env("DECUNE_TEST_COMPOSE_ENV_TOKEN", "first-secret")
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"))
+        .stderr(predicate::str::contains("first-secret").not());
+    let first_stderr = String::from_utf8_lossy(&first.get_output().stderr);
+    assert!(!first_stderr.contains("first-secret"));
+
+    let first_containers = compose_project_containers(workspace.path()).unwrap();
+    let first_container = first_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    let first_id = first_container.id.clone();
+    let first_hash = compose_label(&first_container.labels, "decune.config_hash")
+        .expect("primary Compose service should have decune.config_hash label")
+        .to_owned();
+    assert!(!first_container.labels.contains("first-secret"));
+    assert_eq!(
+        compose_primary_container_output(workspace.path(), ["printenv", "APP_TOKEN"]).trim(),
+        "first-secret"
+    );
+
+    let state_file = state_home
+        .path()
+        .join("decune")
+        .join(workspace_id(workspace.path()))
+        .join("state.toml");
+    let first_state = fs::read_to_string(&state_file).unwrap();
+    assert!(!first_state.contains("first-secret"));
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("XDG_STATE_HOME", &state_home_value)
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .env("DECUNE_TEST_COMPOSE_ENV_TOKEN", "second-secret")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Dev container configuration changed. Run decune rebuild to recreate it.",
+        ))
+        .stderr(predicate::str::contains("second-secret").not());
+
+    let unchanged_containers = compose_project_containers(workspace.path()).unwrap();
+    let unchanged_container = unchanged_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should still exist");
+    assert_eq!(unchanged_container.id, first_id);
+    assert_eq!(
+        compose_label(&unchanged_container.labels, "decune.config_hash"),
+        Some(first_hash.as_str())
+    );
+    assert!(!unchanged_container.labels.contains("first-secret"));
+    assert!(!unchanged_container.labels.contains("second-secret"));
+    assert_eq!(
+        compose_primary_container_output(workspace.path(), ["printenv", "APP_TOKEN"]).trim(),
+        "first-secret"
+    );
+
+    let unchanged_state = fs::read_to_string(&state_file).unwrap();
+    assert!(!unchanged_state.contains("first-secret"));
+    assert!(!unchanged_state.contains("second-secret"));
 }
 
 #[test]
