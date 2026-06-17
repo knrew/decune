@@ -763,6 +763,9 @@ fn write_devcontainer_source(writer: &mut CanonicalWriter, source: &ResolvedDevc
                 writer.field("args", |writer| {
                     writer.map(build.args.iter(), |writer, value| writer.string(value));
                 });
+                writer.field("options", |writer| {
+                    writer.seq(build.options.iter(), |writer, option| writer.string(option));
+                });
                 writer.field("target", |writer| {
                     writer.option_string(build.target.as_deref());
                 });
@@ -1073,8 +1076,8 @@ mod tests {
     use super::*;
     use crate::config::{
         layer::{
-            LayerDevcontainerMetadata, LayerDevcontainerMount, LayerPortAttributes,
-            LayerPublishPort,
+            LayerDevcontainerBuild, LayerDevcontainerMetadata, LayerDevcontainerMount,
+            LayerDevcontainerSource, LayerPortAttributes, LayerPublishPort,
         },
         merge::{ConfigLayer, ConfigMergeInput, resolve_config},
         types::{OnAutoForward, PortProtocol},
@@ -1423,6 +1426,34 @@ shell = false
         );
 
         assert_eq!(hash_for(&implicit), hash_for(&explicit));
+    }
+
+    #[test]
+    fn dockerfile_build_options_change_hash() {
+        let mut first = resolved_config("version = 1\n");
+        first.devcontainer.source = Some(LayerDevcontainerSource::Dockerfile(
+            LayerDevcontainerBuild {
+                dockerfile: "Dockerfile".to_owned(),
+                context: None,
+                args: BTreeMap::new(),
+                options: vec!["--platform=linux/amd64".to_owned()],
+                target: None,
+                cache_from: Vec::new(),
+            },
+        ));
+        let mut second = first.clone();
+        second.devcontainer.source = Some(LayerDevcontainerSource::Dockerfile(
+            LayerDevcontainerBuild {
+                dockerfile: "Dockerfile".to_owned(),
+                context: None,
+                args: BTreeMap::new(),
+                options: vec!["--platform=linux/arm64".to_owned()],
+                target: None,
+                cache_from: Vec::new(),
+            },
+        ));
+
+        assert_ne!(hash_for(&first), hash_for(&second));
     }
 
     #[test]

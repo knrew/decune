@@ -1475,6 +1475,7 @@ container = 5432
                 dockerfile: "Dockerfile".to_owned(),
                 context: None,
                 args: BTreeMap::new(),
+                options: Vec::new(),
                 target: None,
                 cache_from: Vec::new(),
             },
@@ -2100,6 +2101,11 @@ type = "volume"
                 "args": {
                   "VARIANT": "bookworm"
                 },
+                "options": [
+                  "--platform=linux/amd64",
+                  "--network",
+                  "host"
+                ],
                 "target": "dev",
                 "cacheFrom": "type=registry,ref=example.test/cache:latest"
               }
@@ -2133,6 +2139,10 @@ type = "volume"
             Some("bookworm")
         );
         assert_eq!(plan.build_options.target.as_deref(), Some("dev"));
+        assert_eq!(
+            plan.build_options.options,
+            vec!["--platform=linux/amd64", "--network", "host"]
+        );
         assert_eq!(
             plan.build_options.cache_from,
             vec!["type=registry,ref=example.test/cache:latest"]
@@ -5592,6 +5602,7 @@ user = "root"
                 dockerfile: "Dockerfile".to_owned(),
                 context: Some(".".to_owned()),
                 args: BTreeMap::new(),
+                options: Vec::new(),
                 target: None,
                 cache_from: Vec::new(),
             },

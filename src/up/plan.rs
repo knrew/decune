@@ -416,6 +416,7 @@ fn dockerfile_build_input(
             )?),
             DockerBuildOptions {
                 build_args: build.args.clone(),
+                options: build.options.clone(),
                 target: build.target.clone(),
                 cache_from: build.cache_from.clone(),
                 ..DockerBuildOptions::default()

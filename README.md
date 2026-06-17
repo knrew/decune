@@ -105,6 +105,32 @@ cargo check --workspace --all-targets --all-features
 }
 ```
 
+### Dockerfile-based
+
+Dockerfile を build する場合は `build.dockerfile` を指定します。`build.options` は Docker build の argv として渡されますが、decune が管理する `--file`、`--tag`、`--label`、`--build-arg`、`--target`、`--cache-from`、`--no-cache`、`--pull`、output / metadata file 系 option は指定できません。build context path も decune が管理するため、`build.options` には書けません。
+
+```jsonc
+// .devcontainer/devcontainer.json
+{
+  "name": "dockerfile-example",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": "..",
+    "options": [
+      "--platform=linux/amd64",
+      "--ssh=default",
+      "--secret",
+      "id=npm,env=NPM_TOKEN",
+      "--network",
+      "host"
+    ]
+  },
+  "remoteUser": "vscode"
+}
+```
+
+`build.options` の値は argv に出るため、secret 文字列そのものを直接書かないでください。`--secret id=npm,env=NPM_TOKEN` のように host 環境変数や file path を参照する形にしてください。
+
 ### Docker Compose-based
 
 Docker Compose を使う場合は、`dockerComposeFile` と primary `service` を指定します。

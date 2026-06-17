@@ -260,6 +260,7 @@ pub(crate) struct LayerDevcontainerBuild {
     pub(crate) dockerfile: String,
     pub(crate) context: Option<String>,
     pub(crate) args: BTreeMap<String, String>,
+    pub(crate) options: Vec<String>,
     pub(crate) target: Option<String>,
     pub(crate) cache_from: Vec<String>,
 }
