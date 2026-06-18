@@ -282,6 +282,7 @@ pub(crate) struct RawGitCredentialsConfig {
 pub(crate) enum RawGitHttpsMode {
     Off,
     HostHelper,
+    HostHelperReadOnly,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]

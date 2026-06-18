@@ -284,6 +284,30 @@ shell = false
     }
 
     #[test]
+    fn git_https_host_helper_read_only_is_accepted() {
+        let path = config_path("git-read-only");
+        fs::write(
+            &path,
+            r#"
+version = 1
+
+[credentials.git]
+https = "host-helper-read-only"
+"#,
+        )
+        .unwrap();
+
+        let config = load_config_file(&path).unwrap();
+
+        assert_eq!(
+            config.credentials.git.unwrap().https,
+            Some(RawGitHttpsMode::HostHelperReadOnly)
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn enabled_dotfile_requires_source() {
         let path = config_path("dotfile-requires-source");
         fs::write(

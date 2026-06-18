@@ -1638,7 +1638,7 @@ install_feature_if_missing = false
 version = 1
 
 [credentials.git]
-https = "host-helper"
+https = "host-helper-read-only"
 
 [credentials.github]
 enabled = true
@@ -1650,7 +1650,10 @@ enabled = true
         assert!(!config.credentials.git.enabled);
         assert!(!config.credentials.git.copy_user);
         assert!(config.credentials.git.copy_global_config);
-        assert_eq!(config.credentials.git.https, GitHttpsMode::HostHelper);
+        assert_eq!(
+            config.credentials.git.https,
+            GitHttpsMode::HostHelperReadOnly
+        );
         assert_eq!(config.credentials.git.ssh_agent, SshAgentMode::Required);
         assert!(config.credentials.github.enabled);
         assert_eq!(config.credentials.github.mode, GithubCredentialsMode::Off);

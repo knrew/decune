@@ -594,10 +594,12 @@ ssh_agent = "auto"
 - `enabled`: 既定 true。
 - `copy_user`: host の `git config --global user.name` / `user.email` を container の remote user に設定する。既定 true。
 - `copy_global_config`: `~/.gitconfig` 全体を container にコピーする。既定 false。
-- `https`: `off`, `host-helper`。既定 `host-helper`。
+- `https`: `off`, `host-helper`, `host-helper-read-only`。既定 `host-helper`。
 - `ssh_agent`: `off`, `auto`, `required`。既定 `auto`。
 
 `host-helper` は container 内に `git-credential-decune` を配置し、host daemon 経由で host の `git credential fill/approve/reject` を呼ぶ。helper は container OS/arch 用 artifact であり、host の `decune` binary をそのまま bind mount しない。
+
+`host-helper-read-only` は同じ helper staging/mount を使うが、container からの credential lookup だけを許可する。Git credential `get` は host の `git credential fill` に forwarding し、`store` / `erase` は host の `approve` / `reject` に渡さず success no-op として空出力を返す。untrusted repository では host credential store の mutation を避けるため、`host-helper-read-only` または `off` を推奨する。
 
 ### `[credentials.github]`
 
@@ -834,6 +836,8 @@ non-detach `up` / `rebuild` は lifecycle 後に remote user shell を TTY attac
 
 `[credentials.git].https = "host-helper"` の場合、container 内に `git-credential-decune` を配置し、Git credential helper として設定する。helper は host daemon に versioned JSON request を送り、host の `git credential fill/approve/reject` を実行する。
 
+`[credentials.git].https = "host-helper-read-only"` の場合も container helper protocol は同じである。host daemon が policy を適用し、`get` は `fill` として実行する一方、`store` / `erase` は host credential store に伝播せず success no-op とする。
+
 ### SSH agent
 
 `ssh_agent = "auto"` では host の `SSH_AUTH_SOCK` が Unix socket の場合のみ forwarding を設定する。container env の `SSH_AUTH_SOCK` は `/run/decune/ssh-agent.sock`。`ssh_agent = "required"` で socket が利用できない場合は error。
@@ -904,7 +908,7 @@ Security note:
 - `decune up` は Dockerfile、Compose service build、local/OCI Feature の `install.sh`、Feature/lifecycle command、hook、`userEnvProbe` 対象 shell startup file を実行し得る。
 - devcontainer metadata と Compose file は bind mount、`privileged`、`capAdd`、`securityOpt`、port publish、SSH agent forwarding、Git/GitHub credential forwarding により host や secret への強い到達性を container へ与え得る。
 - GitHub token forwarding を有効にすると、container 内 process は token file にアクセスできる。
-- untrusted repository では `.devcontainer/`、Compose file、local Feature を確認し、必要に応じて `[credentials.git].enabled = false` と `[credentials.github].enabled = false` を設定する。
+- untrusted repository では `.devcontainer/`、Compose file、local Feature を確認し、必要に応じて `[credentials.git].https = "host-helper-read-only"`、`[credentials.git].enabled = false`、`[credentials.github].enabled = false` を設定する。
 
 `decune up` は、意図した設定どおりに動作する security surface については `Notice:` として表示する。設定が無視される、機能が縮退する、または補助処理の失敗から継続する場合は `Warning:` として表示する。
 

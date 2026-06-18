@@ -91,6 +91,7 @@ impl From<RawOnAutoForward> for OnAutoForward {
 pub(crate) enum GitHttpsMode {
     Off,
     HostHelper,
+    HostHelperReadOnly,
 }
 
 impl From<RawGitHttpsMode> for GitHttpsMode {
@@ -98,6 +99,7 @@ impl From<RawGitHttpsMode> for GitHttpsMode {
         match value {
             RawGitHttpsMode::Off => Self::Off,
             RawGitHttpsMode::HostHelper => Self::HostHelper,
+            RawGitHttpsMode::HostHelperReadOnly => Self::HostHelperReadOnly,
         }
     }
 }

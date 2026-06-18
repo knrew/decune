@@ -56,6 +56,10 @@ impl GitCredentialCommand {
             GitCredentialAction::Erase => Self::Reject,
         }
     }
+
+    fn is_mutating(self) -> bool {
+        matches!(self, Self::Approve | Self::Reject)
+    }
 }
 
 pub(crate) trait GitCredentialExecutor: Send + Sync {
@@ -104,11 +108,14 @@ pub(crate) fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<Strin
 pub(crate) fn handle_git_credential_request(
     request: GitCredentialHostRequest,
     executor: &dyn GitCredentialExecutor,
+    mode: GitHttpsMode,
 ) -> Result<String> {
-    executor.run(
-        GitCredentialCommand::from_action(request.action),
-        &request.input,
-    )
+    let command = GitCredentialCommand::from_action(request.action);
+    if mode == GitHttpsMode::HostHelperReadOnly && command.is_mutating() {
+        return Ok(String::new());
+    }
+
+    executor.run(command, &request.input)
 }
 
 pub(crate) fn prepare_git_credential_runtime(
@@ -439,11 +446,15 @@ pub(crate) fn run_git_credential_helper() -> Result<()> {
 }
 
 fn git_host_helper_enabled(credentials: &ResolvedGitCredentials) -> bool {
-    credentials.enabled && credentials.https == GitHttpsMode::HostHelper
+    credentials.enabled
+        && matches!(
+            credentials.https,
+            GitHttpsMode::HostHelper | GitHttpsMode::HostHelperReadOnly
+        )
 }
 
 fn git_credentials_setup_enabled(credentials: &ResolvedGitCredentials) -> bool {
-    credentials.enabled && (credentials.https == GitHttpsMode::HostHelper || credentials.copy_user)
+    credentials.enabled && (git_host_helper_enabled(credentials) || credentials.copy_user)
 }
 
 fn git_user_config_copy_enabled(credentials: &ResolvedGitCredentials) -> bool {
@@ -598,6 +609,7 @@ mod tests {
         fs,
         os::unix::fs::PermissionsExt,
         path::{Path, PathBuf},
+        sync::Mutex,
     };
 
     use decune_container_protocol::GitCredentialAction;
@@ -608,6 +620,28 @@ mod tests {
         config::{resolved::ResolvedConfig, types::GitHttpsMode},
         host::container_tools::ContainerToolPlatform,
     };
+
+    #[derive(Debug)]
+    struct RecordingGitCredentialExecutor {
+        calls: Mutex<Vec<(GitCredentialCommand, String)>>,
+        output: String,
+    }
+
+    impl RecordingGitCredentialExecutor {
+        fn with_output(output: &str) -> Self {
+            Self {
+                calls: Mutex::new(Vec::new()),
+                output: output.to_owned(),
+            }
+        }
+    }
+
+    impl GitCredentialExecutor for RecordingGitCredentialExecutor {
+        fn run(&self, command: GitCredentialCommand, input: &str) -> Result<String> {
+            self.calls.lock().unwrap().push((command, input.to_owned()));
+            Ok(self.output.clone())
+        }
+    }
 
     #[test]
     fn helper_request_json_preserves_git_protocol_input() {
@@ -662,6 +696,102 @@ mod tests {
     }
 
     #[test]
+    fn read_only_handler_get_invokes_host_fill() {
+        let executor =
+            RecordingGitCredentialExecutor::with_output("username=octo\npassword=SECRET\n");
+        let request = GitCredentialHostRequest::new(
+            GitCredentialAction::Get,
+            "protocol=https\nhost=github.com\n\n",
+        );
+
+        let output =
+            handle_git_credential_request(request, &executor, GitHttpsMode::HostHelperReadOnly)
+                .unwrap();
+
+        assert_eq!(output, "username=octo\npassword=SECRET\n");
+        assert_eq!(
+            executor.calls.lock().unwrap().as_slice(),
+            [(
+                GitCredentialCommand::Fill,
+                "protocol=https\nhost=github.com\n\n".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn read_only_handler_store_is_success_noop() {
+        let executor = RecordingGitCredentialExecutor::with_output("");
+        let request = GitCredentialHostRequest::new(
+            GitCredentialAction::Store,
+            "protocol=https\nhost=github.com\nusername=octo\npassword=SECRET\n\n",
+        );
+
+        let output =
+            handle_git_credential_request(request, &executor, GitHttpsMode::HostHelperReadOnly)
+                .unwrap();
+
+        assert_eq!(output, "");
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn read_only_handler_erase_is_success_noop() {
+        let executor = RecordingGitCredentialExecutor::with_output("");
+        let request = GitCredentialHostRequest::new(
+            GitCredentialAction::Erase,
+            "protocol=https\nhost=github.com\nusername=octo\n\n",
+        );
+
+        let output =
+            handle_git_credential_request(request, &executor, GitHttpsMode::HostHelperReadOnly)
+                .unwrap();
+
+        assert_eq!(output, "");
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn host_helper_handler_store_and_erase_invoke_host_mutations() {
+        let executor = RecordingGitCredentialExecutor::with_output("");
+
+        let store_output = handle_git_credential_request(
+            GitCredentialHostRequest::new(
+                GitCredentialAction::Store,
+                "protocol=https\nhost=github.com\nusername=octo\npassword=SECRET\n\n",
+            ),
+            &executor,
+            GitHttpsMode::HostHelper,
+        )
+        .unwrap();
+        let erase_output = handle_git_credential_request(
+            GitCredentialHostRequest::new(
+                GitCredentialAction::Erase,
+                "protocol=https\nhost=github.com\nusername=octo\n\n",
+            ),
+            &executor,
+            GitHttpsMode::HostHelper,
+        )
+        .unwrap();
+
+        assert_eq!(store_output, "");
+        assert_eq!(erase_output, "");
+        assert_eq!(
+            executor.calls.lock().unwrap().as_slice(),
+            [
+                (
+                    GitCredentialCommand::Approve,
+                    "protocol=https\nhost=github.com\nusername=octo\npassword=SECRET\n\n"
+                        .to_owned()
+                ),
+                (
+                    GitCredentialCommand::Reject,
+                    "protocol=https\nhost=github.com\nusername=octo\n\n".to_owned()
+                )
+            ]
+        );
+    }
+
+    #[test]
     fn runtime_stages_container_helper_in_private_runtime_dir() {
         let temp = TempDir::new().unwrap();
         let source_dir = temp.path().join("tools");
@@ -693,6 +823,39 @@ mod tests {
             b"helper"
         );
         assert_eq!(fs::read(&helper_path).unwrap(), b"helper");
+    }
+
+    #[test]
+    fn runtime_stages_container_helper_for_read_only_mode() {
+        let temp = TempDir::new().unwrap();
+        let source_dir = temp.path().join("tools");
+        crate::host::container_tools::write_test_container_tools_bundle(
+            &source_dir,
+            &[crate::host::container_tools::TestContainerToolEntry {
+                tool: ContainerTool::GitCredentialHelper,
+                platform: ContainerToolPlatform::LinuxAmd64,
+                contents: b"helper",
+            }],
+        )
+        .unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::HostHelperReadOnly;
+
+        let runtime = prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
+            &config,
+            &runtime_dir,
+            ContainerToolPlatform::LinuxAmd64,
+            None,
+            Some(vec![source_dir]),
+        )
+        .unwrap();
+
+        assert_eq!(runtime.mounts().len(), 1);
+        assert_eq!(
+            fs::read(runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME)).unwrap(),
+            b"helper"
+        );
     }
 
     #[test]
