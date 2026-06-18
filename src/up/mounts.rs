@@ -256,6 +256,7 @@ pub(super) fn static_mount_variable_context(
         .devcontainer
         .remote_user
         .clone()
+        .or_else(|| config.devcontainer.container_user.clone())
         .unwrap_or_else(|| "root".to_owned());
 
     mount_variable_context(

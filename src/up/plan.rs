@@ -11,6 +11,7 @@ use crate::{
         resolved::{ResolvedConfig, ResolvedDevcontainerSource},
         variables::{
             SensitiveEnvMap, VariableContext, expand_string_map_tracked, expand_variables,
+            references_remote_user_home_variable, references_remote_user_variable,
         },
     },
     devcontainer::{
@@ -299,7 +300,9 @@ pub(super) fn expand_static_plan_fields(
         workspace_validation,
         |workspace_folder| static_mount_variable_context(workspace, workspace_folder, config),
     )?;
-    config.devcontainer.workspace_folder = Some(workspace_location.workspace_folder.clone());
+    if should_store_static_workspace_folder(config)? {
+        config.devcontainer.workspace_folder = Some(workspace_location.workspace_folder.clone());
+    }
     let mount_variables =
         static_mount_variable_context(workspace, &workspace_location.workspace_folder, config);
     let sensitive_build_args = expand_static_devcontainer_fields(config, &mount_variables)?;
@@ -313,6 +316,13 @@ pub(super) fn expand_static_plan_fields(
         build_options,
         sensitive_build_args,
     })
+}
+
+fn should_store_static_workspace_folder(config: &ResolvedConfig) -> Result<bool> {
+    match config.devcontainer.workspace_folder.as_deref() {
+        Some(workspace_folder) => Ok(!references_remote_user_variable(workspace_folder)?),
+        None => Ok(true),
+    }
 }
 
 fn expand_static_user_fields(
@@ -338,6 +348,17 @@ fn expand_static_devcontainer_fields(
     let mut sensitive_build_args = SensitiveEnvMap::default();
 
     if let Some(ResolvedDevcontainerSource::Dockerfile(build)) = &mut config.devcontainer.source {
+        reject_runtime_user_home_in_build_value(build.args.values(), "build.args")?;
+        reject_runtime_user_home_in_build_value(build.target.iter(), "build.target")?;
+        reject_runtime_user_home_in_build_value(build.cache_from.iter(), "build.cacheFrom")?;
+        let static_remote_user_available = config.devcontainer.remote_user.is_some()
+            || config.devcontainer.container_user.is_some();
+        if !static_remote_user_available {
+            reject_remote_user_in_build_value(build.args.values(), "build.args")?;
+            reject_remote_user_in_build_value(build.target.iter(), "build.target")?;
+            reject_remote_user_in_build_value(build.cache_from.iter(), "build.cacheFrom")?;
+        }
+
         let expanded_args = expand_string_map_tracked(&build.args, variables)
             .context("Failed to expand build.args")?;
         build.args = expanded_args.values;
@@ -353,15 +374,82 @@ fn expand_static_devcontainer_fields(
         }
     }
 
+    expand_runtime_independent_string_values(
+        &mut config.devcontainer.cap_add,
+        variables,
+        "runArgs value",
+    )?;
+    expand_runtime_independent_string_values(
+        &mut config.devcontainer.security_opt,
+        variables,
+        "runArgs value",
+    )?;
+    expand_runtime_independent_run_args(&mut config.devcontainer.run_args, variables)?;
+
+    Ok(sensitive_build_args)
+}
+
+pub(super) fn expand_runtime_devcontainer_fields(
+    config: &mut ResolvedConfig,
+    variables: &VariableContext,
+) -> Result<()> {
     expand_string_values(&mut config.devcontainer.cap_add, variables, "runArgs value")?;
     expand_string_values(
         &mut config.devcontainer.security_opt,
         variables,
         "runArgs value",
     )?;
-    expand_run_args(&mut config.devcontainer.run_args, variables)?;
+    expand_run_args(&mut config.devcontainer.run_args, variables)
+}
 
-    Ok(sensitive_build_args)
+fn reject_runtime_user_home_in_build_value<'a>(
+    values: impl IntoIterator<Item = &'a String>,
+    field: &str,
+) -> Result<()> {
+    for value in values {
+        if references_remote_user_home_variable(value)? {
+            bail!(
+                "{field} must not reference ${{remoteUserHome}} because it is resolved from the runtime container passwd database after the image is built"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn reject_remote_user_in_build_value<'a>(
+    values: impl IntoIterator<Item = &'a String>,
+    field: &str,
+) -> Result<()> {
+    for value in values {
+        if references_remote_user_variable(value)? {
+            bail!(
+                "{field} must not reference ${{remoteUser}} unless remoteUser or containerUser is configured before the Dockerfile build"
+            );
+        }
+    }
+
+    Ok(())
+}
+
+fn expand_runtime_independent_run_args(
+    run_args: &mut [LayerRunArg],
+    variables: &VariableContext,
+) -> Result<()> {
+    for run_arg in run_args {
+        match run_arg {
+            LayerRunArg::AddHost(value)
+            | LayerRunArg::Dns(value)
+            | LayerRunArg::DnsSearch(value) => {
+                if !references_remote_user_variable(value)? {
+                    *value = expand_variables(value, variables)
+                        .context("Failed to expand runArgs value")?;
+                }
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn expand_run_args(run_args: &mut [LayerRunArg], variables: &VariableContext) -> Result<()> {
@@ -373,6 +461,21 @@ fn expand_run_args(run_args: &mut [LayerRunArg], variables: &VariableContext) ->
                 *value =
                     expand_variables(value, variables).context("Failed to expand runArgs value")?;
             }
+        }
+    }
+
+    Ok(())
+}
+
+fn expand_runtime_independent_string_values(
+    values: &mut [String],
+    variables: &VariableContext,
+    field: &str,
+) -> Result<()> {
+    for value in values {
+        if !references_remote_user_variable(value)? {
+            *value = expand_variables(value, variables)
+                .with_context(|| format!("Failed to expand {field}"))?;
         }
     }
 
@@ -821,6 +924,146 @@ mod tests {
                 LayerRunArg::Dns("dns-User Run Args".to_owned()),
                 LayerRunArg::DnsSearch("User Run Args.test".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn build_up_plan_keeps_runtime_user_dependent_fields_for_runtime_expansion() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Runtime User Fields");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "image": "alpine:3.20",
+              "workspaceFolder": "${remoteUserHome}/src",
+              "runArgs": [
+                "--cap-add=SYS_${remoteUser}",
+                "--security-opt", "label=${remoteUser}",
+                "--add-host", "api.${remoteUser}:127.0.0.1",
+                "--dns", "${remoteUser}",
+                "--dns-search=${remoteUser}.test"
+              ]
+            }
+            "#,
+        );
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.workspace_folder, "/root/src");
+        assert_eq!(
+            plan.config.devcontainer.workspace_folder.as_deref(),
+            Some("${remoteUserHome}/src")
+        );
+        assert_eq!(plan.config.devcontainer.cap_add, vec!["SYS_${remoteUser}"]);
+        assert_eq!(
+            plan.config.devcontainer.security_opt,
+            vec!["label=${remoteUser}"]
+        );
+        assert_eq!(
+            plan.config.devcontainer.run_args,
+            vec![
+                LayerRunArg::AddHost("api.${remoteUser}:127.0.0.1".to_owned()),
+                LayerRunArg::Dns("${remoteUser}".to_owned()),
+                LayerRunArg::DnsSearch("${remoteUser}.test".to_owned()),
+            ]
+        );
+    }
+
+    #[test]
+    fn build_up_plan_rejects_remote_user_home_in_build_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Build Remote User Home");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile",
+                "args": {
+                  "REMOTE_HOME": "${remoteUserHome}"
+                }
+              }
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("build.args must not reference ${remoteUserHome}")
+        );
+    }
+
+    #[test]
+    fn build_up_plan_rejects_remote_user_in_build_fields_when_not_static() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Build Remote User");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile",
+                "args": {
+                  "REMOTE_USER": "${remoteUser}"
+                }
+              }
+            }
+            "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("build.args must not reference ${remoteUser}")
+        );
+    }
+
+    #[test]
+    fn build_up_plan_expands_remote_user_in_build_fields_from_container_user() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Build Container User");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile",
+                "args": {
+                  "REMOTE_USER": "${remoteUser}"
+                }
+              },
+              "containerUser": "node"
+            }
+            "#,
+        );
+        fs::write(
+            workspace.root().join(".devcontainer").join("Dockerfile"),
+            "FROM alpine:3.20\n",
+        )
+        .unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(
+            plan.build_options
+                .build_args
+                .get("REMOTE_USER")
+                .map(String::as_str),
+            Some("node")
         );
     }
 

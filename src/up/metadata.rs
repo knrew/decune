@@ -54,7 +54,8 @@ use crate::{
         plan::{
             add_internal_hash_versions, base_image_source,
             build_up_plan_with_forwarding_resolution,
-            build_up_plan_with_image_metadata_and_forwarding_resolution, expand_static_plan_fields,
+            build_up_plan_with_image_metadata_and_forwarding_resolution,
+            expand_runtime_devcontainer_fields, expand_static_plan_fields,
             feature_lock_hash_inputs, final_image_source,
         },
         start::wait_for_container_exit_code,
@@ -439,6 +440,8 @@ async fn finalize_mounts_and_resources_for_plan(
         remote_user_name,
         remote_user_home,
     );
+    plan.config.devcontainer.workspace_folder = Some(workspace_location.workspace_folder.clone());
+    expand_runtime_devcontainer_fields(&mut plan.config, &mount_variables)?;
     let expanded_container_env =
         expand_container_env_tracked(&plan.config.devcontainer.container_env, &mount_variables)?;
     plan.config.devcontainer.container_env = expanded_container_env.values;
