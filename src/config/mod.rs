@@ -4,6 +4,7 @@ pub(crate) mod layer;
 pub(crate) mod load;
 pub(crate) mod merge;
 pub(crate) mod path;
+pub(crate) mod ports;
 pub(crate) mod resolved;
 pub(crate) mod schema;
 pub(crate) mod types;

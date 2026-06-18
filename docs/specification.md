@@ -163,7 +163,7 @@ decune up [OPTIONS] [WORKSPACE]
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
 - `--pull`: base image または Compose service image を pull してから build/create する。Compose mode では config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
-- `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000:3000`, `127.0.0.1:8080:3000`。複数指定可。Compose mode で service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
+- `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。複数指定可。Compose mode で service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
 
 `--detach` では `up` process 終了時に host daemon も停止するため、manual/automatic forwarding と Git HTTPS host-helper は維持されない。detached container で外部公開が必要な port は、image/Dockerfile mode では `appPort`、Compose mode では Compose file の `ports` を使う。`--detach` と CLI `-p` / `--port` の併用は error とする。設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視する。
 
@@ -851,6 +851,8 @@ Compose mode では GitHub token file mount は primary service にのみ追加�
 `forwardPorts`、decune `[[ports]]`、CLI `-p` は forwarding であり Docker publish ではない。host 側 listen address の既定は `127.0.0.1`。container 内で `127.0.0.1:<container port>` にだけ listen している process にも届くよう、container-side `decune-forward-agent` 経由で proxy する。
 
 `appPort` は image/Dockerfile mode の Docker publish であり container create 時に決まる。host IP が指定されない場合、Docker の既定で全 interface に公開される可能性があるため warning 対象とする。
+
+CLI `-p` と Dev Container `appPort` の host IP は IPv4 / hostname / bracketed IPv6 を受け付ける。IPv6 host IP は `[::1]:8080:3000` のように bracketed form で指定し、内部 model では bracket なしで保持する。unbracketed IPv6 は colon 区切りと曖昧なため error とする。`forwardPorts` string の `[::1]:3000` は host IP `::1` への forwarding として扱い、`[::1]:8080:3000` のような host-port mapping は `forwardPorts` では unsupported error とする。
 
 Compose mode では Docker publish は Compose file の `ports` に委譲する。`appPort` は unsupported error とする。
 

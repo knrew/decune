@@ -5,6 +5,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::config::{
     layer::{ConfigLayer, LayerAutoPorts, LayerPort},
+    ports::{PortSpecSegments, split_port_spec},
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
 use crate::down::{CleanOptions, DownOptions};
@@ -261,34 +262,45 @@ fn cli_config_layer(ports: Vec<ManualPort>, no_auto_forward: bool) -> ConfigLaye
 
 fn parse_manual_port(value: &str) -> std::result::Result<ManualPort, String> {
     let (port, protocol) = parse_port_protocol(value)?;
-    let segments = port.split(':').collect::<Vec<_>>();
 
-    match segments.as_slice() {
-        [container] => Ok(ManualPort {
+    match split_port_spec(port)? {
+        PortSpecSegments::One { container } => Ok(ManualPort {
             container: parse_u16_port(container, "container port", value)?,
             host: None,
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
             protocol,
         }),
-        [host, container] if is_numeric_port_candidate(host) => Ok(ManualPort {
+        PortSpecSegments::Two {
+            left: host,
+            container,
+            bracketed_host_ip: false,
+        } if is_numeric_port_candidate(host) => Ok(ManualPort {
             container: parse_u16_port(container, "container port", value)?,
             host: Some(parse_u16_port(host, "host port", value)?),
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
             protocol,
         }),
-        [host_ip, container] => Ok(ManualPort {
+        PortSpecSegments::Two {
+            left: host_ip,
+            container,
+            ..
+        } => Ok(ManualPort {
             container: parse_u16_port(container, "container port", value)?,
             host: None,
             host_ip: normalize_host_ip(host_ip)?,
             protocol,
         }),
-        [host_ip, host, container] => Ok(ManualPort {
+        PortSpecSegments::Three {
+            host_ip,
+            host,
+            container,
+            ..
+        } => Ok(ManualPort {
             container: parse_u16_port(container, "container port", value)?,
             host: Some(parse_u16_port(host, "host port", value)?),
             host_ip: normalize_host_ip(host_ip)?,
             protocol,
         }),
-        _ => Err(format!("invalid manual port specification: {value}")),
     }
 }
 
@@ -437,6 +449,36 @@ mod tests {
     }
 
     #[test]
+    fn parses_manual_port_ipv6_forms() {
+        let cli = Cli::parse_from([
+            "decune",
+            "up",
+            "--port",
+            "[::1]:8080:3000",
+            "--port",
+            "[::1]:3000",
+            "--port",
+            "[2001:db8::1]:8080:3000/tcp",
+        ]);
+
+        let Commands::Up(args) = cli.command else {
+            panic!("expected up command");
+        };
+
+        assert_eq!(args.ports.len(), 3);
+        assert_eq!(args.ports[0].container, 3000);
+        assert_eq!(args.ports[0].host, Some(8080));
+        assert_eq!(args.ports[0].host_ip, "::1");
+        assert_eq!(args.ports[1].container, 3000);
+        assert_eq!(args.ports[1].host, None);
+        assert_eq!(args.ports[1].host_ip, "::1");
+        assert_eq!(args.ports[2].container, 3000);
+        assert_eq!(args.ports[2].host, Some(8080));
+        assert_eq!(args.ports[2].host_ip, "2001:db8::1");
+        assert_eq!(args.ports[2].protocol, PortProtocol::Tcp);
+    }
+
+    #[test]
     fn parses_rebuild_options() {
         let cli = Cli::parse_from([
             "decune",
@@ -555,6 +597,24 @@ mod tests {
             Cli::try_parse_from(["decune", "up", "--port", "127.0.0.1:abc:3000"]).unwrap_err();
 
         assert!(error.to_string().contains("invalid host port"));
+    }
+
+    #[test]
+    fn malformed_ipv6_manual_ports_are_rejected() {
+        for value in [
+            "::1:8080:3000",
+            "[::1:8080:3000",
+            "[]:3000",
+            "[::1]",
+            "[::1]:8080:3000:extra",
+            "[::1]:abc:3000",
+        ] {
+            let error = Cli::try_parse_from(["decune", "up", "--port", value]).unwrap_err();
+            assert!(
+                error.to_string().contains("port") || error.to_string().contains("IPv6"),
+                "{value}: {error}"
+            );
+        }
     }
 
     #[test]
