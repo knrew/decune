@@ -10,6 +10,18 @@ pub(crate) fn stdin_is_tty() -> bool {
     }
 }
 
+pub(crate) fn stderr_is_tty() -> bool {
+    #[cfg(unix)]
+    {
+        is_tty(libc::STDERR_FILENO)
+    }
+
+    #[cfg(not(unix))]
+    {
+        false
+    }
+}
+
 #[cfg(unix)]
 fn is_tty(fd: i32) -> bool {
     // SAFETY: isatty only reads the file descriptor, and failures are returned as 0.

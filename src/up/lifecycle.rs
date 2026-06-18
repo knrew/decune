@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use anyhow::{Context, Result};
 
 use crate::{
@@ -11,7 +13,7 @@ use crate::{
     up::{exec_target::resolve_up_exec_target, start::StartedUpContainer},
 };
 
-pub(in crate::up) fn report_up_success(started: &StartedUpContainer) {
+pub(in crate::up) fn report_up_success(started: &StartedUpContainer, elapsed: Duration) {
     let name = &started.outcome.container_name;
     let message = match started.lifecycle_path {
         crate::devcontainer::lifecycle::LifecycleRunPath::New => {
@@ -25,7 +27,7 @@ pub(in crate::up) fn report_up_success(started: &StartedUpContainer) {
         }
     };
 
-    ui::done(&message);
+    ui::finished(&message, elapsed);
 }
 
 pub(in crate::up) async fn prepare_up_lifecycle(

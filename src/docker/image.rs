@@ -349,16 +349,10 @@ fn metadata_value_to_layer(
 }
 
 async fn pull_image(client: &DockerClient, image: &str) -> Result<()> {
-    ui::info(&format!("Pulling Docker image: {image}"));
-
+    let spinner = ui::spinner(&format!("Pulling Docker image: {image}"));
     let output = client.cli().pull(image).await?;
-    for line in String::from_utf8_lossy(&output.stdout).lines() {
-        if !line.trim().is_empty() {
-            ui::info(line.trim());
-        }
-    }
-
-    ui::done(&format!("Pulled Docker image: {image}"));
+    drop(output);
+    spinner.finish(&format!("Pulled Docker image: {image}"));
     Ok(())
 }
 

@@ -72,6 +72,7 @@ use uid_gid::{uid_gid_sync_base_image, uid_gid_sync_warning};
 const SHUTDOWN_STOP_TIMEOUT_SECONDS: i32 = 10;
 
 pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
+    let start_time = std::time::Instant::now();
     let started = Box::pin(ensure_container_started(
         options,
         ForwardingResolution::IgnoreDetached,
@@ -83,12 +84,13 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
         let lifecycle = prepare_up_lifecycle(&started).await?;
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
     }
-    report_up_success(&started);
+    report_up_success(&started, start_time.elapsed());
 
     Ok(started.outcome)
 }
 
 pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
+    let start_time = std::time::Instant::now();
     let started = Box::pin(ensure_container_started(
         options,
         ForwardingResolution::Resolve,
@@ -100,7 +102,7 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     let forwarding = start_forwarding_for_up(&started).await?;
     let attach_result = async {
         run_attach_lifecycle_for_up(&lifecycle).await?;
-        report_up_success(&started);
+        report_up_success(&started, start_time.elapsed());
 
         attach_shell(
             &started.client,

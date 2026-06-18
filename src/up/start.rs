@@ -1436,6 +1436,7 @@ async fn create_and_start_container_inner(
         user: Some(container_user),
         ..spec
     };
+    ui::status("Creating", "dev container");
     let container_id = create_container(client, &spec).await?;
     if let Err(state_error) = persist_initial_container_state(workspace, plan, &container_id) {
         let cleanup = remove_container(client, &plan.resources.container_name, true, true).await;
@@ -1450,6 +1451,7 @@ async fn create_and_start_container_inner(
             ))),
         };
     }
+    ui::status("Starting", "dev container");
     start_new_container(
         client,
         workspace,
