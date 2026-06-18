@@ -8,7 +8,7 @@ use crate::{
         run_attach_lifecycle, run_container_start_lifecycle,
     },
     docker::user::resolve_remote_user,
-    host::daemon::{HostDaemon, HostDaemonStartError, host_daemon_metadata_matches},
+    host::daemon::{HostDaemon, HostDaemonStartError, ensure_host_daemon_access_for_remote_user},
     ui,
     up::{exec_target::resolve_up_exec_target, start::StartedUpContainer},
 };
@@ -90,10 +90,17 @@ async fn start_host_daemon_for_remote_user(
             Ok(Some(daemon))
         }
         Err(error) => {
-            if HostDaemonStartError::is_socket_already_in_use(&error)
-                && host_daemon_metadata_matches(runtime_dir, remote_uid)
-            {
-                return Ok(None);
+            if HostDaemonStartError::is_socket_already_in_use(&error) {
+                match ensure_host_daemon_access_for_remote_user(runtime_dir, remote_uid, remote_gid)
+                {
+                    Ok(true) => return Ok(None),
+                    Ok(false) => {}
+                    Err(access_error) => {
+                        return Err(access_error).with_context(|| {
+                            format!("Failed to start host daemon for workspace: {workspace_id}")
+                        });
+                    }
+                }
             }
             Err(error).with_context(|| {
                 format!("Failed to start host daemon for workspace: {workspace_id}")
@@ -166,6 +173,80 @@ mod tests {
 
             assert!(result.unwrap().is_none());
             assert_eq!(mode(&runtime_dir), 0o711);
+
+            existing.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn host_daemon_reuse_expands_access_when_remote_gid_changes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        runtime.block_on(async {
+            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+            let group_access_gid = current_gid();
+            let world_access_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing =
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, group_access_gid)
+                    .await
+                    .unwrap();
+
+            assert_eq!(mode(&runtime_dir), 0o710);
+            assert_eq!(mode(&runtime_dir.join("host-daemon.sock")), 0o660);
+
+            let result = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                remote_uid,
+                world_access_gid,
+            )
+            .await;
+
+            assert!(result.unwrap().is_none());
+            assert_eq!(mode(&runtime_dir), 0o711);
+            assert_eq!(mode(&runtime_dir.join("host-daemon.sock")), 0o666);
+
+            existing.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn host_daemon_reuse_does_not_narrow_existing_access() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        runtime.block_on(async {
+            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+            let world_access_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+            let group_access_gid = current_gid();
+            let existing =
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, world_access_gid)
+                    .await
+                    .unwrap();
+
+            assert_eq!(mode(&runtime_dir), 0o711);
+            assert_eq!(mode(&runtime_dir.join("host-daemon.sock")), 0o666);
+
+            let result = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                remote_uid,
+                group_access_gid,
+            )
+            .await;
+
+            assert!(result.unwrap().is_none());
+            assert_eq!(mode(&runtime_dir), 0o711);
+            assert_eq!(mode(&runtime_dir.join("host-daemon.sock")), 0o666);
 
             existing.stop().await.unwrap();
         });

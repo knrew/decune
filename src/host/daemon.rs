@@ -60,6 +60,13 @@ impl HostDaemonAccess {
             }
         }
     }
+
+    fn expanded_for(self, required: Self) -> Self {
+        Self {
+            runtime_dir_mode: self.runtime_dir_mode | required.runtime_dir_mode,
+            socket_mode: self.socket_mode | required.socket_mode,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -102,8 +109,20 @@ impl Error for HostDaemonStartError {}
 struct HostDaemonMetadata {
     protocol_version: u16,
     allowed_peer_uid: u32,
+    remote_gid: u32,
+    runtime_dir_mode: u32,
+    socket_mode: u32,
     socket_dev: u64,
     socket_ino: u64,
+}
+
+impl HostDaemonMetadata {
+    fn access(&self) -> HostDaemonAccess {
+        HostDaemonAccess {
+            runtime_dir_mode: self.runtime_dir_mode,
+            socket_mode: self.socket_mode,
+        }
+    }
 }
 
 impl HostDaemon {
@@ -122,6 +141,7 @@ impl HostDaemon {
             runtime_dir,
             HostDaemonAccess::for_remote_user(remote_uid, remote_gid),
             remote_uid,
+            remote_gid,
             Arc::new(SystemGitCredentialExecutor),
         )
         .await
@@ -136,6 +156,7 @@ impl HostDaemon {
             runtime_dir,
             HostDaemonAccess::private(),
             current_uid(),
+            current_gid(),
             git_credentials,
         )
         .await
@@ -145,6 +166,7 @@ impl HostDaemon {
         runtime_dir: impl AsRef<Path>,
         access: HostDaemonAccess,
         allowed_peer_uid: u32,
+        remote_gid: u32,
         git_credentials: Arc<dyn GitCredentialExecutor>,
     ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
@@ -160,12 +182,17 @@ impl HostDaemon {
                 )
             })?;
         let metadata_path = runtime_dir.join(HOST_DAEMON_METADATA_NAME);
-        write_host_daemon_metadata(&metadata_path, &socket_path, allowed_peer_uid).inspect_err(
-            |_| {
-                cleanup_host_daemon_metadata_file(&metadata_path);
-                cleanup_host_daemon_socket_file(&socket_path);
-            },
-        )?;
+        write_host_daemon_metadata(
+            &metadata_path,
+            &socket_path,
+            allowed_peer_uid,
+            remote_gid,
+            access,
+        )
+        .inspect_err(|_| {
+            cleanup_host_daemon_metadata_file(&metadata_path);
+            cleanup_host_daemon_socket_file(&socket_path);
+        })?;
 
         let task = tokio::spawn(run_host_daemon(listener, allowed_peer_uid, git_credentials));
 
@@ -258,6 +285,8 @@ fn write_host_daemon_metadata(
     metadata_path: &Path,
     socket_path: &Path,
     allowed_peer_uid: u32,
+    remote_gid: u32,
+    access: HostDaemonAccess,
 ) -> Result<()> {
     let socket_metadata = fs::symlink_metadata(socket_path).with_context(|| {
         format!(
@@ -268,6 +297,9 @@ fn write_host_daemon_metadata(
     let metadata = HostDaemonMetadata {
         protocol_version: crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION,
         allowed_peer_uid,
+        remote_gid,
+        runtime_dir_mode: access.runtime_dir_mode,
+        socket_mode: access.socket_mode,
         socket_dev: socket_metadata.dev(),
         socket_ino: socket_metadata.ino(),
     };
@@ -287,29 +319,51 @@ fn write_host_daemon_metadata(
     })
 }
 
-pub(crate) fn host_daemon_metadata_matches(runtime_dir: &Path, allowed_peer_uid: u32) -> bool {
+pub(crate) fn ensure_host_daemon_access_for_remote_user(
+    runtime_dir: &Path,
+    remote_uid: u32,
+    remote_gid: u32,
+) -> Result<bool> {
     let metadata_path = runtime_dir.join(HOST_DAEMON_METADATA_NAME);
     let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
     let Ok(socket_metadata) = fs::symlink_metadata(&socket_path) else {
-        return false;
+        return Ok(false);
     };
     if !socket_metadata.file_type().is_socket() {
-        return false;
+        return Ok(false);
     }
     let Ok(content) = fs::read(&metadata_path) else {
-        return false;
+        return Ok(false);
     };
     let Ok(metadata) = serde_json::from_slice::<HostDaemonMetadata>(&content) else {
-        return false;
+        return Ok(false);
     };
 
-    metadata
-        == HostDaemonMetadata {
-            protocol_version: crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION,
-            allowed_peer_uid,
-            socket_dev: socket_metadata.dev(),
-            socket_ino: socket_metadata.ino(),
-        }
+    if metadata.protocol_version != crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION
+        || metadata.allowed_peer_uid != remote_uid
+        || metadata.socket_dev != socket_metadata.dev()
+        || metadata.socket_ino != socket_metadata.ino()
+    {
+        return Ok(false);
+    }
+
+    let existing_access = metadata.access();
+    let access =
+        existing_access.expanded_for(HostDaemonAccess::for_remote_user(remote_uid, remote_gid));
+    set_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")?;
+    validate_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")?;
+    fs::set_permissions(&socket_path, fs::Permissions::from_mode(access.socket_mode))
+        .with_context(|| {
+            format!(
+                "Failed to set host daemon socket permissions: {}",
+                socket_path.display()
+            )
+        })?;
+    if metadata.remote_gid != remote_gid || existing_access != access {
+        write_host_daemon_metadata(&metadata_path, &socket_path, remote_uid, remote_gid, access)?;
+    }
+
+    Ok(true)
 }
 
 async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
