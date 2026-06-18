@@ -264,8 +264,16 @@ pub(crate) fn write_state_file(state_dir: impl AsRef<Path>, state: &WorkspaceSta
     Ok(())
 }
 
+// Docker Compose `ps --format json` may return truncated (12-char) container IDs while
+// `docker container inspect` always returns the full 64-char ID. Compare as prefixes so
+// a short ID stored in state.toml matches the full ID from inspect.
+pub(crate) fn container_ids_match(a: &str, b: &str) -> bool {
+    !a.is_empty() && !b.is_empty() && (a.starts_with(b) || b.starts_with(a))
+}
+
 fn state_matches_container(state: &WorkspaceState, container: &StateContainerSnapshot) -> bool {
-    state.container_id == container.container_id && state.config_hash == container.config_hash
+    container_ids_match(&state.container_id, &container.container_id)
+        && state.config_hash == container.config_hash
 }
 
 fn temporary_state_file_path(state_dir: &Path) -> PathBuf {
