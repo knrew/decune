@@ -237,7 +237,7 @@ devcontainer を作成または起動し、remote user の shell に接続しま
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
 - `--pull`: base image または Compose service image を pull してから build/create する。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
-- `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000:3000`, `127.0.0.1:8080:3000`。
+- `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。
 
 `--detach` では host daemon も `up` 終了時に止まるため、manual/automatic forwarding と Git HTTPS host-helper は維持されません。detached container で外部公開したい port は、image/Dockerfile mode では `appPort`、Compose mode では Compose file の `ports` を使ってください。`--detach -p` はエラーになります。
 
@@ -355,6 +355,8 @@ shell = true
 `forwardPorts`、decune TOML の `[[ports]]`、CLI の `-p` は decune forwarding です。host 側の既定 listen address は `127.0.0.1` で、container 内の `127.0.0.1:<port>` にだけ listen している開発 server にも届くよう、container-side agent 経由で転送します。
 
 `appPort` は image/Dockerfile mode の Docker publish です。container 作成時に決まるため、既存 container への後付けはできません。host IP を省略した publish は Docker の既定により localhost 限定にならない可能性があります。localhost 限定が必要な場合は `forwardPorts`、`[[ports]]`、または `decune up -p` を使ってください。
+
+CLI `-p` と `appPort` の IPv6 host IP は `[::1]:8080:3000` のような bracketed form で指定します。unbracketed IPv6 は曖昧なためエラーになります。
 
 Compose mode の publish は Compose file の `ports` に委譲します。Compose sidecar service へ forwarding する場合は、`forwardPorts` の `"service:port"` 形式、または decune TOML の `[[ports]].service` を使います。
 

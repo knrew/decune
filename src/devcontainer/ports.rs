@@ -5,6 +5,7 @@ use serde::Deserialize;
 
 use crate::config::{
     layer::{LayerForwardPort, LayerPort, LayerPortAttributes, LayerPublishPort},
+    ports::{PortSpecSegments, split_port_spec},
     types::{DEFAULT_PORT_HOST_IP, OnAutoForward as ConfigOnAutoForward, PortProtocol},
 };
 
@@ -160,76 +161,113 @@ fn parse_publish_port(port: &DevcontainerPort) -> Result<ParsedPort> {
 
 fn parse_forwarding_port_string(original: &str) -> Result<ParsedPort> {
     let (value, protocol) = parse_forwarding_port_protocol(original)?;
-    let segments = value.split(':').collect::<Vec<_>>();
 
-    match segments.as_slice() {
-        [host, container] if is_local_forwarding_host(host) => Ok(ParsedPort {
+    match split_port_spec(value)
+        .map_err(|error| anyhow!("Invalid devcontainer forwardPorts entry: {original}. {error}"))?
+    {
+        PortSpecSegments::Two {
+            left: host_ip,
+            container,
+            bracketed_host_ip: true,
+        } => Ok(ParsedPort {
+            service: None,
+            container: parse_u16_port(container, "container port")?,
+            host: None,
+            host_ip: Some(normalize_host_ip(host_ip)?),
+            protocol,
+        }),
+        PortSpecSegments::Two {
+            left: host,
+            container,
+            bracketed_host_ip: false,
+        } if is_local_forwarding_host(host) => Ok(ParsedPort {
             service: None,
             container: parse_u16_port(container, "container port")?,
             host: None,
             host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
             protocol,
         }),
-        [host, container] if is_numeric_port_candidate(host) => {
+        PortSpecSegments::Two {
+            left: host,
+            container,
+            bracketed_host_ip: false,
+        } if is_numeric_port_candidate(host) => {
             let _ = parse_u16_port(container, "container port")?;
             Err(anyhow!(
                 "Invalid devcontainer forwardPorts entry: {original}. Use a numeric JSON value for a current-container port; host-port mappings are not supported in forwardPorts"
             ))
         }
-        [service, container] => Ok(ParsedPort {
+        PortSpecSegments::Two {
+            left: service,
+            container,
+            bracketed_host_ip: false,
+        } => Ok(ParsedPort {
             service: Some(parse_compose_service_name(service, original)?),
             container: parse_u16_port(container, "container port")?,
             host: None,
             host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
             protocol,
         }),
-        [container] => Ok(ParsedPort {
+        PortSpecSegments::One { container } => Ok(ParsedPort {
             service: None,
             container: parse_u16_port(container, "container port")?,
             host: None,
             host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
             protocol,
         }),
-        _ => Err(anyhow!(
-            "Invalid devcontainer forwardPorts entry: {original}"
+        PortSpecSegments::Three { .. } => Err(anyhow!(
+            "Invalid devcontainer forwardPorts entry: {original}. host-port mappings are not supported in forwardPorts"
         )),
     }
 }
 
 fn parse_publish_port_string(value: &str) -> Result<ParsedPort> {
     let (value, protocol) = parse_publish_port_protocol(value)?;
-    let segments = value.split(':').collect::<Vec<_>>();
 
-    match segments.as_slice() {
-        [container] => Ok(ParsedPort {
+    match split_port_spec(value)
+        .map_err(|error| anyhow!("Invalid devcontainer port specification: {value}. {error}"))?
+    {
+        PortSpecSegments::One { container } => Ok(ParsedPort {
             service: None,
             container: parse_u16_port(container, "container port")?,
             host: None,
             host_ip: None,
             protocol,
         }),
-        [left, container] if is_numeric_port_candidate(left) => Ok(ParsedPort {
+        PortSpecSegments::Two {
+            left,
+            container,
+            bracketed_host_ip: false,
+        } if is_numeric_port_candidate(left) => Ok(ParsedPort {
             service: None,
             container: parse_u16_port(container, "container port")?,
             host: Some(parse_u16_port(left, "host port")?),
             host_ip: None,
             protocol,
         }),
-        [host_ip, container] => Ok(ParsedPort {
+        PortSpecSegments::Two {
+            left: host_ip,
+            container,
+            ..
+        } => Ok(ParsedPort {
             service: None,
             container: parse_u16_port(container, "container port")?,
             host: None,
             host_ip: Some(normalize_host_ip(host_ip)?),
             protocol,
         }),
-        [host_ip, host, container] => Ok(ParsedPort {
+        PortSpecSegments::Three {
+            host_ip,
+            host,
+            container,
+            ..
+        } => Ok(ParsedPort {
             service: None,
             container: parse_u16_port(container, "container port")?,
             host: Some(parse_u16_port(host, "host port")?),
             host_ip: Some(normalize_host_ip(host_ip)?),
             protocol,
         }),
-        _ => Err(anyhow!("Invalid devcontainer port specification: {value}")),
     }
 }
 
@@ -409,6 +447,20 @@ mod tests {
     }
 
     #[test]
+    fn bracketed_ipv6_forward_port_sets_host_ip() {
+        let port = forwarding_port_to_layer(
+            &DevcontainerPort::String("[::1]:5432".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap();
+
+        assert_eq!(port.port.service, None);
+        assert_eq!(port.port.container, 5432);
+        assert_eq!(port.port.host, None);
+        assert_eq!(port.port.host_ip, "::1");
+    }
+
+    #[test]
     fn three_segment_forward_port_mapping_is_rejected() {
         let error = forwarding_port_to_layer(
             &DevcontainerPort::String("127.0.0.1:5433:5432".to_owned()),
@@ -420,6 +472,21 @@ mod tests {
             error
                 .to_string()
                 .contains("Invalid devcontainer forwardPorts entry")
+        );
+    }
+
+    #[test]
+    fn bracketed_ipv6_forward_port_mapping_is_rejected() {
+        let error = forwarding_port_to_layer(
+            &DevcontainerPort::String("[::1]:5433:5432".to_owned()),
+            &empty_attributes(),
+        )
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("host-port mappings are not supported")
         );
     }
 
@@ -477,6 +544,84 @@ mod tests {
                 protocol: PortProtocol::Udp,
             }
         );
+    }
+
+    #[test]
+    fn app_port_accepts_bracketed_ipv6_publish_forms() {
+        let host_and_container =
+            publish_port_to_layer(&DevcontainerPort::String("[::1]:8080:3000".to_owned())).unwrap();
+        let container_only =
+            publish_port_to_layer(&DevcontainerPort::String("[::1]:3000".to_owned())).unwrap();
+        let with_protocol = publish_port_to_layer(&DevcontainerPort::String(
+            "[2001:db8::1]:8080:3000/tcp".to_owned(),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            host_and_container,
+            LayerPublishPort {
+                container: 3000,
+                host: Some(8080),
+                host_ip: Some("::1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }
+        );
+        assert_eq!(
+            container_only,
+            LayerPublishPort {
+                container: 3000,
+                host: None,
+                host_ip: Some("::1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }
+        );
+        assert_eq!(
+            with_protocol,
+            LayerPublishPort {
+                container: 3000,
+                host: Some(8080),
+                host_ip: Some("2001:db8::1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }
+        );
+    }
+
+    #[test]
+    fn app_port_preserves_ipv4_localhost_and_numeric_host_forms() {
+        let ipv4 =
+            publish_port_to_layer(&DevcontainerPort::String("127.0.0.1:8080:3000".to_owned()))
+                .unwrap();
+        let localhost =
+            publish_port_to_layer(&DevcontainerPort::String("localhost:3000".to_owned())).unwrap();
+        let numeric_host =
+            publish_port_to_layer(&DevcontainerPort::String("8080:3000".to_owned())).unwrap();
+
+        assert_eq!(ipv4.host_ip.as_deref(), Some(DEFAULT_PORT_HOST_IP));
+        assert_eq!(ipv4.host, Some(8080));
+        assert_eq!(ipv4.container, 3000);
+        assert_eq!(localhost.host_ip.as_deref(), Some(DEFAULT_PORT_HOST_IP));
+        assert_eq!(localhost.host, None);
+        assert_eq!(localhost.container, 3000);
+        assert_eq!(numeric_host.host_ip, None);
+        assert_eq!(numeric_host.host, Some(8080));
+        assert_eq!(numeric_host.container, 3000);
+    }
+
+    #[test]
+    fn malformed_ipv6_app_ports_are_rejected() {
+        for value in [
+            "::1:8080:3000",
+            "[::1:8080:3000",
+            "[]:3000",
+            "[::1]",
+            "[::1]:8080:3000:extra",
+            "[::1]:abc:3000",
+        ] {
+            assert!(
+                publish_port_to_layer(&DevcontainerPort::String(value.to_owned())).is_err(),
+                "{value}"
+            );
+        }
     }
 
     #[test]

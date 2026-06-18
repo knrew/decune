@@ -1339,6 +1339,16 @@ mod tests {
             .to_cli_publish(),
             "[::1]:18080:8080/udp"
         );
+        assert_eq!(
+            DockerPublishPort {
+                container: 3000,
+                host: Some(8080),
+                host_ip: Some("::1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }
+            .to_cli_publish(),
+            "[::1]:8080:3000/tcp"
+        );
     }
 
     #[test]
