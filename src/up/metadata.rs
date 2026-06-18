@@ -449,6 +449,7 @@ async fn finalize_mounts_and_resources_for_plan(
         &plan.config,
         &mount_variables,
         MountResolution::Resolve,
+        workspace.paths().state_dir(),
     )?;
     let mut hash_input = ConfigHashInput::new(&plan.config);
     if let Some(context) = &plan.build_context {

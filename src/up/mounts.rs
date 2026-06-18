@@ -53,6 +53,7 @@ pub(super) fn workspace_mounts_from_resolved(
     config: &ResolvedConfig,
     variables: &crate::config::variables::VariableContext,
     mount_resolution: MountResolution,
+    state_root: &Path,
 ) -> Result<Vec<DockerMountSpec>> {
     if matches!(
         config.devcontainer.source,
@@ -62,7 +63,12 @@ pub(super) fn workspace_mounts_from_resolved(
             return Ok(Vec::new());
         }
         let mut mounts = config_mount_specs(config, workspace_root, variables)?;
-        mounts.extend(dotfile_mount_specs(config, workspace_root, variables)?);
+        mounts.extend(dotfile_mount_specs(
+            config,
+            workspace_root,
+            variables,
+            state_root,
+        )?);
         return Ok(mounts);
     }
 
@@ -73,7 +79,7 @@ pub(super) fn workspace_mounts_from_resolved(
         reject_workspace_mount_target_conflicts(&workspace_target, &config_mounts)?;
         mounts.extend(config_mounts);
 
-        let dotfile_mounts = dotfile_mount_specs(config, workspace_root, variables)?;
+        let dotfile_mounts = dotfile_mount_specs(config, workspace_root, variables, state_root)?;
         reject_workspace_mount_target_conflicts(&workspace_target, &dotfile_mounts)?;
         mounts.extend(dotfile_mounts);
     }
