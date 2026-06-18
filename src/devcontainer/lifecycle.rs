@@ -509,6 +509,8 @@ pub(crate) async fn run_container_start_lifecycle(
                     LifecycleStage::PostStart,
                 )
                 .await?;
+            } else {
+                crate::ui::skipped(LifecycleStage::PostStart.property_name());
             }
         }
     }
@@ -575,6 +577,7 @@ async fn run_container_creation_stage(
     save_state: &mut impl FnMut(&LifecycleState) -> Result<()>,
 ) -> Result<()> {
     if state.is_completed(completion) {
+        crate::ui::skipped(lifecycle_stage.property_name());
         return Ok(());
     }
 
@@ -621,12 +624,15 @@ async fn run_lifecycle_stage(
     stage: LifecycleStage,
 ) -> Result<()> {
     let Some(lifecycle) = &context.config.devcontainer.lifecycle else {
+        crate::ui::skipped(stage.property_name());
         return Ok(());
     };
     if lifecycle.commands(stage).is_empty() {
+        crate::ui::skipped(stage.property_name());
         return Ok(());
     }
 
+    crate::ui::status("Running", stage.property_name());
     for command in lifecycle.commands(stage) {
         run_container_lifecycle_command(context, stage, command).await?;
     }
@@ -640,12 +646,15 @@ fn run_host_lifecycle_command(
     stage: LifecycleStage,
 ) -> Result<()> {
     let Some(lifecycle) = &config.devcontainer.lifecycle else {
+        crate::ui::skipped(stage.property_name());
         return Ok(());
     };
     if lifecycle.commands(stage).is_empty() {
+        crate::ui::skipped(stage.property_name());
         return Ok(());
     }
 
+    crate::ui::status("Running", stage.property_name());
     for command in lifecycle.commands(stage) {
         run_host_lifecycle_command_value(workspace_root, stage, command)?;
     }
@@ -658,7 +667,11 @@ fn run_hook_stage_without_container(
     workspace_root: &Path,
     stage: HookStage,
 ) -> Result<()> {
-    for hook in hooks_for_stage(config, stage) {
+    let hooks = hooks_for_stage(config, stage);
+    if !hooks.is_empty() {
+        crate::ui::status("Running", &format!("{} hook", stage.property_name()));
+    }
+    for hook in hooks {
         let location = hook.location.unwrap_or_else(|| stage.default_location());
         if location != HookLocation::Host {
             bail!(
@@ -673,7 +686,11 @@ fn run_hook_stage_without_container(
 }
 
 async fn run_hook_stage(context: &PreparedLifecycleRunContext<'_>, stage: HookStage) -> Result<()> {
-    for hook in hooks_for_stage(context.config, stage) {
+    let hooks = hooks_for_stage(context.config, stage);
+    if !hooks.is_empty() {
+        crate::ui::status("Running", &format!("{} hook", stage.property_name()));
+    }
+    for hook in hooks {
         match hook.location.unwrap_or_else(|| stage.default_location()) {
             HookLocation::Host => run_host_hook(context.workspace_root, stage, hook)?,
             HookLocation::Container => run_container_hook(context, stage, hook).await?,
