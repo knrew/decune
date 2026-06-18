@@ -29,6 +29,38 @@ pub(super) fn effective_user_input_from_config_layers(
     }
 }
 
+pub(super) fn effective_user_input_from_plan(plan: &UpPlan) -> EffectiveUserResolveInput<'_> {
+    let layer_input = effective_user_input_from_config_layers(&plan.config_layers);
+    let devcontainer_remote_user = layer_input
+        .devcontainer_remote_user
+        .and(plan.config.devcontainer.remote_user.as_deref());
+    let image_metadata_remote_user = if devcontainer_remote_user.is_some() {
+        None
+    } else {
+        layer_input
+            .image_metadata_remote_user
+            .and(plan.config.devcontainer.remote_user.as_deref())
+    };
+    let devcontainer_container_user = layer_input
+        .devcontainer_container_user
+        .and(plan.config.devcontainer.container_user.as_deref());
+    let image_metadata_container_user = if devcontainer_container_user.is_some() {
+        None
+    } else {
+        layer_input
+            .image_metadata_container_user
+            .and(plan.config.devcontainer.container_user.as_deref())
+    };
+
+    EffectiveUserResolveInput {
+        devcontainer_remote_user,
+        devcontainer_container_user,
+        image_metadata_remote_user,
+        image_metadata_container_user,
+        image_config_user: None,
+    }
+}
+
 pub(super) fn uid_gid_sync_hash_input(
     plan: &UidGidSyncPlan,
     update_remote_user_uid: bool,
@@ -229,10 +261,20 @@ fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::uid_gid_sync_warning;
+    use std::collections::BTreeMap;
+
+    use super::{effective_user_input_from_plan, uid_gid_sync_warning};
     use crate::{
-        config::{ConfigLayer, ConfigMergeInput, layer::LayerDevcontainerMetadata},
-        docker::user::{HostPlatform, UidGidSyncNoopReason, UidGidSyncPlan},
+        config::{
+            ConfigLayer, ConfigMergeInput, layer::LayerDevcontainerMetadata,
+            resolved::ResolvedConfig,
+        },
+        docker::{
+            build::DockerBuildOptions,
+            resource::DockerResources,
+            user::{EffectiveUsers, HostPlatform, UidGidSyncNoopReason, UidGidSyncPlan},
+        },
+        up::types::UpPlan,
     };
 
     #[test]
@@ -258,6 +300,67 @@ mod tests {
         assert_eq!(
             uid_gid_sync_warning(&explicit_false, &plan, false, HostPlatform::NonLinux),
             None
+        );
+    }
+
+    #[test]
+    fn effective_user_input_from_plan_uses_expanded_user_values() {
+        let devcontainer_layer = ConfigLayer {
+            devcontainer: Some(LayerDevcontainerMetadata {
+                remote_user: Some("${localEnv:DECUNE_TEST_REMOTE_USER}".to_owned()),
+                container_user: Some("${localEnv:DECUNE_TEST_CONTAINER_USER}".to_owned()),
+                ..LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        };
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.remote_user = Some("remoteuser".to_owned());
+        config.devcontainer.container_user = Some("containeruser".to_owned());
+        let plan = test_plan(
+            config,
+            ConfigMergeInput {
+                devcontainer: Some(devcontainer_layer),
+                ..ConfigMergeInput::default()
+            },
+        );
+
+        let input = effective_user_input_from_plan(&plan);
+
+        assert_eq!(input.devcontainer_remote_user, Some("remoteuser"));
+        assert_eq!(input.devcontainer_container_user, Some("containeruser"));
+        assert_eq!(input.image_metadata_remote_user, None);
+        assert_eq!(input.image_metadata_container_user, None);
+    }
+
+    #[test]
+    fn effective_user_input_from_plan_keeps_metadata_user_origin() {
+        let feature_layer = ConfigLayer {
+            devcontainer: Some(LayerDevcontainerMetadata {
+                remote_user: Some("${localEnv:DECUNE_TEST_FEATURE_REMOTE_USER}".to_owned()),
+                container_user: Some("${localEnv:DECUNE_TEST_FEATURE_CONTAINER_USER}".to_owned()),
+                ..LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        };
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.remote_user = Some("feature-remote".to_owned());
+        config.devcontainer.container_user = Some("feature-container".to_owned());
+        let plan = test_plan(
+            config,
+            ConfigMergeInput {
+                feature_metadata: vec![feature_layer],
+                ..ConfigMergeInput::default()
+            },
+        );
+
+        let input = effective_user_input_from_plan(&plan);
+
+        assert_eq!(input.devcontainer_remote_user, None);
+        assert_eq!(input.devcontainer_container_user, None);
+        assert_eq!(input.image_metadata_remote_user, Some("feature-remote"));
+        assert_eq!(
+            input.image_metadata_container_user,
+            Some("feature-container")
         );
     }
 
@@ -288,6 +391,39 @@ mod tests {
                 ..ConfigLayer::default()
             }),
             ..ConfigMergeInput::default()
+        }
+    }
+
+    fn test_plan(config: ResolvedConfig, config_layers: ConfigMergeInput) -> UpPlan {
+        UpPlan {
+            image: "alpine:3.20".to_owned(),
+            base_image: "alpine:3.20".to_owned(),
+            build_context: None,
+            build_options: DockerBuildOptions::default(),
+            feature_install: None,
+            feature_build_context_dir: None,
+            uid_gid_sync_build_context_dir: None,
+            resources: DockerResources {
+                container_name: "decune-test".to_owned(),
+                image_tag: "decune/test:stable-hash".to_owned(),
+                workspace_volume_name: "decune-test-workspace".to_owned(),
+                labels: BTreeMap::new(),
+                config_hash: "stable-hash".to_owned(),
+            },
+            pre_uid_gid_sync_resources: None,
+            compose_project: None,
+            config_layers,
+            config,
+            sensitive_container_env: Default::default(),
+            sensitive_build_args: Default::default(),
+            compose_interpolation_env: Default::default(),
+            compose_interpolation_redactions: Vec::new(),
+            effective_users: EffectiveUsers::root(),
+            uid_gid_sync_plan: UidGidSyncPlan::default(),
+            workspace_folder: "/workspaces/project".to_owned(),
+            mounts: Vec::new(),
+            forward_ports: Vec::new(),
+            ignored_detached_forwarding: false,
         }
     }
 }

@@ -9,6 +9,7 @@ use crate::{
         layer::LayerDevcontainerMount,
         resolved::{ResolvedConfig, ResolvedDevcontainerSource},
         types::MountType,
+        variables::expand_variables,
     },
     docker::{
         dotfiles::dotfile_mount_specs,
@@ -111,11 +112,7 @@ pub(super) fn resolve_workspace_location<F>(
 where
     F: Fn(&str) -> crate::config::variables::VariableContext,
 {
-    let seed_workspace_folder = config
-        .devcontainer
-        .workspace_folder
-        .clone()
-        .unwrap_or_else(|| default_workspace_folder(workspace));
+    let default_folder = default_workspace_folder(workspace);
     let explicit_workspace_folder = config.devcontainer.workspace_folder.as_deref();
     if config.devcontainer.workspace_mount.is_some()
         && explicit_workspace_folder.is_none()
@@ -124,11 +121,19 @@ where
         bail!("workspaceFolder is required when workspaceMount is specified");
     }
 
-    let workspace_folder = validate_workspace_folder(&seed_workspace_folder)?;
+    let pre_variables = variables_for_workspace_folder(&default_folder);
+    let workspace_folder = match explicit_workspace_folder {
+        Some(workspace_folder) => {
+            let expanded_workspace_folder = expand_variables(workspace_folder, &pre_variables)
+                .context("Failed to expand workspaceFolder")?;
+            validate_workspace_folder(&expanded_workspace_folder)?
+        }
+        None => validate_workspace_folder(&default_folder)?,
+    };
     let variables = variables_for_workspace_folder(&workspace_folder);
     let workspace_mount = workspace_mount_spec(workspace, config, &variables)?;
     let workspace_folder = if explicit_workspace_folder.is_some() {
-        validate_workspace_folder(&workspace_folder)?
+        workspace_folder
     } else {
         workspace_mount.target.clone()
     };
@@ -251,6 +256,7 @@ pub(super) fn static_mount_variable_context(
         .devcontainer
         .remote_user
         .clone()
+        .or_else(|| config.devcontainer.container_user.clone())
         .unwrap_or_else(|| "root".to_owned());
 
     mount_variable_context(

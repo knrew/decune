@@ -99,6 +99,7 @@ pub(crate) struct UpPlan {
     pub(crate) config_layers: ConfigMergeInput,
     pub(crate) config: ResolvedConfig,
     pub(crate) sensitive_container_env: SensitiveEnvMap,
+    pub(crate) sensitive_build_args: SensitiveEnvMap,
     pub(crate) compose_interpolation_env: BTreeMap<String, String>,
     pub(crate) compose_interpolation_redactions: Vec<String>,
     pub(crate) effective_users: EffectiveUsers,

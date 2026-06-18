@@ -116,12 +116,33 @@ pub(crate) fn expand_remote_env_tracked(
     expand_env_map_tracked(remote_env, context)
 }
 
+pub(crate) fn expand_string_map_tracked(
+    values: &BTreeMap<String, String>,
+    context: &VariableContext,
+) -> Result<ExpandedEnvMap> {
+    expand_env_map_tracked(values, context)
+}
+
 pub(crate) fn expand_container_env_tracked(
     container_env: &BTreeMap<String, String>,
     context: &VariableContext,
 ) -> Result<ExpandedEnvMap> {
     reject_container_env_references(container_env)?;
     expand_env_map_tracked(container_env, context)
+}
+
+pub(crate) fn references_remote_user_variable(input: &str) -> Result<bool> {
+    references_any_variable(input, &["remoteUser", "remoteUserHome"])
+}
+
+pub(crate) fn references_remote_user_home_variable(input: &str) -> Result<bool> {
+    references_any_variable(input, &["remoteUserHome"])
+}
+
+pub(crate) fn references_any_variable(input: &str, names: &[&str]) -> Result<bool> {
+    Ok(variable_expressions(input)?
+        .into_iter()
+        .any(|expression| names.contains(&expression)))
 }
 
 fn expand_env_map_tracked(

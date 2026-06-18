@@ -5651,6 +5651,7 @@ user = "root"
             config_layers: ConfigMergeInput::default(),
             config,
             sensitive_container_env: Default::default(),
+            sensitive_build_args: Default::default(),
             compose_interpolation_env: Default::default(),
             compose_interpolation_redactions: Vec::new(),
             effective_users: EffectiveUsers::root(),
