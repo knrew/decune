@@ -648,7 +648,7 @@ shell = true
 - `${remoteUser}`
 - `${remoteUserHome}`
 
-v0.1 では少なくとも `build.args` の value、`build.target`、`build.cacheFrom`、`workspaceFolder`、`containerEnv`、`remoteEnv`、`remoteUser`、`containerUser`、`mounts`、dotfiles、`runArgs` の value 部分で変数展開する。`workspaceFolder` は変数展開後に absolute path validation を行う。`workspaceFolder` 内の `${containerWorkspaceFolder}` は default workspace folder を基準に展開する。lifecycle command 本体、`dockerComposeFile`、`service`、`runServices`、`forwardPorts`、`appPort` の追加変数展開は v0.1 では行わない。
+v0.1 では少なくとも `build.args` の value、`build.target`、`build.cacheFrom`、`workspaceFolder`、`containerEnv`、`remoteEnv`、`remoteUser`、`containerUser`、`mounts`、dotfiles、`runArgs` の value 部分で変数展開する。`workspaceFolder` は変数展開後に absolute path validation を行う。`workspaceFolder` 内の `${containerWorkspaceFolder}` は default workspace folder を基準に展開する。`workspaceFolder` 未指定時に decune が合成する default workspace folder は設定 string value ではないため、変数展開せず literal path として扱う。lifecycle command 本体、`dockerComposeFile`、`service`、`runServices`、`forwardPorts`、`appPort` の追加変数展開は v0.1 では行わない。
 
 `${remoteUserHome}` は `/home/<user>` と推測せず、container/image 内の passwd database から解決する。`containerEnv` 自体の中で `${containerEnv:...}` を使う構成は v0.1 では error とする。
 

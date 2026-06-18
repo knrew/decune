@@ -113,11 +113,6 @@ where
     F: Fn(&str) -> crate::config::variables::VariableContext,
 {
     let default_folder = default_workspace_folder(workspace);
-    let seed_workspace_folder = config
-        .devcontainer
-        .workspace_folder
-        .clone()
-        .unwrap_or_else(|| default_folder.clone());
     let explicit_workspace_folder = config.devcontainer.workspace_folder.as_deref();
     if config.devcontainer.workspace_mount.is_some()
         && explicit_workspace_folder.is_none()
@@ -127,13 +122,18 @@ where
     }
 
     let pre_variables = variables_for_workspace_folder(&default_folder);
-    let expanded_workspace_folder = expand_variables(&seed_workspace_folder, &pre_variables)
-        .context("Failed to expand workspaceFolder")?;
-    let workspace_folder = validate_workspace_folder(&expanded_workspace_folder)?;
+    let workspace_folder = match explicit_workspace_folder {
+        Some(workspace_folder) => {
+            let expanded_workspace_folder = expand_variables(workspace_folder, &pre_variables)
+                .context("Failed to expand workspaceFolder")?;
+            validate_workspace_folder(&expanded_workspace_folder)?
+        }
+        None => validate_workspace_folder(&default_folder)?,
+    };
     let variables = variables_for_workspace_folder(&workspace_folder);
     let workspace_mount = workspace_mount_spec(workspace, config, &variables)?;
     let workspace_folder = if explicit_workspace_folder.is_some() {
-        validate_workspace_folder(&workspace_folder)?
+        workspace_folder
     } else {
         workspace_mount.target.clone()
     };

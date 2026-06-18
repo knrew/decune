@@ -35,9 +35,9 @@ use crate::{
 
 use super::mounts::default_workspace_folder;
 use super::{
-    ForwardingResolution, MountResolution, UpPlan, UpPlanResolution, WorkspaceLocationValidation,
-    mount_hash_inputs, resolve_workspace_location, static_mount_variable_context,
-    static_uid_gid_sync_hash_input, workspace_mounts_from_resolved,
+    ForwardingResolution, MountResolution, UpPlan, UpPlanResolution, WorkspaceLocation,
+    WorkspaceLocationValidation, mount_hash_inputs, resolve_workspace_location,
+    static_mount_variable_context, static_uid_gid_sync_hash_input, workspace_mounts_from_resolved,
 };
 
 const FEATURE_ENTRYPOINT_SHIM_HASH_VERSION: &str = "2";
@@ -182,30 +182,25 @@ fn build_up_plan_inner(
         cli: Some(cli_layer),
         ..ConfigMergeInput::default()
     };
-    let mut config = resolve_config(config_layers.clone());
-    let preliminary_variables =
-        static_mount_variable_context(workspace, &default_workspace_folder(workspace), &config);
-    expand_static_user_fields(&mut config, &preliminary_variables)?;
     let workspace_validation = match mount_resolution {
         MountResolution::Resolve => WorkspaceLocationValidation::ConfigResolved,
         MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
     };
-    let workspace_location = resolve_workspace_location(
+    let mut config = resolve_config(config_layers.clone());
+    let static_expansion = expand_static_plan_fields(
         workspace,
-        &config,
+        devcontainer_json.path(),
+        &mut config,
         workspace_validation,
-        |workspace_folder| static_mount_variable_context(workspace, workspace_folder, &config),
     )?;
-    config.devcontainer.workspace_folder = Some(workspace_location.workspace_folder.clone());
-    let mount_variables =
-        static_mount_variable_context(workspace, &workspace_location.workspace_folder, &config);
-    let static_expansion = expand_static_devcontainer_fields(&mut config, &mount_variables)?;
-    let (build_context, mut build_options) =
-        dockerfile_build_input(workspace.root(), devcontainer_json.path(), &config)?;
-    build_options.build_arg_redactions = static_expansion.sensitive_build_args.redaction_values();
+    let mount_variables = static_mount_variable_context(
+        workspace,
+        &static_expansion.workspace_location.workspace_folder,
+        &config,
+    );
     let compose_project = compose_project_plan(workspace, devcontainer_json.path(), &config)?;
     let mounts = workspace_mounts_from_resolved(
-        workspace_location.workspace_mount,
+        static_expansion.workspace_location.workspace_mount.clone(),
         workspace.root(),
         &config,
         &mount_variables,
@@ -213,7 +208,7 @@ fn build_up_plan_inner(
         workspace.paths().state_dir(),
     )?;
     let mut hash_input = ConfigHashInput::new(&config);
-    if let Some(context) = &build_context {
+    if let Some(context) = &static_expansion.build_context {
         hash_input.build = Some(build_hash_input(context)?);
     }
     hash_input.sensitive_build_arg_keys = static_expansion
@@ -259,8 +254,8 @@ fn build_up_plan_inner(
     Ok(UpPlan {
         image,
         base_image,
-        build_context,
-        build_options,
+        build_context: static_expansion.build_context,
+        build_options: static_expansion.build_options,
         feature_install: None,
         feature_build_context_dir: None,
         uid_gid_sync_build_context_dir: None,
@@ -275,15 +270,49 @@ fn build_up_plan_inner(
         compose_interpolation_redactions: Vec::new(),
         effective_users: EffectiveUsers::root(),
         uid_gid_sync_plan: UidGidSyncPlan::default(),
-        workspace_folder: workspace_location.workspace_folder,
+        workspace_folder: static_expansion.workspace_location.workspace_folder,
         mounts,
         forward_ports,
         ignored_detached_forwarding,
     })
 }
 
-struct StaticVariableExpansion {
-    sensitive_build_args: SensitiveEnvMap,
+pub(super) struct StaticPlanExpansion {
+    pub(super) workspace_location: WorkspaceLocation,
+    pub(super) build_context: Option<ResolvedBuildContext>,
+    pub(super) build_options: DockerBuildOptions,
+    pub(super) sensitive_build_args: SensitiveEnvMap,
+}
+
+pub(super) fn expand_static_plan_fields(
+    workspace: &Workspace,
+    devcontainer_file: &Path,
+    config: &mut ResolvedConfig,
+    workspace_validation: WorkspaceLocationValidation,
+) -> Result<StaticPlanExpansion> {
+    let preliminary_variables =
+        static_mount_variable_context(workspace, &default_workspace_folder(workspace), config);
+    expand_static_user_fields(config, &preliminary_variables)?;
+    let workspace_location = resolve_workspace_location(
+        workspace,
+        config,
+        workspace_validation,
+        |workspace_folder| static_mount_variable_context(workspace, workspace_folder, config),
+    )?;
+    config.devcontainer.workspace_folder = Some(workspace_location.workspace_folder.clone());
+    let mount_variables =
+        static_mount_variable_context(workspace, &workspace_location.workspace_folder, config);
+    let sensitive_build_args = expand_static_devcontainer_fields(config, &mount_variables)?;
+    let (build_context, mut build_options) =
+        dockerfile_build_input(workspace.root(), devcontainer_file, config)?;
+    build_options.build_arg_redactions = sensitive_build_args.redaction_values();
+
+    Ok(StaticPlanExpansion {
+        workspace_location,
+        build_context,
+        build_options,
+        sensitive_build_args,
+    })
 }
 
 fn expand_static_user_fields(
@@ -305,7 +334,7 @@ fn expand_static_user_fields(
 fn expand_static_devcontainer_fields(
     config: &mut ResolvedConfig,
     variables: &VariableContext,
-) -> Result<StaticVariableExpansion> {
+) -> Result<SensitiveEnvMap> {
     let mut sensitive_build_args = SensitiveEnvMap::default();
 
     if let Some(ResolvedDevcontainerSource::Dockerfile(build)) = &mut config.devcontainer.source {
@@ -332,9 +361,7 @@ fn expand_static_devcontainer_fields(
     )?;
     expand_run_args(&mut config.devcontainer.run_args, variables)?;
 
-    Ok(StaticVariableExpansion {
-        sensitive_build_args,
-    })
+    Ok(sensitive_build_args)
 }
 
 fn expand_run_args(run_args: &mut [LayerRunArg], variables: &VariableContext) -> Result<()> {
@@ -606,6 +633,20 @@ mod tests {
         assert_eq!(plan.mounts[0].target, "/workspaces/Image Plan!");
         assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
         assert!(!plan.mounts[0].read_only);
+    }
+
+    #[test]
+    fn build_up_plan_treats_default_workspace_folder_as_literal() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Project ${unknown}");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.workspace_folder, "/workspaces/Project ${unknown}");
+        assert_eq!(plan.mounts[0].target, "/workspaces/Project ${unknown}");
     }
 
     #[test]

@@ -54,13 +54,13 @@ use crate::{
         plan::{
             add_internal_hash_versions, base_image_source,
             build_up_plan_with_forwarding_resolution,
-            build_up_plan_with_image_metadata_and_forwarding_resolution, feature_lock_hash_inputs,
-            final_image_source,
+            build_up_plan_with_image_metadata_and_forwarding_resolution, expand_static_plan_fields,
+            feature_lock_hash_inputs, final_image_source,
         },
         start::wait_for_container_exit_code,
         types::{ForwardingResolution, MountResolution, UpPlan, UpPlanResolution},
         uid_gid::{
-            effective_user_input_from_config_layers, effective_users_depend_on_image_config_user,
+            effective_user_input_from_plan, effective_users_depend_on_image_config_user,
             plan_requires_uid_gid_sync_layer, pre_uid_gid_sync_layer_resources,
             uid_gid_sync_hash_input, uid_gid_sync_plan_requires_layer, uid_gid_sync_warning,
         },
@@ -395,7 +395,7 @@ async fn finalize_mounts_and_resources_for_plan(
     let effective_users = resolve_effective_users_for_image(
         client,
         lookup_image,
-        effective_user_input_from_config_layers(&plan.config_layers),
+        effective_user_input_from_plan(&plan),
         options.compose_primary_service_user,
     )
     .await?;
@@ -796,6 +796,7 @@ async fn prepare_feature_metadata_for_plan(
         .override_feature_install_order
         .clone();
     let devcontainer_file = PathBuf::from(&plan.resources.labels["devcontainer.config_file"]);
+    let feature_devcontainer_file = devcontainer_file.clone();
     let workspace_root = workspace.root().to_path_buf();
     let feature_archive_cache_dir = workspace.paths().feature_archive_cache_dir().to_path_buf();
     let feature_extract_dir = workspace
@@ -806,7 +807,7 @@ async fn prepare_feature_metadata_for_plan(
     let Some(feature_install) = tokio::task::spawn_blocking(move || {
         prepare_feature_install_plan(
             &features,
-            &devcontainer_file,
+            &feature_devcontainer_file,
             &workspace_root,
             &feature_archive_cache_dir,
             &feature_extract_dir,
@@ -821,6 +822,16 @@ async fn prepare_feature_metadata_for_plan(
     };
     plan.config_layers.feature_metadata = feature_install.metadata_layers.clone();
     plan.config = resolve_config(plan.config_layers.clone());
+    let static_expansion = expand_static_plan_fields(
+        workspace,
+        &devcontainer_file,
+        &mut plan.config,
+        WorkspaceLocationValidation::Preliminary,
+    )?;
+    plan.build_context = static_expansion.build_context;
+    plan.build_options = static_expansion.build_options;
+    plan.sensitive_build_args = static_expansion.sensitive_build_args;
+    plan.workspace_folder = static_expansion.workspace_location.workspace_folder;
     plan.feature_install = Some(feature_install);
     plan.feature_build_context_dir =
         Some(workspace.paths().cache_dir().join("feature-build-context"));
@@ -953,7 +964,7 @@ async fn command_probe_container_env(
     let effective_users = resolve_effective_users_for_image(
         client,
         image,
-        effective_user_input_from_config_layers(&plan.config_layers),
+        effective_user_input_from_plan(plan),
         compose_primary_service_user,
     )
     .await?;
@@ -1290,16 +1301,48 @@ pub(in crate::up) async fn warn_about_unsupported_dockerfile_image_metadata(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::{
-        config::{ConfigMergeInput, layer::LayerDevcontainerCompose},
+        config::{
+            ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash,
+            layer::{LayerDevcontainerCompose, LayerRunArg},
+        },
         docker::{
             build::DockerBuildOptions,
             resource::DockerResources,
             user::{EffectiveUsers, UidGidSyncPlan},
         },
-        up::types::UpPlan,
+        up::{plan::build_up_plan, types::UpPlan},
     };
+
+    struct EnvVarGuard {
+        name: &'static str,
+        previous: Option<std::ffi::OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn capture(name: &'static str) -> Self {
+            Self {
+                name,
+                previous: std::env::var_os(name),
+            }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            match &self.previous {
+                Some(value) => unsafe {
+                    std::env::set_var(self.name, value);
+                },
+                None => unsafe {
+                    std::env::remove_var(self.name);
+                },
+            }
+        }
+    }
 
     #[test]
     fn effective_startup_command_uses_compose_overrides() {
@@ -1320,6 +1363,116 @@ mod tests {
             vec!["/service-entrypoint.sh".to_owned()]
         );
         assert_eq!(startup.command, vec!["service-cmd".to_owned()]);
+    }
+
+    #[test]
+    fn feature_metadata_refresh_preserves_static_expansion() {
+        let env_name = "DECUNE_TEST_FEATURE_STATIC_BUILD_ARG";
+        let _guard = EnvVarGuard::capture(env_name);
+        unsafe {
+            std::env::set_var(env_name, "first-secret");
+        }
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Feature Static");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        let devcontainer_dir = root.join(".devcontainer");
+        fs::create_dir_all(devcontainer_dir.join("features/noop")).unwrap();
+        fs::write(
+            devcontainer_dir.join("Dockerfile"),
+            "FROM alpine\nARG TOKEN\n",
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("devcontainer.json"),
+            format!(
+                r#"
+                {{
+                  "build": {{
+                    "dockerfile": "Dockerfile",
+                    "args": {{
+                      "TOKEN": "${{localEnv:{env_name}}}"
+                    }},
+                    "target": "stage-${{localWorkspaceFolderBasename}}",
+                    "cacheFrom": "type=registry,ref=example.test/${{localWorkspaceFolderBasename}}:cache"
+                  }},
+                  "features": {{
+                    "./features/noop": {{}}
+                  }},
+                  "runArgs": [
+                    "--add-host", "api.${{localWorkspaceFolderBasename}}:127.0.0.1",
+                    "--dns=dns-${{localWorkspaceFolderBasename}}"
+                  ]
+                }}
+                "#
+            ),
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("features/noop/devcontainer-feature.json"),
+            r#"{"id":"noop","version":"1.0.0","name":"Noop"}"#,
+        )
+        .unwrap();
+        fs::write(
+            devcontainer_dir.join("features/noop/install.sh"),
+            "set -eu\n",
+        )
+        .unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let first = runtime.block_on(prepared_feature_plan(&workspace));
+        assert_eq!(
+            first
+                .build_options
+                .build_args
+                .get("TOKEN")
+                .map(String::as_str),
+            Some("first-secret")
+        );
+        assert_eq!(
+            first.build_options.target.as_deref(),
+            Some("stage-Feature Static")
+        );
+        assert_eq!(
+            first.build_options.cache_from,
+            vec!["type=registry,ref=example.test/Feature Static:cache"]
+        );
+        assert!(first.sensitive_build_args.contains_key("TOKEN"));
+        assert!(
+            first
+                .build_options
+                .build_arg_redactions
+                .iter()
+                .any(|value| value == "first-secret")
+        );
+        assert_eq!(
+            first.config.devcontainer.run_args,
+            vec![
+                LayerRunArg::AddHost("api.Feature Static:127.0.0.1".to_owned()),
+                LayerRunArg::Dns("dns-Feature Static".to_owned()),
+            ]
+        );
+
+        unsafe {
+            std::env::set_var(env_name, "second-secret");
+        }
+        let second = runtime.block_on(prepared_feature_plan(&workspace));
+
+        assert_eq!(
+            second
+                .build_options
+                .build_args
+                .get("TOKEN")
+                .map(String::as_str),
+            Some("second-secret")
+        );
+        assert_ne!(
+            config_hash_for_static_build_args(&first),
+            config_hash_for_static_build_args(&second)
+        );
     }
 
     #[test]
@@ -1428,5 +1581,22 @@ mod tests {
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         }
+    }
+
+    async fn prepared_feature_plan(workspace: &Workspace) -> UpPlan {
+        let plan = build_up_plan(workspace, None, ConfigLayer::default()).unwrap();
+        prepare_feature_metadata_for_plan(workspace, plan, false)
+            .await
+            .unwrap()
+    }
+
+    fn config_hash_for_static_build_args(plan: &UpPlan) -> String {
+        let mut input = ConfigHashInput::new(&plan.config);
+        input.sensitive_build_arg_keys = plan
+            .sensitive_build_args
+            .iter()
+            .map(|(key, _)| key.clone())
+            .collect();
+        config_hash(&input)
     }
 }
