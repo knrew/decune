@@ -161,6 +161,18 @@ fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String
     done </etc/passwd
     return 0
 }
+decune_fix_feature_ownership() {
+    fix_user="${1:-}"
+    fix_user="${fix_user%%:*}"
+    if [ -z "$fix_user" ] || [ "$fix_user" = "root" ] || [ "$fix_user" = "0" ]; then
+        return 0
+    fi
+    fix_home="$(decune_feature_user_home "$fix_user")"
+    if [ -z "$fix_home" ] || [ ! -d "$fix_home" ]; then
+        return 0
+    fi
+    chown -R "$fix_user:" "$fix_home"
+}
 "#,
     );
     for (index, feature) in input.features.iter().enumerate() {
@@ -170,6 +182,28 @@ fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String
         ));
         script.push_str(&format!(
             "chmod +x /tmp/decune-features/{name}/install.sh\ncd /tmp/decune-features/{name}\n./install.sh\n)\n"
+        ));
+    }
+    let remote_user = input
+        .install_env
+        .get("_REMOTE_USER")
+        .map(String::as_str)
+        .unwrap_or("");
+    let container_user = input
+        .install_env
+        .get("_CONTAINER_USER")
+        .map(String::as_str)
+        .unwrap_or("");
+    if !remote_user.is_empty() {
+        script.push_str(&format!(
+            "decune_fix_feature_ownership {}\n",
+            shell_quote(remote_user)
+        ));
+    }
+    if !container_user.is_empty() && container_user != remote_user {
+        script.push_str(&format!(
+            "decune_fix_feature_ownership {}\n",
+            shell_quote(container_user)
         ));
     }
     script.push_str("rm -rf /tmp/decune-features\n");
@@ -446,6 +480,16 @@ mod tests {
             .unwrap(),
             "VERSION='1.2'\"'\"'$(echo unsafe)'\n_CONTAINER_USER='root'\n_CONTAINER_USER_HOME='/root'\n_REMOTE_USER='vscode'\n_REMOTE_USER_HOME='/home/vscode'\n"
         );
+        assert!(install_script.contains("decune_fix_feature_ownership()"));
+        assert!(install_script.contains("decune_fix_feature_ownership 'vscode'"));
+        assert!(install_script.contains("decune_fix_feature_ownership 'root'"));
+        let install_pos = install_script.find("./install.sh").unwrap();
+        let fix_pos = install_script
+            .find("decune_fix_feature_ownership 'vscode'")
+            .unwrap();
+        let cleanup_pos = install_script.find("rm -rf /tmp/decune-features").unwrap();
+        assert!(install_pos < fix_pos);
+        assert!(fix_pos < cleanup_pos);
     }
 
     #[test]
