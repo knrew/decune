@@ -2,6 +2,7 @@ use std::{
     env, fs,
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
+    process,
 };
 
 use anyhow::{Context, Result, bail};
@@ -191,32 +192,50 @@ fn stage_container_tool_from_sources(
     embedded: &'static [EmbeddedContainerToolArtifact],
 ) -> Result<PathBuf> {
     let target = runtime_dir.join(tool.file_name());
-    match resolve_container_tool(tool, platform, source_dirs, embedded)? {
-        ResolvedContainerTool::ExternalFile(source) => {
-            fs::copy(&source, &target).with_context(|| {
-                format!(
-                    "Failed to stage decune container tool artifact: {} -> {}",
-                    source.display(),
-                    target.display()
-                )
-            })?;
+    let resolved = resolve_container_tool(tool, platform, source_dirs, embedded)?;
+
+    // Write to a temporary file and atomically rename into place to avoid ETXTBSY
+    // when the target binary is currently being executed inside a running container.
+    let staged = target.with_extension(format!("tmp-{}", process::id()));
+    let result = (|| -> Result<()> {
+        match resolved {
+            ResolvedContainerTool::ExternalFile(source) => {
+                fs::copy(&source, &staged).with_context(|| {
+                    format!(
+                        "Failed to stage decune container tool artifact: {} -> {}",
+                        source.display(),
+                        staged.display()
+                    )
+                })?;
+            }
+            ResolvedContainerTool::Embedded(artifact) => {
+                fs::write(&staged, artifact.bytes).with_context(|| {
+                    format!(
+                        "Failed to stage embedded decune container tool artifact: {}",
+                        staged.display()
+                    )
+                })?;
+            }
         }
-        ResolvedContainerTool::Embedded(artifact) => {
-            fs::write(&target, artifact.bytes).with_context(|| {
-                format!(
-                    "Failed to stage embedded decune container tool artifact: {}",
-                    target.display()
-                )
-            })?;
-        }
+        fs::set_permissions(&staged, fs::Permissions::from_mode(0o755)).with_context(|| {
+            format!(
+                "Failed to set decune container tool artifact permissions: {}",
+                staged.display()
+            )
+        })?;
+        fs::rename(&staged, &target).with_context(|| {
+            format!(
+                "Failed to replace decune container tool artifact: {}",
+                target.display()
+            )
+        })?;
+        Ok(())
+    })();
+
+    if result.is_err() {
+        let _ = fs::remove_file(&staged);
     }
-    fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).with_context(|| {
-        format!(
-            "Failed to set decune container tool artifact permissions: {}",
-            target.display()
-        )
-    })?;
-    Ok(target)
+    result.map(|()| target)
 }
 
 fn resolve_container_tool(
