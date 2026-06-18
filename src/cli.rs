@@ -78,6 +78,9 @@ struct RebuildArgs {
     /// Resolve Feature references without using the lock file.
     #[arg(long)]
     update_features: bool,
+    /// Disable automatic port forwarding.
+    #[arg(long)]
+    no_auto_forward: bool,
     /// Add a manual port forwarding rule.
     #[arg(short = 'p', long = "port", value_name = "SPEC")]
     ports: Vec<ManualPort>,
@@ -190,6 +193,7 @@ fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
         no_cache,
         pull,
         update_features,
+        no_auto_forward,
         ports,
         workspace,
     } = args;
@@ -199,7 +203,7 @@ fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
     Ok(UpOptions {
         workspace,
         config_path: config,
-        cli_layer: cli_config_layer(ports, false),
+        cli_layer: cli_config_layer(ports, no_auto_forward),
         pull,
         rebuild: true,
         no_cache,
@@ -336,7 +340,10 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::Cli;
-    use super::{Commands, PortProtocol, rebuild_up_options_from_args, reject_detached_cli_ports};
+    use super::{
+        Commands, PortProtocol, cli_config_layer, rebuild_up_options_from_args,
+        reject_detached_cli_ports,
+    };
 
     #[test]
     fn clap_definition_is_valid() {
@@ -384,6 +391,10 @@ mod tests {
         assert_eq!(args.ports[1].container, 3000);
         assert_eq!(args.ports[1].host, Some(8080));
         assert_eq!(args.ports[1].host_ip, "127.0.0.1");
+
+        let cli_layer = cli_config_layer(args.ports.clone(), args.no_auto_forward);
+
+        assert_eq!(cli_layer.auto_ports.unwrap().enabled, Some(false));
     }
 
     #[test]
@@ -436,6 +447,7 @@ mod tests {
             "--no-cache",
             "--pull",
             "--update-features",
+            "--no-auto-forward",
             "-p",
             "8080:80",
         ]);
@@ -453,6 +465,7 @@ mod tests {
         assert!(args.no_cache);
         assert!(args.pull);
         assert!(args.update_features);
+        assert!(args.no_auto_forward);
         assert_eq!(args.ports.len(), 1);
         assert_eq!(args.ports[0].container, 80);
         assert_eq!(args.ports[0].host, Some(8080));
@@ -468,6 +481,30 @@ mod tests {
         let options = rebuild_up_options_from_args(args).unwrap();
 
         assert!(options.update_features);
+    }
+
+    #[test]
+    fn rebuild_no_auto_forward_disables_auto_ports() {
+        let cli = Cli::parse_from(["decune", "rebuild", "--no-auto-forward"]);
+        let Commands::Rebuild(args) = cli.command else {
+            panic!("expected rebuild command");
+        };
+
+        let options = rebuild_up_options_from_args(args).unwrap();
+
+        assert_eq!(options.cli_layer.auto_ports.unwrap().enabled, Some(false));
+    }
+
+    #[test]
+    fn rebuild_detach_allows_no_auto_forward_without_manual_ports() {
+        let cli = Cli::parse_from(["decune", "rebuild", "--detach", "--no-auto-forward"]);
+        let Commands::Rebuild(args) = cli.command else {
+            panic!("expected rebuild command");
+        };
+
+        let options = rebuild_up_options_from_args(args).unwrap();
+
+        assert_eq!(options.cli_layer.auto_ports.unwrap().enabled, Some(false));
     }
 
     #[test]
