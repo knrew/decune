@@ -315,6 +315,7 @@ pub(crate) enum LayerRunArg {
     AddHost(String),
     Dns(String),
     DnsSearch(String),
+    Passthrough { option: String, value: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

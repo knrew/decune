@@ -20,6 +20,13 @@ pub(crate) struct ContainerHostConfig {
     pub(crate) extra_hosts: Vec<String>,
     pub(crate) dns: Vec<String>,
     pub(crate) dns_search: Vec<String>,
+    pub(crate) run_args: Vec<DockerRunArg>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DockerRunArg {
+    pub(crate) option: String,
+    pub(crate) value: String,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,6 +159,12 @@ fn host_config_from_resolved(config: &ResolvedConfig) -> ContainerHostConfig {
             ResolvedRunArg::AddHost(value) => host_config.extra_hosts.push(value.clone()),
             ResolvedRunArg::Dns(value) => host_config.dns.push(value.clone()),
             ResolvedRunArg::DnsSearch(value) => host_config.dns_search.push(value.clone()),
+            ResolvedRunArg::Passthrough { option, value } => {
+                host_config.run_args.push(DockerRunArg {
+                    option: option.clone(),
+                    value: value.clone(),
+                });
+            }
         }
     }
 
@@ -282,6 +295,14 @@ mod tests {
             LayerRunArg::AddHost("host.docker.internal:host-gateway".to_owned()),
             LayerRunArg::Dns("1.1.1.1".to_owned()),
             LayerRunArg::DnsSearch("example.test".to_owned()),
+            LayerRunArg::Passthrough {
+                option: "--network".to_owned(),
+                value: "host".to_owned(),
+            },
+            LayerRunArg::Passthrough {
+                option: "--device".to_owned(),
+                value: "/dev/fuse".to_owned(),
+            },
         ];
 
         let spec = ContainerCreateSpec::from_resolved(ContainerCreateInput {
@@ -328,6 +349,19 @@ mod tests {
         );
         assert_eq!(spec.host_config.dns, vec!["1.1.1.1"]);
         assert_eq!(spec.host_config.dns_search, vec!["example.test"]);
+        assert_eq!(
+            spec.host_config.run_args,
+            vec![
+                super::DockerRunArg {
+                    option: "--network".to_owned(),
+                    value: "host".to_owned(),
+                },
+                super::DockerRunArg {
+                    option: "--device".to_owned(),
+                    value: "/dev/fuse".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]

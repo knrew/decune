@@ -369,6 +369,8 @@ GitHub CLI 連携を有効にすると、host の `gh auth token` から得た t
 
 `containerEnv` は container 作成時の環境変数です。container 内プロセスや Docker inspect から見えるため、decune は `containerEnv` を secret storage として扱いません。`${localEnv:VAR}` から展開された `containerEnv` / `remoteEnv` / `build.args` の値は state、config hash、generated Compose override、argv、通常の error 表示に平文保存しないよう redaction します。`containerEnv` と `build.args` は config hash に平文ではなく非可逆 digest として変更検出情報を含め、host 側の値が変わった既存 container / Compose project は再利用しません。Docker build arg は image layer や build output に残る可能性があるため、build secret には Docker BuildKit secret を使ってください。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser` も secret storage ではありません。literal に書かれた secret 文字列は decune が secret と判定できません。
 
+Dev Container `runArgs` は Docker option の完全 pass-through ではなく allowlist です。image/Dockerfile mode では `--init`、`--privileged`、`--cap-add`、`--security-opt`、`--add-host`、`--dns`、`--dns-search`、`--network`、`--network-alias`、`--hostname`、`--device`、`--group-add`、`--ulimit`、`--ipc`、`--shm-size`、`--gpus` を受け付けます。`--mount`、`--volume`、`--env`、`--env-file`、`--publish`、`--user`、`--workdir`、`--entrypoint`、`--label`、`--name` など decune が管理する option は拒否されます。Compose mode では `runArgs` は unsupported のため、Compose service の field に書いてください。
+
 SSH agent forwarding は `SSH_AUTH_SOCK` を `/run/decune/ssh-agent.sock` として container に渡します。`ssh_agent = "required"` の場合、host 側 socket が使えないと `up` は失敗します。
 
 ## 開発

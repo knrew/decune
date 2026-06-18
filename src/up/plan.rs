@@ -440,7 +440,8 @@ fn expand_runtime_independent_run_args(
         match run_arg {
             LayerRunArg::AddHost(value)
             | LayerRunArg::Dns(value)
-            | LayerRunArg::DnsSearch(value) => {
+            | LayerRunArg::DnsSearch(value)
+            | LayerRunArg::Passthrough { value, .. } => {
                 if !references_remote_user_variable(value)? {
                     *value = expand_variables(value, variables)
                         .context("Failed to expand runArgs value")?;
@@ -457,7 +458,8 @@ fn expand_run_args(run_args: &mut [LayerRunArg], variables: &VariableContext) ->
         match run_arg {
             LayerRunArg::AddHost(value)
             | LayerRunArg::Dns(value)
-            | LayerRunArg::DnsSearch(value) => {
+            | LayerRunArg::DnsSearch(value)
+            | LayerRunArg::Passthrough { value, .. } => {
                 *value =
                     expand_variables(value, variables).context("Failed to expand runArgs value")?;
             }
@@ -896,7 +898,8 @@ mod tests {
                 "--security-opt", "label=${localWorkspaceFolderBasename}",
                 "--add-host", "api.${localWorkspaceFolderBasename}:127.0.0.1",
                 "--dns", "dns-${localWorkspaceFolderBasename}",
-                "--dns-search=${localWorkspaceFolderBasename}.test"
+                "--dns-search=${localWorkspaceFolderBasename}.test",
+                "--hostname", "host-${localWorkspaceFolderBasename}"
               ]
             }
             "#,
@@ -923,6 +926,10 @@ mod tests {
                 LayerRunArg::AddHost("api.User Run Args:127.0.0.1".to_owned()),
                 LayerRunArg::Dns("dns-User Run Args".to_owned()),
                 LayerRunArg::DnsSearch("User Run Args.test".to_owned()),
+                LayerRunArg::Passthrough {
+                    option: "--hostname".to_owned(),
+                    value: "host-User Run Args".to_owned(),
+                },
             ]
         );
     }
@@ -944,7 +951,8 @@ mod tests {
                 "--security-opt", "label=${remoteUser}",
                 "--add-host", "api.${remoteUser}:127.0.0.1",
                 "--dns", "${remoteUser}",
-                "--dns-search=${remoteUser}.test"
+                "--dns-search=${remoteUser}.test",
+                "--hostname", "host-${remoteUser}"
               ]
             }
             "#,
@@ -968,6 +976,10 @@ mod tests {
                 LayerRunArg::AddHost("api.${remoteUser}:127.0.0.1".to_owned()),
                 LayerRunArg::Dns("${remoteUser}".to_owned()),
                 LayerRunArg::DnsSearch("${remoteUser}.test".to_owned()),
+                LayerRunArg::Passthrough {
+                    option: "--hostname".to_owned(),
+                    value: "host-${remoteUser}".to_owned(),
+                },
             ]
         );
     }
