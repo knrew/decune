@@ -524,7 +524,7 @@ dotfiles は host path を remote home に直接 bind mount しない。`/opt/de
 - `target`: remote home からの相対 path。absolute path は禁止。
 - `enabled`: 既定 true。false の場合は同一 target を無効化。
 - `read_only`: 既定 true。
-- `resolve_symlink`: 既定 true。true の場合は source を canonicalize する。file の場合は canonicalized source を直接 bind mount する。directory の場合は、配下 symlink がなければ canonicalized source を直接 bind mount する。配下 symlink があり、同一 backing root に完全一致する場合は backing root を直接 bind mount する。完全一致しない場合は state dir に mount 用 skeleton を作成し、skeleton と symlink 解決後の実ファイル/実ディレクトリを追加 bind mount する。dotfile 内容は state dir にコピーしない。broken symlink、循環 symlink、特殊ファイル、mount 数過多など直接 bind mount として表現できない場合は error。
+- `resolve_symlink`: 既定 true。true の場合は source を canonicalize する。file の場合は canonicalized source を直接 bind mount する。directory の場合は、配下 symlink がなければ canonicalized source を直接 bind mount する。配下 symlink があり、同一 backing root に完全一致する場合は backing root を直接 bind mount する。完全一致しない場合は state dir に mount 用 skeleton を作成し、skeleton と symlink 解決後の実ファイル/実ディレクトリを追加 bind mount する。skeleton と追加 bind mount の writable/read-only は `read_only` に従う。`read_only = false` の skeleton-only path に container から新規作成された file/directory は、元 source ではなく state dir の skeleton に保存される。dotfile 内容は state dir にコピーしない。broken symlink、循環 symlink、特殊ファイル、mount 数過多など直接 bind mount として表現できない場合は error。
 - `on_conflict`: `fail`, `replace-symlink`, `backup`。既定 `fail`。
 
 Compose mode では primary service に dotfiles bind mount と setup lifecycle を適用する。

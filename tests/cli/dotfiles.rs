@@ -318,7 +318,7 @@ fn up_detach_writes_directory_symlink_mounts_back_to_real_file_when_not_read_onl
             r#"
             {
               "image": "alpine:3.20",
-              "postStartCommand": "printf 'after\n' > /root/.config/lazygit/config.yml && grep -q after /root/.config/lazygit/config.yml"
+              "postStartCommand": "printf 'after\n' > /root/.config/lazygit/config.yml && grep -q after /root/.config/lazygit/config.yml && printf 'new\n' > /root/.config/lazygit/new.json && grep -q new /root/.config/lazygit/new.json"
             }
             "#,
         )
@@ -338,6 +338,19 @@ read_only = false
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let real_config = workspace_root.join("dotfiles-real/config.yml");
+    let state_root = std::env::var_os("XDG_STATE_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local").join("state"))
+        })
+        .expect("HOME should be set for decune state path");
+    let expected_skeleton = state_root
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("dotfile-mount-skeleton")
+        .join(".config")
+        .join("lazygit");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -357,6 +370,10 @@ read_only = false
             .stderr(predicate::str::contains("Started dev container"));
 
         assert_eq!(std::fs::read_to_string(&real_config).unwrap(), "after\n");
+        assert_eq!(
+            std::fs::read_to_string(expected_skeleton.join("new.json")).unwrap(),
+            "new\n"
+        );
     });
 
     runtime.block_on(async {

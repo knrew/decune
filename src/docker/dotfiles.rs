@@ -759,7 +759,7 @@ fn skeleton_dotfile_mounts(
     let mounts = vec![dotfile_bind_mount(
         &skeleton_root,
         container_target.clone(),
-        true,
+        read_only,
     )];
     let source = source.canonicalize().with_context(|| {
         format!(
@@ -1750,6 +1750,53 @@ mod tests {
         assert!(!skeleton_file.symlink_metadata().unwrap().is_symlink());
         assert_eq!(fs::read_to_string(&skeleton_file).unwrap(), "");
         assert!(!skeleton_path.join("extra.yml").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uses_writable_skeleton_mount_when_dotfile_is_not_read_only() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dotfiles_real = workspace.path().join("dotfiles-real");
+        fs::create_dir_all(&dotfiles_real).unwrap();
+        fs::write(dotfiles_real.join("config.yml"), "key: value\n").unwrap();
+        fs::write(dotfiles_real.join("extra.yml"), "extra\n").unwrap();
+
+        let source_dir = workspace.path().join(".config/lazygit");
+        fs::create_dir_all(&source_dir).unwrap();
+        unix_fs::symlink(
+            dotfiles_real.join("config.yml"),
+            source_dir.join("config.yml"),
+        )
+        .unwrap();
+
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: ".config/lazygit".to_owned(),
+                target: ".config/lazygit".to_owned(),
+                read_only: false,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts = dotfile_mount_specs(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+
+        assert_eq!(mounts.len(), 2);
+        assert_eq!(mounts[0].target, "/opt/decune/dotfiles/.config/lazygit");
+        assert!(!mounts[0].read_only);
+        assert_eq!(
+            mounts[1].target,
+            "/opt/decune/dotfiles/.config/lazygit/config.yml"
+        );
+        assert!(!mounts[1].read_only);
     }
 
     #[cfg(unix)]
