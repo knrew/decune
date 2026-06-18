@@ -56,7 +56,12 @@ pub(in crate::up) async fn prepare_up_lifecycle(
 
 pub(in crate::up) async fn start_host_daemon_for_up(
     started: &StartedUpContainer,
-) -> Result<HostDaemon> {
+) -> Result<Option<HostDaemon>> {
+    let runtime_dir = started.workspace.paths().runtime_dir();
+    if crate::host::daemon::is_host_daemon_running(runtime_dir).await {
+        return Ok(None);
+    }
+
     let target = resolve_up_exec_target(&started.plan, &started.outcome.container_name).await?;
     let remote_user = resolve_remote_user(
         &started.client,
@@ -66,21 +71,17 @@ pub(in crate::up) async fn start_host_daemon_for_up(
     )
     .await?;
 
-    let daemon = HostDaemon::start_for_remote_user(
-        started.workspace.paths().runtime_dir(),
-        remote_user.uid,
-        remote_user.gid,
-    )
-    .await
-    .with_context(|| {
-        format!(
-            "Failed to start host daemon for workspace: {}",
-            started.workspace.id()
-        )
-    })?;
+    let daemon = HostDaemon::start_for_remote_user(runtime_dir, remote_user.uid, remote_user.gid)
+        .await
+        .with_context(|| {
+            format!(
+                "Failed to start host daemon for workspace: {}",
+                started.workspace.id()
+            )
+        })?;
     let _socket_path = daemon.socket_path();
 
-    Ok(daemon)
+    Ok(Some(daemon))
 }
 
 pub(in crate::up) async fn run_container_start_lifecycle_for_up(
