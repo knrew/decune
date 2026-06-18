@@ -663,8 +663,12 @@ fn write_devcontainer(
         writer.field("run_args", |writer| {
             writer.seq(devcontainer.run_args.iter(), write_run_arg);
         });
-        writer.field("init", |writer| writer.bool(devcontainer.init));
-        writer.field("privileged", |writer| writer.bool(devcontainer.privileged));
+        writer.field("init", |writer| {
+            write_option_bool(writer, devcontainer.init)
+        });
+        writer.field("privileged", |writer| {
+            write_option_bool(writer, devcontainer.privileged)
+        });
         writer.field("cap_add", |writer| {
             writer.seq(devcontainer.cap_add.iter(), |writer, capability| {
                 writer.string(capability);

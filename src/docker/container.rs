@@ -140,8 +140,8 @@ pub(crate) async fn remove_container(
 
 fn host_config_from_resolved(config: &ResolvedConfig) -> ContainerHostConfig {
     let mut host_config = ContainerHostConfig {
-        init: config.devcontainer.init,
-        privileged: config.devcontainer.privileged,
+        init: config.devcontainer.init_enabled(),
+        privileged: config.devcontainer.privileged_enabled(),
         cap_add: config.devcontainer.cap_add.clone(),
         security_opt: config.devcontainer.security_opt.clone(),
         ..ContainerHostConfig::default()
@@ -274,8 +274,8 @@ mod tests {
             host_ip: Some("127.0.0.1".to_owned()),
             protocol: PortProtocol::Tcp,
         }];
-        config.devcontainer.init = true;
-        config.devcontainer.privileged = true;
+        config.devcontainer.init = Some(true);
+        config.devcontainer.privileged = Some(true);
         config.devcontainer.cap_add = vec!["SYS_PTRACE".to_owned()];
         config.devcontainer.security_opt = vec!["seccomp=unconfined".to_owned()];
         config.devcontainer.run_args = vec![

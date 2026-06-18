@@ -1374,7 +1374,7 @@ container = 5432
         let mut config = ResolvedConfig::default();
         config.credentials.git.enabled = false;
         config.credentials.github.enabled = false;
-        config.devcontainer.privileged = true;
+        config.devcontainer.privileged = Some(true);
         config.devcontainer.cap_add = vec!["SYS_PTRACE".to_owned()];
         config.devcontainer.security_opt = vec!["seccomp=unconfined".to_owned()];
         config.devcontainer.publish_ports = vec![ResolvedPublishPort {

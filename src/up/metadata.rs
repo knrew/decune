@@ -594,9 +594,11 @@ fn compose_generated_override_hash_input(
         writer.field("container_user", |writer| {
             writer.option_string(plan.config.devcontainer.container_user.as_deref());
         });
-        writer.field("init", |writer| writer.bool(plan.config.devcontainer.init));
+        writer.field("init", |writer| {
+            write_option_bool(writer, plan.config.devcontainer.init);
+        });
         writer.field("privileged", |writer| {
-            writer.bool(plan.config.devcontainer.privileged);
+            write_option_bool(writer, plan.config.devcontainer.privileged);
         });
         writer.field("cap_add", |writer| {
             writer.seq(plan.config.devcontainer.cap_add.iter(), |writer, value| {
@@ -668,6 +670,13 @@ fn generated_override_semantic_image(plan: &UpPlan) -> &str {
 
 fn generated_override_semantic_pull_policy_never(plan: &UpPlan) -> bool {
     plan.image != plan.base_image
+}
+
+fn write_option_bool(writer: &mut CanonicalWriter, value: Option<bool>) {
+    match value {
+        Some(value) => writer.bool(value),
+        None => writer.none(),
+    }
 }
 
 fn generated_override_semantic_labels(
@@ -1158,7 +1167,7 @@ pub(in crate::up) fn untrusted_repository_warnings(config: &ResolvedConfig) -> V
                 .to_owned(),
         );
     }
-    if config.devcontainer.privileged {
+    if config.devcontainer.privileged_enabled() {
         warnings.push(
             "This dev container requests privileged mode, which grants broad container privileges. Remove privileged=true before running untrusted repositories."
                 .to_owned(),
@@ -1533,6 +1542,31 @@ mod tests {
         .unwrap();
 
         assert_eq!(first.content_hash, second.content_hash);
+    }
+
+    #[test]
+    fn generated_override_semantic_hash_distinguishes_unspecified_and_false_security_booleans() {
+        let unspecified = compose_hash_plan("stable-hash", "decune/test:first", "1.0.0");
+        let mut explicit_false = compose_hash_plan("stable-hash", "decune/test:first", "1.0.0");
+        explicit_false.config.devcontainer.init = Some(false);
+        explicit_false.config.devcontainer.privileged = Some(false);
+
+        let first = compose_generated_override_hash_input(
+            PathBuf::from("/state/compose.override.yaml"),
+            &unspecified,
+            &[],
+            None,
+        )
+        .unwrap();
+        let second = compose_generated_override_hash_input(
+            PathBuf::from("/state/compose.override.yaml"),
+            &explicit_false,
+            &[],
+            None,
+        )
+        .unwrap();
+
+        assert_ne!(first.content_hash, second.content_hash);
     }
 
     fn compose_hash_plan(config_hash: &str, image: &str, version: &str) -> UpPlan {

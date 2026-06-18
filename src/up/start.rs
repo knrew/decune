@@ -924,11 +924,11 @@ fn generated_compose_override_patch(
     if let Some(user) = compose_override_user(plan)? {
         service = service.user(user);
     }
-    if plan.config.devcontainer.init {
-        service = service.init(true);
+    if let Some(init) = plan.config.devcontainer.init {
+        service = service.init(init);
     }
-    if plan.config.devcontainer.privileged {
-        service = service.privileged(true);
+    if let Some(privileged) = plan.config.devcontainer.privileged {
+        service = service.privileged(privileged);
     }
     if let Some(startup) = startup {
         service = service
@@ -1991,6 +1991,18 @@ mod tests {
 
         assert!(content.contains("image: 'alpine:3.20'"));
         assert!(!content.contains("pull_policy:"));
+    }
+
+    #[test]
+    fn generated_compose_override_writes_explicit_false_security_booleans() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.config.devcontainer.init = Some(false);
+        plan.config.devcontainer.privileged = Some(false);
+
+        let content = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(content.contains("    init: false\n"));
+        assert!(content.contains("    privileged: false\n"));
     }
 
     #[test]

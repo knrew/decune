@@ -1294,6 +1294,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_false_security_booleans_as_explicit_metadata_values() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "init": false,
+            "privileged": false
+        }))
+        .unwrap();
+
+        assert_eq!(metadata.init(), Some(false));
+        assert_eq!(metadata.privileged(), Some(false));
+    }
+
+    #[test]
     fn parses_compose_metadata_from_string_file() {
         let metadata = parse_metadata(json!({
             "dockerComposeFile": "compose.yml",
@@ -1934,8 +1947,8 @@ mod tests {
         assert_eq!(config.devcontainer.container_user.as_deref(), Some("root"));
         assert!(!config.devcontainer.update_remote_user_uid);
         assert!(!config.devcontainer.override_command);
-        assert!(config.devcontainer.init);
-        assert!(config.devcontainer.privileged);
+        assert_eq!(config.devcontainer.init, Some(true));
+        assert_eq!(config.devcontainer.privileged, Some(true));
         assert_eq!(config.devcontainer.cap_add, vec!["SYS_PTRACE"]);
         assert_eq!(config.devcontainer.security_opt, vec!["seccomp=unconfined"]);
         assert_eq!(
