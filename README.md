@@ -367,13 +367,14 @@ Compose mode の publish は Compose file の `ports` に委譲します。Compo
 `decune up` は、設定どおり有効な security surface を `Notice:` として表示します。設定が無視される、機能が縮退する、または補助処理の失敗から継続する場合は `Warning:` として表示します。
 
 untrusted repository では、認証 forwarding を無効にするか read-only に制限する設定を推奨します。
-Git HTTPS credential lookup だけが必要な場合は、host credential store への `store` / `erase` を抑止する `https = "host-helper-read-only"` も選択できます。
+Git HTTPS credential lookup だけが必要な場合は、host credential store への `store` / `erase` を抑止する `https = "host-helper-read-only"` と、SSH agent forwarding を無効化する `ssh_agent = "off"` を組み合わせます。
 
 ```toml
 version = 1
 
 [credentials.git]
 https = "host-helper-read-only"
+ssh_agent = "off"
 
 [credentials.github]
 enabled = false
@@ -381,7 +382,7 @@ enabled = false
 
 完全に credential を渡したくない場合は `[credentials.git].enabled = false` にしてください。
 
-`[credentials.git].https = "host-helper"` は container の Git credential `get` / `store` / `erase` を host の `git credential fill` / `approve` / `reject` に forwarding します。`host-helper-read-only` は helper の staging と mount は同じですが、`get` だけを host に forwarding し、`store` / `erase` は host に送らず成功 no-op として扱います。
+`[credentials.git].https = "host-helper"` は container の Git credential `get` / `store` / `erase` を host の `git credential fill` / `approve` / `reject` に forwarding します。`host-helper-read-only` は helper の staging と mount は同じですが、`get` だけを host に forwarding し、`store` / `erase` は host に送らず成功 no-op として扱います。SSH agent forwarding は別の認証経路なので、不要な場合は `ssh_agent = "off"` を設定してください。
 
 GitHub CLI 連携を有効にすると、host の `gh auth token` から得た token は一時 file として container に read-only mount されます。token は Docker label、container env、state、config hash、image layer には保存しませんが、container 内プロセスからは token file に到達できます。
 
