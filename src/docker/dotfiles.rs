@@ -166,14 +166,15 @@ fn dotfile_mount_spec(
         );
     }
 
-    let tree = collect_dotfile_tree(&source)?;
-    if !tree.has_symlink {
+    if !directory_contains_any_symlink(&source)? {
         return Ok(vec![dotfile_bind_mount(
             &source,
             target,
             dotfile.dotfile.read_only,
         )]);
     }
+
+    let tree = collect_dotfile_tree(&source)?;
     if let Some(backing_root) = backing_root_mount_source(&tree)? {
         return Ok(vec![dotfile_bind_mount(
             &backing_root,
@@ -462,6 +463,50 @@ fn collect_dotfile_tree(source: &Path) -> Result<DotfileTree> {
     Ok(tree)
 }
 
+fn directory_contains_any_symlink(source: &Path) -> Result<bool> {
+    let mut pending = vec![source.to_path_buf()];
+    while let Some(directory) = pending.pop() {
+        let entries = fs::read_dir(&directory).with_context(|| {
+            format!(
+                "Failed to read dotfile source directory: {}",
+                directory.display()
+            )
+        })?;
+        for entry in entries {
+            let entry = entry.with_context(|| {
+                format!("Failed to read directory entry in: {}", directory.display())
+            })?;
+            let name = entry.file_name();
+            let _name = name.to_str().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Dotfile source entry is not valid Unicode: {}",
+                    entry.path().display()
+                )
+            })?;
+            let metadata = fs::symlink_metadata(entry.path()).with_context(|| {
+                format!(
+                    "Failed to read dotfile source metadata: {}",
+                    entry.path().display()
+                )
+            })?;
+            let file_type = metadata.file_type();
+            if file_type.is_symlink() {
+                return Ok(true);
+            }
+            if file_type.is_dir() {
+                pending.push(entry.path());
+            } else if !file_type.is_file() {
+                bail!(
+                    "Dotfile source entry must be a file, directory, or symlink: {}",
+                    entry.path().display()
+                );
+            }
+        }
+    }
+
+    Ok(false)
+}
+
 fn collect_logical_directory(
     source: &Path,
     relative_parent: &Path,
@@ -646,13 +691,11 @@ fn backing_root_matches_tree(candidate: &Path, tree: &DotfileTree) -> Result<boo
         if metadata.file_type().is_symlink() || kind_from_metadata(&metadata) != Some(entry.kind) {
             return Ok(false);
         }
-        if entry.kind == DotfileTreeEntryKind::File {
-            let Ok(real_path) = candidate_path.canonicalize() else {
-                return Ok(false);
-            };
-            if real_path != entry.real_path {
-                return Ok(false);
-            }
+        let Ok(real_path) = candidate_path.canonicalize() else {
+            return Ok(false);
+        };
+        if real_path != entry.real_path {
+            return Ok(false);
         }
     }
 
@@ -1211,6 +1254,45 @@ mod tests {
         assert!(!workspace.path().join(DOTFILE_MOUNT_SKELETON_DIR).exists());
     }
 
+    #[test]
+    fn mounts_deep_directory_without_symlinks_directly() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("deep-dotfiles");
+        let mut current = source.clone();
+        for index in 0..=MAX_DOTFILE_TREE_DEPTH + 1 {
+            current = current.join(format!("level-{index}"));
+            fs::create_dir_all(&current).unwrap();
+        }
+        fs::write(current.join("config.txt"), "content").unwrap();
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: "deep-dotfiles".to_owned(),
+                target: ".config/deep".to_owned(),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts = dotfile_mount_specs(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+
+        assert_eq!(mounts.len(), 1);
+        assert_eq!(
+            mounts[0].source.as_deref(),
+            Some(source.canonicalize().unwrap().to_str().unwrap())
+        );
+        assert_eq!(mounts[0].target, "/opt/decune/dotfiles/.config/deep");
+        assert!(!workspace.path().join(DOTFILE_MOUNT_SKELETON_DIR).exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn preserves_dotfile_symlink_source_when_requested() {
@@ -1750,6 +1832,75 @@ mod tests {
         assert!(!skeleton_file.symlink_metadata().unwrap().is_symlink());
         assert_eq!(fs::read_to_string(&skeleton_file).unwrap(), "");
         assert!(!skeleton_path.join("extra.yml").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uses_skeleton_when_backing_root_directory_resolves_elsewhere() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dotfiles_real = workspace.path().join("dotfiles-real");
+        fs::create_dir_all(dotfiles_real.join("plugins")).unwrap();
+        fs::write(dotfiles_real.join("config.yml"), "key: value\n").unwrap();
+
+        let source_dir = workspace.path().join(".config/lazygit");
+        fs::create_dir_all(source_dir.join("plugins")).unwrap();
+        unix_fs::symlink(
+            dotfiles_real.join("config.yml"),
+            source_dir.join("config.yml"),
+        )
+        .unwrap();
+
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: ".config/lazygit".to_owned(),
+                target: ".config/lazygit".to_owned(),
+                read_only: false,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts = dotfile_mount_specs(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+
+        let skeleton_path = workspace
+            .path()
+            .join(DOTFILE_MOUNT_SKELETON_DIR)
+            .join(".config/lazygit");
+        assert_eq!(mounts.len(), 3);
+        assert_eq!(
+            mounts[0].source.as_deref(),
+            Some(skeleton_path.to_str().unwrap())
+        );
+        assert_eq!(mounts[0].target, "/opt/decune/dotfiles/.config/lazygit");
+        assert!(!mounts[0].read_only);
+        assert_eq!(
+            mounts[1].source.as_deref(),
+            Some(dotfiles_real.join("config.yml").to_str().unwrap())
+        );
+        assert_eq!(
+            mounts[1].target,
+            "/opt/decune/dotfiles/.config/lazygit/config.yml"
+        );
+        assert_eq!(
+            mounts[2].source.as_deref(),
+            Some(source_dir.join("plugins").to_str().unwrap())
+        );
+        assert_eq!(
+            mounts[2].target,
+            "/opt/decune/dotfiles/.config/lazygit/plugins"
+        );
+        assert!(!mounts.iter().any(|mount| {
+            mount.source.as_deref() == dotfiles_real.to_str()
+                && mount.target == "/opt/decune/dotfiles/.config/lazygit"
+        }));
     }
 
     #[cfg(unix)]
