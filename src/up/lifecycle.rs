@@ -8,7 +8,7 @@ use crate::{
         run_attach_lifecycle, run_container_start_lifecycle,
     },
     docker::user::resolve_remote_user,
-    host::daemon::{HostDaemon, is_host_daemon_running},
+    host::daemon::{HostDaemon, HostDaemonStartError, host_daemon_metadata_matches},
     ui,
     up::{exec_target::resolve_up_exec_target, start::StartedUpContainer},
 };
@@ -90,7 +90,9 @@ async fn start_host_daemon_for_remote_user(
             Ok(Some(daemon))
         }
         Err(error) => {
-            if is_host_daemon_running(runtime_dir).await {
+            if HostDaemonStartError::is_socket_already_in_use(&error)
+                && host_daemon_metadata_matches(runtime_dir, remote_uid)
+            {
                 return Ok(None);
             }
             Err(error).with_context(|| {
@@ -126,9 +128,14 @@ pub(in crate::up) async fn run_attach_lifecycle_for_up(
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+    use std::{
+        fs,
+        os::unix::{fs::PermissionsExt, fs::symlink},
+        path::Path,
+    };
 
     use tempfile::TempDir;
+    use tokio::net::UnixListener;
 
     use super::start_host_daemon_for_remote_user;
     use crate::host::daemon::HostDaemon;
@@ -143,9 +150,11 @@ mod tests {
         let runtime_dir = temp.path().join("runtime");
 
         runtime.block_on(async {
-            let existing = HostDaemon::start(&runtime_dir).await.unwrap();
             let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
             let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing = HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, remote_gid)
+                .await
+                .unwrap();
 
             let result = start_host_daemon_for_remote_user(
                 &runtime_dir,
@@ -159,6 +168,65 @@ mod tests {
             assert_eq!(mode(&runtime_dir), 0o711);
 
             existing.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn host_daemon_start_does_not_ignore_symlink_runtime_dir_with_active_socket() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let target_dir = temp.path().join("target-runtime");
+        let runtime_dir = temp.path().join("runtime");
+        fs::create_dir(&target_dir).unwrap();
+        symlink(&target_dir, &runtime_dir).unwrap();
+
+        runtime.block_on(async {
+            let _listener = UnixListener::bind(target_dir.join("host-daemon.sock")).unwrap();
+
+            let error =
+                start_host_daemon_for_remote_user(&runtime_dir, "workspace-test", 20001, 20001)
+                    .await
+                    .unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("Failed to start host daemon for workspace: workspace-test")
+            );
+            assert!(
+                format!("{error:#}")
+                    .contains("host daemon runtime directory must not be a symlink")
+            );
+        });
+    }
+
+    #[test]
+    fn host_daemon_start_does_not_reuse_active_socket_without_decune_metadata() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        fs::create_dir(&runtime_dir).unwrap();
+
+        runtime.block_on(async {
+            let _listener = UnixListener::bind(runtime_dir.join("host-daemon.sock")).unwrap();
+
+            let error =
+                start_host_daemon_for_remote_user(&runtime_dir, "workspace-test", 20001, 20001)
+                    .await
+                    .unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("Failed to start host daemon for workspace: workspace-test")
+            );
+            assert!(format!("{error:#}").contains("Host daemon socket is already in use"));
         });
     }
 
