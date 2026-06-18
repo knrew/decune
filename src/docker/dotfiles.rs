@@ -47,6 +47,8 @@ pub(crate) async fn setup_dotfiles(
         return Ok(());
     }
 
+    fix_dotfiles_staging_ownership(client, container, remote_user).await;
+
     exec_capture(
         client,
         container,
@@ -63,6 +65,32 @@ pub(crate) async fn setup_dotfiles(
     .with_context(|| format!("Failed to setup dotfiles in container: {container}"))?;
 
     Ok(())
+}
+
+async fn fix_dotfiles_staging_ownership(
+    client: &DockerClient,
+    container: &str,
+    remote_user: &ResolvedRemoteUser,
+) {
+    let script = format!(
+        "chown {}:{} '{}'",
+        remote_user.uid,
+        remote_user.gid,
+        DOTFILES_STAGING_ROOT,
+    );
+    let _ = exec_capture(
+        client,
+        container,
+        &ExecCommandSpec {
+            command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
+            user: Some("root".to_owned()),
+            working_dir: None,
+            env: Default::default(),
+            redactions: Vec::new(),
+            tty: false,
+        },
+    )
+    .await;
 }
 
 fn dotfile_setup_script(
