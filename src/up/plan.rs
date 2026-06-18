@@ -199,6 +199,7 @@ fn build_up_plan_inner(
         &config,
         &mount_variables,
         mount_resolution,
+        workspace.paths().state_dir(),
     )?;
     let mut hash_input = ConfigHashInput::new(&config);
     if let Some(context) = &build_context {
