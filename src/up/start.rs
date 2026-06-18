@@ -258,7 +258,8 @@ fn state_matches_container_snapshot(
     state: &WorkspaceState,
     container: &StateContainerSnapshot,
 ) -> bool {
-    state.container_id == container.container_id && state.config_hash == container.config_hash
+    state::container_ids_match(&state.container_id, &container.container_id)
+        && state.config_hash == container.config_hash
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
