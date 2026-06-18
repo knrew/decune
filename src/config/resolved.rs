@@ -114,8 +114,8 @@ pub(crate) struct ResolvedDevcontainer {
     pub(crate) port_attributes: BTreeMap<String, ResolvedPortAttributes>,
     pub(crate) other_ports_attributes: Option<ResolvedPortAttributes>,
     pub(crate) run_args: Vec<ResolvedRunArg>,
-    pub(crate) init: bool,
-    pub(crate) privileged: bool,
+    pub(crate) init: Option<bool>,
+    pub(crate) privileged: Option<bool>,
     pub(crate) cap_add: Vec<String>,
     pub(crate) security_opt: Vec<String>,
     pub(crate) entrypoints: Vec<String>,
@@ -142,14 +142,24 @@ impl Default for ResolvedDevcontainer {
             port_attributes: BTreeMap::new(),
             other_ports_attributes: None,
             run_args: Vec::new(),
-            init: false,
-            privileged: false,
+            init: None,
+            privileged: None,
             cap_add: Vec::new(),
             security_opt: Vec::new(),
             entrypoints: Vec::new(),
             shutdown_action: ResolvedShutdownAction::StopContainer,
             lifecycle: None,
         }
+    }
+}
+
+impl ResolvedDevcontainer {
+    pub(crate) fn init_enabled(&self) -> bool {
+        self.init.unwrap_or(false)
+    }
+
+    pub(crate) fn privileged_enabled(&self) -> bool {
+        self.privileged.unwrap_or(false)
     }
 }
 

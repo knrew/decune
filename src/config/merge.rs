@@ -94,10 +94,10 @@ fn merge_feature_devcontainer_metadata_into_resolved(
     }
     target.run_args.splice(0..0, devcontainer.run_args);
     if let Some(init) = devcontainer.init {
-        target.init = init;
+        target.init = Some(init);
     }
     if let Some(privileged) = devcontainer.privileged {
-        target.privileged = privileged;
+        target.privileged = Some(privileged);
     }
     append_unique(&mut target.cap_add, devcontainer.cap_add);
     append_unique(&mut target.security_opt, devcontainer.security_opt);
@@ -440,8 +440,8 @@ impl MergeAccumulator {
 
     fn into_resolved(mut self) -> ResolvedConfig {
         self.apply_forward_port_attributes();
-        self.devcontainer.init = self.devcontainer_init.unwrap_or(false);
-        self.devcontainer.privileged = self.devcontainer_privileged.unwrap_or(false);
+        self.devcontainer.init = self.devcontainer_init;
+        self.devcontainer.privileged = self.devcontainer_privileged;
         self.ports
             .sort_by_key(|entry| std::cmp::Reverse(entry.source_priority));
 
@@ -923,8 +923,8 @@ command = "cli.sh"
             ..ConfigMergeInput::default()
         });
 
-        assert!(!config.devcontainer.init);
-        assert!(!config.devcontainer.privileged);
+        assert_eq!(config.devcontainer.init, Some(false));
+        assert_eq!(config.devcontainer.privileged, Some(false));
         assert_eq!(
             config.devcontainer.cap_add,
             vec!["SYS_PTRACE", "SYS_ADMIN", "NET_ADMIN"]
@@ -953,8 +953,8 @@ command = "cli.sh"
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.devcontainer.init);
-        assert!(config.devcontainer.privileged);
+        assert_eq!(config.devcontainer.init, Some(true));
+        assert_eq!(config.devcontainer.privileged, Some(true));
     }
 
     #[test]
@@ -987,16 +987,18 @@ command = "cli.sh"
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.devcontainer.init);
-        assert!(config.devcontainer.privileged);
+        assert_eq!(config.devcontainer.init, Some(true));
+        assert_eq!(config.devcontainer.privileged, Some(true));
     }
 
     #[test]
     fn devcontainer_security_booleans_default_to_false_when_unspecified() {
         let config = resolve_config(ConfigMergeInput::default());
 
-        assert!(!config.devcontainer.init);
-        assert!(!config.devcontainer.privileged);
+        assert_eq!(config.devcontainer.init, None);
+        assert_eq!(config.devcontainer.privileged, None);
+        assert!(!config.devcontainer.init_enabled());
+        assert!(!config.devcontainer.privileged_enabled());
     }
 
     #[test]

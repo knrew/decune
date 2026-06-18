@@ -1947,8 +1947,8 @@ mod tests {
         assert_eq!(config.devcontainer.container_user.as_deref(), Some("root"));
         assert!(!config.devcontainer.update_remote_user_uid);
         assert!(!config.devcontainer.override_command);
-        assert!(config.devcontainer.init);
-        assert!(config.devcontainer.privileged);
+        assert_eq!(config.devcontainer.init, Some(true));
+        assert_eq!(config.devcontainer.privileged, Some(true));
         assert_eq!(config.devcontainer.cap_add, vec!["SYS_PTRACE"]);
         assert_eq!(config.devcontainer.security_opt, vec!["seccomp=unconfined"]);
         assert_eq!(
