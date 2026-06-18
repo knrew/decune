@@ -214,13 +214,29 @@ fn reserved_host_port_conflicts(
 }
 
 fn host_ip_bindings_conflict(left: &str, right: &str) -> bool {
-    left == right || host_ip_is_wildcard(left) || host_ip_is_wildcard(right)
+    if left == right {
+        return true;
+    }
+
+    let Some(left) = parse_host_ip(left) else {
+        return false;
+    };
+    let Some(right) = parse_host_ip(right) else {
+        return false;
+    };
+
+    (left.is_unspecified() || right.is_unspecified()) && same_ip_family(left, right)
 }
 
-fn host_ip_is_wildcard(value: &str) -> bool {
-    value
-        .parse::<IpAddr>()
-        .is_ok_and(|address| address.is_unspecified())
+fn parse_host_ip(value: &str) -> Option<IpAddr> {
+    value.parse::<IpAddr>().ok()
+}
+
+fn same_ip_family(left: IpAddr, right: IpAddr) -> bool {
+    matches!(
+        (left, right),
+        (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))
+    )
 }
 
 fn host_port_available(host_ip: &str, host_port: u16) -> Result<bool> {
@@ -311,6 +327,45 @@ mod tests {
 
         assert_eq!(resolved[0].host, 3000);
         assert_eq!(resolved[1].host, 3001);
+    }
+
+    #[test]
+    fn resolver_keeps_ipv4_wildcard_and_ipv6_loopback_separate() {
+        let ports = vec![
+            manual_port(3000, Some(3000), "0.0.0.0", false),
+            manual_port(3001, Some(3000), "::1", false),
+        ];
+
+        let resolved = resolve_forward_ports_with(&ports, |_, _| Ok(true)).unwrap();
+
+        assert_eq!(resolved[0].host, 3000);
+        assert_eq!(resolved[1].host, 3000);
+    }
+
+    #[test]
+    fn resolver_keeps_ipv6_loopback_and_ipv4_wildcard_separate() {
+        let ports = vec![
+            manual_port(3000, Some(3000), "::1", false),
+            manual_port(3001, Some(3000), "0.0.0.0", false),
+        ];
+
+        let resolved = resolve_forward_ports_with(&ports, |_, _| Ok(true)).unwrap();
+
+        assert_eq!(resolved[0].host, 3000);
+        assert_eq!(resolved[1].host, 3000);
+    }
+
+    #[test]
+    fn resolver_allows_required_ipv6_loopback_with_ipv4_wildcard() {
+        let ports = vec![
+            manual_port(3000, Some(3000), "0.0.0.0", false),
+            manual_port(3001, Some(3000), "::1", true),
+        ];
+
+        let resolved = resolve_forward_ports_with(&ports, |_, _| Ok(true)).unwrap();
+
+        assert_eq!(resolved[0].host, 3000);
+        assert_eq!(resolved[1].host, 3000);
     }
 
     #[test]

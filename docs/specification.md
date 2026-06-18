@@ -865,6 +865,8 @@ manual forwarding source priority:
 
 host port が占有済みの場合、`require_local = true` なら失敗し、false なら昇順で空き port を探索する。
 
+forwarding の host port reservation は IP family 境界を尊重する。IPv4 wildcard `0.0.0.0` は IPv4 address とだけ衝突し、IPv6 loopback / concrete address とは同一 host port を共有できる組み合わせとして扱う。同様に IPv6 wildcard `::` は IPv6 address とだけ衝突する。
+
 Compose mode の service 解決:
 
 - `forwardPorts` number: primary service の port。
