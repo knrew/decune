@@ -131,18 +131,18 @@ pub(crate) fn spinner(message: &str) -> Spinner {
         }
         pb.enable_steady_tick(Duration::from_millis(80));
         Spinner {
-            inner: SpinnerInner::Tty(pb),
+            inner: Some(SpinnerInner::Tty(pb)),
         }
     } else {
         write_plain("Info", message);
         Spinner {
-            inner: SpinnerInner::Plain,
+            inner: Some(SpinnerInner::Plain),
         }
     }
 }
 
 pub(crate) struct Spinner {
-    inner: SpinnerInner,
+    inner: Option<SpinnerInner>,
 }
 
 enum SpinnerInner {
@@ -151,9 +151,9 @@ enum SpinnerInner {
 }
 
 impl Spinner {
-    pub(crate) fn finish(self, done_message: &str) {
-        match &self.inner {
-            SpinnerInner::Tty(pb) => {
+    pub(crate) fn finish(mut self, done_message: &str) {
+        match self.inner.take() {
+            Some(SpinnerInner::Tty(pb)) => {
                 let (action, detail) = split_action(done_message);
                 if action.is_empty() {
                     let done_line = format!("{done_message}  {}", style("✓").green());
@@ -174,30 +174,28 @@ impl Spinner {
                     pb.set_prefix(action.to_owned());
                     pb.finish_with_message(done_line);
                 }
-                std::mem::forget(self);
             }
-            SpinnerInner::Plain => {
+            Some(SpinnerInner::Plain) => {
                 write_plain("Done", done_message);
-                std::mem::forget(self);
             }
+            None => {}
         }
     }
 
-    #[expect(dead_code)]
-    pub(crate) fn finish_quiet(self) {
-        match &self.inner {
-            SpinnerInner::Tty(pb) => pb.finish_and_clear(),
-            SpinnerInner::Plain => {}
+    #[cfg_attr(not(test), expect(dead_code))]
+    pub(crate) fn finish_quiet(mut self) {
+        match self.inner.take() {
+            Some(SpinnerInner::Tty(pb)) => pb.finish_and_clear(),
+            Some(SpinnerInner::Plain) | None => {}
         }
-        std::mem::forget(self);
     }
 }
 
 impl Drop for Spinner {
     fn drop(&mut self) {
         match &self.inner {
-            SpinnerInner::Tty(pb) => pb.finish_and_clear(),
-            SpinnerInner::Plain => {}
+            Some(SpinnerInner::Tty(pb)) => pb.finish_and_clear(),
+            Some(SpinnerInner::Plain) | None => {}
         }
     }
 }
@@ -207,7 +205,9 @@ mod tests {
     use std::io::Write;
     use std::time::Duration;
 
-    use super::split_action;
+    use indicatif::ProgressBar;
+
+    use super::{Spinner, SpinnerInner, split_action};
 
     #[test]
     fn split_action_extracts_first_word() {
@@ -220,6 +220,46 @@ mod tests {
     #[test]
     fn split_action_handles_no_space() {
         assert_eq!(split_action("message"), ("", "message"));
+    }
+
+    #[test]
+    fn tty_spinner_finish_drops_progress_bar() {
+        let pb = ProgressBar::hidden();
+        let weak = pb.downgrade();
+        let spinner = Spinner {
+            inner: Some(SpinnerInner::Tty(pb)),
+        };
+
+        spinner.finish("Done building");
+
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn tty_spinner_finish_quiet_drops_progress_bar() {
+        let pb = ProgressBar::hidden();
+        let weak = pb.downgrade();
+        let spinner = Spinner {
+            inner: Some(SpinnerInner::Tty(pb)),
+        };
+
+        spinner.finish_quiet();
+
+        assert!(weak.upgrade().is_none());
+    }
+
+    #[test]
+    fn unfinished_tty_spinner_drop_drops_progress_bar() {
+        let weak = {
+            let pb = ProgressBar::hidden();
+            let weak = pb.downgrade();
+            let _spinner = Spinner {
+                inner: Some(SpinnerInner::Tty(pb)),
+            };
+            weak
+        };
+
+        assert!(weak.upgrade().is_none());
     }
 
     #[test]
