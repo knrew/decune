@@ -203,6 +203,7 @@ impl HostDaemon {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn socket_path(&self) -> &Path {
         &self.socket_path
     }
@@ -364,6 +365,35 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
     }
 
     Ok(true)
+}
+
+pub(crate) async fn ensure_host_daemon_available_for_remote_user(
+    runtime_dir: &Path,
+    remote_uid: u32,
+    remote_gid: u32,
+) -> Result<bool> {
+    if !ensure_host_daemon_access_for_remote_user(runtime_dir, remote_uid, remote_gid)? {
+        return Ok(false);
+    }
+
+    let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
+    match UnixStream::connect(&socket_path).await {
+        Ok(_stream) => Ok(true),
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::ConnectionRefused | io::ErrorKind::NotFound
+            ) =>
+        {
+            Ok(false)
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to probe host daemon socket: {}",
+                socket_path.display()
+            )
+        }),
+    }
 }
 
 async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
