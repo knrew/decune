@@ -874,6 +874,12 @@ fn write_run_arg(writer: &mut CanonicalWriter, run_arg: &ResolvedRunArg) {
                 writer.field("value", |writer| writer.string(value));
             });
         }
+        ResolvedRunArg::Passthrough { option, value } => {
+            writer.object("Passthrough", |writer| {
+                writer.field("option", |writer| writer.string(option));
+                writer.field("value", |writer| writer.string(value));
+            });
+        }
     }
 }
 
@@ -1121,7 +1127,7 @@ mod tests {
     use crate::config::{
         layer::{
             LayerDevcontainerBuild, LayerDevcontainerMetadata, LayerDevcontainerMount,
-            LayerDevcontainerSource, LayerPortAttributes, LayerPublishPort,
+            LayerDevcontainerSource, LayerPortAttributes, LayerPublishPort, LayerRunArg,
         },
         merge::{ConfigLayer, ConfigMergeInput, resolve_config},
         types::{OnAutoForward, PortProtocol},
@@ -1328,6 +1334,38 @@ on_auto_forward = "silent"
         });
 
         assert_ne!(hash_for(&without_publish), hash_for(&with_publish));
+    }
+
+    #[test]
+    fn passthrough_run_arg_value_change_changes_hash() {
+        let first = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    run_args: vec![LayerRunArg::Passthrough {
+                        option: "--network".to_owned(),
+                        value: "host".to_owned(),
+                    }],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+        let second = resolve_config(ConfigMergeInput {
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    run_args: vec![LayerRunArg::Passthrough {
+                        option: "--network".to_owned(),
+                        value: "bridge".to_owned(),
+                    }],
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_ne!(hash_for(&first), hash_for(&second));
     }
 
     #[test]

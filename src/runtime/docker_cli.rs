@@ -637,6 +637,9 @@ fn add_host_config_args(mut command: RuntimeCommand, spec: &ContainerCreateSpec)
     for dns_search in &spec.host_config.dns_search {
         command = command.arg("--dns-search").arg(dns_search);
     }
+    for arg in &spec.host_config.run_args {
+        command = command.arg(&arg.option).arg(&arg.value);
+    }
     command
 }
 
@@ -896,7 +899,7 @@ mod tests {
     use crate::{
         config::types::{MountType, PortProtocol},
         docker::{
-            container::{ContainerCreateSpec, ContainerHostConfig},
+            container::{ContainerCreateSpec, ContainerHostConfig, DockerRunArg},
             exec::ExecCommandSpec,
             mounts::{DockerMountSpec, MountBindOptions, MountVolumeOptions},
             ports::DockerPublishPort,
@@ -1084,6 +1087,16 @@ mod tests {
                 extra_hosts: Vec::new(),
                 dns: Vec::new(),
                 dns_search: Vec::new(),
+                run_args: vec![
+                    DockerRunArg {
+                        option: "--network".to_owned(),
+                        value: "host".to_owned(),
+                    },
+                    DockerRunArg {
+                        option: "--device".to_owned(),
+                        value: "/dev/fuse".to_owned(),
+                    },
+                ],
             },
         };
 
@@ -1098,6 +1111,8 @@ mod tests {
             arg_after(&command, "--publish"),
             Some("127.0.0.1:18080:8080/tcp")
         );
+        assert_eq!(arg_after(&command, "--network"), Some("host"));
+        assert_eq!(arg_after(&command, "--device"), Some("/dev/fuse"));
         assert!(!command.sanitized_display().contains("sh -c docker"));
     }
 

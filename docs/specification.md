@@ -290,8 +290,19 @@ v0.1 で image/Dockerfile mode が受け付ける `runArgs` は以下のみ。
 - `--add-host <HOST:IP>`
 - `--dns <IP>`
 - `--dns-search <DOMAIN>`
+- `--network <NETWORK>`
+- `--network-alias <ALIAS>`
+- `--hostname <HOSTNAME>`
+- `--device <HOST_PATH[:CONTAINER_PATH[:PERMISSIONS]]>`
+- `--group-add <GROUP>`
+- `--ulimit <NAME=SOFT[:HARD]>`
+- `--ipc <MODE>`
+- `--shm-size <SIZE>`
+- `--gpus <REQUEST>`
 
-上記以外は unsupported error とする。`--publish` / `-p` は `appPort` または decune forwarding、`--mount` / `--volume` は `mounts`、`--user` は `containerUser`、環境変数は `containerEnv` を使う。
+value を取る option は `--foo=value` と `--foo value` の両方を受け付け、内部では `--foo`, `value` へ正規化する。`--init` と `--privileged` は value なしの boolean flag としてのみ受け付ける。`--cap-add` と `--security-opt` は Dev Container の専用 field と同じ扱いで merge する。その他の許可 option は Docker create に `option value` として渡す。
+
+上記以外は unsupported error とする。特に decune が container identity、environment、user/workdir、mount、publish、label、entrypoint、lifecycle/control を管理するため、`--name`、`--env` / `-e`、`--env-file`、`--user` / `-u`、`--workdir` / `-w`、`--mount`、`--volume` / `-v`、`--tmpfs`、`--volumes-from`、`--publish` / `-p`、`--publish-all` / `-P`、`--expose`、`--entrypoint`、`--label`、`--label-file`、`--rm`、`--detach` / `-d`、`--restart` は reserved option として拒否する。publish は `appPort` または decune forwarding、mount は `mounts`、user は `containerUser`、working directory は `workspaceFolder`、環境変数は `containerEnv` を使う。
 
 Compose mode では `runArgs` を unsupported error とする。Compose service の `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`ports`、`volumes`、`user`、`environment` などを Compose file に書くか、Dev Container の cross-orchestrator property を使う。
 

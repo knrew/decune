@@ -252,6 +252,14 @@ impl DevcontainerMetadata {
                             .push(LayerRunArg::DnsSearch(value.clone()));
                     }
                 }
+                DevcontainerRunArg::Passthrough { option, value } => {
+                    if let Some(devcontainer) = &mut layer.devcontainer {
+                        devcontainer.run_args.push(LayerRunArg::Passthrough {
+                            option: option.clone(),
+                            value: value.clone(),
+                        });
+                    }
+                }
             }
         }
 
@@ -431,6 +439,7 @@ pub(crate) enum DevcontainerRunArg {
     AddHost(String),
     Dns(String),
     DnsSearch(String),
+    Passthrough { option: String, value: String },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -878,6 +887,9 @@ fn normalize_run_args(values: &[String]) -> Result<Vec<DevcontainerRunArg>> {
 
     while index < values.len() {
         let current = &values[index];
+        if current.is_empty() {
+            return Err(anyhow!("Unsupported runArgs option: {current}"));
+        }
         if let Some((option, value)) = current.split_once('=') {
             args.push(run_arg_with_value(option, value.to_owned())?);
             index += 1;
@@ -887,12 +899,17 @@ fn normalize_run_args(values: &[String]) -> Result<Vec<DevcontainerRunArg>> {
         match current.as_str() {
             "--init" => args.push(DevcontainerRunArg::Init),
             "--privileged" => args.push(DevcontainerRunArg::Privileged),
-            "--cap-add" | "--security-opt" | "--add-host" | "--dns" | "--dns-search" => {
+            option if run_arg_allows_separate_value(option) => {
                 let value = required_run_arg_value(values, current, index)?;
                 args.push(run_arg_with_value(current, value)?);
                 index += 1;
             }
-            _ => return Err(anyhow!("Unsupported runArgs option: {current}")),
+            option if is_reserved_run_arg_option(option) => {
+                return Err(anyhow!(
+                    "Unsupported runArgs option controlled by decune: {option}"
+                ));
+            }
+            option => return Err(anyhow!("Unsupported runArgs option: {option}")),
         }
 
         index += 1;
@@ -924,11 +941,70 @@ fn run_arg_with_value(option: &str, value: String) -> Result<DevcontainerRunArg>
         "--add-host" => Ok(DevcontainerRunArg::AddHost(value)),
         "--dns" => Ok(DevcontainerRunArg::Dns(value)),
         "--dns-search" => Ok(DevcontainerRunArg::DnsSearch(value)),
+        "--network" | "--network-alias" | "--hostname" | "--device" | "--group-add"
+        | "--ulimit" | "--ipc" | "--shm-size" | "--gpus" => Ok(DevcontainerRunArg::Passthrough {
+            option: option.to_owned(),
+            value,
+        }),
         "--init" | "--privileged" => {
             Err(anyhow!("runArgs option {option} does not accept a value"))
         }
+        _ if is_reserved_run_arg_option(option) => Err(anyhow!(
+            "Unsupported runArgs option controlled by decune: {option}"
+        )),
         _ => Err(anyhow!("Unsupported runArgs option: {option}")),
     }
+}
+
+fn run_arg_allows_separate_value(option: &str) -> bool {
+    matches!(
+        option,
+        "--cap-add"
+            | "--security-opt"
+            | "--add-host"
+            | "--dns"
+            | "--dns-search"
+            | "--network"
+            | "--network-alias"
+            | "--hostname"
+            | "--device"
+            | "--group-add"
+            | "--ulimit"
+            | "--ipc"
+            | "--shm-size"
+            | "--gpus"
+    )
+}
+
+fn is_reserved_run_arg_option(option: &str) -> bool {
+    matches!(
+        option,
+        "--name"
+            | "--entrypoint"
+            | "-e"
+            | "--env"
+            | "--env-file"
+            | "-u"
+            | "--user"
+            | "-w"
+            | "--workdir"
+            | "-v"
+            | "--volume"
+            | "--mount"
+            | "--tmpfs"
+            | "--volumes-from"
+            | "-p"
+            | "--publish"
+            | "-P"
+            | "--publish-all"
+            | "--expose"
+            | "--label"
+            | "--label-file"
+            | "--rm"
+            | "--detach"
+            | "-d"
+            | "--restart"
+    )
 }
 
 fn deserialize_build_args<'de, D>(
@@ -1576,7 +1652,16 @@ mod tests {
                 "--security-opt", "seccomp=unconfined",
                 "--add-host", "host.docker.internal:host-gateway",
                 "--dns", "1.1.1.1",
-                "--dns-search=example.test"
+                "--dns-search=example.test",
+                "--network", "host",
+                "--network-alias=api",
+                "--hostname=devbox",
+                "--device", "/dev/fuse",
+                "--group-add=video",
+                "--ulimit", "nofile=1024:2048",
+                "--ipc=host",
+                "--shm-size", "1g",
+                "--gpus", "all"
             ]
         }))
         .unwrap();
@@ -1591,18 +1676,61 @@ mod tests {
                 DevcontainerRunArg::AddHost("host.docker.internal:host-gateway".to_owned()),
                 DevcontainerRunArg::Dns("1.1.1.1".to_owned()),
                 DevcontainerRunArg::DnsSearch("example.test".to_owned()),
+                DevcontainerRunArg::Passthrough {
+                    option: "--network".to_owned(),
+                    value: "host".to_owned()
+                },
+                DevcontainerRunArg::Passthrough {
+                    option: "--network-alias".to_owned(),
+                    value: "api".to_owned()
+                },
+                DevcontainerRunArg::Passthrough {
+                    option: "--hostname".to_owned(),
+                    value: "devbox".to_owned()
+                },
+                DevcontainerRunArg::Passthrough {
+                    option: "--device".to_owned(),
+                    value: "/dev/fuse".to_owned()
+                },
+                DevcontainerRunArg::Passthrough {
+                    option: "--group-add".to_owned(),
+                    value: "video".to_owned()
+                },
+                DevcontainerRunArg::Passthrough {
+                    option: "--ulimit".to_owned(),
+                    value: "nofile=1024:2048".to_owned()
+                },
+                DevcontainerRunArg::Passthrough {
+                    option: "--ipc".to_owned(),
+                    value: "host".to_owned()
+                },
+                DevcontainerRunArg::Passthrough {
+                    option: "--shm-size".to_owned(),
+                    value: "1g".to_owned()
+                },
+                DevcontainerRunArg::Passthrough {
+                    option: "--gpus".to_owned(),
+                    value: "all".to_owned()
+                },
             ]
         );
     }
 
     #[test]
-    fn unsupported_run_args_are_rejected() {
+    fn reserved_run_args_are_rejected() {
         for run_args in [
+            json!(["--name", "devcontainer"]),
             json!(["--publish", "3000:3000"]),
             json!(["-p", "3000:3000"]),
             json!(["--mount", "type=bind,source=/tmp,target=/tmp"]),
             json!(["--user", "vscode"]),
             json!(["--env", "RUST_LOG=debug"]),
+            json!(["--env-file", ".env"]),
+            json!(["--entrypoint", "/bin/sh"]),
+            json!(["--label", "x=y"]),
+            json!(["--rm"]),
+            json!(["--detach"]),
+            json!(["--restart", "always"]),
         ] {
             let error = parse_metadata(json!({
                 "image": "ubuntu:24.04",
@@ -1610,7 +1738,40 @@ mod tests {
             }))
             .unwrap_err();
 
-            assert!(error.to_string().contains("Unsupported runArgs option"));
+            assert!(
+                error
+                    .to_string()
+                    .contains("Unsupported runArgs option controlled by decune")
+            );
+        }
+    }
+
+    #[test]
+    fn unsupported_run_args_are_rejected() {
+        let error = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "runArgs": ["--cpus", "2"]
+        }))
+        .unwrap_err();
+
+        assert!(error.to_string().contains("Unsupported runArgs option"));
+        assert!(!error.to_string().contains("controlled by decune"));
+    }
+
+    #[test]
+    fn run_args_reserved_equals_form_is_rejected() {
+        for run_args in [json!(["--env=RUST_LOG=debug"]), json!(["--label=x=y"])] {
+            let error = parse_metadata(json!({
+                "image": "ubuntu:24.04",
+                "runArgs": run_args
+            }))
+            .unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains("Unsupported runArgs option controlled by decune")
+            );
         }
     }
 
@@ -1622,6 +1783,15 @@ mod tests {
             json!(["--add-host"]),
             json!(["--dns"]),
             json!(["--dns-search"]),
+            json!(["--network"]),
+            json!(["--network-alias"]),
+            json!(["--hostname"]),
+            json!(["--device"]),
+            json!(["--group-add"]),
+            json!(["--ulimit"]),
+            json!(["--ipc"]),
+            json!(["--shm-size"]),
+            json!(["--gpus"]),
         ] {
             let error = parse_metadata(json!({
                 "image": "ubuntu:24.04",
@@ -1641,6 +1811,8 @@ mod tests {
             json!(["--add-host", "--dns", "1.1.1.1"]),
             json!(["--dns", "--dns-search", "example.test"]),
             json!(["--dns-search", "--init"]),
+            json!(["--network", "--hostname", "devbox"]),
+            json!(["--device", "--group-add", "video"]),
         ] {
             let error = parse_metadata(json!({
                 "image": "ubuntu:24.04",
