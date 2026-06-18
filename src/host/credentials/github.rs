@@ -250,14 +250,11 @@ pub(crate) async fn setup_github_cli_credentials(
                 github_cli_auth_login_script(&config.credentials.github, &github_cli_path),
             ],
             user: Some("root".to_owned()),
-            working_dir: Some(remote_home.to_owned()),
-            env: BTreeMap::from([
-                ("HOME".to_owned(), remote_home.to_owned()),
-                (
-                    "DECUNE_GH_CONFIG_OWNER".to_owned(),
-                    format!("{}:{}", remote_user.uid, remote_user.gid),
-                ),
-            ]),
+            working_dir: None,
+            env: BTreeMap::from([(
+                "DECUNE_GH_CONFIG_OWNER".to_owned(),
+                format!("{}:{}", remote_user.uid, remote_user.gid),
+            )]),
             redactions: Vec::new(),
             tty: false,
         },
