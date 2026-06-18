@@ -8,7 +8,7 @@ use crate::{
         run_attach_lifecycle, run_container_start_lifecycle,
     },
     docker::user::resolve_remote_user,
-    host::daemon::HostDaemon,
+    host::daemon::{HostDaemon, is_host_daemon_running},
     ui,
     up::{exec_target::resolve_up_exec_target, start::StartedUpContainer},
 };
@@ -58,7 +58,7 @@ pub(in crate::up) async fn prepare_up_lifecycle(
 
 pub(in crate::up) async fn start_host_daemon_for_up(
     started: &StartedUpContainer,
-) -> Result<HostDaemon> {
+) -> Result<Option<HostDaemon>> {
     let runtime_dir = started.workspace.paths().runtime_dir();
     let target = resolve_up_exec_target(&started.plan, &started.outcome.container_name).await?;
     let remote_user = resolve_remote_user(
@@ -83,13 +83,21 @@ async fn start_host_daemon_for_remote_user(
     workspace_id: &str,
     remote_uid: u32,
     remote_gid: u32,
-) -> Result<HostDaemon> {
-    let daemon = HostDaemon::start_for_remote_user(runtime_dir, remote_uid, remote_gid)
-        .await
-        .with_context(|| format!("Failed to start host daemon for workspace: {workspace_id}"))?;
-    let _socket_path = daemon.socket_path();
-
-    Ok(daemon)
+) -> Result<Option<HostDaemon>> {
+    match HostDaemon::start_for_remote_user(runtime_dir, remote_uid, remote_gid).await {
+        Ok(daemon) => {
+            let _socket_path = daemon.socket_path();
+            Ok(Some(daemon))
+        }
+        Err(error) => {
+            if is_host_daemon_running(runtime_dir).await {
+                return Ok(None);
+            }
+            Err(error).with_context(|| {
+                format!("Failed to start host daemon for workspace: {workspace_id}")
+            })
+        }
+    }
 }
 
 pub(in crate::up) async fn run_container_start_lifecycle_for_up(
@@ -126,7 +134,7 @@ mod tests {
     use crate::host::daemon::HostDaemon;
 
     #[test]
-    fn host_daemon_start_does_not_reuse_active_socket() {
+    fn host_daemon_skips_startup_when_daemon_already_running() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -147,9 +155,7 @@ mod tests {
             )
             .await;
 
-            let message = format!("{:#}", result.unwrap_err());
-            assert!(message.contains("Failed to start host daemon for workspace: workspace-test"));
-            assert!(message.contains("Host daemon socket is already in use"));
+            assert!(result.unwrap().is_none());
             assert_eq!(mode(&runtime_dir), 0o711);
 
             existing.stop().await.unwrap();
