@@ -249,6 +249,15 @@ decune rebuild [OPTIONS] [WORKSPACE]
 
 `up --rebuild` と同等の明示サブコマンドです。`--update-features` を指定すると、既存の feature lock より registry/tag の再解決を優先します。
 
+主なオプション:
+
+- `--detach`: shell に接続せず起動だけ行う。
+- `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
+- `--pull`: base image または Compose service image を pull してから build/create する。
+- `--update-features`: feature lock より registry/tag の再解決を優先する。
+- `--no-auto-forward`: automatic port forwarding を無効化する。
+- `-p, --port <SPEC>`: manual forwarding。`--detach -p` はエラーになります。
+
 ### `decune down`
 
 ```sh

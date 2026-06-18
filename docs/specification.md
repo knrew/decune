@@ -181,6 +181,7 @@ decune rebuild [OPTIONS] [WORKSPACE]
 - `--no-cache`
 - `--pull`
 - `--update-features`: feature lock より registry/tag の再解決を優先する。
+- `--no-auto-forward`: automatic port forwarding を無効化する。
 - `-p, --port <SPEC>`
 
 Compose mode では、`docker compose build` と `docker compose up -d --force-recreate` を使う。`--no-cache` は Compose service build と Feature layer build の両方に適用する。`--pull` は Compose service build/pull に適用するが、decune generated local image を親にする Feature / UID/GID / entrypoint shim layer build には適用しない。
