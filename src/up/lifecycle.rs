@@ -56,12 +56,8 @@ pub(in crate::up) async fn prepare_up_lifecycle(
 
 pub(in crate::up) async fn start_host_daemon_for_up(
     started: &StartedUpContainer,
-) -> Result<Option<HostDaemon>> {
+) -> Result<HostDaemon> {
     let runtime_dir = started.workspace.paths().runtime_dir();
-    if crate::host::daemon::is_host_daemon_running(runtime_dir).await {
-        return Ok(None);
-    }
-
     let target = resolve_up_exec_target(&started.plan, &started.outcome.container_name).await?;
     let remote_user = resolve_remote_user(
         &started.client,
@@ -71,17 +67,27 @@ pub(in crate::up) async fn start_host_daemon_for_up(
     )
     .await?;
 
-    let daemon = HostDaemon::start_for_remote_user(runtime_dir, remote_user.uid, remote_user.gid)
+    start_host_daemon_for_remote_user(
+        runtime_dir,
+        started.workspace.id(),
+        remote_user.uid,
+        remote_user.gid,
+    )
+    .await
+}
+
+async fn start_host_daemon_for_remote_user(
+    runtime_dir: &std::path::Path,
+    workspace_id: &str,
+    remote_uid: u32,
+    remote_gid: u32,
+) -> Result<HostDaemon> {
+    let daemon = HostDaemon::start_for_remote_user(runtime_dir, remote_uid, remote_gid)
         .await
-        .with_context(|| {
-            format!(
-                "Failed to start host daemon for workspace: {}",
-                started.workspace.id()
-            )
-        })?;
+        .with_context(|| format!("Failed to start host daemon for workspace: {workspace_id}"))?;
     let _socket_path = daemon.socket_path();
 
-    Ok(Some(daemon))
+    Ok(daemon)
 }
 
 pub(in crate::up) async fn run_container_start_lifecycle_for_up(
@@ -106,4 +112,57 @@ pub(in crate::up) async fn run_attach_lifecycle_for_up(
     lifecycle: &PreparedLifecycleRunContext<'_>,
 ) -> Result<()> {
     run_attach_lifecycle(lifecycle).await
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, os::unix::fs::PermissionsExt, path::Path};
+
+    use tempfile::TempDir;
+
+    use super::start_host_daemon_for_remote_user;
+    use crate::host::daemon::HostDaemon;
+
+    #[test]
+    fn host_daemon_start_does_not_reuse_active_socket() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        runtime.block_on(async {
+            let existing = HostDaemon::start(&runtime_dir).await.unwrap();
+            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+
+            let result = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                remote_uid,
+                remote_gid,
+            )
+            .await;
+
+            let message = format!("{:#}", result.unwrap_err());
+            assert!(message.contains("Failed to start host daemon for workspace: workspace-test"));
+            assert!(message.contains("Host daemon socket is already in use"));
+            assert_eq!(mode(&runtime_dir), 0o711);
+
+            existing.stop().await.unwrap();
+        });
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    fn current_uid() -> u32 {
+        unsafe { libc::getuid() }
+    }
+
+    fn current_gid() -> u32 {
+        unsafe { libc::getgid() }
+    }
 }

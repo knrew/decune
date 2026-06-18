@@ -261,11 +261,6 @@ fn remove_socket_if_present(socket_path: &Path) -> Result<()> {
     })
 }
 
-pub(crate) async fn is_host_daemon_running(runtime_dir: &Path) -> bool {
-    let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
-    UnixStream::connect(&socket_path).await.is_ok()
-}
-
 pub(crate) async fn cleanup_host_daemon_socket(runtime_dir: &Path) {
     let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
     if let Err(error) = remove_stale_socket(&socket_path).await {
