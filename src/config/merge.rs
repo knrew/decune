@@ -93,11 +93,11 @@ fn merge_feature_devcontainer_metadata_into_resolved(
         target.other_ports_attributes = devcontainer.other_ports_attributes;
     }
     target.run_args.splice(0..0, devcontainer.run_args);
-    if devcontainer.init == Some(true) {
-        target.init = true;
+    if let Some(init) = devcontainer.init {
+        target.init = init;
     }
-    if devcontainer.privileged == Some(true) {
-        target.privileged = true;
+    if let Some(privileged) = devcontainer.privileged {
+        target.privileged = privileged;
     }
     append_unique(&mut target.cap_add, devcontainer.cap_add);
     append_unique(&mut target.security_opt, devcontainer.security_opt);
@@ -126,6 +126,8 @@ struct MergeAccumulator {
     ports: Vec<MergedPort>,
     auto_ports: ResolvedAutoPorts,
     devcontainer: ResolvedDevcontainer,
+    devcontainer_init: Option<bool>,
+    devcontainer_privileged: Option<bool>,
     credentials: ResolvedCredentials,
     hooks: ResolvedHooks,
 }
@@ -411,11 +413,11 @@ impl MergeAccumulator {
         );
         self.devcontainer.run_args.extend(devcontainer.run_args);
 
-        if devcontainer.init == Some(true) {
-            self.devcontainer.init = true;
+        if let Some(init) = devcontainer.init {
+            self.devcontainer_init = Some(init);
         }
-        if devcontainer.privileged == Some(true) {
-            self.devcontainer.privileged = true;
+        if let Some(privileged) = devcontainer.privileged {
+            self.devcontainer_privileged = Some(privileged);
         }
         append_unique(&mut self.devcontainer.cap_add, devcontainer.cap_add);
         append_unique(
@@ -438,6 +440,8 @@ impl MergeAccumulator {
 
     fn into_resolved(mut self) -> ResolvedConfig {
         self.apply_forward_port_attributes();
+        self.devcontainer.init = self.devcontainer_init.unwrap_or(false);
+        self.devcontainer.privileged = self.devcontainer_privileged.unwrap_or(false);
         self.ports
             .sort_by_key(|entry| std::cmp::Reverse(entry.source_priority));
 
@@ -884,7 +888,7 @@ command = "cli.sh"
     }
 
     #[test]
-    fn devcontainer_security_metadata_uses_or_and_deduped_union_merge() {
+    fn devcontainer_security_booleans_use_layer_precedence_and_lists_use_deduped_union() {
         let config = resolve_config(ConfigMergeInput {
             image_metadata: vec![ConfigLayer {
                 devcontainer: Some(LayerDevcontainerMetadata {
@@ -919,8 +923,8 @@ command = "cli.sh"
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.devcontainer.init);
-        assert!(config.devcontainer.privileged);
+        assert!(!config.devcontainer.init);
+        assert!(!config.devcontainer.privileged);
         assert_eq!(
             config.devcontainer.cap_add,
             vec!["SYS_PTRACE", "SYS_ADMIN", "NET_ADMIN"]
@@ -929,6 +933,70 @@ command = "cli.sh"
             config.devcontainer.security_opt,
             vec!["seccomp=unconfined", "label=disable"]
         );
+    }
+
+    #[test]
+    fn devcontainer_security_booleans_keep_lower_layer_value_when_unspecified() {
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: vec![ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    init: Some(true),
+                    privileged: Some(true),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }],
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata::default()),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.devcontainer.init);
+        assert!(config.devcontainer.privileged);
+    }
+
+    #[test]
+    fn project_devcontainer_security_booleans_override_devcontainer_false() {
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: vec![ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    init: Some(true),
+                    privileged: Some(true),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }],
+            devcontainer: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    init: Some(false),
+                    privileged: Some(false),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            project: Some(ConfigLayer {
+                devcontainer: Some(LayerDevcontainerMetadata {
+                    init: Some(true),
+                    privileged: Some(true),
+                    ..LayerDevcontainerMetadata::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.devcontainer.init);
+        assert!(config.devcontainer.privileged);
+    }
+
+    #[test]
+    fn devcontainer_security_booleans_default_to_false_when_unspecified() {
+        let config = resolve_config(ConfigMergeInput::default());
+
+        assert!(!config.devcontainer.init);
+        assert!(!config.devcontainer.privileged);
     }
 
     #[test]

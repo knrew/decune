@@ -430,6 +430,8 @@ project 設定は Git 管理してよい。秘密情報を設定 file に直接�
 ### merge rule
 
 - scalar: 後勝ち。
+- `init` / `privileged`: boolean scalar として後勝ち。上位 layer の `false` は下位 layer の `true` を打ち消せる。
+- `capAdd` / `securityOpt`: security list として deduped union。
 - map: key ごとに merge。同一 key は後勝ち。
 - decune TOML の array: 原則 append。ただし identity を持つ要素は置換。
 - feature identity: canonical Feature ID と concrete ref。同一 concrete ref は option を merge する。`enabled = false` は canonical Feature ID 単位で無効化する。

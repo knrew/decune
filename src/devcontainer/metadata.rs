@@ -1294,6 +1294,19 @@ mod tests {
     }
 
     #[test]
+    fn parses_false_security_booleans_as_explicit_metadata_values() {
+        let metadata = parse_metadata(json!({
+            "image": "ubuntu:24.04",
+            "init": false,
+            "privileged": false
+        }))
+        .unwrap();
+
+        assert_eq!(metadata.init(), Some(false));
+        assert_eq!(metadata.privileged(), Some(false));
+    }
+
+    #[test]
     fn parses_compose_metadata_from_string_file() {
         let metadata = parse_metadata(json!({
             "dockerComposeFile": "compose.yml",
