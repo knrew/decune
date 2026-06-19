@@ -221,6 +221,7 @@ impl RuntimeCommandRunner for TokioRuntimeCommand {
                 .stdin(Stdio::inherit())
                 .stdout(Stdio::inherit())
                 .stderr(Stdio::inherit());
+            process.kill_on_drop(true);
             let mut child = process
                 .spawn()
                 .with_context(|| format!("Failed to run command: {command_display}"))?;
@@ -250,6 +251,7 @@ async fn run_capture_process(
         })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    process.kill_on_drop(true);
 
     let mut child = process
         .spawn()
@@ -696,6 +698,45 @@ mod tests {
         assert!(err.to_string().contains("Command timed out"));
         let pid = read_pid(&pid_path);
         assert!(!process_exists(pid), "process {pid} was still running");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn runtime_command_cancel_kills_child_process() {
+        let tempdir = tempfile::tempdir().unwrap();
+        let pid_path = tempdir.path().join("sleep.pid");
+        let command = sleeper_command(&pid_path);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let runner = TokioRuntimeCommand;
+            let mut future = runner.run_capture(command);
+            for _ in 0..100 {
+                if let Ok(result) =
+                    tokio::time::timeout(Duration::from_millis(10), &mut future).await
+                {
+                    panic!("command finished unexpectedly: {result:?}");
+                }
+                if pid_path.is_file() {
+                    break;
+                }
+            }
+            assert!(pid_path.is_file(), "child process did not write its pid");
+            let pid = read_pid(&pid_path);
+
+            drop(future);
+
+            for _ in 0..100 {
+                if !process_exists(pid) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+            panic!("process {pid} was still running after command future cancellation");
+        });
     }
 
     #[cfg(unix)]

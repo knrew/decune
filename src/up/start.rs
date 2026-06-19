@@ -42,10 +42,10 @@ use crate::{
         },
     },
     runtime::compose_cli::{
-        ComposeBuildOptions, ComposeConfigService, ComposeIntrospector, ComposeLifecyclePlan,
-        ComposeOverridePatch, ComposeOverrideServicePatch, ComposePrimaryImageResolver,
-        ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation, ComposeUpOptions,
-        DockerComposeCli, write_compose_override,
+        ComposeBuildOptions, ComposeConfigOutput, ComposeConfigService, ComposeIntrospector,
+        ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverrideServicePatch,
+        ComposePrimaryImageResolver, ComposeProjectPlan, ComposePullOptions,
+        ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, write_compose_override,
     },
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
@@ -515,6 +515,137 @@ pub(in crate::up) async fn ensure_container_started(
     }
 }
 
+fn compose_running_reuse_fast_path_enabled(
+    options: &UpOptions,
+    existing_compose_containers: &[UpContainerSummary],
+) -> bool {
+    !(options.pull || options.rebuild || options.no_cache || options.update_features)
+        && existing_compose_containers
+            .first()
+            .is_some_and(|container| container.running)
+}
+
+struct ComposeRunningReuseInput<'a> {
+    plan: UpPlan,
+    options: &'a UpOptions,
+    forwarding_resolution: ForwardingResolution,
+    existing_compose_containers: &'a [UpContainerSummary],
+    compose_primary_image: &'a str,
+    user_config: &'a ComposeConfigOutput,
+    compose_primary_service_user: Option<&'a str>,
+    compose_primary_service: Option<&'a ComposeConfigService>,
+}
+
+async fn try_reuse_running_compose_container_before_image_prepare(
+    client: &DockerClient,
+    workspace: &Workspace,
+    input: ComposeRunningReuseInput<'_>,
+) -> Result<Option<StartedUpContainer>> {
+    let ComposeRunningReuseInput {
+        mut plan,
+        options,
+        forwarding_resolution,
+        existing_compose_containers,
+        compose_primary_image,
+        user_config,
+        compose_primary_service_user,
+        compose_primary_service,
+    } = input;
+    if !compose_running_reuse_fast_path_enabled(options, existing_compose_containers) {
+        return Ok(None);
+    }
+    let Some(existing_container_image) = existing_compose_containers
+        .first()
+        .and_then(existing::existing_container_image_id)
+    else {
+        return Ok(None);
+    };
+
+    plan = prepare_compose_image_metadata(
+        client,
+        workspace,
+        options.config_path.as_deref(),
+        options.cli_layer.clone(),
+        plan,
+        compose_primary_image,
+        UpPlanResolution::new(forwarding_resolution, options.update_features),
+    )
+    .await?;
+    plan.base_image = compose_primary_image.to_owned();
+    let (plan, _) = finalize_up_plan_mounts(
+        client,
+        workspace,
+        plan,
+        Some(existing_container_image),
+        existing_compose_containers
+            .first()
+            .and_then(existing::existing_container_config_hash),
+        Some((false, false)),
+        FinalizeUpPlanMountsOptions {
+            update_features: options.update_features,
+            compose_canonical_model: Some(&user_config.canonical_model),
+            compose_primary_service_user,
+            compose_primary_service,
+        },
+    )
+    .await?;
+    let mut plan = plan;
+    if !plan_requires_final_image_layer(&plan) {
+        plan.image = compose_primary_image.to_owned();
+        plan.base_image = compose_primary_image.to_owned();
+    }
+    let platform =
+        container_tool_platform_for_plan(client, &plan, Some(existing_container_image)).await?;
+    let (mut plan, credentials) =
+        add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
+    attach_compose_interpolation_env_to_plan(&mut plan);
+    warn_about_deferred_features(&plan.config);
+
+    let Some(compose_project) = &plan.compose_project else {
+        bail!("Docker Compose project plan is missing after finalization");
+    };
+    let decision = decide_existing_container(
+        existing_compose_containers,
+        &plan.resources.config_hash,
+        credentials.mount_policy(),
+        options.rebuild,
+    )?;
+    let service_forward_requires_recreate = compose_service_forward_requires_recreate(
+        client,
+        workspace.id(),
+        compose_project.project_name(),
+        credentials.service_forward(),
+    )
+    .await?;
+    let should_reuse = should_reuse_existing_container(
+        &decision,
+        ExistingContainerReusePolicy {
+            pull: options.pull,
+            service_forward_requires_recreate,
+        },
+    );
+
+    if let ExistingContainerDecision::ReuseRunning { id, name } = decision
+        && should_reuse
+    {
+        let outcome = UpOutcome {
+            container_id: id,
+            container_name: name,
+            reused: true,
+        };
+        return Ok(Some(started_up_container(
+            client.clone(),
+            workspace.clone(),
+            plan,
+            outcome,
+            LifecycleRunPath::Running,
+            credentials,
+        )?));
+    }
+
+    Ok(None)
+}
+
 async fn start_compose_project(
     workspace: Workspace,
     mut plan: UpPlan,
@@ -572,6 +703,25 @@ async fn start_compose_project(
         &compose.service,
     )
     .await?;
+
+    if let Some(started) = try_reuse_running_compose_container_before_image_prepare(
+        &client,
+        &workspace,
+        ComposeRunningReuseInput {
+            plan: plan.clone(),
+            options: &options,
+            forwarding_resolution,
+            existing_compose_containers: &existing_compose_containers,
+            compose_primary_image: &compose_primary_image,
+            user_config: &user_config,
+            compose_primary_service_user,
+            compose_primary_service: compose_primary_service.as_ref(),
+        },
+    )
+    .await?
+    {
+        return Ok(started);
+    }
 
     if options.pull {
         cli.pull(
@@ -1829,13 +1979,13 @@ async fn list_compose_project_containers(
 mod tests {
     use super::{
         ComposeOverrideStartup, ExistingContainerReusePolicy,
-        attach_compose_interpolation_env_to_plan,
+        attach_compose_interpolation_env_to_plan, compose_running_reuse_fast_path_enabled,
         compose_service_forward_container_requires_recreate, generated_compose_override_content,
         generated_compose_override_content_with_startup, should_reuse_existing_container,
         state_container_snapshot,
     };
     use crate::{
-        config::{ConfigMergeInput, resolved::ResolvedConfig, types::MountType},
+        config::{ConfigLayer, ConfigMergeInput, resolved::ResolvedConfig, types::MountType},
         docker::{
             build::DockerBuildOptions,
             mounts::{DockerMountSpec, MountBindOptions, MountBindPropagation, MountVolumeOptions},
@@ -1849,10 +1999,10 @@ mod tests {
         host::forward::ServiceForwardRuntime,
         up::{
             CredentialRuntimeMountPolicy, ExistingContainerDecision, UpContainerSummary,
-            UpMountSummary, UpPlan, decide_existing_container,
+            UpMountSummary, UpOptions, UpPlan, decide_existing_container,
         },
     };
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, path::PathBuf};
 
     #[test]
     fn generated_compose_override_patches_only_primary_service() {
@@ -2018,6 +2168,50 @@ mod tests {
 
         assert_eq!(snapshot.image, "decune/project-abc123:config-hash");
         assert_eq!(snapshot.config_hash, "config-hash");
+    }
+
+    #[test]
+    fn compose_running_reuse_fast_path_only_allows_running_container_without_mutating_flags() {
+        let running = reusable_container("stable-hash");
+        let mut options = up_options_for_fast_path();
+
+        assert!(compose_running_reuse_fast_path_enabled(
+            &options,
+            std::slice::from_ref(&running),
+        ));
+
+        let stopped = UpContainerSummary {
+            running: false,
+            ..running.clone()
+        };
+        assert!(!compose_running_reuse_fast_path_enabled(
+            &options,
+            &[stopped],
+        ));
+
+        options.pull = true;
+        assert!(!compose_running_reuse_fast_path_enabled(
+            &options,
+            std::slice::from_ref(&running),
+        ));
+        options = up_options_for_fast_path();
+        options.rebuild = true;
+        assert!(!compose_running_reuse_fast_path_enabled(
+            &options,
+            std::slice::from_ref(&running),
+        ));
+        options = up_options_for_fast_path();
+        options.no_cache = true;
+        assert!(!compose_running_reuse_fast_path_enabled(
+            &options,
+            std::slice::from_ref(&running),
+        ));
+        options = up_options_for_fast_path();
+        options.update_features = true;
+        assert!(!compose_running_reuse_fast_path_enabled(
+            &options,
+            std::slice::from_ref(&running),
+        ));
     }
 
     #[test]
@@ -2349,6 +2543,18 @@ mod tests {
             mounts,
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
+        }
+    }
+
+    fn up_options_for_fast_path() -> UpOptions {
+        UpOptions {
+            workspace: PathBuf::from("/workspace"),
+            config_path: None,
+            cli_layer: ConfigLayer::default(),
+            pull: false,
+            rebuild: false,
+            no_cache: false,
+            update_features: false,
         }
     }
 
