@@ -15,7 +15,7 @@ pub(crate) use agent::{
 pub(crate) use auto::AutoForwardConfig;
 pub(crate) use runtime::{
     ForwardRuntime, ServiceForwardRuntime, forward_agent_command_at, new_forward_agent_secret,
-    prepare_forward_runtime, prepare_service_forward_runtimes,
+    new_forward_agent_socket_id, prepare_forward_runtime, prepare_service_forward_runtimes,
 };
 pub(crate) use session::{ForwardSession, start_forward_session_with_auto};
 
@@ -40,14 +40,24 @@ pub(crate) fn forward_agent_socket_name(service: Option<&str>) -> String {
     }
 }
 
-pub(crate) fn forward_agent_socket_target(service: Option<&str>) -> String {
+pub(crate) fn forward_agent_session_socket_name(service: Option<&str>, session_id: &str) -> String {
+    match service {
+        Some(service) => format!(
+            "forward-agent-{}-{session_id}.sock",
+            service_socket_key(service)
+        ),
+        None => format!("forward-agent-{session_id}.sock"),
+    }
+}
+
+pub(crate) fn forward_agent_socket_target_from_name(socket_name: &str) -> String {
     format!(
         "{}/{}",
         FORWARD_AGENT_SOCKET_TARGET
             .rsplit_once('/')
             .map(|(parent, _)| parent)
             .unwrap_or("/run/decune"),
-        forward_agent_socket_name(service)
+        socket_name
     )
 }
 
@@ -93,5 +103,29 @@ mod tests {
             require_local: false,
             label: None,
         }
+    }
+
+    #[test]
+    fn session_socket_names_are_service_aware() {
+        assert_eq!(
+            super::forward_agent_session_socket_name(None, "abc123"),
+            "forward-agent-abc123.sock"
+        );
+        assert_eq!(
+            super::forward_agent_session_socket_name(Some("db"), "abc123"),
+            "forward-agent-db-abc123.sock"
+        );
+        assert_eq!(
+            super::forward_agent_session_socket_name(Some("db/primary"), "abc123"),
+            "forward-agent-db_primary-abc123.sock"
+        );
+    }
+
+    #[test]
+    fn socket_target_can_be_built_from_session_socket_name() {
+        assert_eq!(
+            super::forward_agent_socket_target_from_name("forward-agent-abc123.sock"),
+            "/run/decune/forward-agent-abc123.sock"
+        );
     }
 }

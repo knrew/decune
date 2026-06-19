@@ -227,11 +227,20 @@ pub(crate) fn forward_agent_command_at(
 }
 
 pub(crate) fn new_forward_agent_secret() -> Result<String> {
+    random_hex(32, "port forwarding secret")
+}
+
+pub(crate) fn new_forward_agent_socket_id() -> Result<String> {
+    random_hex(8, "port forwarding socket id")
+}
+
+fn random_hex(bytes_len: usize, context: &str) -> Result<String> {
     let mut bytes = [0u8; 32];
+    let bytes = &mut bytes[..bytes_len];
     fs::File::open("/dev/urandom")
-        .context("Failed to open /dev/urandom for port forwarding secret")?
-        .read_exact(&mut bytes)
-        .context("Failed to read port forwarding secret")?;
+        .with_context(|| format!("Failed to open /dev/urandom for {context}"))?
+        .read_exact(bytes)
+        .with_context(|| format!("Failed to read {context}"))?;
     Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 

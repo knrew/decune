@@ -1760,11 +1760,9 @@ require_local = true
             vec![3000, 3001]
         );
         assert!(targets[0].auto_forward.is_some());
-        assert_eq!(targets[0].socket_name, "forward-agent.sock");
         assert_eq!(targets[1].service.as_deref(), Some("db"));
         assert_eq!(targets[1].forward_ports[0].container, 5432);
         assert!(targets[1].auto_forward.is_none());
-        assert_eq!(targets[1].socket_name, "forward-agent-db.sock");
     }
 
     #[test]
