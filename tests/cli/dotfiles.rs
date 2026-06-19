@@ -210,6 +210,9 @@ fn up_detach_mounts_directory_symlink_entries_as_real_files() {
             r#"
 version = 1
 
+[credentials.github]
+enabled = false
+
 [[dotfiles]]
 source = "lazygit-source"
 target = ".config/lazygit"
@@ -280,6 +283,108 @@ read_only = true
             assert_eq!(file_mount.source.as_deref(), expected_config.to_str());
             assert_eq!(file_mount.read_only, Some(true));
         });
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn up_detach_reuses_running_container_without_refreshing_dotfile_skeleton_mounts() {
+    use std::os::unix::fs as unix_fs;
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace.create_dir("dotfiles-real").unwrap();
+    workspace.create_dir("lazygit-source").unwrap();
+    workspace
+        .write_file(
+            "dotfiles-real/config.yml",
+            "gui:\n  nerdFontsVersion: '3'\n",
+        )
+        .unwrap();
+    workspace
+        .write_file("dotfiles-real/extra.yml", "not mounted\n")
+        .unwrap();
+    unix_fs::symlink(
+        workspace.path().join("dotfiles-real/config.yml"),
+        workspace.path().join("lazygit-source/config.yml"),
+    )
+    .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+version = 1
+
+[credentials.github]
+enabled = false
+
+[[dotfiles]]
+source = "lazygit-source"
+target = ".config/lazygit"
+read_only = true
+"#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let state_home_value = state_home.path().to_string_lossy().into_owned();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home_value)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &state_home_value)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Reusing running dev container"));
+
+        let output = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/root/.config/lazygit/config.yml"],
+                )
+                .await
+            })
+            .unwrap();
+        assert!(output.contains("nerdFontsVersion"));
     });
 
     runtime.block_on(async {

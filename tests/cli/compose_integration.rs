@@ -276,6 +276,116 @@ fn compose_integration_localenv_container_env_is_expanded() {
     assert!(!stderr.contains("secret-token"));
 }
 
+#[cfg(unix)]
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_reuses_running_container_without_refreshing_dotfile_skeleton_mounts() {
+    use std::os::unix::fs as unix_fs;
+
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace.create_dir("actual-nvim").unwrap();
+    workspace.create_dir("nvim-source").unwrap();
+    workspace
+        .write_file("actual-nvim/init.lua", "return {}\n")
+        .unwrap();
+    workspace
+        .write_file("actual-nvim/extra.lua", "not mounted\n")
+        .unwrap();
+    unix_fs::symlink(
+        workspace.path().join("actual-nvim/init.lua"),
+        workspace.path().join("nvim-source/init.lua"),
+    )
+    .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: "alpine:3.20"
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.github]
+            enabled = false
+
+            [[dotfiles]]
+            source = "nvim-source"
+            target = ".config/nvim"
+            read_only = true
+            "#,
+        )
+        .unwrap();
+    let workspace = ComposeFixtureWorkspace { workspace };
+    let state_home_value = state_home.path().to_string_lossy().into_owned();
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("XDG_STATE_HOME", &state_home_value)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let first_containers = compose_project_containers(workspace.path()).unwrap();
+    let first_primary = first_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    let first_id = first_primary.id.clone();
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("XDG_STATE_HOME", &state_home_value)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Reusing running dev container"));
+
+    let second_containers = compose_project_containers(workspace.path()).unwrap();
+    let second_primary = second_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    assert_eq!(second_primary.id, first_id);
+
+    let output =
+        compose_primary_container_output(workspace.path(), ["cat", "/root/.config/nvim/init.lua"]);
+    assert_eq!(output, "return {}\n");
+}
+
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_rejects_reuse_when_compose_env_interpolation_changes() {

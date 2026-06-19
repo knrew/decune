@@ -10,6 +10,7 @@ use crate::{
     devcontainer::features::PreparedFeatureInstallPlan,
     docker::{
         build::{DockerBuildOptions, ResolvedBuildContext},
+        dotfiles::DotfileSkeletonPlan,
         mounts::DockerMountSpec,
         ports::ResolvedForwardPort,
         resource::DockerResources,
@@ -106,6 +107,7 @@ pub(crate) struct UpPlan {
     pub(crate) uid_gid_sync_plan: UidGidSyncPlan,
     pub(crate) workspace_folder: String,
     pub(crate) mounts: Vec<DockerMountSpec>,
+    pub(crate) dotfile_skeletons: Vec<DotfileSkeletonPlan>,
     pub(crate) forward_ports: Vec<ResolvedForwardPort>,
     pub(crate) ignored_detached_forwarding: bool,
 }

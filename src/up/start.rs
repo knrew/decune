@@ -25,6 +25,7 @@ use crate::{
             ContainerCreateInput, ContainerCreateSpec, create_container,
             devcontainer_keepalive_command, remove_container, start_container, stop_container,
         },
+        dotfiles::materialize_dotfile_skeletons,
         exec::{ExecCommandSpec, exec_capture_output},
         image::{PullPolicy, ensure_image, image_container_tool_platform, image_startup_command},
         mounts::{DockerMountSpec, normalize_container_path},
@@ -730,6 +731,7 @@ async fn start_compose_project(
             );
         }
         ExistingContainerDecision::StartStopped { id, name } if should_reuse => {
+            materialize_dotfile_skeletons(&plan.dotfile_skeletons)?;
             cli.up(
                 &runtime_lifecycle.project,
                 ComposeUpOptions {
@@ -774,6 +776,7 @@ async fn start_compose_project(
         | ExistingContainerDecision::StartStopped { .. } => {}
     }
 
+    materialize_dotfile_skeletons(&plan.dotfile_skeletons)?;
     cli.up(
         &runtime_lifecycle.project,
         ComposeUpOptions {
@@ -1062,6 +1065,7 @@ async fn start_stopped_existing_container(
     let container = state_container_snapshot(plan, container_id.clone());
     let existing_state = reusable_lifecycle_state(workspace, &container)?;
 
+    materialize_dotfile_skeletons(&plan.dotfile_skeletons)?;
     start_container_and_verify_running(
         client,
         &container_name,
@@ -1436,6 +1440,7 @@ async fn create_and_start_container_inner(
         user: Some(container_user),
         ..spec
     };
+    materialize_dotfile_skeletons(&plan.dotfile_skeletons)?;
     ui::status("Creating", "dev container");
     let container_id = create_container(client, &spec).await?;
     if let Err(state_error) = persist_initial_container_state(workspace, plan, &container_id) {
@@ -1899,6 +1904,7 @@ mod tests {
                 bind_options: None,
                 volume_options: None,
             }],
+            dotfile_skeletons: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         };
@@ -2347,6 +2353,7 @@ mod tests {
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspace".to_owned(),
             mounts,
+            dotfile_skeletons: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         }
@@ -2419,6 +2426,7 @@ mod tests {
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspace".to_owned(),
             mounts: Vec::new(),
+            dotfile_skeletons: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         };
@@ -2474,6 +2482,7 @@ mod tests {
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspace".to_owned(),
             mounts: Vec::new(),
+            dotfile_skeletons: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         };

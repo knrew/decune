@@ -12,7 +12,7 @@ use crate::{
         variables::expand_variables,
     },
     docker::{
-        dotfiles::dotfile_mount_specs,
+        dotfiles::{DotfileSkeletonPlan, dotfile_mount_plan},
         mounts::{
             DockerMountSpec, MountBindOptions, MountVolumeOptions, config_mount_specs,
             devcontainer_mount_spec, normalize_container_path,
@@ -48,44 +48,54 @@ pub(crate) fn default_workspace_folder(workspace: &Workspace) -> String {
     format!("/workspaces/{}", workspace.basename())
 }
 
-pub(super) fn workspace_mounts_from_resolved(
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(in crate::up) struct WorkspaceMountPlan {
+    pub(in crate::up) mounts: Vec<DockerMountSpec>,
+    pub(in crate::up) dotfile_skeletons: Vec<DotfileSkeletonPlan>,
+}
+
+pub(in crate::up) fn workspace_mount_plan_from_resolved(
     workspace_mount: DockerMountSpec,
     workspace_root: &Path,
     config: &ResolvedConfig,
     variables: &crate::config::variables::VariableContext,
     mount_resolution: MountResolution,
     state_root: &Path,
-) -> Result<Vec<DockerMountSpec>> {
+) -> Result<WorkspaceMountPlan> {
     if matches!(
         config.devcontainer.source,
         Some(ResolvedDevcontainerSource::Compose(_))
     ) {
         if mount_resolution != MountResolution::Resolve {
-            return Ok(Vec::new());
+            return Ok(WorkspaceMountPlan::default());
         }
         let mut mounts = config_mount_specs(config, workspace_root, variables)?;
-        mounts.extend(dotfile_mount_specs(
-            config,
-            workspace_root,
-            variables,
-            state_root,
-        )?);
-        return Ok(mounts);
+        let dotfiles = dotfile_mount_plan(config, workspace_root, variables, state_root)?;
+        mounts.extend(dotfiles.mounts);
+        return Ok(WorkspaceMountPlan {
+            mounts,
+            dotfile_skeletons: dotfiles.skeletons,
+        });
     }
 
     let workspace_target = workspace_mount.target.clone();
     let mut mounts = vec![workspace_mount];
+    let mut dotfile_skeletons = Vec::new();
     if mount_resolution == MountResolution::Resolve {
         let config_mounts = config_mount_specs(config, workspace_root, variables)?;
         reject_workspace_mount_target_conflicts(&workspace_target, &config_mounts)?;
         mounts.extend(config_mounts);
 
-        let dotfile_mounts = dotfile_mount_specs(config, workspace_root, variables, state_root)?;
-        reject_workspace_mount_target_conflicts(&workspace_target, &dotfile_mounts)?;
-        mounts.extend(dotfile_mounts);
+        let dotfiles = dotfile_mount_plan(config, workspace_root, variables, state_root)?;
+        reject_workspace_mount_target_conflicts(&workspace_target, &dotfiles.mounts)?;
+        mounts.extend(dotfiles.mounts);
+        dotfile_skeletons = dotfiles.skeletons;
     }
 
-    Ok(mounts)
+    Ok(WorkspaceMountPlan {
+        mounts,
+        dotfile_skeletons,
+    })
 }
 
 fn reject_workspace_mount_target_conflicts(

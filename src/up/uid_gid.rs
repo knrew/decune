@@ -422,6 +422,7 @@ mod tests {
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspaces/project".to_owned(),
             mounts: Vec::new(),
+            dotfile_skeletons: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         }

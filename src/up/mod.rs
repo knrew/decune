@@ -47,7 +47,7 @@ use mounts::default_workspace_folder;
 pub(crate) use mounts::mount_hash_inputs;
 pub(in crate::up) use mounts::{
     WorkspaceLocationValidation, resolve_workspace_location, static_mount_variable_context,
-    workspace_mounts_from_resolved,
+    workspace_mount_plan_from_resolved,
 };
 #[cfg(test)]
 use plan::build_preliminary_up_plan_with_forwarding_resolution;
@@ -5660,6 +5660,7 @@ user = "root"
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspaces/project".to_owned(),
             mounts: Vec::new(),
+            dotfile_skeletons: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         }
