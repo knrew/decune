@@ -906,6 +906,8 @@ Security note:
 - GitHub token forwarding を有効にすると、container 内 process は token file にアクセスできる。
 - untrusted repository では `.devcontainer/`、Compose file、local Feature を確認し、必要に応じて `[credentials.git].enabled = false` と `[credentials.github].enabled = false` を設定する。
 
+`decune up` は、意図した設定どおりに動作する security surface については `Notice:` として表示する。設定が無視される、機能が縮退する、または補助処理の失敗から継続する場合は `Warning:` として表示する。
+
 ## 検証方針
 
 通常の formatting / lint:

@@ -64,7 +64,7 @@ pub(crate) fn prepare_github_cli_runtime_with_token(
         remove_github_cli_token_file(runtime_dir)?;
         return Ok(GithubCliRuntime::empty());
     };
-    ui::warn(
+    ui::notice(
         "GitHub credential forwarding is enabled; disable [credentials.github] for untrusted repositories.",
     );
 
