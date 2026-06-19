@@ -416,6 +416,46 @@ fn compose_integration_features_apply_to_primary_service() {
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_reuses_running_feature_container_without_rebuilding() {
+    let workspace = compose_fixture_workspace("features");
+    let state_home = support::TempWorkspace::new().unwrap();
+    let state_home_value = state_home.path().to_string_lossy().into_owned();
+    let config_home = support::TempWorkspace::new().unwrap();
+    let config_home_value = config_home.path().to_string_lossy().into_owned();
+    workspace.workspace.create_dir(".decune").unwrap();
+    workspace
+        .workspace
+        .write_file(
+            ".decune/config.toml",
+            b"version = 1\n[credentials.git]\nenabled = false\n[credentials.github]\nenabled = false\n",
+        )
+        .unwrap();
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("XDG_STATE_HOME", &state_home_value)
+        .env("XDG_CONFIG_HOME", &config_home_value)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Building Docker image"))
+        .stderr(predicate::str::contains("Started dev container"));
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("XDG_STATE_HOME", &state_home_value)
+        .env("XDG_CONFIG_HOME", &config_home_value)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Reusing running dev container"))
+        .stderr(predicate::str::contains("Building Docker image").not());
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_credentials_disabled_fixture_runs_without_forwarding_setup() {
     let workspace = compose_fixture_workspace("credentials-disabled");
 
