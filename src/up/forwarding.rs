@@ -11,7 +11,8 @@ use crate::{
     docker::ports::ResolvedForwardPort,
     host::forward::{
         AutoForwardConfig, ForwardAgentStatus, ForwardSession, forward_agent_command_at,
-        forward_agent_socket_target, new_forward_agent_secret, service_forward_runtime_dir,
+        forward_agent_session_socket_name, forward_agent_socket_target_from_name,
+        new_forward_agent_secret, new_forward_agent_socket_id, service_forward_runtime_dir,
         start_forward_session_with_auto, wait_for_forward_agent_with_status,
     },
     runtime::compose_cli::{ComposeIntrospector, ComposePsContainer},
@@ -59,10 +60,13 @@ async fn start_forwarding_target(
     target: ForwardingAgentTarget,
 ) -> Result<ForwardSession> {
     let secret = new_forward_agent_secret()?;
+    let socket_id = new_forward_agent_socket_id()?;
+    let socket_name = forward_agent_session_socket_name(target.service.as_deref(), &socket_id);
+    let socket_target = forward_agent_socket_target_from_name(&socket_name);
     exec_detached(
         &started.client,
         &target.container_name,
-        &forward_agent_command_at(&target.forward_ports, &secret, &target.socket_target),
+        &forward_agent_command_at(&target.forward_ports, &secret, &socket_target),
     )
     .await
     .with_context(|| {
@@ -72,7 +76,7 @@ async fn start_forwarding_target(
         )
     })?;
     let agent_socket_path =
-        wait_for_forward_agent_with_status(&target.runtime_dir, &target.socket_name, || async {
+        wait_for_forward_agent_with_status(&target.runtime_dir, &socket_name, || async {
             Ok(ForwardAgentStatus::Running)
         })
         .await
@@ -121,8 +125,6 @@ pub(in crate::up) struct ForwardingAgentTarget {
     pub(in crate::up) service: Option<String>,
     pub(in crate::up) container_name: String,
     pub(in crate::up) runtime_dir: PathBuf,
-    pub(in crate::up) socket_name: String,
-    socket_target: String,
     pub(in crate::up) forward_ports: Vec<ResolvedForwardPort>,
     pub(in crate::up) auto_forward: Option<AutoForwardConfig>,
 }
@@ -209,8 +211,6 @@ pub(in crate::up) fn plan_forwarding_agent_targets(
             service: None,
             container_name: String::new(),
             runtime_dir: primary_runtime_dir.to_path_buf(),
-            socket_name: crate::host::forward::forward_agent_socket_name(None),
-            socket_target: forward_agent_socket_target(None),
             forward_ports: primary_ports,
             auto_forward,
         });
@@ -220,8 +220,6 @@ pub(in crate::up) fn plan_forwarding_agent_targets(
             service: Some(service.clone()),
             container_name: String::new(),
             runtime_dir: service_forward_runtime_dir(primary_runtime_dir, &service),
-            socket_name: crate::host::forward::forward_agent_socket_name(Some(&service)),
-            socket_target: forward_agent_socket_target(Some(&service)),
             forward_ports,
             auto_forward: None,
         });
