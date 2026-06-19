@@ -26,23 +26,62 @@ const DOTFILE_MOUNT_SKELETON_DIR: &str = "dotfile-mount-skeleton";
 const MAX_DOTFILE_TREE_DEPTH: u32 = 32;
 const MAX_DOTFILE_MOUNTS: usize = 1024;
 
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct DotfileMountPlan {
+    pub(crate) mounts: Vec<DockerMountSpec>,
+    pub(crate) skeletons: Vec<DotfileSkeletonPlan>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DotfileSkeletonPlan {
+    pub(crate) root: PathBuf,
+    pub(crate) read_only: bool,
+    entries: BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DotfileSkeletonEntryKind {
+    File,
+    Directory,
+}
+
+#[cfg(test)]
 pub(crate) fn dotfile_mount_specs(
     config: &ResolvedConfig,
     workspace_root: &Path,
     variables: &VariableContext,
     state_root: &Path,
 ) -> Result<Vec<DockerMountSpec>> {
-    let mut mounts = Vec::new();
+    Ok(dotfile_mount_plan(config, workspace_root, variables, state_root)?.mounts)
+}
+
+pub(crate) fn dotfile_mount_plan(
+    config: &ResolvedConfig,
+    workspace_root: &Path,
+    variables: &VariableContext,
+    state_root: &Path,
+) -> Result<DotfileMountPlan> {
+    let mut plan = DotfileMountPlan::default();
     for dotfile in expanded_dotfiles(config, variables)? {
-        mounts.extend(dotfile_mount_spec(
-            &dotfile,
-            workspace_root,
-            variables,
-            state_root,
-        )?);
+        let dotfile_plan = dotfile_mount_spec(&dotfile, workspace_root, variables, state_root)?;
+        plan.mounts.extend(dotfile_plan.mounts);
+        plan.skeletons.extend(dotfile_plan.skeletons);
     }
 
-    Ok(mounts)
+    Ok(plan)
+}
+
+pub(crate) fn materialize_dotfile_skeletons(skeletons: &[DotfileSkeletonPlan]) -> Result<()> {
+    for skeleton in skeletons {
+        materialize_dotfile_skeleton(skeleton).with_context(|| {
+            format!(
+                "Failed to prepare dotfile mount skeleton: {}",
+                skeleton.root.display()
+            )
+        })?;
+    }
+
+    Ok(())
 }
 
 pub(crate) async fn setup_dotfiles(
@@ -137,7 +176,7 @@ fn dotfile_mount_spec(
     workspace_root: &Path,
     variables: &VariableContext,
     state_root: &Path,
-) -> Result<Vec<DockerMountSpec>> {
+) -> Result<DotfileMountPlan> {
     let target = dotfile_mount_target(&dotfile.target)?;
     let source = resolve_host_path(
         &dotfile.dotfile.source,
@@ -153,11 +192,14 @@ fn dotfile_mount_spec(
     })?;
 
     if !dotfile.dotfile.resolve_symlink || source.is_file() {
-        return Ok(vec![dotfile_bind_mount(
-            &source,
-            target,
-            dotfile.dotfile.read_only,
-        )]);
+        return Ok(DotfileMountPlan {
+            mounts: vec![dotfile_bind_mount(
+                &source,
+                target,
+                dotfile.dotfile.read_only,
+            )],
+            skeletons: Vec::new(),
+        });
     }
     if !source.is_dir() {
         bail!(
@@ -167,39 +209,45 @@ fn dotfile_mount_spec(
     }
 
     if !directory_contains_any_symlink(&source)? {
-        return Ok(vec![dotfile_bind_mount(
-            &source,
-            target,
-            dotfile.dotfile.read_only,
-        )]);
+        return Ok(DotfileMountPlan {
+            mounts: vec![dotfile_bind_mount(
+                &source,
+                target,
+                dotfile.dotfile.read_only,
+            )],
+            skeletons: Vec::new(),
+        });
     }
 
     let tree = collect_dotfile_tree(&source)?;
     if let Some(backing_root) = backing_root_mount_source(&tree)? {
-        return Ok(vec![dotfile_bind_mount(
-            &backing_root,
-            target,
-            dotfile.dotfile.read_only,
-        )]);
+        return Ok(DotfileMountPlan {
+            mounts: vec![dotfile_bind_mount(
+                &backing_root,
+                target,
+                dotfile.dotfile.read_only,
+            )],
+            skeletons: Vec::new(),
+        });
     }
 
-    let mounts = skeleton_dotfile_mounts(
+    let plan = skeleton_dotfile_mount_plan(
         &source,
         &dotfile.target,
         target,
         state_root,
         dotfile.dotfile.read_only,
     )?;
-    if mounts.len() > MAX_DOTFILE_MOUNTS {
+    if plan.mounts.len() > MAX_DOTFILE_MOUNTS {
         bail!(
             "Dotfile target generates too many bind mounts ({} > {}): {}",
-            mounts.len(),
+            plan.mounts.len(),
             MAX_DOTFILE_MOUNTS,
             dotfile.target
         );
     }
 
-    Ok(mounts)
+    Ok(plan)
 }
 
 fn dotfile_bind_mount(source: &Path, target: String, read_only: bool) -> DockerMountSpec {
@@ -781,24 +829,17 @@ fn kind_from_metadata(metadata: &fs::Metadata) -> Option<DotfileTreeEntryKind> {
     }
 }
 
-fn skeleton_dotfile_mounts(
+fn skeleton_dotfile_mount_plan(
     source: &Path,
     dotfile_target: &str,
     container_target: String,
     state_root: &Path,
     read_only: bool,
-) -> Result<Vec<DockerMountSpec>> {
+) -> Result<DotfileMountPlan> {
     let components = relative_target_components(dotfile_target)?;
     let skeleton_root = state_root
         .join(DOTFILE_MOUNT_SKELETON_DIR)
         .join(components.join("/"));
-    prepare_dotfile_skeleton_root(&skeleton_root).with_context(|| {
-        format!(
-            "Failed to prepare dotfile mount skeleton: {}",
-            skeleton_root.display()
-        )
-    })?;
-
     let mounts = vec![dotfile_bind_mount(
         &skeleton_root,
         container_target.clone(),
@@ -812,10 +853,10 @@ fn skeleton_dotfile_mounts(
     })?;
     let mut ancestors = vec![source.clone()];
     let mut builder = DotfileSkeletonBuilder {
-        skeleton_root: &skeleton_root,
         container_root: &container_target,
         read_only,
         mounts,
+        skeleton_entries: BTreeMap::new(),
     };
     builder.build_directory(&source, Path::new(""), &mut ancestors, 0)?;
     builder.mounts[1..].sort_by(|left, right| {
@@ -824,14 +865,21 @@ fn skeleton_dotfile_mounts(
             .then_with(|| left.target.cmp(&right.target))
     });
 
-    Ok(builder.mounts)
+    Ok(DotfileMountPlan {
+        mounts: builder.mounts,
+        skeletons: vec![DotfileSkeletonPlan {
+            root: skeleton_root,
+            read_only,
+            entries: builder.skeleton_entries,
+        }],
+    })
 }
 
 struct DotfileSkeletonBuilder<'a> {
-    skeleton_root: &'a Path,
     container_root: &'a str,
     read_only: bool,
     mounts: Vec<DockerMountSpec>,
+    skeleton_entries: BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
 }
 
 impl DotfileSkeletonBuilder<'_> {
@@ -906,7 +954,7 @@ impl DotfileSkeletonBuilder<'_> {
                 )
             })?;
             if metadata.is_file() {
-                create_skeleton_file(&self.skeleton_root.join(&relative))?;
+                self.push_skeleton_entry(relative.clone(), DotfileSkeletonEntryKind::File)?;
                 self.push_mount(
                     &real_path,
                     container_child_target(self.container_root, &relative)?,
@@ -923,7 +971,7 @@ impl DotfileSkeletonBuilder<'_> {
             let real_path = path.canonicalize().with_context(|| {
                 format!("Failed to canonicalize dotfile file: {}", path.display())
             })?;
-            create_skeleton_file(&self.skeleton_root.join(&relative))?;
+            self.push_skeleton_entry(relative.clone(), DotfileSkeletonEntryKind::File)?;
             self.push_mount(
                 &real_path,
                 container_child_target(self.container_root, &relative)?,
@@ -954,7 +1002,7 @@ impl DotfileSkeletonBuilder<'_> {
         depth: u32,
     ) -> Result<()> {
         reject_circular_dotfile_directory(real_path, real_path, ancestors)?;
-        create_skeleton_directory(&self.skeleton_root.join(relative))?;
+        self.push_skeleton_entry(relative.to_path_buf(), DotfileSkeletonEntryKind::Directory)?;
 
         if !directory_contains_symlink(real_path, ancestors, depth)? {
             self.push_mount(
@@ -967,6 +1015,23 @@ impl DotfileSkeletonBuilder<'_> {
         ancestors.push(real_path.to_path_buf());
         self.build_directory(real_path, relative, ancestors, depth)?;
         ancestors.pop();
+
+        Ok(())
+    }
+
+    fn push_skeleton_entry(
+        &mut self,
+        relative: PathBuf,
+        kind: DotfileSkeletonEntryKind,
+    ) -> Result<()> {
+        if let Some(existing) = self.skeleton_entries.insert(relative.clone(), kind)
+            && existing != kind
+        {
+            bail!(
+                "Dotfile skeleton path generated with conflicting entry kinds: {}",
+                relative.display()
+            );
+        }
 
         Ok(())
     }
@@ -1040,90 +1105,119 @@ fn directory_contains_symlink(source: &Path, ancestors: &[PathBuf], depth: u32) 
     Ok(false)
 }
 
-fn prepare_dotfile_skeleton_root(path: &Path) -> Result<()> {
-    match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_dir() => {
-            clear_directory_contents(path).with_context(|| {
-                format!(
-                    "Failed to clear dotfile mount skeleton directory: {}",
-                    path.display()
-                )
-            })?;
-        }
-        Ok(metadata) => {
-            if metadata.file_type().is_dir() {
-                fs::remove_dir_all(path).with_context(|| {
-                    format!(
-                        "Failed to remove dotfile mount skeleton path: {}",
-                        path.display()
-                    )
-                })?;
-            } else {
-                fs::remove_file(path).with_context(|| {
-                    format!(
-                        "Failed to remove dotfile mount skeleton path: {}",
-                        path.display()
-                    )
-                })?;
+fn materialize_dotfile_skeleton(skeleton: &DotfileSkeletonPlan) -> Result<()> {
+    materialize_skeleton_root(&skeleton.root)?;
+
+    for (relative, kind) in &skeleton.entries {
+        let path = skeleton.root.join(relative);
+        match kind {
+            DotfileSkeletonEntryKind::Directory => {
+                materialize_skeleton_directory(&path, skeleton.read_only)?;
             }
-            fs::create_dir_all(path).with_context(|| {
-                format!(
-                    "Failed to create dotfile mount skeleton directory: {}",
-                    path.display()
-                )
-            })?;
+            DotfileSkeletonEntryKind::File => {
+                materialize_skeleton_file(&path, skeleton.read_only)?;
+            }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            fs::create_dir_all(path).with_context(|| {
-                format!(
-                    "Failed to create dotfile mount skeleton directory: {}",
-                    path.display()
-                )
-            })?;
-        }
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!(
-                    "Failed to read dotfile mount skeleton path: {}",
-                    path.display()
-                )
-            });
-        }
+    }
+
+    if skeleton.read_only {
+        remove_stale_skeleton_entries(&skeleton.root, &skeleton.entries)?;
     }
 
     Ok(())
 }
 
-fn clear_directory_contents(dir: &Path) -> Result<()> {
-    for entry in fs::read_dir(dir)? {
-        let entry = entry?;
-        let path = entry.path();
-        let metadata = fs::symlink_metadata(&path)?;
-        if metadata.file_type().is_dir() {
-            fs::remove_dir_all(&path)?;
-        } else {
-            fs::remove_file(&path)?;
+fn materialize_skeleton_root(path: &Path) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
+        Ok(metadata) => {
+            remove_skeleton_path(path, &metadata)?;
+            fs::create_dir_all(path).with_context(|| {
+                format!(
+                    "Failed to create dotfile mount skeleton directory: {}",
+                    path.display()
+                )
+            })
         }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(path)
+            .with_context(|| {
+                format!(
+                    "Failed to create dotfile mount skeleton directory: {}",
+                    path.display()
+                )
+            }),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to read dotfile mount skeleton path: {}",
+                path.display()
+            )
+        }),
     }
-    Ok(())
 }
 
-fn create_skeleton_directory(path: &Path) -> Result<()> {
-    fs::create_dir_all(path).with_context(|| {
-        format!(
-            "Failed to create dotfile mount skeleton directory: {}",
+fn materialize_skeleton_directory(path: &Path, replace_conflict: bool) -> Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_dir() => Ok(()),
+        Ok(metadata) if replace_conflict => {
+            remove_skeleton_path(path, &metadata)?;
+            fs::create_dir_all(path).with_context(|| {
+                format!(
+                    "Failed to create dotfile mount skeleton directory: {}",
+                    path.display()
+                )
+            })
+        }
+        Ok(_) => bail!(
+            "Dotfile mount skeleton path conflicts with desired directory: {}",
             path.display()
-        )
-    })
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => fs::create_dir_all(path)
+            .with_context(|| {
+                format!(
+                    "Failed to create dotfile mount skeleton directory: {}",
+                    path.display()
+                )
+            }),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to read dotfile mount skeleton path: {}",
+                path.display()
+            )
+        }),
+    }
 }
 
-fn create_skeleton_file(path: &Path) -> Result<()> {
+fn materialize_skeleton_file(path: &Path, replace_conflict: bool) -> Result<()> {
     if let Some(parent) = path.parent() {
-        create_skeleton_directory(parent)?;
+        materialize_skeleton_directory(parent, replace_conflict)?;
     }
+
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
+        Ok(metadata) if replace_conflict => {
+            remove_skeleton_path(path, &metadata)?;
+            create_skeleton_file_without_truncate(path)
+        }
+        Ok(_) => bail!(
+            "Dotfile mount skeleton path conflicts with desired file: {}",
+            path.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            create_skeleton_file_without_truncate(path)
+        }
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to read dotfile mount skeleton path: {}",
+                path.display()
+            )
+        }),
+    }
+}
+
+fn create_skeleton_file_without_truncate(path: &Path) -> Result<()> {
     fs::OpenOptions::new()
         .create(true)
-        .truncate(true)
+        .truncate(false)
         .write(true)
         .open(path)
         .with_context(|| {
@@ -1134,6 +1228,75 @@ fn create_skeleton_file(path: &Path) -> Result<()> {
         })?;
 
     Ok(())
+}
+
+fn remove_stale_skeleton_entries(
+    root: &Path,
+    desired: &BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
+) -> Result<()> {
+    remove_stale_skeleton_entries_in_directory(root, Path::new(""), desired)
+}
+
+fn remove_stale_skeleton_entries_in_directory(
+    directory: &Path,
+    relative_parent: &Path,
+    desired: &BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
+) -> Result<()> {
+    for entry in fs::read_dir(directory).with_context(|| {
+        format!(
+            "Failed to read dotfile mount skeleton directory: {}",
+            directory.display()
+        )
+    })? {
+        let entry = entry.with_context(|| {
+            format!(
+                "Failed to read directory entry in dotfile mount skeleton: {}",
+                directory.display()
+            )
+        })?;
+        let relative = relative_parent.join(PathBuf::from(entry.file_name()));
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path).with_context(|| {
+            format!(
+                "Failed to read dotfile mount skeleton path: {}",
+                path.display()
+            )
+        })?;
+        if !skeleton_relative_should_keep(&relative, desired) {
+            remove_skeleton_path(&path, &metadata)?;
+            continue;
+        }
+        if metadata.file_type().is_dir() {
+            remove_stale_skeleton_entries_in_directory(&path, &relative, desired)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn skeleton_relative_should_keep(
+    relative: &Path,
+    desired: &BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
+) -> bool {
+    desired.contains_key(relative) || desired.keys().any(|entry| entry.starts_with(relative))
+}
+
+fn remove_skeleton_path(path: &Path, metadata: &fs::Metadata) -> Result<()> {
+    if metadata.file_type().is_dir() {
+        fs::remove_dir_all(path).with_context(|| {
+            format!(
+                "Failed to remove dotfile mount skeleton directory: {}",
+                path.display()
+            )
+        })
+    } else {
+        fs::remove_file(path).with_context(|| {
+            format!(
+                "Failed to remove dotfile mount skeleton path: {}",
+                path.display()
+            )
+        })
+    }
 }
 
 fn container_child_target(root: &str, relative: &Path) -> Result<String> {
@@ -1190,7 +1353,7 @@ mod tests {
     use std::{fs, path::Path, process::Command};
 
     #[cfg(unix)]
-    use std::os::unix::fs as unix_fs;
+    use std::os::unix::{fs as unix_fs, fs::MetadataExt};
 
     use super::*;
     use crate::config::{
@@ -1214,6 +1377,17 @@ mod tests {
         })
     }
 
+    fn materialized_dotfile_mount_specs(
+        config: &ResolvedConfig,
+        workspace_root: &Path,
+        variables: &VariableContext,
+        state_root: &Path,
+    ) -> Result<Vec<DockerMountSpec>> {
+        let plan = dotfile_mount_plan(config, workspace_root, variables, state_root)?;
+        materialize_dotfile_skeletons(&plan.skeletons)?;
+        Ok(plan.mounts)
+    }
+
     #[test]
     fn converts_directory_dotfile_to_read_only_direct_mount() {
         let workspace = tempfile::tempdir().unwrap();
@@ -1231,7 +1405,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1276,7 +1450,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1313,7 +1487,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1376,7 +1550,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1416,7 +1590,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1461,7 +1635,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1753,7 +1927,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1767,6 +1941,53 @@ mod tests {
         );
         assert_eq!(mounts.len(), 1);
         assert!(!workspace.path().join(DOTFILE_MOUNT_SKELETON_DIR).exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn dotfile_mount_plan_does_not_materialize_skeleton() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dotfiles_real = workspace.path().join("dotfiles-real");
+        fs::create_dir_all(&dotfiles_real).unwrap();
+        fs::write(dotfiles_real.join("config.yml"), "key: value\n").unwrap();
+        fs::write(dotfiles_real.join("extra.yml"), "extra\n").unwrap();
+
+        let source_dir = workspace.path().join(".config/lazygit");
+        fs::create_dir_all(&source_dir).unwrap();
+        unix_fs::symlink(
+            dotfiles_real.join("config.yml"),
+            source_dir.join("config.yml"),
+        )
+        .unwrap();
+
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: ".config/lazygit".to_owned(),
+                target: ".config/lazygit".to_owned(),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let plan = dotfile_mount_plan(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+        let skeleton_path = workspace
+            .path()
+            .join(DOTFILE_MOUNT_SKELETON_DIR)
+            .join(".config/lazygit");
+
+        assert_eq!(plan.mounts.len(), 2);
+        assert_eq!(plan.skeletons.len(), 1);
+        assert_eq!(plan.skeletons[0].root, skeleton_path);
+        assert!(!skeleton_path.exists());
     }
 
     #[cfg(unix)]
@@ -1798,7 +2019,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1862,7 +2083,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1932,7 +2153,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -1974,7 +2195,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -2019,7 +2240,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -2053,7 +2274,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts = dotfile_mount_specs(
+        let mounts = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -2183,6 +2404,112 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn materialize_preserves_desired_skeleton_path_inodes_and_file_contents() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dotfiles_real = workspace.path().join("real");
+        fs::create_dir_all(&dotfiles_real).unwrap();
+        fs::write(dotfiles_real.join("config.yml"), "content").unwrap();
+        fs::write(dotfiles_real.join("extra.yml"), "extra").unwrap();
+
+        let source_dir = workspace.path().join("dotdir");
+        fs::create_dir_all(&source_dir).unwrap();
+        unix_fs::symlink(
+            dotfiles_real.join("config.yml"),
+            source_dir.join("config.yml"),
+        )
+        .unwrap();
+
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: "dotdir".to_owned(),
+                target: ".config/app".to_owned(),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+        let skeleton_path = workspace
+            .path()
+            .join(DOTFILE_MOUNT_SKELETON_DIR)
+            .join(".config/app");
+
+        let plan = dotfile_mount_plan(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+        materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+        let file_path = skeleton_path.join("config.yml");
+        fs::write(&file_path, "placeholder").unwrap();
+        fs::write(skeleton_path.join("stale"), "stale").unwrap();
+        let root_ino = skeleton_path.symlink_metadata().unwrap().ino();
+        let file_ino = file_path.symlink_metadata().unwrap().ino();
+
+        materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+
+        assert_eq!(skeleton_path.symlink_metadata().unwrap().ino(), root_ino);
+        assert_eq!(file_path.symlink_metadata().unwrap().ino(), file_ino);
+        assert_eq!(fs::read_to_string(&file_path).unwrap(), "placeholder");
+        assert!(!skeleton_path.join("stale").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn writable_skeleton_materialization_preserves_unknown_entries() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dotfiles_real = workspace.path().join("real");
+        fs::create_dir_all(&dotfiles_real).unwrap();
+        fs::write(dotfiles_real.join("config.yml"), "content").unwrap();
+        fs::write(dotfiles_real.join("extra.yml"), "extra").unwrap();
+
+        let source_dir = workspace.path().join("dotdir");
+        fs::create_dir_all(&source_dir).unwrap();
+        unix_fs::symlink(
+            dotfiles_real.join("config.yml"),
+            source_dir.join("config.yml"),
+        )
+        .unwrap();
+
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: "dotdir".to_owned(),
+                target: ".config/app".to_owned(),
+                read_only: false,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+        let skeleton_path = workspace
+            .path()
+            .join(DOTFILE_MOUNT_SKELETON_DIR)
+            .join(".config/app");
+
+        let plan = dotfile_mount_plan(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+        materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+        fs::write(skeleton_path.join("new.json"), "new").unwrap();
+
+        materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+
+        assert_eq!(
+            fs::read_to_string(skeleton_path.join("new.json")).unwrap(),
+            "new"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn skeleton_is_idempotent_without_copying_contents() {
         let workspace = tempfile::tempdir().unwrap();
         let dotfiles_real = workspace.path().join("real");
@@ -2210,7 +2537,7 @@ mod tests {
             ..ResolvedConfig::default()
         };
 
-        let mounts1 = dotfile_mount_specs(
+        let mounts1 = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),
@@ -2225,7 +2552,7 @@ mod tests {
         fs::write(skeleton_path.join("stale"), "stale").unwrap();
         fs::write(dotfiles_real.join("config.yml"), "v2").unwrap();
 
-        let mounts2 = dotfile_mount_specs(
+        let mounts2 = materialized_dotfile_mount_specs(
             &config,
             workspace.path(),
             &variables(workspace.path()),

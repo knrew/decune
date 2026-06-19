@@ -49,7 +49,7 @@ use crate::{
         },
         mounts::{
             WorkspaceLocationValidation, mount_variable_context, resolve_workspace_location,
-            workspace_mounts_from_resolved,
+            workspace_mount_plan_from_resolved,
         },
         plan::{
             add_internal_hash_versions, base_image_source,
@@ -446,7 +446,7 @@ async fn finalize_mounts_and_resources_for_plan(
         expand_container_env_tracked(&plan.config.devcontainer.container_env, &mount_variables)?;
     plan.config.devcontainer.container_env = expanded_container_env.values;
     plan.sensitive_container_env = expanded_container_env.sensitive;
-    let mounts = workspace_mounts_from_resolved(
+    let mount_plan = workspace_mount_plan_from_resolved(
         workspace_location.workspace_mount,
         workspace.root(),
         &plan.config,
@@ -454,6 +454,7 @@ async fn finalize_mounts_and_resources_for_plan(
         MountResolution::Resolve,
         workspace.paths().state_dir(),
     )?;
+    let mounts = mount_plan.mounts;
     let mut hash_input = ConfigHashInput::new(&plan.config);
     if let Some(context) = &plan.build_context {
         hash_input.build = Some(build_hash_input(context)?);
@@ -540,6 +541,7 @@ async fn finalize_mounts_and_resources_for_plan(
     }
     plan.workspace_folder = workspace_location.workspace_folder;
     plan.mounts = mounts;
+    plan.dotfile_skeletons = mount_plan.dotfile_skeletons;
 
     Ok(plan)
 }
@@ -1615,6 +1617,7 @@ mod tests {
             uid_gid_sync_plan: UidGidSyncPlan::default(),
             workspace_folder: "/workspace".to_owned(),
             mounts: Vec::new(),
+            dotfile_skeletons: Vec::new(),
             forward_ports: Vec::new(),
             ignored_detached_forwarding: false,
         }

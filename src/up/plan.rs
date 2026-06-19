@@ -38,7 +38,8 @@ use super::mounts::default_workspace_folder;
 use super::{
     ForwardingResolution, MountResolution, UpPlan, UpPlanResolution, WorkspaceLocation,
     WorkspaceLocationValidation, mount_hash_inputs, resolve_workspace_location,
-    static_mount_variable_context, static_uid_gid_sync_hash_input, workspace_mounts_from_resolved,
+    static_mount_variable_context, static_uid_gid_sync_hash_input,
+    workspace_mount_plan_from_resolved,
 };
 
 const FEATURE_ENTRYPOINT_SHIM_HASH_VERSION: &str = "2";
@@ -200,7 +201,7 @@ fn build_up_plan_inner(
         &config,
     );
     let compose_project = compose_project_plan(workspace, devcontainer_json.path(), &config)?;
-    let mounts = workspace_mounts_from_resolved(
+    let mount_plan = workspace_mount_plan_from_resolved(
         static_expansion.workspace_location.workspace_mount.clone(),
         workspace.root(),
         &config,
@@ -208,6 +209,7 @@ fn build_up_plan_inner(
         mount_resolution,
         workspace.paths().state_dir(),
     )?;
+    let mounts = mount_plan.mounts;
     let mut hash_input = ConfigHashInput::new(&config);
     if let Some(context) = &static_expansion.build_context {
         hash_input.build = Some(build_hash_input(context)?);
@@ -273,6 +275,7 @@ fn build_up_plan_inner(
         uid_gid_sync_plan: UidGidSyncPlan::default(),
         workspace_folder: static_expansion.workspace_location.workspace_folder,
         mounts,
+        dotfile_skeletons: mount_plan.dotfile_skeletons,
         forward_ports,
         ignored_detached_forwarding,
     })
