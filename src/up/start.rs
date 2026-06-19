@@ -60,7 +60,7 @@ use crate::{
             FinalizeUpPlanMountsOptions, build_existing_container_decision_plan,
             existing_remote_user_image_for_decision, finalize_up_plan_mounts,
             prepare_compose_image_metadata, prepare_image_based_metadata,
-            warn_about_deferred_features,
+            report_deferred_config_messages,
         },
         plan::build_preliminary_up_plan_with_forwarding_resolution,
         types::{
@@ -362,7 +362,7 @@ pub(in crate::up) async fn ensure_container_started(
             false,
         )? {
             ExistingContainerDecision::ReuseRunning { id, name } => {
-                warn_about_deferred_features(&existing_plan.config);
+                report_deferred_config_messages(&existing_plan.config);
                 let outcome = UpOutcome {
                     container_id: id,
                     container_name: name,
@@ -378,7 +378,7 @@ pub(in crate::up) async fn ensure_container_started(
                 );
             }
             ExistingContainerDecision::StartStopped { id, name } => {
-                warn_about_deferred_features(&existing_plan.config);
+                report_deferred_config_messages(&existing_plan.config);
                 let (outcome, state) =
                     start_stopped_existing_container(&client, &workspace, &existing_plan, id, name)
                         .await?;
@@ -438,7 +438,7 @@ pub(in crate::up) async fn ensure_container_started(
     let (mut plan, credentials) =
         add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
     attach_compose_interpolation_env_to_plan(&mut plan);
-    warn_about_deferred_features(&plan.config);
+    report_deferred_config_messages(&plan.config);
 
     match decide_existing_container(
         &containers,
@@ -600,7 +600,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     let (mut plan, credentials) =
         add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
     attach_compose_interpolation_env_to_plan(&mut plan);
-    warn_about_deferred_features(&plan.config);
+    report_deferred_config_messages(&plan.config);
 
     let Some(compose_project) = &plan.compose_project else {
         bail!("Docker Compose project plan is missing after finalization");
@@ -805,7 +805,7 @@ async fn start_compose_project(
     let (mut plan, credentials) =
         add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
     attach_compose_interpolation_env_to_plan(&mut plan);
-    warn_about_deferred_features(&plan.config);
+    report_deferred_config_messages(&plan.config);
 
     let Some(compose_project) = &plan.compose_project else {
         bail!("Docker Compose project plan is missing after finalization");

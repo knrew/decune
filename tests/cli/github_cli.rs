@@ -1,7 +1,8 @@
 use crate::harness::*;
 
 #[test]
-fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_without_leaking_token() {
+fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_without_leaking_token()
+{
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     let path_roots = tempfile::tempdir().unwrap();
@@ -84,13 +85,13 @@ fn up_detach_warns_when_github_cli_is_missing_and_auto_install_is_disabled_witho
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains(
-                "GitHub credential forwarding is enabled",
+                "Notice: GitHub credential forwarding is enabled",
             ))
             .stderr(predicate::str::contains(
                 "[credentials.github].enabled = false",
             ))
             .stderr(predicate::str::contains(
-                "GitHub CLI token forwarding is unavailable",
+                "Warning: GitHub CLI token forwarding is unavailable",
             ))
             .stderr(predicate::str::contains("Building Docker image"))
             .stderr(predicate::str::contains("Started dev container"))

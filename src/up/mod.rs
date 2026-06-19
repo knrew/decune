@@ -39,8 +39,8 @@ use forwarding::{
 };
 #[cfg(test)]
 use metadata::{
-    add_github_cli_feature_to_plan, finalize_up_plan_mounts, should_auto_add_github_cli_feature,
-    untrusted_repository_warnings,
+    add_github_cli_feature_to_plan, deferred_config_warnings, finalize_up_plan_mounts,
+    security_notices, should_auto_add_github_cli_feature,
 };
 #[cfg(test)]
 use mounts::default_workspace_folder;
@@ -217,12 +217,12 @@ mod tests {
         add_github_cli_feature_to_plan, build_preliminary_up_plan_with_forwarding_resolution,
         build_up_plan, build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
         build_up_plan_with_update_features, container_summary, create_and_start_container,
-        decide_existing_container, default_workspace_folder, feature_layer_image,
-        finalize_up_plan_mounts, first_successful_shell_candidate,
+        decide_existing_container, default_workspace_folder, deferred_config_warnings,
+        feature_layer_image, finalize_up_plan_mounts, first_successful_shell_candidate,
         generated_compose_override_content, list_workspace_containers, mount_hash_inputs,
-        plan_forwarding_agent_targets, run_attached_up, run_detached_up, shell_command_candidates,
-        should_auto_add_github_cli_feature, uid_gid_sync_base_image, uid_gid_sync_warning,
-        untrusted_repository_warnings,
+        plan_forwarding_agent_targets, run_attached_up, run_detached_up, security_notices,
+        shell_command_candidates, should_auto_add_github_cli_feature, uid_gid_sync_base_image,
+        uid_gid_sync_warning,
     };
 
     #[test]
@@ -1362,61 +1362,46 @@ container = 5432
     }
 
     #[test]
-    fn untrusted_repository_warnings_are_empty_for_default_plan_security_surface() {
+    fn security_notices_are_empty_for_default_plan_security_surface() {
         let mut config = ResolvedConfig::default();
         config.credentials.git.enabled = false;
         config.credentials.github.enabled = false;
-        let warnings = untrusted_repository_warnings(&config);
+        let notices = security_notices(&config);
 
-        assert!(warnings.is_empty());
+        assert!(notices.is_empty());
     }
 
     #[test]
-    fn untrusted_repository_warnings_report_risky_container_settings() {
+    fn security_notices_report_risky_container_settings() {
         let mut config = ResolvedConfig::default();
         config.credentials.git.enabled = false;
         config.credentials.github.enabled = false;
         config.devcontainer.privileged = Some(true);
         config.devcontainer.cap_add = vec!["SYS_PTRACE".to_owned()];
         config.devcontainer.security_opt = vec!["seccomp=unconfined".to_owned()];
-        config.devcontainer.publish_ports = vec![ResolvedPublishPort {
-            container: 8080,
-            host: None,
-            host_ip: None,
-            protocol: PortProtocol::Tcp,
-        }];
         config.devcontainer.mounts = vec![crate::config::layer::LayerDevcontainerMount::String(
             "type=bind,source=/tmp,target=/host-tmp".to_owned(),
         )];
 
-        let warnings = untrusted_repository_warnings(&config);
+        let notices = security_notices(&config);
 
+        assert!(notices.iter().any(|notice| notice.contains("privileged")));
+        assert!(notices.iter().any(|notice| notice.contains("SYS_PTRACE")));
         assert!(
-            warnings
+            notices
                 .iter()
-                .any(|warning| warning.contains("privileged"))
+                .any(|notice| notice.contains("seccomp=unconfined"))
         );
         assert!(
-            warnings
+            notices
                 .iter()
-                .any(|warning| warning.contains("SYS_PTRACE"))
+                .any(|notice| notice.contains("additional bind mounts"))
         );
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("seccomp=unconfined"))
-        );
-        assert!(warnings.iter().any(|warning| warning.contains("appPort")));
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("additional bind mounts"))
-        );
-        assert!(warnings.iter().all(|warning| !warning.contains("/tmp")));
+        assert!(notices.iter().all(|notice| !notice.contains("/tmp")));
     }
 
     #[test]
-    fn untrusted_repository_warnings_skip_devcontainer_volume_mounts() {
+    fn security_notices_skip_devcontainer_volume_mounts() {
         let mut config = ResolvedConfig::default();
         config.credentials.git.enabled = false;
         config.credentials.github.enabled = false;
@@ -1436,34 +1421,34 @@ container = 5432
         config.devcontainer.workspace_mount =
             Some("type=volume,source=project-workspace,target=/workspace".to_owned());
 
-        let warnings = untrusted_repository_warnings(&config);
+        let notices = security_notices(&config);
 
         assert!(
-            warnings
+            notices
                 .iter()
-                .all(|warning| !warning.contains("additional bind mounts"))
+                .all(|notice| !notice.contains("additional bind mounts"))
         );
     }
 
     #[test]
-    fn untrusted_repository_warnings_report_devcontainer_workspace_bind_mount() {
+    fn security_notices_report_devcontainer_workspace_bind_mount() {
         let mut config = ResolvedConfig::default();
         config.credentials.git.enabled = false;
         config.credentials.github.enabled = false;
         config.devcontainer.workspace_mount =
             Some("type=bind,source=${localWorkspaceFolder},target=/workspace".to_owned());
 
-        let warnings = untrusted_repository_warnings(&config);
+        let notices = security_notices(&config);
 
         assert!(
-            warnings
+            notices
                 .iter()
-                .any(|warning| warning.contains("additional bind mounts"))
+                .any(|notice| notice.contains("additional bind mounts"))
         );
     }
 
     #[test]
-    fn untrusted_repository_warnings_report_code_execution_surfaces() {
+    fn security_notices_report_code_execution_surfaces() {
         let mut config = ResolvedConfig::default();
         config.credentials.git.enabled = false;
         config.credentials.github.enabled = false;
@@ -1492,67 +1477,55 @@ container = 5432
         );
         config.devcontainer.user_env_probe = Some(LayerUserEnvProbe::LoginShell);
 
-        let warnings = untrusted_repository_warnings(&config);
+        let notices = security_notices(&config);
 
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("Dockerfile"))
-        );
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("install.sh"))
-        );
-        assert!(
-            warnings
-                .iter()
-                .any(|warning| warning.contains("entrypoint"))
-        );
-        assert!(warnings.iter().any(|warning| warning.contains("lifecycle")));
-        assert!(warnings.iter().any(|warning| {
-            warning.contains("userEnvProbe") && warning.contains("userEnvProbe to \"none\"")
+        assert!(notices.iter().any(|notice| notice.contains("Dockerfile")));
+        assert!(notices.iter().any(|notice| notice.contains("install.sh")));
+        assert!(notices.iter().any(|notice| notice.contains("entrypoint")));
+        assert!(notices.iter().any(|notice| notice.contains("lifecycle")));
+        assert!(notices.iter().any(|notice| {
+            notice.contains("userEnvProbe") && notice.contains("userEnvProbe to \"none\"")
         }));
     }
 
     #[test]
-    fn untrusted_repository_warnings_report_enabled_credentials() {
-        let warnings = untrusted_repository_warnings(&ResolvedConfig::default());
+    fn security_notices_report_enabled_credentials() {
+        let notices = security_notices(&ResolvedConfig::default());
 
-        assert!(warnings.iter().any(|warning| {
-            warning.contains("Git credential forwarding")
-                && warning.contains("[credentials.git].enabled = false")
+        assert!(notices.iter().any(|notice| {
+            notice.contains("Git credential forwarding")
+                && notice.contains("[credentials.git].enabled = false")
         }));
-        assert!(warnings.iter().any(|warning| {
-            warning.contains("SSH agent forwarding") && warning.contains("ssh_agent = \"off\"")
+        assert!(notices.iter().any(|notice| {
+            notice.contains("SSH agent forwarding") && notice.contains("ssh_agent = \"off\"")
         }));
-        assert!(warnings.iter().any(|warning| {
-            warning.contains("GitHub credential forwarding")
-                && warning.contains("[credentials.github].enabled = false")
+        assert!(notices.iter().any(|notice| {
+            notice.contains("GitHub credential forwarding")
+                && notice.contains("[credentials.github].enabled = false")
         }));
 
         let mut disabled = ResolvedConfig::default();
         disabled.credentials.git.enabled = false;
         disabled.credentials.github.enabled = false;
-        let disabled_warnings = untrusted_repository_warnings(&disabled);
+        let disabled_notices = security_notices(&disabled);
         assert!(
-            disabled_warnings
+            disabled_notices
                 .iter()
-                .all(|warning| !warning.contains("credential forwarding"))
+                .all(|notice| !notice.contains("credential forwarding"))
         );
 
         let mut ssh_off = ResolvedConfig::default();
         ssh_off.credentials.git.ssh_agent = SshAgentMode::Off;
-        let ssh_off_warnings = untrusted_repository_warnings(&ssh_off);
+        let ssh_off_notices = security_notices(&ssh_off);
         assert!(
-            ssh_off_warnings
+            ssh_off_notices
                 .iter()
-                .all(|warning| !warning.contains("SSH agent forwarding"))
+                .all(|notice| !notice.contains("SSH agent forwarding"))
         );
     }
 
     #[test]
-    fn untrusted_repository_warnings_report_app_port_without_explicit_host_ip() {
+    fn deferred_config_warnings_report_app_port_without_explicit_host_ip() {
         let mut config = ResolvedConfig::default();
         config.devcontainer.publish_ports = vec![ResolvedPublishPort {
             container: 8080,
@@ -1561,7 +1534,7 @@ container = 5432
             protocol: PortProtocol::Tcp,
         }];
 
-        let warnings = untrusted_repository_warnings(&config);
+        let warnings = deferred_config_warnings(&config);
         let warning = warnings
             .iter()
             .find(|warning| warning.contains("appPort"))
@@ -1573,7 +1546,7 @@ container = 5432
     }
 
     #[test]
-    fn untrusted_repository_warnings_skip_localhost_only_app_port() {
+    fn deferred_config_warnings_skip_localhost_only_app_port() {
         let mut config = ResolvedConfig::default();
         config.devcontainer.publish_ports = vec![ResolvedPublishPort {
             container: 8080,
@@ -1582,13 +1555,13 @@ container = 5432
             protocol: PortProtocol::Tcp,
         }];
 
-        let warnings = untrusted_repository_warnings(&config);
+        let warnings = deferred_config_warnings(&config);
 
         assert!(!warnings.iter().any(|warning| warning.contains("appPort")));
     }
 
     #[test]
-    fn untrusted_repository_warnings_report_unsupported_port_attributes() {
+    fn deferred_config_warnings_report_unsupported_port_attributes() {
         let mut config = ResolvedConfig::default();
         config.devcontainer.port_attributes.insert(
             "3000".to_owned(),
@@ -1608,7 +1581,7 @@ container = 5432
             unsupported_elevate_if_needed: None,
         });
 
-        let warnings = untrusted_repository_warnings(&config);
+        let warnings = deferred_config_warnings(&config);
 
         assert!(warnings.iter().any(|warning| {
             warning.contains("portsAttributes.3000.protocol")

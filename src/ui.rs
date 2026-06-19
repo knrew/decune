@@ -66,6 +66,14 @@ pub(crate) fn warn(message: &str) {
     }
 }
 
+pub(crate) fn notice(message: &str) {
+    if is_tty() {
+        write_styled("Notice", message, &Style::new().cyan().bold());
+    } else {
+        write_plain("Notice", message);
+    }
+}
+
 pub(crate) fn error(message: &str) {
     if is_tty() {
         write_styled("Error", message, &Style::new().red().bold());
@@ -278,6 +286,15 @@ mod tests {
         writeln!(&mut output, "Warning: {message}").unwrap();
 
         assert_eq!(output, b"Warning: Credential helper is unavailable\n");
+    }
+
+    #[test]
+    fn plain_notice_message_is_prefixed() {
+        let message = "Git credential forwarding is enabled";
+        let mut output = Vec::new();
+        writeln!(&mut output, "Notice: {message}").unwrap();
+
+        assert_eq!(output, b"Notice: Git credential forwarding is enabled\n");
     }
 
     #[test]

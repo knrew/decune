@@ -364,6 +364,8 @@ Compose mode の publish は Compose file の `ports` に委譲します。Compo
 
 `decune up` は devcontainer の Dockerfile、Compose service build、Feature `install.sh`、lifecycle command、hook、`userEnvProbe` 対象 shell startup file を実行し得ます。信頼していない repository では、実行前に `.devcontainer/`、Compose file、local Feature、mount、credentials、`privileged`、`capAdd`、`securityOpt`、`appPort` / Compose `ports` を確認してください。
 
+`decune up` は、設定どおり有効な security surface を `Notice:` として表示します。設定が無視される、機能が縮退する、または補助処理の失敗から継続する場合は `Warning:` として表示します。
+
 untrusted repository では、認証 forwarding を無効にする設定を推奨します。
 
 ```toml
