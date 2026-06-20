@@ -4,7 +4,7 @@
 
 ## 方針
 
-- 公式配布は GitHub Releases のビルド済みアーカイブです。`Cargo.toml` は `publish = false` のため、v0.1 では crates.io publish は行いません。
+- 公式配布は GitHub Releases のビルド済みアーカイブです。`Cargo.toml` は `publish = false` のため、crates.io publish は行いません。
 - tag は `vMAJOR.MINOR.PATCH` 形式にします。pre-release は `v0.1.1-rc.1` のように SemVer の pre-release suffix を使います。
 - release notes は GitHub Releases の generated release notes を使います。必要な見出しや除外条件が増えた場合は、GitHub の release notes 設定で調整します。
 - 成果物は GitHub Actions 上で作り、ローカルで作ったバイナリは配布しません。
@@ -93,7 +93,7 @@
 
 - tag push 後に workflow が失敗し、GitHub Release が未公開の場合は、原因を修正した commit を作ってから新しい patch version または pre-release tag を切ります。既に共有された tag の移動は避けます。
 - GitHub Release が公開済みで成果物に問題がある場合は、該当 release を非公開化または説明を追記し、修正版を新しい version で出します。
-- crates.io に publish していないため、`cargo yank` は v0.1 の通常フローには含めません。
+- crates.io に publish していないため、`cargo yank` は通常フローには含めません。
 
 ## crates.io publish を導入する場合
 

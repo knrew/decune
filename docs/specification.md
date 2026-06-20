@@ -1,6 +1,6 @@
-# decune v0.1 仕様
+# decune 仕様
 
-この文書は、`decune` v0.1 の公開挙動、CLI の契約、設定スキーマ、Docker/Compose 連携、状態とリソース、セキュリティ境界の正本である。利用手順は [usage.md](usage.md)、開発・検証手順は [development.md](development.md)、用語基準は [glossary.md](glossary.md) を参照する。
+この文書は、`decune` の公開挙動、CLI の契約、設定スキーマ、Docker/Compose 連携、状態とリソース、セキュリティ境界の正本である。利用手順は [usage.md](usage.md)、開発・検証手順は [development.md](development.md)、用語基準は [glossary.md](glossary.md) を参照する。
 
 実装作業ログ、milestone 履歴、PR 単位の一時 issue、agent prompt はこの文書に置かない。
 
@@ -8,7 +8,7 @@
 
 `decune` は、Dev Containers Specification の Dev Container を Rust 製の単一 CLI から起動、接続、停止、削除するためのツールである。VS Code や Node.js ベースの Dev Container CLI には依存しない。
 
-v0.1 は Dev Container の次の 3 構成を正式対象にする。
+`decune` は Dev Container の次の 3 構成を正式対象にする。
 
 1. image-based: `image`
 2. Dockerfile-based: `build.dockerfile`
@@ -20,7 +20,7 @@ global/project の decune TOML 設定を Dev Container configuration に重ね�
 
 - [README.md](../README.md): プロジェクト概要、最短インストール手順、クイックスタート、主要リンク。
 - [usage.md](usage.md): 利用者向けの操作手順、操作例、設定例、安全な使い方。
-- [specification.md](specification.md): v0.1 の公開挙動とセキュリティ境界。
+- [specification.md](specification.md): 公開挙動とセキュリティ境界。
 - [development.md](development.md): コントリビューター向けの環境構築、検証、リリース成果物の作成コマンド。
 - [glossary.md](glossary.md): プロジェクト用語と表記基準。
 
@@ -33,7 +33,7 @@ README と usage はこの仕様を要約できるが、この仕様と矛盾す
 - Rust 製単一バイナリの CLI。
 - Docker image / container / exec / copy / inspect 操作を `docker` CLI adapter 経由で行う。
 - Docker Compose 操作を `docker compose` v2 CLI adapter 経由で行う。
-- `bollard` crate への依存を廃止する。Docker Engine API を Rust 型で直接操作する実装は v0.1 の前提にしない。
+- `bollard` crate への依存を廃止する。Docker Engine API を Rust 型で直接操作する実装は前提にしない。
 - Dev Container の image-based / Dockerfile-based / Docker Compose-based 構成。
 - JSONC としての `devcontainer.json` 読み込み。
 - TOML による global/project 設定。
@@ -48,7 +48,7 @@ README と usage はこの仕様を要約できるが、この仕様と矛盾す
 
 ### Docker Compose サポートの定義
 
-v0.1 における「Docker Compose 完全サポート」とは、Dev Containers Specification が定義する Docker Compose-based 構成を、image/Dockerfile 構成と同じ decune 機能群で扱えることを指す。
+この文書における「Docker Compose 完全サポート」とは、Dev Containers Specification が定義する Docker Compose-based 構成を、image/Dockerfile 構成と同じ decune 機能群で扱えることを指す。
 
 具体的には以下を満たす。
 
@@ -64,7 +64,7 @@ v0.1 における「Docker Compose 完全サポート」とは、Dev Containers 
 
 ### 対象外
 
-- 旧 `docker-compose` v1 standalone binary の公式対応。v0.1 は `docker compose` v2 プラグインを必須にする。
+- 旧 `docker-compose` v1 standalone binary の公式対応。`docker compose` v2 プラグインを必須にする。
 - Kubernetes、Swarm stack、Docker Desktop UI、cloud provider 固有 orchestrator の直接サポート。
 - Compose file を `dockerComposeFile` から git URL / OCI artifact / stdin で参照する構成。Dev Container の `dockerComposeFile` は `devcontainer.json` からの local path として扱う。
 - primary service の replica/scale が 2 以上の構成。remote shell と lifecycle の対象 container が一意に決まらないため error にする。
@@ -95,7 +95,7 @@ Docker endpoint、context、credential helper、BuildKit、Compose profiles な�
 
 ## 配布方針
 
-公式配布は GitHub Releases のビルド済みアーカイブを第一導線とし、ソースコードからのローカル `cargo install --path .` を第二導線とする。crates.io publish と `cargo install --git` は v0.1 の公式導線にしない。
+公式配布は GitHub Releases のビルド済みアーカイブを第一導線とし、ソースコードからのローカル `cargo install --path .` を第二導線とする。crates.io publish と `cargo install --git` は公式導線にしない。
 
 リリースアーカイブは以下を含む。
 
@@ -144,7 +144,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `WORKSPACE` の既定値はカレントディレクトリ。
 - `WORKSPACE` は実在するディレクトリでなければならない。
 - Git repository 内では repository root を workspace root とする。Git repository でなければ指定ディレクトリを workspace root とする。
-- v0.1 では `devcontainer.json` を必須とする。decune TOML は overlay であり、base image/build/Compose 定義の置き換えには使わない。
+- `devcontainer.json` を必須とする。decune TOML は overlay であり、base image/build/Compose 定義の置き換えには使わない。
 - CLI output、log、error message は英語にする。
 - 設定変更が既存 container/project に反映できない場合、`up` は暗黙 rebuild を行わず、`Run decune rebuild` を促して終了する。
 
@@ -171,7 +171,7 @@ decune up [OPTIONS] [WORKSPACE]
 - `--pull`: base image または Compose service image を pull してから build/create する。Compose モードでは config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
-- `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000/tcp`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。複数指定可。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は v0.1 unsupported error。Compose モードで service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
+- `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000/tcp`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。複数指定可。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードで service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
 
 `--detach` では `up` process 終了時に host daemon も停止するため、manual/automatic forwarding と Git HTTPS host-helper は維持されない。detached container で外部公開が必要な port は、image/Dockerfile モードでは `appPort`、Compose モードでは Compose file の `ports` を使う。`--detach` と CLI `-p` / `--port` の併用は error とする。設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視する。
 
@@ -231,7 +231,7 @@ workspace root から以下の順で検出する。
 2. `.devcontainer.json`
 3. `.devcontainer/<name>/devcontainer.json`
 
-`--config <PATH>` が指定された場合は自動検出を行わず、その path を `devcontainer.json` として使う。relative path は workspace root 相対で解決する。3 に複数候補がある場合、v0.1 では自動選択せず、`--config .devcontainer/<name>/devcontainer.json` で明示する。
+`--config <PATH>` が指定された場合は自動検出を行わず、その path を `devcontainer.json` として使う。relative path は workspace root 相対で解決する。3 に複数候補がある場合は自動選択せず、`--config .devcontainer/<name>/devcontainer.json` で明示する。
 
 ### 構成モードの判定
 
@@ -260,7 +260,7 @@ workspace root から以下の順で検出する。
 | `features` | yes | yes | yes | Compose モードは primary service final image に適用 |
 | `overrideFeatureInstallOrder` | yes | yes | yes | Feature install order に反映 |
 | `overrideCommand` | yes | yes | yes | image/Dockerfile 既定 true、Compose 既定 false |
-| `mounts` | partial | partial | partial | bind/volume 対応。Compose モードは primary service に override として追加。tmpfs は v0.1 error |
+| `mounts` | partial | partial | partial | bind/volume 対応。Compose モードは primary service に override として追加。tmpfs は error |
 | `workspaceMount` | yes | yes | no | Compose モードは unsupported error。Compose file の primary service `volumes` を使う |
 | `workspaceFolder` | yes | yes | yes | Compose モードの既定は `/` |
 | `containerEnv` | yes | yes | yes | Compose モードは primary service `environment` override。secret storage ではない |
@@ -293,7 +293,7 @@ JSON5 全体はサポートしない。single-quoted string、unquoted key、hex
 
 ### `runArgs` 許可リスト
 
-v0.1 で image/Dockerfile モードが受け付ける `runArgs` は以下のみ。
+image/Dockerfile モードが受け付ける `runArgs` は以下のみ。
 
 - `--init`
 - `--privileged`
@@ -346,7 +346,7 @@ Compose モードでも decune は、対応している cross-orchestrator prope
 
 解決した Compose file は指定順に `docker compose -f <file>` へ渡す。後続 file が前 file を override/add する Compose 標準の merge semantics に従う。relative path resolution の基準は Docker Compose CLI の標準挙動に合わせ、第一 Compose file の parent directory を project directory とする。必要に応じて `--project-directory <first-compose-file-parent>` を明示する。Docker Compose child process の current directory も project directory に固定し、Compose interpolation の `.env` 解決が decune 呼び出し元 PWD ではなく Compose project directory 基準になるようにする。第一 Compose file が symlink の場合、project directory は final symlink を辿った canonical path の parent ではなく、`devcontainer.json` 相対で解決した入力 path の parent とする。
 
-`dockerComposeFile` から git URL、OCI artifact、stdin を参照する構成は v0.1 では unsupported error とする。
+`dockerComposeFile` から git URL、OCI artifact、stdin を参照する構成は unsupported error とする。
 
 ### Compose project name
 
@@ -540,7 +540,7 @@ shell = true
 
 ### トップレベル
 
-- `version`: 必須。v0.1 では `1` のみ。
+- `version`: 必須。`1` のみ。
 - `use_global_config`: 任意。既定 true。project config で false にすると global decune config を適用しない。
 - `shell`: 任意。`decune up` で attach する shell path または command 名。
 - 未知の key は error。
@@ -576,7 +576,7 @@ Compose モードでは primary service に dotfiles bind mount と setup lifecy
 
 任意の追加 mount。
 
-- `type`: `bind`, `volume`, `tmpfs`。v0.1 では `bind` と `volume` に対応し、`tmpfs` は error。
+- `type`: `bind`, `volume`, `tmpfs`。`bind` と `volume` に対応し、`tmpfs` は error。
 - `source`: `bind` では必須。`volume` では volume 名。
 - `target`: container absolute path。`/opt/decune` と `/run/decune` 配下、および workspace mount target と同一 target は禁止。
 - `enabled`: 既定 true。false の場合は同一 target を無効化。
@@ -593,7 +593,7 @@ manual port forwarding 設定。Docker published port ではない。
 - `container`: container 側 port。必須。
 - `host`: host 側 port。省略時は `container` と同じ番号を試し、占有済みなら空き port を探索する。
 - `host_ip`: 既定 `127.0.0.1`。`0.0.0.0` は明示された場合のみ許可。
-- `protocol`: v0.1 は `tcp` のみ。省略時も TCP。`udp` は unsupported error。
+- `protocol`: `tcp` のみ。省略時も TCP。`udp` は unsupported error。
 - `service`: Compose モードで対象 service を指定する任意 field。未指定は primary service。image/Dockerfile モードでは指定不可。
 - `enabled`: 既定 true。
 - `require_local`: true の場合、要求した host port と異なる port に fallback したら warning する。
@@ -695,11 +695,11 @@ shell = true
 - `${remoteUser}`
 - `${remoteUserHome}`
 
-v0.1 では少なくとも `build.args` の value、`build.target`、`build.cacheFrom`、`workspaceFolder`、`containerEnv`、`remoteEnv`、`remoteUser`、`containerUser`、`mounts`、dotfiles、`runArgs` の value 部分で変数展開する。`workspaceFolder` は変数展開後に absolute path validation を行う。`workspaceFolder` 内の `${containerWorkspaceFolder}` は default workspace folder を基準に展開する。`workspaceFolder` 未指定時に decune が合成する default workspace folder は設定 string value ではないため、変数展開せず literal path として扱う。lifecycle command 本体、`dockerComposeFile`、`service`、`runServices`、`forwardPorts`、`appPort` の追加変数展開は v0.1 では行わない。
+少なくとも `build.args` の value、`build.target`、`build.cacheFrom`、`workspaceFolder`、`containerEnv`、`remoteEnv`、`remoteUser`、`containerUser`、`mounts`、dotfiles、`runArgs` の value 部分で変数展開する。`workspaceFolder` は変数展開後に absolute path validation を行う。`workspaceFolder` 内の `${containerWorkspaceFolder}` は default workspace folder を基準に展開する。`workspaceFolder` 未指定時に decune が合成する default workspace folder は設定 string value ではないため、変数展開せず literal path として扱う。lifecycle command 本体、`dockerComposeFile`、`service`、`runServices`、`forwardPorts`、`appPort` の追加変数展開は行わない。
 
 `build.args`、`build.target`、`build.cacheFrom` は Dockerfile build 前に展開するため、最終 image や runtime container からしか分からない値には依存できない。これらの field で `${remoteUserHome}` を使う構成は error とする。`${remoteUser}` は `remoteUser` または `containerUser` が config / metadata から build 前に決まる場合だけ使える。Dockerfile `USER`、Compose service `user`、image config `User` 由来の user は build 前の `build.*` 変数展開には使わない。
 
-`${remoteUserHome}` は `/home/<user>` と推測せず、container/image 内の passwd database から解決する。`workspaceFolder`、`containerEnv`、`remoteEnv`、`mounts`、dotfiles、`runArgs` など runtime user 解決後に評価できる field では、effective remote user 決定後に `${remoteUser}` / `${remoteUserHome}` を展開する。`containerEnv` 自体の中で `${containerEnv:...}` を使う構成は v0.1 では error とする。
+`${remoteUserHome}` は `/home/<user>` と推測せず、container/image 内の passwd database から解決する。`workspaceFolder`、`containerEnv`、`remoteEnv`、`mounts`、dotfiles、`runArgs` など runtime user 解決後に評価できる field では、effective remote user 決定後に `${remoteUser}` / `${remoteUserHome}` を展開する。`containerEnv` 自体の中で `${containerEnv:...}` を使う構成は error とする。
 
 `${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `build.args` value は secret-sensitive として追跡する。decune はその実値を state、config hash、generated Compose override、Docker/Compose label、argv、通常の error log に平文保存してはならない。config hash では key を保持し、`containerEnv` と `build.args` は変更検出のため実値ではなく非可逆 digest を含め、`remoteEnv` は redacted marker に置き換える。Compose モードの generated override では primary service `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式の placeholder を書き、実値は `docker compose` child process の environment として渡す。placeholder variable name の `<SAFE_KEY>` は `containerEnv` key から ASCII alphanumeric / underscore のみへ正規化した値とする。Docker build args は process environment と `--build-arg KEY` で Docker CLI に渡し、argv に value を直接載せない。
 
@@ -740,7 +740,7 @@ Docker CLI / Compose CLI の実行失敗は、実行した高レベル action、
 
 - Docker CLI は Docker デーモン と同じ host/remote context を指す。
 - Compose CLI は Docker CLI と同じ `DOCKER_HOST` / `DOCKER_CONTEXT` / `DOCKER_CONFIG` を継承する。
-- Podman 互換 endpoint は、Docker CLI / Compose CLI が透過的に扱える範囲でのみ対象にする。Podman Compose 固有挙動は v0.1 の公式対象外。
+- Podman 互換 endpoint は、Docker CLI / Compose CLI が透過的に扱える範囲でのみ対象にする。Podman Compose 固有挙動は公式対象外。
 
 ## Docker リソースと状態
 
@@ -803,7 +803,7 @@ state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存す�
 
 Known limitations:
 
-- v0.1 では、Dockerfile が build context 外にある構成を unsupported error とする。decune は build context tar を生成して `docker build -` に渡すため、`--file` は tar 内の path を指す必要がある。このため `build.dockerfile` は解決後の `build.context` 配下に存在しなければならない。回避策は、`build.context` を Dockerfile を含む上位 directory に広げるか、Dockerfile を context 内へ移動することである。将来互換性を上げる場合は、context 外 Dockerfile を synthetic tar entry として追加し、Dockerfile-specific ignore file と context digest の semantics を Docker CLI と揃える必要がある。
+- Dockerfile が build context 外にある構成を unsupported error とする。decune は build context tar を生成して `docker build -` に渡すため、`--file` は tar 内の path を指す必要がある。このため `build.dockerfile` は解決後の `build.context` 配下に存在しなければならない。回避策は、`build.context` を Dockerfile を含む上位 directory に広げるか、Dockerfile を context 内へ移動することである。将来互換性を上げる場合は、context 外 Dockerfile を synthetic tar entry として追加し、Dockerfile-specific ignore file と context digest の semantics を Docker CLI と揃える必要がある。
 - Dockerfile build 後に判明する `devcontainer.metadata` label は build 入力には使わない。このため `build.args`、`build.target`、`build.cacheFrom` の `${remoteUser}` は、`devcontainer.json` や decune TOML など build 前に解決できる `remoteUser` / `containerUser` だけを参照できる。
 
 ### Docker Compose-based
@@ -815,7 +815,7 @@ primary service に `build` がある場合、まず Compose CLI で service ima
 Feature:
 
 - OCI registry ref と local `./` ref に対応する。
-- direct HTTPS tgz Feature は v0.1 では未対応。
+- direct HTTPS tgz Feature は未対応。
 - registry auth は Docker CLI 互換で `credHelpers`、`credsStore`、`auths` の順に source を選ぶ。選択 source が失敗しても別 source に fallback しない。
 - manifest body と layer blob は sha256 digest を検証する。
 - local Feature path は `devcontainer.json` directory からの相対 `./` path に限定し、absolute path と path escape を拒否する。
@@ -891,9 +891,9 @@ Compose モードでは GitHub token file mount は primary service にのみ追
 
 `forwardPorts`、decune `[[ports]]`、CLI `-p` は port forwarding であり Docker published port ではない。host 側 listen address の既定は `127.0.0.1`。container 内で `127.0.0.1:<container port>` にだけ listen している process にも届くよう、container-side `decune-forward-agent` 経由で proxy する。
 
-v0.1 の port forwarding と published port metadata は TCP-only とする。CLI `-p`、decune `[[ports]]`、Dev Container `forwardPorts`、Dev Container `appPort` は protocol suffix なしを TCP として扱い、`/tcp` は明示的な TCP 指定として受け付ける。`/udp` は unsupported error とし、UDP 対応は将来課題とする。
+port forwarding と published port metadata は TCP-only とする。CLI `-p`、decune `[[ports]]`、Dev Container `forwardPorts`、Dev Container `appPort` は protocol suffix なしを TCP として扱い、`/tcp` は明示的な TCP 指定として受け付ける。`/udp` は unsupported error とし、UDP 対応は将来課題とする。
 
-`appPort` は image/Dockerfile モードの Docker published port であり container create 時に決まる。host IP が指定されない場合、Docker の既定で全 interface に公開される可能性があるため warning 対象とする。v0.1 では `appPort` の published port metadata も TCP-only である。
+`appPort` は image/Dockerfile モードの Docker published port であり container create 時に決まる。host IP が指定されない場合、Docker の既定で全 interface に公開される可能性があるため warning 対象とする。`appPort` の published port metadata も TCP-only である。
 
 CLI `-p` と Dev Container `appPort` の host IP は IPv4 / hostname / bracketed IPv6 を受け付ける。IPv6 host IP は `[::1]:8080:3000` のように bracketed form で指定し、内部 model では bracket なしで保持する。unbracketed IPv6 は colon 区切りと曖昧なため error とする。`forwardPorts` string の `[::1]:3000` は host IP `::1` への forwarding として扱い、`[::1]:8080:3000` のような host-port mapping は `forwardPorts` では unsupported error とする。
 
@@ -922,7 +922,7 @@ Compose モードの service 解決:
 
 sidecar service forwarding は、その service の container ID を解決し、必要な container-side tool を runtime install して forward-agent を起動する。対象 service には forwarding runtime mount と decune identity label だけを generated override で追加し、credentials、dotfiles、GitHub token、SSH agent は自動注入しない。service の replica が 2 以上なら error とする。
 
-automatic forwarding は TCP listening socket のみを対象にする。container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、TCP LISTEN port を検出する。UDP socket は v0.1 では検出・転送しない。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済みの port、Docker published port として扱われる port、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose モードの automatic forwarding は primary service のみを対象にする。
+automatic forwarding は TCP listening socket のみを対象にする。container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、TCP LISTEN port を検出する。UDP socket は検出・転送しない。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済みの port、Docker published port として扱われる port、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose モードの automatic forwarding は primary service のみを対象にする。
 
 ## Host daemon とセキュリティ境界
 
