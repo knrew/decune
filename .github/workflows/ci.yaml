@@ -154,4 +154,5 @@ jobs:
     uses: ./.github/workflows/package-dist-reusable.yaml
     with:
       artifact-name: dist-assets
+      verify-display-version: false
       version: 0.0.0-dev

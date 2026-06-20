@@ -61,6 +61,7 @@ jobs:
     with:
       artifact-name: dist-assets
       checkout-ref: ${{ needs.preflight.outputs.tag }}
+      verify-display-version: true
       version: ${{ needs.preflight.outputs.version }}
 
   publish:
