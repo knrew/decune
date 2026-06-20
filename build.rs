@@ -56,16 +56,34 @@ fn emit_display_version() -> Result<()> {
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR is not set")?);
     let package_version = env::var("CARGO_PKG_VERSION").context("CARGO_PKG_VERSION is not set")?;
+    let metadata = display_version_metadata(&manifest_dir, &package_version);
 
     emit_display_version_rerun_instructions(&manifest_dir);
     println!(
         "cargo:rustc-env=DECUNE_DISPLAY_VERSION={}",
-        display_version(&manifest_dir, &package_version)
+        metadata.display_version
+    );
+    if metadata.full_commit.is_some() {
+        println!(
+            "cargo:rustc-env=DECUNE_VERSION_SOURCE_ROOT={}",
+            manifest_dir.display()
+        );
+    }
+    if let Some(commit) = &metadata.full_commit {
+        println!("cargo:rustc-env=DECUNE_VERSION_FULL_COMMIT={commit}");
+    }
+    if let Some(commit) = &metadata.short_commit {
+        println!("cargo:rustc-env=DECUNE_VERSION_SHORT_COMMIT={commit}");
+    }
+    println!(
+        "cargo:rustc-env=DECUNE_VERSION_RELEASE_TAG_MATCHES={}",
+        metadata.release_tag_matches
     );
     Ok(())
 }
 
 fn emit_display_version_rerun_instructions(manifest_dir: &Path) {
+    let mut emitted = BTreeSet::new();
     for path in [
         "build.rs",
         "Cargo.toml",
@@ -78,25 +96,70 @@ fn emit_display_version_rerun_instructions(manifest_dir: &Path) {
         ".git/refs/tags",
     ] {
         let absolute = manifest_dir.join(path);
-        if absolute.exists() {
-            println!("cargo:rerun-if-changed={}", absolute.display());
-        }
+        emit_rerun_if_changed(&absolute, &mut emitted);
+    }
+
+    for path in git_worktree_paths(manifest_dir) {
+        emit_rerun_if_changed(&path, &mut emitted);
     }
 }
 
-fn display_version(workspace: &Path, package_version: &str) -> String {
-    let commit = match git_output(workspace, ["rev-parse", "--short=12", "HEAD"]) {
-        Some(commit) if is_git_hash(&commit) => commit,
-        _ => return format!("{package_version}+source"),
+fn emit_rerun_if_changed(path: &Path, emitted: &mut BTreeSet<PathBuf>) {
+    if path.exists() && emitted.insert(path.to_path_buf()) {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
+
+fn git_worktree_paths(workspace: &Path) -> Vec<PathBuf> {
+    let Some(paths) = git_output(
+        workspace,
+        [
+            "ls-files",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "-z",
+        ],
+    ) else {
+        return Vec::new();
     };
 
-    let dirty = git_dirty(workspace).unwrap_or(true);
-    if !dirty && head_has_release_tag(workspace, package_version).unwrap_or(false) {
-        return package_version.to_owned();
-    }
+    paths
+        .split('\0')
+        .filter(|path| !path.is_empty())
+        .map(|path| workspace.join(path))
+        .collect()
+}
 
-    let dirty_suffix = if dirty { ".dirty" } else { "" };
-    format!("{package_version}+g{commit}{dirty_suffix}")
+fn display_version_metadata(workspace: &Path, package_version: &str) -> DisplayVersionMetadata {
+    let full_commit = match git_output(workspace, ["rev-parse", "HEAD"]) {
+        Some(commit) if is_git_hash(&commit) => commit,
+        _ => {
+            return DisplayVersionMetadata {
+                display_version: format!("{package_version}+source"),
+                full_commit: None,
+                short_commit: None,
+                release_tag_matches: false,
+            };
+        }
+    };
+    let short_commit = full_commit.chars().take(12).collect::<String>();
+
+    let dirty = git_dirty(workspace).unwrap_or(true);
+    let release_tag_matches = head_has_release_tag(workspace, package_version).unwrap_or(false);
+
+    let display_version = if !dirty && release_tag_matches {
+        package_version.to_owned()
+    } else {
+        let dirty_suffix = if dirty { ".dirty" } else { "" };
+        format!("{package_version}+g{short_commit}{dirty_suffix}")
+    };
+    DisplayVersionMetadata {
+        display_version,
+        full_commit: Some(full_commit),
+        short_commit: Some(short_commit),
+        release_tag_matches,
+    }
 }
 
 fn git_dirty(workspace: &Path) -> Option<bool> {
@@ -139,6 +202,13 @@ fn is_git_hash(value: &str) -> bool {
         && value
             .chars()
             .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+}
+
+struct DisplayVersionMetadata {
+    display_version: String,
+    full_commit: Option<String>,
+    short_commit: Option<String>,
+    release_tag_matches: bool,
 }
 
 fn resolve_bundle_dir() -> Result<PathBuf> {

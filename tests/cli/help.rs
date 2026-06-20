@@ -36,6 +36,16 @@ fn version_is_displayed() {
 }
 
 #[test]
+fn short_version_is_displayed() {
+    decune()
+        .arg("-V")
+        .assert()
+        .success()
+        .stdout(predicate::str::starts_with("decune "))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
 fn command_help_is_displayed() {
     for command in ["up", "down", "clean", "rebuild"] {
         decune()
