@@ -86,12 +86,18 @@ jobs:
       - name: Attest release assets
         uses: actions/attest@v4
         with:
-          subject-path: target/dist/*
+          subject-path: |
+            target/dist/decune-v${{ needs.preflight.outputs.version }}-*.tar.gz
+            target/dist/SHA256SUMS
+            target/dist/release-manifest.json
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ needs.preflight.outputs.tag }}" target/dist/* \
+          gh release create "${{ needs.preflight.outputs.tag }}" \
+            target/dist/decune-v${{ needs.preflight.outputs.version }}-*.tar.gz \
+            target/dist/SHA256SUMS \
+            target/dist/release-manifest.json \
             --verify-tag \
             --title "${{ needs.preflight.outputs.tag }}" \
             --generate-notes \
