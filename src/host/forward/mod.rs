@@ -97,6 +97,7 @@ mod tests {
         ResolvedForwardPort {
             service: None,
             container,
+            requested_host: host,
             host,
             host_ip: "127.0.0.1".to_owned(),
             protocol: PortProtocol::Tcp,

@@ -597,7 +597,7 @@ manual forwarding 設定。Docker publish ではない。
 - `protocol`: v0.1 は `tcp` のみ。省略時も TCP。`udp` は unsupported error。
 - `service`: Compose mode で対象 service を指定する任意 field。未指定は primary service。image/Dockerfile mode では指定不可。
 - `enabled`: 既定 true。
-- `require_local`: true の場合、host port が占有済みなら別 port に fallback せず失敗。
+- `require_local`: true の場合、要求した host port と異なる port に fallback したら warning する。
 - `label`: 表示用。
 
 ### `[ports.auto]`
@@ -907,7 +907,7 @@ manual forwarding source priority:
 3. devcontainer `forwardPorts`
 4. global decune `[[ports]]`
 
-host port が占有済みの場合、`require_local = true` なら失敗し、false なら昇順で空き port を探索する。
+host port が占有済みの場合、昇順で空き port を探索し、上限に達した場合は OS assigned port へ fallback する。`require_local = true` なら要求した host port と実際の forwarding port が異なる場合に warning し、false なら silent fallback する。空き確認後に別 process が port を取得した場合も、listener bind 時に再度 fallback する。
 
 forwarding の host port reservation は IP family 境界を尊重する。IPv4 wildcard `0.0.0.0` は IPv4 address とだけ衝突し、IPv6 loopback / concrete address とは同一 host port を共有できる組み合わせとして扱う。同様に IPv6 wildcard `::` は IPv6 address とだけ衝突する。
 

@@ -104,14 +104,15 @@ async fn scan_and_add_auto_forwards(
         .map(|addition| addition.port.clone())
         .collect::<Vec<_>>();
     let mut new_listeners = start_forward_listeners(&new_ports, agent_socket_path, secret).await?;
-    for addition in additions {
+    for (addition, listener) in additions.into_iter().zip(new_listeners.iter()) {
+        let port = listener.port().clone();
         if addition.on_auto_forward == OnAutoForward::Notify {
             ui::info(&format!(
                 "Forwarded localhost:{} -> container:{}",
-                addition.port.host, addition.port.container
+                port.host, port.container
             ));
         }
-        forward_ports.push(addition.port);
+        forward_ports.push(port);
     }
     listeners.append(&mut new_listeners);
 
