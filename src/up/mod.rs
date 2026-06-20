@@ -3115,6 +3115,7 @@ type = "bind"
                 None,
                 Some((false, false)),
                 FinalizeUpPlanMountsOptions {
+                    forwarding: ForwardingResolution::Resolve,
                     update_features: false,
                     compose_canonical_model: None,
                     compose_primary_service_user: None,
@@ -3183,6 +3184,7 @@ type = "bind"
                     None,
                     Some((false, false)),
                     FinalizeUpPlanMountsOptions {
+                        forwarding: ForwardingResolution::Resolve,
                         update_features: false,
                         compose_canonical_model: None,
                         compose_primary_service_user: None,
@@ -3264,6 +3266,7 @@ type = "bind"
                     None,
                     Some((false, false)),
                     FinalizeUpPlanMountsOptions {
+                        forwarding: ForwardingResolution::Resolve,
                         update_features: false,
                         compose_canonical_model: None,
                         compose_primary_service_user: None,

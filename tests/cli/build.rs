@@ -502,7 +502,7 @@ fn up_detach_builds_with_dockerfile_specific_ignore_over_default_ignore() {
 }
 
 #[test]
-fn up_dockerfile_metadata_label_warns_and_is_not_merged() {
+fn up_dockerfile_metadata_label_is_merged() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
@@ -513,7 +513,7 @@ fn up_dockerfile_metadata_label_warns_and_is_not_merged() {
               "build": {
                 "dockerfile": "Dockerfile"
               },
-              "postStartCommand": "test \"${FROM_DOCKERFILE_LABEL:-}\" = \"\" && test \"$(id -un)\" = \"root\""
+              "postStartCommand": "test \"${FROM_DOCKERFILE_LABEL:-}\" = \"set\" && test \"$(id -un)\" = \"devuser\""
             }
             "#,
         )
@@ -523,7 +523,19 @@ fn up_dockerfile_metadata_label_warns_and_is_not_merged() {
             ".devcontainer/Dockerfile",
             r#"
             FROM alpine:3.20
-            LABEL devcontainer.metadata="{\"remoteUser\":\"nobody\",\"remoteEnv\":{\"FROM_DOCKERFILE_LABEL\":\"set\"}}"
+            RUN adduser -D -u 1000 -h /home/devuser devuser
+            LABEL devcontainer.metadata="{\"remoteUser\":\"devuser\",\"updateRemoteUserUID\":false,\"remoteEnv\":{\"FROM_DOCKERFILE_LABEL\":\"set\"}}"
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.github]
+            enabled = false
             "#,
         )
         .unwrap();
@@ -545,9 +557,12 @@ fn up_dockerfile_metadata_label_warns_and_is_not_merged() {
             .assert()
             .success()
             .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains(
-                "Dockerfile image label devcontainer.metadata is not merged",
-            ))
+            .stderr(
+                predicate::str::contains(
+                    "Dockerfile image label devcontainer.metadata is not merged",
+                )
+                .not(),
+            )
             .stderr(predicate::str::contains("Started dev container"));
     });
 
