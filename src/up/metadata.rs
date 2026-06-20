@@ -103,6 +103,7 @@ pub(in crate::up) async fn build_existing_container_decision_plan(
             cli_layer,
             resolution.forwarding,
             resolution.update_features,
+            resolution.skip_global_config,
         );
     }
 
@@ -123,6 +124,7 @@ pub(in crate::up) async fn build_existing_container_decision_plan(
                     cli_layer,
                     resolution.forwarding,
                     resolution.update_features,
+                    resolution.skip_global_config,
                 );
             };
             let Some(image_metadata) =
@@ -139,6 +141,7 @@ pub(in crate::up) async fn build_existing_container_decision_plan(
                     cli_layer,
                     resolution.forwarding,
                     resolution.update_features,
+                    resolution.skip_global_config,
                 );
             };
             image_metadata
@@ -152,6 +155,7 @@ pub(in crate::up) async fn build_existing_container_decision_plan(
             cli_layer,
             resolution.forwarding,
             resolution.update_features,
+            resolution.skip_global_config,
         );
     }
 
@@ -161,8 +165,7 @@ pub(in crate::up) async fn build_existing_container_decision_plan(
         cli_layer,
         image_metadata.layers,
         !include_forward_ports && image_metadata.has_forward_ports,
-        resolution.forwarding,
-        resolution.update_features,
+        resolution,
     )
 }
 
@@ -183,6 +186,7 @@ pub(in crate::up) async fn prepare_image_based_metadata(
                 cli_layer,
                 resolution.forwarding,
                 resolution.update_features,
+                resolution.skip_global_config,
             )?,
             false,
         ));
@@ -213,6 +217,7 @@ pub(in crate::up) async fn prepare_image_based_metadata(
                 cli_layer,
                 resolution.forwarding,
                 resolution.update_features,
+                resolution.skip_global_config,
             )?,
             true,
         ));
@@ -224,8 +229,7 @@ pub(in crate::up) async fn prepare_image_based_metadata(
         cli_layer,
         image_metadata.layers,
         !include_forward_ports && image_metadata.has_forward_ports,
-        resolution.forwarding,
-        resolution.update_features,
+        resolution,
     )?;
 
     Ok((plan, true))
@@ -257,8 +261,7 @@ pub(in crate::up) async fn prepare_compose_image_metadata(
         cli_layer,
         image_metadata.layers,
         !include_forward_ports && image_metadata.has_forward_ports,
-        resolution.forwarding,
-        resolution.update_features,
+        resolution,
     )?;
     plan.base_image = compose_primary_image.to_owned();
     Ok(plan)
@@ -309,6 +312,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         dockerfile_image_metadata_for_plan(client, &plan, &lookup_image, options.forwarding)
             .await?;
     if !dockerfile_metadata.layers.is_empty() {
+        let skip_global_config = plan.config_layers.global.is_none();
         plan = rebuild_up_plan_with_image_metadata_layers(
             workspace,
             plan,
@@ -316,7 +320,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
             options.forwarding == ForwardingResolution::IgnoreDetached
                 && dockerfile_metadata.has_forward_ports,
             MountResolution::Resolve,
-            UpPlanResolution::new(options.forwarding, update_features),
+            UpPlanResolution::new(options.forwarding, update_features, skip_global_config),
         )?;
         plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
         if plan_requires_workspace_layer(&plan) && !using_existing_remote_user_image {

@@ -138,6 +138,7 @@ mod tests {
             &path,
             r#"
 version = 1
+use_global_config = false
 shell = "/bin/zsh"
 
 [features."ghcr.io/devcontainers/features/github-cli:1"]
@@ -206,6 +207,7 @@ shell = false
         let config = load_config_file(&path).unwrap();
 
         assert_eq!(config.version, Some(1));
+        assert_eq!(config.use_global_config, Some(false));
         assert_eq!(config.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.features.len(), 2);
         assert_eq!(

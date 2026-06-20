@@ -28,3 +28,15 @@ fn command_help_is_displayed() {
             .stderr(predicate::str::is_empty());
     }
 }
+
+#[test]
+fn up_and_rebuild_help_list_no_global_config() {
+    for command in ["up", "rebuild"] {
+        decune()
+            .args([command, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--no-global-config"))
+            .stderr(predicate::str::is_empty());
+    }
+}

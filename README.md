@@ -252,6 +252,7 @@ devcontainer を作成または起動し、remote user の shell に接続しま
 - `--rebuild`: 既存 container/project を破棄して再作成する。decune 管理 volume は保持する。
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
 - `--pull`: base image または Compose service image を pull してから build/create する。
+- `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
 - `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。
 
@@ -271,6 +272,7 @@ decune rebuild [OPTIONS] [WORKSPACE]
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
 - `--pull`: base image または Compose service image を pull してから build/create する。
 - `--update-features`: feature lock より registry/tag の再解決を優先する。
+- `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
 - `-p, --port <SPEC>`: manual forwarding。`--detach -p` はエラーになります。
 
@@ -304,10 +306,13 @@ decune TOML は以下の順で読み込まれます。後勝ちが基本です�
 6. project decune config: `<workspace>/.decune/config.toml`
 7. CLI flags
 
+`decune up --no-global-config` / `decune rebuild --no-global-config`、または project config の `use_global_config = false` を指定した場合、global decune config は適用されません。この場合、global config file は読み込まれないため、global config 側の parse / validation error も発生しません。
+
 最小例:
 
 ```toml
 version = 1
+use_global_config = true
 shell = "/bin/zsh"
 
 [features."ghcr.io/devcontainers/features/github-cli:1"]

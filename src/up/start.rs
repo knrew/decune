@@ -301,6 +301,7 @@ pub(in crate::up) async fn ensure_container_started(
         options.cli_layer.clone(),
         forwarding_resolution,
         options.update_features,
+        options.skip_global_config,
     )?;
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     if preliminary_plan.compose_project.is_some() {
@@ -308,7 +309,11 @@ pub(in crate::up) async fn ensure_container_started(
         return start_compose_project(workspace, preliminary_plan, options, forwarding_resolution)
             .await;
     }
-    let plan_resolution = UpPlanResolution::new(forwarding_resolution, options.update_features);
+    let plan_resolution = UpPlanResolution::new(
+        forwarding_resolution,
+        options.update_features,
+        options.skip_global_config,
+    );
 
     let client = DockerClient::connect_from_env()?;
     let containers = list_workspace_containers(&client, workspace.id()).await?;
@@ -580,7 +585,11 @@ async fn try_reuse_running_compose_container_before_image_prepare(
         options.cli_layer.clone(),
         plan,
         compose_primary_image,
-        UpPlanResolution::new(forwarding_resolution, options.update_features),
+        UpPlanResolution::new(
+            forwarding_resolution,
+            options.update_features,
+            options.skip_global_config,
+        ),
     )
     .await?;
     plan.base_image = compose_primary_image.to_owned();
@@ -784,7 +793,11 @@ async fn start_compose_project(
         options.cli_layer.clone(),
         plan,
         &compose_primary_image,
-        UpPlanResolution::new(forwarding_resolution, options.update_features),
+        UpPlanResolution::new(
+            forwarding_resolution,
+            options.update_features,
+            options.skip_global_config,
+        ),
     )
     .await?;
     plan.base_image = compose_primary_image.clone();
@@ -2690,6 +2703,7 @@ mod tests {
         UpOptions {
             workspace: PathBuf::from("/workspace"),
             config_path: None,
+            skip_global_config: false,
             cli_layer: ConfigLayer::default(),
             pull: false,
             rebuild: false,
