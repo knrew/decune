@@ -79,7 +79,7 @@ esac
 target="${arch_target}-${os_target}"
 archive="decune-v${version}-${target}.tar.gz"
 base_url="https://github.com/knrew/decune/releases/download/${tag}"
-tmpdir="$(mktemp -d)"
+tmpdir="$(mktemp -d "${TMPDIR:-/tmp}/decune.XXXXXXXXXX")"
 
 cleanup() {
   rm -rf "$tmpdir"

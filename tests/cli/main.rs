@@ -14,6 +14,7 @@ mod harness;
 mod help;
 mod host_git_config;
 mod image_metadata;
+mod install_script;
 mod lifecycle;
 mod mounts;
 mod ports;

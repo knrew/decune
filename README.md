@@ -72,8 +72,11 @@ v0.1 の Dockerfile-based mode では、`build.dockerfile` が解決後の `buil
 公式導線は GitHub Releases の prebuilt archive です。archive には `decune` binary、`LICENSE`、`README.md` が含まれます。
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.1.0/scripts/install.sh | sh -s -- --version 0.1.0
+mkdir -p "$HOME/.local/bin"
+curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.1.0/scripts/install.sh | sh -s -- --version 0.1.0 --dir "$HOME/.local/bin"
 ```
+
+`$HOME/.local/bin` が `PATH` に含まれていない場合は、利用している shell の設定で追加してください。
 
 手動で release asset を選ぶ場合は、host に合わせた `target` を指定して取得します。
 
