@@ -278,7 +278,9 @@ workspace root から以下の順で検出する。
 
 ### JSONC
 
-`devcontainer.json` は JSON with Comments として扱う。コメント除去を正規表現で実装しない。trailing comma は JSONC として受け付ける。
+`devcontainer.json` は JSON with Comments として扱う。コメント除去を正規表現で実装しない。`//` line comment、`/* ... */` block comment、trailing comma は JSONC として受け付ける。
+
+JSON5 全体はサポートしない。single-quoted string、unquoted key、hex number、`#` comment などの JSON5-only syntax は invalid metadata として扱う。
 
 ### `runArgs` allowlist
 
