@@ -78,6 +78,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
+          ref: ${{ needs.preflight.outputs.tag }}
       - uses: actions/download-artifact@v8
         with:
           name: dist-assets

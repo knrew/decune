@@ -124,6 +124,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - [docs/usage.md](docs/usage.md): 利用手順、利用例、インストール詳細、運用上の注意
 - [docs/specification.md](docs/specification.md): v0.1 の公開挙動、設定スキーマ、セキュリティ境界
 - [docs/development.md](docs/development.md): 開発環境の準備、ローカルインストール、検証、リリース成果物の作成コマンド
+- [docs/release.md](docs/release.md): maintainer 向けのリリース手順
 - [docs/glossary.md](docs/glossary.md): プロジェクト用語と表記基準
 
 ## ライセンス

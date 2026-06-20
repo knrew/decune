@@ -786,17 +786,41 @@ fn release_preflight(workspace: &Path, tag: &str, version: &str) -> Result<()> {
             "Release version must be numeric semver core with optional prerelease suffix: {version}"
         );
     }
-    let cargo_toml = fs::read_to_string(workspace.join("Cargo.toml"))
-        .context("Failed to read Cargo.toml for release preflight")?;
-    let actual = package_version_from_toml(&cargo_toml)?;
-    if actual != version {
-        bail!(
-            "Cargo.toml package version does not match release version: expected {version}, got {actual}"
-        );
+    for package in workspace_package_versions(workspace)? {
+        if package.version != version {
+            bail!(
+                "{} package version does not match release version: expected {version}, got {}",
+                package.manifest.display(),
+                package.version
+            );
+        }
     }
+    require_release_doc_refs(workspace, version)?;
     if !workspace.join("LICENSE").is_file() {
         bail!("LICENSE is required for release archives");
     }
+    require_clean_worktree(workspace)?;
+    Ok(())
+}
+
+fn require_release_doc_refs(workspace: &Path, version: &str) -> Result<()> {
+    for path in ["README.md", "docs/usage.md"] {
+        let path = workspace.join(path);
+        let text = fs::read_to_string(&path)
+            .with_context(|| format!("Failed to read release documentation: {}", path.display()))?;
+        let install_ref = format!("/v{version}/scripts/install.sh");
+        let version_ref = format!("--version {version}");
+        if !text.contains(&install_ref) || !text.contains(&version_ref) {
+            bail!(
+                "{} must reference release v{version} in the install command",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn require_clean_worktree(workspace: &Path) -> Result<()> {
     let output = Command::new("git")
         .current_dir(workspace)
         .args(["status", "--porcelain"])
@@ -809,6 +833,37 @@ fn release_preflight(workspace: &Path, tag: &str, version: &str) -> Result<()> {
         bail!("Release preflight requires a clean working tree");
     }
     Ok(())
+}
+
+fn workspace_package_versions(workspace: &Path) -> Result<Vec<PackageVersion>> {
+    let root_manifest = workspace.join("Cargo.toml");
+    let source = fs::read_to_string(&root_manifest)
+        .with_context(|| format!("Failed to read {}", root_manifest.display()))?;
+    let parsed: toml::Value =
+        toml::from_str(&source).context("Failed to parse Cargo.toml for release preflight")?;
+    let members = parsed
+        .get("workspace")
+        .and_then(|workspace| workspace.get("members"))
+        .and_then(toml::Value::as_array)
+        .context("Cargo.toml workspace.members is missing or not an array")?;
+
+    let mut packages = Vec::new();
+    for member in members {
+        let member = member
+            .as_str()
+            .context("Cargo.toml workspace member is not a string")?;
+        if member.contains('*') {
+            bail!("Release preflight does not support workspace member globs: {member}");
+        }
+        let manifest = workspace.join(member).join("Cargo.toml");
+        let source = fs::read_to_string(&manifest)
+            .with_context(|| format!("Failed to read {}", manifest.display()))?;
+        packages.push(PackageVersion {
+            manifest,
+            version: package_version_from_toml(&source)?,
+        });
+    }
+    Ok(packages)
 }
 
 fn is_release_version(version: &str) -> bool {
@@ -1200,6 +1255,12 @@ struct ReleaseArtifact {
     sha256: String,
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct PackageVersion {
+    manifest: PathBuf,
+    version: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1574,6 +1635,49 @@ mod tests {
             error
                 .to_string()
                 .contains("Cargo.toml package.version is missing")
+        );
+    }
+
+    #[test]
+    fn workspace_package_versions_reads_workspace_members() {
+        let temp = TempDir::new().unwrap();
+        fs::write(
+            temp.path().join("Cargo.toml"),
+            r#"
+            [package]
+            name = "decune"
+            version = "0.1.0"
+
+            [workspace]
+            members = [".", "tools"]
+            "#,
+        )
+        .unwrap();
+        fs::create_dir(temp.path().join("tools")).unwrap();
+        fs::write(
+            temp.path().join("tools/Cargo.toml"),
+            r#"
+            [package]
+            name = "tools"
+            version = "0.1.0"
+            "#,
+        )
+        .unwrap();
+
+        let versions = workspace_package_versions(temp.path()).unwrap();
+
+        assert_eq!(
+            versions,
+            [
+                PackageVersion {
+                    manifest: temp.path().join("./Cargo.toml"),
+                    version: "0.1.0".to_owned(),
+                },
+                PackageVersion {
+                    manifest: temp.path().join("tools/Cargo.toml"),
+                    version: "0.1.0".to_owned(),
+                },
+            ]
         );
     }
 
