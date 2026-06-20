@@ -793,6 +793,7 @@ mod tests {
         plan.forward_ports = vec![ResolvedForwardPort {
             service: None,
             container: 4321,
+            requested_host: 54321,
             host: 54321,
             host_ip: "127.0.0.1".to_owned(),
             protocol: PortProtocol::Tcp,
@@ -863,6 +864,7 @@ mod tests {
         plan.forward_ports = vec![ResolvedForwardPort {
             service: None,
             container: 4321,
+            requested_host: 54321,
             host: 54321,
             host_ip: "127.0.0.1".to_owned(),
             protocol: PortProtocol::Tcp,
@@ -934,6 +936,7 @@ mod tests {
         plan.forward_ports = vec![ResolvedForwardPort {
             service: None,
             container: 4321,
+            requested_host: 54321,
             host: 54321,
             host_ip: "127.0.0.1".to_owned(),
             protocol: PortProtocol::Tcp,
@@ -1252,6 +1255,7 @@ digest = "sha256:locked"
             vec![ResolvedForwardPort {
                 service: None,
                 container: 3000,
+                requested_host: 3000,
                 host: 3000,
                 host_ip: "127.0.0.1".to_owned(),
                 protocol: PortProtocol::Tcp,
@@ -1625,6 +1629,7 @@ container = 5432
             vec![ResolvedForwardPort {
                 service: None,
                 container: 3000,
+                requested_host: 3000,
                 host: 3000,
                 host_ip: "127.0.0.1".to_owned(),
                 protocol: PortProtocol::Tcp,
@@ -5699,6 +5704,7 @@ user = "root"
         ResolvedForwardPort {
             service: service.map(str::to_owned),
             container,
+            requested_host: container,
             host: container,
             host_ip: "127.0.0.1".to_owned(),
             protocol: PortProtocol::Tcp,

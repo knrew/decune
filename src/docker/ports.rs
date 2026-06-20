@@ -3,7 +3,7 @@ use std::{
     net::{IpAddr, TcpListener},
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 
 use crate::config::{
     resolved::{ResolvedAutoPorts, ResolvedPort, ResolvedPortAttributes, ResolvedPublishPort},
@@ -22,6 +22,7 @@ pub(crate) struct DockerPublishPort {
 pub(crate) struct ResolvedForwardPort {
     pub(crate) service: Option<String>,
     pub(crate) container: u16,
+    pub(crate) requested_host: u16,
     pub(crate) host: u16,
     pub(crate) host_ip: String,
     pub(crate) protocol: PortProtocol,
@@ -55,6 +56,7 @@ where
         resolved.push(ResolvedForwardPort {
             service: port.service.clone(),
             container: port.container,
+            requested_host: start_host,
             host,
             host_ip: port.host_ip.clone(),
             protocol: port.protocol,
@@ -150,6 +152,7 @@ where
         let port = ResolvedForwardPort {
             service: None,
             container,
+            requested_host: container,
             host,
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
             protocol: PortProtocol::Tcp,
@@ -185,20 +188,11 @@ where
             return Ok(candidate);
         }
 
-        if port.require_local {
-            bail!(
-                "Manual port {}:{} is already in use; choose another host port or disable require_local",
-                port.host_ip,
-                start_host
-            );
+        if let Some(next) = candidate.checked_add(1) {
+            candidate = next;
+        } else {
+            return Ok(0);
         }
-
-        candidate = candidate.checked_add(1).with_context(|| {
-            format!(
-                "No available host port found for manual port {}:{}",
-                port.host_ip, start_host
-            )
-        })?;
     }
 }
 
@@ -271,6 +265,7 @@ mod tests {
             vec![ResolvedForwardPort {
                 service: None,
                 container: 3000,
+                requested_host: 3000,
                 host: 3000,
                 host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
                 protocol: PortProtocol::Tcp,
@@ -291,16 +286,30 @@ mod tests {
     }
 
     #[test]
-    fn require_local_rejects_occupied_host_port() {
+    fn require_local_falls_back_from_occupied_host_port() {
         let ports = vec![manual_port(3000, Some(3000), DEFAULT_PORT_HOST_IP, true)];
 
-        let error = resolve_forward_ports_with(&ports, |_, _| Ok(false)).unwrap_err();
+        let resolved =
+            resolve_forward_ports_with(&ports, |_, port| Ok(!matches!(port, 3000 | 3001))).unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("Manual port 127.0.0.1:3000 is already in use")
-        );
+        assert_eq!(resolved[0].requested_host, 3000);
+        assert_eq!(resolved[0].host, 3002);
+        assert!(resolved[0].require_local);
+    }
+
+    #[test]
+    fn falls_back_to_os_assigned_host_port_when_upper_bound_is_occupied() {
+        let ports = vec![manual_port(
+            3000,
+            Some(u16::MAX),
+            DEFAULT_PORT_HOST_IP,
+            false,
+        )];
+
+        let resolved = resolve_forward_ports_with(&ports, |_, _| Ok(false)).unwrap();
+
+        assert_eq!(resolved[0].requested_host, u16::MAX);
+        assert_eq!(resolved[0].host, 0);
     }
 
     #[test]
@@ -395,19 +404,18 @@ mod tests {
     }
 
     #[test]
-    fn resolver_rejects_required_ipv6_wildcard_conflict() {
+    fn resolver_falls_back_for_required_ipv6_wildcard_conflict() {
         let ports = vec![
             manual_port(3000, Some(3000), "::", false),
             manual_port(3001, Some(3000), "::1", true),
         ];
 
-        let error = resolve_forward_ports_with(&ports, |_, _| Ok(true)).unwrap_err();
+        let resolved = resolve_forward_ports_with(&ports, |_, _| Ok(true)).unwrap();
 
-        assert!(
-            error
-                .to_string()
-                .contains("Manual port ::1:3000 is already in use")
-        );
+        assert_eq!(resolved[0].host, 3000);
+        assert_eq!(resolved[1].requested_host, 3000);
+        assert_eq!(resolved[1].host, 3001);
+        assert!(resolved[1].require_local);
     }
 
     #[test]
@@ -589,6 +597,7 @@ mod tests {
         ResolvedForwardPort {
             service: None,
             container,
+            requested_host: host,
             host,
             host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
             protocol: PortProtocol::Tcp,

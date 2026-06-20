@@ -408,6 +408,8 @@ v0.1 の port forwarding / publish は TCP-only です。protocol suffix がな�
 
 automatic forwarding も TCP listening socket のみを対象にします。container agent は TCP の LISTEN port を検出し、UDP socket は検出・転送しません。
 
+host 側 port が使えない場合、decune は空いている port へ fallback します。Dev Container `portsAttributes.requireLocalPort` または decune `require_local = true` が指定されている場合は、要求 port と実際の forwarding port が異なることを warning します。
+
 `appPort` は image/Dockerfile mode の Docker publish です。container 作成時に決まるため、既存 container への後付けはできません。host IP を省略した publish は Docker の既定により localhost 限定にならない可能性があります。localhost 限定が必要な場合は `forwardPorts`、`[[ports]]`、または `decune up -p` を使ってください。
 
 CLI `-p` と `appPort` の IPv6 host IP は `[::1]:8080:3000` のような bracketed form で指定します。unbracketed IPv6 は曖昧なためエラーになります。

@@ -11,7 +11,7 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::{config::types::PortProtocol, docker::ports::ResolvedForwardPort};
+use crate::{config::types::PortProtocol, docker::ports::ResolvedForwardPort, ui};
 
 use super::{
     agent::{send_agent_shutdown, write_agent_request},
@@ -28,6 +28,7 @@ pub(crate) struct ForwardSession {
 
 #[derive(Debug)]
 pub(super) struct ForwardListener {
+    port: ResolvedForwardPort,
     task: JoinHandle<()>,
     #[cfg(test)]
     local_addr: std::net::SocketAddr,
@@ -36,6 +37,12 @@ pub(super) struct ForwardListener {
 impl Drop for ForwardListener {
     fn drop(&mut self) {
         self.task.abort();
+    }
+}
+
+impl ForwardListener {
+    pub(super) fn port(&self) -> &ResolvedForwardPort {
+        &self.port
     }
 }
 
@@ -53,9 +60,13 @@ pub(crate) async fn start_forward_session_with_auto(
             return Err(error);
         }
     };
+    let active_forward_ports = listeners
+        .iter()
+        .map(|listener| listener.port.clone())
+        .collect::<Vec<_>>();
     let auto_task = auto_forward.map(|config| {
         tokio::spawn(run_auto_forward_loop(
-            forward_ports.to_vec(),
+            active_forward_ports,
             config,
             agent_socket_path.clone(),
             secret.clone(),
@@ -84,21 +95,30 @@ pub(super) async fn start_forward_listeners(
             .host_ip
             .parse::<IpAddr>()
             .with_context(|| format!("Invalid host IP for port forwarding: {}", port.host_ip))?;
-        let listener = TcpListener::bind((host_ip, port.host))
-            .await
-            .with_context(|| {
-                format!(
-                    "Failed to bind port forwarding listener: {}:{}",
-                    port.host_ip, port.host
-                )
-            })?;
-        #[cfg(test)]
+        let (listener, actual_host) = bind_forward_listener(host_ip, port).await?;
         let local_addr = listener.local_addr().with_context(|| {
             format!(
                 "Failed to inspect port forwarding listener: {}:{}",
                 port.host_ip, port.host
             )
         })?;
+        let actual_host = if actual_host == 0 {
+            local_addr.port()
+        } else {
+            actual_host
+        };
+        let mut resolved_port = port.clone();
+        resolved_port.host = actual_host;
+        if resolved_port.require_local && resolved_port.host != resolved_port.requested_host {
+            ui::warn(&format!(
+                "Local port {}:{} is unavailable; forwarded {}:{} -> container:{} instead",
+                resolved_port.host_ip,
+                resolved_port.requested_host,
+                resolved_port.host_ip,
+                resolved_port.host,
+                resolved_port.container
+            ));
+        }
         let target_port = port.container;
         let socket_path = agent_socket_path.to_path_buf();
         let secret = secret.to_owned();
@@ -106,6 +126,7 @@ pub(super) async fn start_forward_listeners(
             run_forward_listener(listener, socket_path, target_port, secret).await;
         });
         listeners.push(ForwardListener {
+            port: resolved_port,
             task,
             #[cfg(test)]
             local_addr,
@@ -113,6 +134,43 @@ pub(super) async fn start_forward_listeners(
     }
 
     Ok(listeners)
+}
+
+async fn bind_forward_listener(
+    host_ip: IpAddr,
+    port: &ResolvedForwardPort,
+) -> Result<(TcpListener, u16)> {
+    let mut candidate = port.host;
+    loop {
+        match TcpListener::bind((host_ip, candidate)).await {
+            Ok(listener) => return Ok((listener, candidate)),
+            Err(error) if is_addr_in_use(&error) => {
+                if let Some(next) = candidate.checked_add(1) {
+                    candidate = next;
+                } else {
+                    let listener = TcpListener::bind((host_ip, 0)).await.with_context(|| {
+                        format!(
+                            "Failed to bind port forwarding listener: {}:{}",
+                            port.host_ip, port.host
+                        )
+                    })?;
+                    return Ok((listener, 0));
+                }
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "Failed to bind port forwarding listener: {}:{}",
+                        port.host_ip, port.host
+                    )
+                });
+            }
+        }
+    }
+}
+
+fn is_addr_in_use(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::AddrInUse
 }
 
 impl ForwardSession {
@@ -129,6 +187,11 @@ impl ForwardSession {
     #[cfg(test)]
     fn local_addr(&self, index: usize) -> std::net::SocketAddr {
         self.listeners[index].local_addr
+    }
+
+    #[cfg(test)]
+    fn forwarded_port(&self, index: usize) -> &ResolvedForwardPort {
+        &self.listeners[index].port
     }
 
     pub(crate) async fn stop(mut self) {
@@ -303,7 +366,7 @@ mod tests {
     }
 
     #[test]
-    fn listener_start_failure_stops_agent() {
+    fn listener_falls_back_when_requested_host_port_is_occupied() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -327,8 +390,53 @@ mod tests {
             });
             wait_for_socket(&agent_socket).await;
 
+            let mut port = forward_port(occupied_port, 9);
+            port.require_local = true;
+            let session = start_forward_session_with_auto(
+                &[port],
+                None,
+                agent_socket.clone(),
+                "test-secret".to_owned(),
+            )
+            .await
+            .unwrap();
+
+            assert_eq!(session.forwarded_port(0).requested_host, occupied_port);
+            assert_ne!(session.forwarded_port(0).host, occupied_port);
+            assert_ne!(session.local_addr(0).port(), occupied_port);
+
+            session.stop().await;
+            agent_task.await.unwrap();
+            assert!(!agent_socket.exists());
+        });
+    }
+
+    #[test]
+    fn listener_start_failure_stops_agent() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let agent_socket = temp.path().join("forward-agent.sock");
+            let agent_task = tokio::spawn({
+                let agent_socket = agent_socket.clone();
+                async move {
+                    run_forward_agent_at_with_access(
+                        &agent_socket,
+                        ForwardAgentAccess::new([9], "test-secret".to_owned()),
+                    )
+                    .await
+                    .unwrap()
+                }
+            });
+            wait_for_socket(&agent_socket).await;
+            let mut port = forward_port(0, 9);
+            port.protocol = PortProtocol::Udp;
             let error = start_forward_session_with_auto(
-                &[forward_port(occupied_port, 9)],
+                &[port],
                 None,
                 agent_socket.clone(),
                 "test-secret".to_owned(),
@@ -337,7 +445,7 @@ mod tests {
             .unwrap_err();
             let message = format!("{error:#}");
 
-            assert!(message.contains("Failed to bind port forwarding listener"));
+            assert!(message.contains("Unsupported port forwarding protocol"));
             timeout(std::time::Duration::from_secs(1), agent_task)
                 .await
                 .unwrap()
