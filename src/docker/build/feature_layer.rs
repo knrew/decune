@@ -13,6 +13,7 @@ use crate::docker::image::validate_image_name;
 pub(crate) const FEATURE_ENTRYPOINT_WRAPPER: &str =
     "/usr/local/share/decune/feature-entrypoint-wrapper.sh";
 pub(crate) const FEATURE_ENTRYPOINT_SENTINEL: &str = "/run/decune/feature-entrypoints-complete";
+pub(crate) const FEATURE_ENTRYPOINT_TOKEN: &str = "/run/decune/feature-entrypoints-token";
 const FEATURE_ENTRYPOINTS_FILE: &str = "decune-feature-entrypoints";
 const FEATURE_ENTRYPOINT_WRAPPER_FILE: &str = "decune-feature-entrypoint-wrapper.sh";
 const FEATURE_ENTRYPOINTS_TARGET: &str = "/usr/local/share/decune/feature-entrypoints";
@@ -236,7 +237,13 @@ feature_startup_id() {
     printf '%s' "${20:-unknown}"
 }
 sentinel=/run/decune/feature-entrypoints-complete
+token_file=/run/decune/feature-entrypoints-token
 sentinel_startup_id=$(feature_startup_id)
+if [ ! -r "$token_file" ]; then
+    echo "decune Feature entrypoint token is unavailable: $token_file" >&2
+    exit 1
+fi
+sentinel_token=$(cat "$token_file")
 : > "$sentinel"
 if [ -f /usr/local/share/decune/feature-entrypoints ]; then
     while IFS= read -r entrypoint; do
@@ -245,7 +252,7 @@ if [ -f /usr/local/share/decune/feature-entrypoints ]; then
         fi
     done </usr/local/share/decune/feature-entrypoints
 fi
-printf '%s\n' "$sentinel_startup_id" > "$sentinel"
+printf '%s:%s\n' "$sentinel_startup_id" "$sentinel_token" > "$sentinel"
 if [ "$#" -eq 0 ]; then
     trap 'exit 0' TERM
     while sleep 1 & wait $!; do :; done
@@ -392,9 +399,9 @@ mod tests {
     use tempfile::TempDir;
 
     use super::{
-        FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_WRAPPER, FEATURE_ENTRYPOINT_WRAPPER_FILE,
-        FEATURE_ENTRYPOINTS_FILE, FeatureLayerBuildFeature, FeatureLayerBuildInput,
-        prepare_feature_layer_build_context,
+        FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_TOKEN, FEATURE_ENTRYPOINT_WRAPPER,
+        FEATURE_ENTRYPOINT_WRAPPER_FILE, FEATURE_ENTRYPOINTS_FILE, FeatureLayerBuildFeature,
+        FeatureLayerBuildInput, prepare_feature_layer_build_context,
     };
     use crate::docker::build::tar::{create_build_context_tar, tar_contains_path};
 
@@ -459,8 +466,15 @@ mod tests {
         assert!(dockerfile.contains(FEATURE_ENTRYPOINT_WRAPPER));
         assert!(dockerfile.contains("USER vscode"));
         assert!(wrapper.contains(FEATURE_ENTRYPOINT_SENTINEL));
+        assert!(wrapper.contains(FEATURE_ENTRYPOINT_TOKEN));
         assert!(wrapper.contains("sentinel_startup_id=$(feature_startup_id)"));
+        assert!(wrapper.contains("if [ ! -r \"$token_file\" ]; then"));
+        assert!(wrapper.contains("decune Feature entrypoint token is unavailable"));
+        assert!(wrapper.contains("sentinel_token=$(cat \"$token_file\")"));
         assert!(wrapper.contains(": > \"$sentinel\""));
+        assert!(wrapper.contains(
+            "printf '%s:%s\\n' \"$sentinel_startup_id\" \"$sentinel_token\" > \"$sentinel\""
+        ));
         assert!(!wrapper.contains("rm -f \"$sentinel\""));
         assert!(!wrapper.contains("mkdir -p /run/decune"));
         assert!(install_script.contains("./install.sh"));

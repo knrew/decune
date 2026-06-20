@@ -42,7 +42,7 @@ use super::{
     workspace_mount_plan_from_resolved,
 };
 
-const FEATURE_ENTRYPOINT_SHIM_HASH_VERSION: &str = "2";
+const FEATURE_ENTRYPOINT_SHIM_HASH_VERSION: &str = "3";
 
 #[cfg(test)]
 pub(crate) fn build_up_plan(
