@@ -15,7 +15,11 @@ use crate::{
         resource::DockerResources,
         volume::{remove_volume, workspace_volumes},
     },
-    host::{credentials::cleanup_github_cli_token_file, daemon::cleanup_host_daemon_socket},
+    host::{
+        credentials::cleanup_github_cli_token_file,
+        daemon::cleanup_host_daemon_socket,
+        forward::{forward_status_dir, remove_forward_status_dir},
+    },
     runtime::compose_cli::{
         ComposeDownOptions, ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli,
     },
@@ -181,10 +185,12 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
         }
     }
 
+    let status_dir = forward_status_dir(workspace.paths().runtime_dir());
     remove_state_runtime_dirs(
         workspace.paths().state_dir(),
         workspace.paths().runtime_dir(),
     )?;
+    remove_forward_status_dir(status_dir)?;
     ui::done("Cleaned dev container resources");
     Ok(())
 }

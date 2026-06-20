@@ -10,6 +10,32 @@ use std::{
 use crate::harness::*;
 
 #[test]
+fn ports_reports_no_active_forwarded_ports() {
+    let workspace = support::TempWorkspace::new().unwrap();
+
+    decune()
+        .args(["ports"])
+        .arg(workspace.path())
+        .assert()
+        .success()
+        .stdout("No active forwarded ports\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn ports_json_reports_no_active_forwarded_ports() {
+    let workspace = support::TempWorkspace::new().unwrap();
+
+    decune()
+        .args(["ports", "--json"])
+        .arg(workspace.path())
+        .assert()
+        .success()
+        .stdout("[]\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
 fn up_detach_rejects_cli_port_before_workspace_resolution() {
     decune()
         .args(["up", "--detach", "-p", "3000", "/decune/missing-workspace"])
@@ -124,9 +150,26 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
                 "forwarded HTTP response did not arrive: {error}; child_status={status:?}; stderr={stderr}"
             );
         }
+        decune()
+            .args(["ports", "--json"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains(r#""host_port": "#)
+                    .and(predicate::str::contains(host_port.to_string()))
+                    .and(predicate::str::contains(r#""container_port": 4321"#))
+                    .and(predicate::str::contains(r#""source": "configured""#)),
+            );
         let child = child.as_mut().unwrap();
         child.kill().unwrap();
         let _ = child.wait().unwrap();
+        decune()
+            .args(["ports", "--json"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout("[]\n");
     }));
 
     if let Some(mut child) = child

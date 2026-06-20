@@ -9,6 +9,7 @@ use crate::config::{
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
 use crate::down::{CleanOptions, DownOptions};
+use crate::ports::PortsOptions;
 use crate::up::{UpOptions, run_attached_up, run_detached_up};
 
 #[derive(Debug, Parser)]
@@ -30,6 +31,8 @@ enum Commands {
     Rebuild(RebuildArgs),
     /// Stop a managed dev container.
     Down(DownArgs),
+    /// List active port forwarding mappings.
+    Ports(PortsArgs),
     /// Remove managed dev container resources.
     Clean(CleanArgs),
 }
@@ -107,6 +110,16 @@ struct DownArgs {
 }
 
 #[derive(Debug, Args)]
+struct PortsArgs {
+    /// Output active forwarded ports as JSON.
+    #[arg(long)]
+    json: bool,
+    /// Workspace directory.
+    #[arg(default_value = ".", value_name = "WORKSPACE")]
+    workspace: PathBuf,
+}
+
+#[derive(Debug, Args)]
 struct CleanArgs {
     /// Remove decune generated workspace images.
     #[arg(long)]
@@ -151,6 +164,7 @@ async fn run_cli(cli: Cli) -> Result<i32> {
         Commands::Up(args) => run_up(args).await,
         Commands::Rebuild(args) => run_rebuild(args).await,
         Commands::Down(args) => run_down(args).await,
+        Commands::Ports(args) => run_ports(args).await,
         Commands::Clean(args) => run_clean(args).await,
     }
 }
@@ -236,6 +250,13 @@ async fn run_down(args: DownArgs) -> Result<i32> {
         timeout_seconds: timeout,
     })
     .await?;
+    Ok(0)
+}
+
+async fn run_ports(args: PortsArgs) -> Result<i32> {
+    let PortsArgs { json, workspace } = args;
+
+    crate::ports::run_ports(PortsOptions { workspace, json }).await?;
     Ok(0)
 }
 
@@ -607,6 +628,17 @@ mod tests {
         let options = rebuild_up_options_from_args(args).unwrap();
 
         assert_eq!(options.cli_layer.auto_ports.unwrap().enabled, Some(false));
+    }
+
+    #[test]
+    fn parses_ports_options() {
+        let cli = Cli::parse_from(["decune", "ports", "--json", "workspace"]);
+        let Commands::Ports(args) = cli.command else {
+            panic!("expected ports command");
+        };
+
+        assert!(args.json);
+        assert_eq!(args.workspace, PathBuf::from("workspace"));
     }
 
     #[test]

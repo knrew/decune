@@ -11,6 +11,7 @@ fn root_help_is_displayed() {
         ))
         .stdout(predicate::str::contains("up"))
         .stdout(predicate::str::contains("down"))
+        .stdout(predicate::str::contains("ports"))
         .stdout(predicate::str::contains("clean"))
         .stdout(predicate::str::contains("rebuild"))
         .stderr(predicate::str::is_empty());
@@ -47,7 +48,7 @@ fn short_version_is_displayed() {
 
 #[test]
 fn command_help_is_displayed() {
-    for command in ["up", "down", "clean", "rebuild"] {
+    for command in ["up", "down", "ports", "clean", "rebuild"] {
         decune()
             .args([command, "--help"])
             .assert()

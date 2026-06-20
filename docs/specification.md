@@ -208,6 +208,28 @@ decune down [--timeout <SECONDS>] [WORKSPACE]
 
 明示的な `decune down` は `shutdownAction` に関係なく停止を行う。
 
+### `ports`
+
+```text
+decune ports [--json] [WORKSPACE]
+```
+
+役割:
+
+- 実行中の attached `up` process が維持している port forwarding の対応関係を表示する。
+- Docker published port は表示しない。image/Dockerfile モードの `appPort` と Compose file の `ports` は対象外である。
+- 現在有効な forwarding がない場合も success とし、通常出力は `No active forwarded ports`、JSON 出力は `[]` とする。
+
+通常出力:
+
+- `LOCAL`: 実際に listen している host 側 endpoint。
+- `TARGET`: 転送先。primary service は `container:<port>/<protocol>`、sidecar service は `<service>:<port>/<protocol>`。
+- `SOURCE`: `configured` または `auto`。
+- `REQUESTED`: 要求 host port と実 host port が異なる場合だけ要求 endpoint。異ならない場合は `-`。
+- `LABEL`: port label。未指定なら `-`。
+
+`--json` は `host_ip`、`host_port`、`requested_host_port`、`service`、`container_port`、`protocol`、`source`、`label` を持つ JSON array を stdout に出力する。
+
 ### `clean`
 
 ```text
@@ -923,6 +945,8 @@ Compose モードの service 解決:
 sidecar service forwarding は、その service の container ID を解決し、必要な container-side tool を runtime install して forward-agent を起動する。対象 service には forwarding runtime mount と decune identity label だけを generated override で追加し、credentials、dotfiles、GitHub token、SSH agent は自動注入しない。service の replica が 2 以上なら error とする。
 
 automatic forwarding は TCP listening socket のみを対象にする。container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、TCP LISTEN port を検出する。UDP socket は検出・転送しない。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済みの port、Docker published port として扱われる port、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose モードの automatic forwarding は primary service のみを対象にする。
+
+現在有効な forwarding の実効対応は `decune ports` で確認できる。`decune ports` は `decune up` process が runtime directory に公開する host-local status socket に問い合わせる。実効対応は `state.toml` には保存しない。stale metadata または接続不能な status socket は現在有効な forwarding ではないものとして無視する。
 
 ## Host daemon とセキュリティ境界
 

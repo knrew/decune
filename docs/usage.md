@@ -193,6 +193,19 @@ decune down
 
 decune が管理するコンテナまたは Compose プロジェクトを停止します。volume、状態、image は保持します。
 
+### `decune ports`
+
+```sh
+decune ports
+decune ports --json
+```
+
+`--detach` なしで実行中の `decune up` が維持している port forwarding の対応関係を表示します。host port が使用中で別の port に fallback した場合も、実際に listen している host 側 endpoint を確認できます。
+
+通常出力では `LOCAL`、`TARGET`、`SOURCE`、`REQUESTED`、`LABEL` を表示します。`--json` を付けると `host_ip`、`host_port`、`requested_host_port`、`service`、`container_port`、`protocol`、`source`、`label` を持つ JSON array を出力します。
+
+`decune ports` は decune の port forwarding だけを対象にします。image/Dockerfile モードの `appPort` や Compose file の `ports` による Docker published port は表示しません。現在有効な forwarding がない場合、通常出力は `No active forwarded ports`、JSON 出力は `[]` です。
+
 ### `decune clean`
 
 ```sh

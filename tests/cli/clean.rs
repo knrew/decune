@@ -390,6 +390,9 @@ fn clean_force_removes_state_and_runtime_directories() {
     let workspace_id = workspace_id(&workspace_root);
     let state_dir = state_home.join("decune").join(&workspace_id);
     let runtime_dir = runtime_home.join("decune").join(&workspace_id);
+    let port_status_dir = runtime_home
+        .join("decune")
+        .join(format!("{workspace_id}-ports"));
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -397,8 +400,10 @@ fn clean_force_removes_state_and_runtime_directories() {
 
     fs::create_dir_all(&state_dir).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
+    fs::create_dir_all(&port_status_dir).unwrap();
     fs::write(state_dir.join("state.toml"), "version = 1\n").unwrap();
     fs::write(runtime_dir.join("socket"), "").unwrap();
+    fs::write(port_status_dir.join("forward-status-stale.json"), "{}").unwrap();
 
     runtime.block_on(async {
         cleanup_workspace_containers(&workspace_root).await.unwrap();
@@ -417,6 +422,7 @@ fn clean_force_removes_state_and_runtime_directories() {
 
         assert!(!state_dir.exists());
         assert!(!runtime_dir.exists());
+        assert!(!port_status_dir.exists());
     });
 
     runtime.block_on(async {

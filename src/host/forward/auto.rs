@@ -24,6 +24,7 @@ use crate::{
 use super::{
     agent::write_agent_request,
     session::{ForwardListener, start_forward_listeners},
+    status::{ForwardStatusRegistry, ForwardStatusSource},
 };
 
 const AUTO_FORWARD_INITIAL_DELAY: Duration = Duration::from_secs(3);
@@ -53,6 +54,7 @@ pub(super) async fn run_auto_forward_loop(
     config: AutoForwardConfig,
     agent_socket_path: PathBuf,
     secret: String,
+    status_registry: Option<ForwardStatusRegistry>,
 ) {
     let mut listeners = Vec::new();
     let mut reported_error = false;
@@ -65,6 +67,7 @@ pub(super) async fn run_auto_forward_loop(
             &config,
             &agent_socket_path,
             &secret,
+            status_registry.as_ref(),
         )
         .await
         {
@@ -85,6 +88,7 @@ async fn scan_and_add_auto_forwards(
     config: &AutoForwardConfig,
     agent_socket_path: &Path,
     secret: &str,
+    status_registry: Option<&ForwardStatusRegistry>,
 ) -> Result<()> {
     let detected = request_auto_forward_ports(agent_socket_path, secret, &config.auto).await?;
     let additions = resolve_auto_forward_ports(
@@ -111,6 +115,9 @@ async fn scan_and_add_auto_forwards(
                 "Forwarded localhost:{} -> container:{}",
                 port.host, port.container
             ));
+        }
+        if let Some(registry) = status_registry {
+            registry.record(&port, ForwardStatusSource::Auto);
         }
         forward_ports.push(port);
     }
