@@ -2,6 +2,7 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     fs,
+    io::{Read as _, Write as _},
     os::unix::fs::{OpenOptionsExt, PermissionsExt},
     path::{Path, PathBuf},
     time::Duration,
@@ -18,7 +19,8 @@ use crate::{
     devcontainer::lifecycle::{LifecycleRunPath, run_host_initialize_lifecycle},
     docker::{
         build::{
-            DockerBuildInput, FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_WRAPPER, build_image,
+            DockerBuildInput, FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_TOKEN,
+            FEATURE_ENTRYPOINT_WRAPPER, build_image,
         },
         client::DockerClient,
         container::{
@@ -29,7 +31,7 @@ use crate::{
         exec::{ExecCommandSpec, exec_capture_output},
         image::{PullPolicy, ensure_image, image_container_tool_platform, image_startup_command},
         mounts::{DockerMountSpec, normalize_container_path},
-        user::uid_gid_sync_runtime_user,
+        user::{UidGidSyncPlan, uid_gid_sync_runtime_user},
     },
     host::{
         container_tools::ContainerToolPlatform,
@@ -75,6 +77,13 @@ const REBUILD_STOP_TIMEOUT_SECONDS: i32 = 10;
 const KEEPALIVE_STARTUP_CHECK_DELAY: Duration = Duration::from_millis(200);
 const ORIGINAL_COMMAND_STARTUP_MONITOR_WINDOW: Duration = Duration::from_secs(2);
 const FEATURE_ENTRYPOINT_SENTINEL_POLL_INTERVAL: Duration = Duration::from_millis(50);
+const FEATURE_ENTRYPOINT_TOKEN_BYTES: usize = 32;
+const FEATURE_ENTRYPOINT_TOKEN_MODE: u32 = 0o600;
+const FEATURE_ENTRYPOINT_TOKEN_COMPAT_MODE: u32 = 0o644;
+// The wrapper may run as an image-defined non-root user before decune can rely on
+// matching host/container ownership. Keep the sentinel broadly writable for now;
+// readiness is bound to a per-run token so a stale or guessed startup id alone is
+// not sufficient.
 const FEATURE_ENTRYPOINT_SENTINEL_MODE: u32 = 0o666;
 const FEATURE_ENTRYPOINT_RUNTIME_DIR_MODE: u32 = 0o711;
 
@@ -1475,19 +1484,105 @@ fn prepare_feature_entrypoint_sentinel_runtime(plan: &UpPlan, runtime_dir: &Path
         )
     })?;
 
+    let token = new_feature_entrypoint_token()?;
+    let token_path = feature_entrypoint_token_runtime_path(runtime_dir)?;
+    let token_mode = feature_entrypoint_token_mode(plan)?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .mode(token_mode)
+        .open(&token_path)
+        .with_context(|| {
+            format!(
+                "Failed to prepare Feature entrypoint token: {}",
+                token_path.display()
+            )
+        })?;
+    file.write_all(token.as_bytes()).with_context(|| {
+        format!(
+            "Failed to write Feature entrypoint token: {}",
+            token_path.display()
+        )
+    })?;
+    fs::set_permissions(&token_path, fs::Permissions::from_mode(token_mode)).with_context(
+        || {
+            format!(
+                "Failed to set Feature entrypoint token permissions: {}",
+                token_path.display()
+            )
+        },
+    )?;
+
     Ok(())
 }
 
 fn feature_entrypoint_sentinel_runtime_path(runtime_dir: &Path) -> Result<PathBuf> {
-    let sentinel_target = Path::new(FEATURE_ENTRYPOINT_SENTINEL);
-    let relative = sentinel_target
+    feature_entrypoint_runtime_path(runtime_dir, FEATURE_ENTRYPOINT_SENTINEL, "sentinel")
+}
+
+fn feature_entrypoint_token_runtime_path(runtime_dir: &Path) -> Result<PathBuf> {
+    feature_entrypoint_runtime_path(runtime_dir, FEATURE_ENTRYPOINT_TOKEN, "token")
+}
+
+fn feature_entrypoint_runtime_path(
+    runtime_dir: &Path,
+    target: &'static str,
+    description: &str,
+) -> Result<PathBuf> {
+    let relative = Path::new(target)
         .strip_prefix(DECUNE_RUNTIME_TARGET)
         .with_context(|| {
             format!(
-                "Feature entrypoint sentinel must be under {DECUNE_RUNTIME_TARGET}: {FEATURE_ENTRYPOINT_SENTINEL}"
+                "Feature entrypoint {description} must be under {DECUNE_RUNTIME_TARGET}: {target}"
             )
         })?;
     Ok(runtime_dir.join(relative))
+}
+
+fn new_feature_entrypoint_token() -> Result<String> {
+    random_hex(
+        FEATURE_ENTRYPOINT_TOKEN_BYTES,
+        "Feature entrypoint readiness token",
+    )
+}
+
+fn feature_entrypoint_token_mode(plan: &UpPlan) -> Result<u32> {
+    let runtime_user = uid_gid_sync_runtime_user(
+        &plan.effective_users.container_user.user,
+        &plan.uid_gid_sync_plan,
+    )?;
+    if container_runtime_user_is_root(&runtime_user)
+        || matches!(plan.uid_gid_sync_plan, UidGidSyncPlan::Sync { .. })
+    {
+        return Ok(FEATURE_ENTRYPOINT_TOKEN_MODE);
+    }
+
+    Ok(FEATURE_ENTRYPOINT_TOKEN_COMPAT_MODE)
+}
+
+fn container_runtime_user_is_root(user: &str) -> bool {
+    let user = user.split(':').next().unwrap_or(user);
+    user == "root" || user == "0"
+}
+
+fn random_hex(bytes_len: usize, context: &str) -> Result<String> {
+    let mut bytes = vec![0u8; bytes_len];
+    fs::File::open("/dev/urandom")
+        .with_context(|| format!("Failed to open /dev/urandom for {context}"))?
+        .read_exact(&mut bytes)
+        .with_context(|| format!("Failed to read {context}"))?;
+    Ok(hex_lower(&bytes))
+}
+
+fn hex_lower(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut output = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        output.push(HEX[(byte >> 4) as usize] as char);
+        output.push(HEX[(byte & 0x0f) as usize] as char);
+    }
+    output
 }
 
 fn extend_runtime_mounts(mounts: &mut Vec<DockerMountSpec>, runtime_mounts: &[DockerMountSpec]) {
@@ -1839,14 +1934,7 @@ async fn feature_entrypoint_sentinel_is_current(
     client: &DockerClient,
     container_name: &str,
 ) -> Result<bool> {
-    let script = format!(
-        r#"stat_line=$(cat /proc/1/stat 2>/dev/null || true)
-stat_tail=${{stat_line#*) }}
-set -- $stat_tail
-startup_id="${{20:-}}"
-test -n "$startup_id" && test -f {sentinel} && test "$(cat {sentinel})" = "$startup_id""#,
-        sentinel = FEATURE_ENTRYPOINT_SENTINEL
-    );
+    let script = feature_entrypoint_sentinel_check_script();
     let output = match exec_capture_output(
         client,
         container_name,
@@ -1866,6 +1954,43 @@ test -n "$startup_id" && test -f {sentinel} && test "$(cat {sentinel})" = "$star
     };
 
     Ok(output.exit_code == 0)
+}
+
+fn feature_entrypoint_sentinel_check_script() -> String {
+    feature_entrypoint_sentinel_check_script_for(
+        FEATURE_ENTRYPOINT_SENTINEL,
+        FEATURE_ENTRYPOINT_TOKEN,
+        "/proc/1/stat",
+    )
+}
+
+fn feature_entrypoint_sentinel_check_script_for(
+    sentinel: &str,
+    token_file: &str,
+    proc_stat: &str,
+) -> String {
+    format!(
+        r#"sentinel={sentinel}
+token_file={token_file}
+proc_stat={proc_stat}
+stat_line=$(cat "$proc_stat" 2>/dev/null || true)
+stat_tail=${{stat_line#*) }}
+set -- $stat_tail
+startup_id="${{20:-}}"
+token=$(cat "$token_file" 2>/dev/null || true)
+expected="$startup_id:$token"
+test -n "$startup_id" && test -n "$token" && test -f "$sentinel" && test "$(cat "$sentinel")" = "$expected""#,
+        sentinel = shell_word(sentinel),
+        token_file = shell_word(token_file),
+        proc_stat = shell_word(proc_stat)
+    )
+}
+
+fn shell_word(value: &str) -> String {
+    if value.is_empty() {
+        return "''".to_owned();
+    }
+    format!("'{}'", value.replace('\'', "'\"'\"'"))
 }
 
 async fn wait_for_container_exit_within(
@@ -1985,8 +2110,11 @@ mod tests {
     use super::{
         ComposeOverrideStartup, ExistingContainerReusePolicy,
         attach_compose_interpolation_env_to_plan, compose_running_reuse_fast_path_enabled,
-        compose_service_forward_container_requires_recreate, generated_compose_override_content,
-        generated_compose_override_content_with_startup, should_reuse_existing_container,
+        compose_service_forward_container_requires_recreate,
+        feature_entrypoint_sentinel_check_script_for, feature_entrypoint_sentinel_runtime_path,
+        feature_entrypoint_token_runtime_path, generated_compose_override_content,
+        generated_compose_override_content_with_startup,
+        prepare_feature_entrypoint_sentinel_runtime, should_reuse_existing_container,
         state_container_snapshot,
     };
     use crate::{
@@ -2007,7 +2135,13 @@ mod tests {
             UpMountSummary, UpOptions, UpPlan, decide_existing_container,
         },
     };
-    use std::{collections::BTreeMap, path::PathBuf};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        os::unix::fs::PermissionsExt,
+        path::{Path, PathBuf},
+        process::Command,
+    };
 
     #[test]
     fn generated_compose_override_patches_only_primary_service() {
@@ -2600,6 +2734,90 @@ mod tests {
     }
 
     #[test]
+    fn prepare_feature_entrypoint_runtime_creates_sentinel_and_token() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.config.devcontainer.entrypoints = vec!["touch /tmp/entrypoint".to_owned()];
+
+        prepare_feature_entrypoint_sentinel_runtime(&plan, &runtime_dir).unwrap();
+
+        let sentinel = feature_entrypoint_sentinel_runtime_path(&runtime_dir).unwrap();
+        let token = feature_entrypoint_token_runtime_path(&runtime_dir).unwrap();
+        let token_content = fs::read_to_string(&token).unwrap();
+
+        assert!(sentinel.is_file());
+        assert!(token.is_file());
+        assert_eq!(token_content.len(), 64);
+        assert!(
+            token_content
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        );
+        assert_eq!(mode(&runtime_dir), 0o711);
+        assert_eq!(mode(&sentinel), 0o666);
+        assert_eq!(mode(&token), 0o600);
+    }
+
+    #[test]
+    fn prepare_feature_entrypoint_runtime_keeps_token_readable_for_nonroot_without_uid_sync() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut plan = generated_override_test_plan(Vec::new());
+        plan.config.devcontainer.entrypoints = vec!["touch /tmp/entrypoint".to_owned()];
+        plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
+            devcontainer_remote_user: None,
+            devcontainer_container_user: None,
+            image_metadata_remote_user: None,
+            image_metadata_container_user: None,
+            image_config_user: Some("app"),
+        })
+        .unwrap();
+
+        prepare_feature_entrypoint_sentinel_runtime(&plan, &runtime_dir).unwrap();
+
+        let token = feature_entrypoint_token_runtime_path(&runtime_dir).unwrap();
+        assert_eq!(mode(&token), 0o644);
+    }
+
+    #[test]
+    fn feature_entrypoint_sentinel_check_script_rejects_token_mismatch() {
+        let temp = tempfile::tempdir().unwrap();
+        let proc_stat = temp.path().join("proc-stat");
+        let token = temp.path().join("token");
+        let sentinel = temp.path().join("sentinel");
+        let startup_id = "123456789";
+        let mut stat_fields = (1..20).map(|index| format!("f{index}")).collect::<Vec<_>>();
+        stat_fields.push(startup_id.to_owned());
+        fs::write(&proc_stat, format!("1 (sh) {}\n", stat_fields.join(" "))).unwrap();
+        fs::write(&token, "good-token").unwrap();
+        fs::write(&sentinel, format!("{startup_id}:bad-token")).unwrap();
+
+        let mismatch_status = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(feature_entrypoint_sentinel_check_script_for(
+                sentinel.to_str().unwrap(),
+                token.to_str().unwrap(),
+                proc_stat.to_str().unwrap(),
+            ))
+            .status()
+            .unwrap();
+        assert!(!mismatch_status.success());
+
+        fs::write(&sentinel, format!("{startup_id}:good-token")).unwrap();
+        let match_status = Command::new("/bin/sh")
+            .arg("-c")
+            .arg(feature_entrypoint_sentinel_check_script_for(
+                sentinel.to_str().unwrap(),
+                token.to_str().unwrap(),
+                proc_stat.to_str().unwrap(),
+            ))
+            .status()
+            .unwrap();
+        assert!(match_status.success());
+    }
+
+    #[test]
     fn generated_compose_override_uses_feature_entrypoint_wrapper_startup() {
         let mut config = ResolvedConfig::default();
         config.devcontainer.override_command = false;
@@ -2655,6 +2873,10 @@ mod tests {
         assert!(content.contains("command:"));
         assert!(content.contains("'/docker-entrypoint.sh'"));
         assert!(content.contains("'server'"));
+    }
+
+    fn mode(path: &Path) -> u32 {
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
     }
 
     #[test]

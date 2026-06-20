@@ -9,8 +9,8 @@ mod uid_gid_layer;
 
 pub(crate) use context::{ResolvedBuildContext, build_hash_input, resolve_build_context};
 pub(crate) use feature_layer::{
-    FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_WRAPPER, FeatureLayerBuildFeature,
-    FeatureLayerBuildInput, prepare_feature_layer_build_context,
+    FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_TOKEN, FEATURE_ENTRYPOINT_WRAPPER,
+    FeatureLayerBuildFeature, FeatureLayerBuildInput, prepare_feature_layer_build_context,
 };
 pub(crate) use uid_gid_layer::{
     UidGidSyncLayerBuildInput, prepare_uid_gid_sync_layer_build_context,
