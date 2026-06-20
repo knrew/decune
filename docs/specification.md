@@ -75,7 +75,7 @@ v0.1 における「Docker Compose 完全サポート」とは、Dev Containers 
 - GPG agent forwarding。
 - コンテナから任意の host command を実行する API。
 - Windows host 向け公式配布。
-- `cargo install` / `cargo install --git` を公式インストール手段として扱うこと。
+- crates.io または `cargo install --git` による公式インストール。
 
 ## 必要な host tool
 
@@ -98,7 +98,9 @@ Docker endpoint、context、credential helper、BuildKit、Compose profiles な�
 
 ## 配布仕様
 
-公式配布は GitHub Releases の prebuilt archive とする。release archive は以下を含む。
+公式配布は GitHub Releases の prebuilt archive を第一導線とし、source checkout からの local `cargo install --path .` を第二導線とする。crates.io publish と `cargo install --git` は v0.1 の公式導線にしない。
+
+release archive は以下を含む。
 
 - `decune` binary
 - `LICENSE`
@@ -109,6 +111,8 @@ release asset:
 - `decune-v{version}-{host_triple}.tar.gz`
 - `SHA256SUMS`
 - `release-manifest.json`
+
+`scripts/install.sh` は release archive install の補助導線として提供する。latest 自動解決は行わず、利用者が指定した version の OS/arch 対応 asset を取得し、`SHA256SUMS` で検証してから install する。
 
 初期 target:
 
@@ -123,6 +127,10 @@ container-side tool platform:
 
 - `linux-amd64`
 - `linux-arm64`
+
+release asset は `SHA256SUMS` で検証できる。GitHub Actions release workflow は build provenance attestation を作成し、release publish 前に全 asset を draft release に添付する。
+
+source checkout からの local install は `cargo run --locked -p xtask -- install --locked` を公式入口とする。この command は container-side tools bundle を build/check し、`DECUNE_CONTAINER_TOOLS_BUNDLE=required` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` を設定したうえで `cargo install --path . --profile dist --bin decune` を実行する。container-side tools bundle を埋め込まない build は正式な install 手順ではない。
 
 開発・debug 用 override として `DECUNE_CONTAINER_TOOLS_DIR` を残す。build-time の bundle 制御は `DECUNE_CONTAINER_TOOLS_BUNDLE` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` で行うが、通常の local/CI command では `xtask` が内部で設定する。
 
