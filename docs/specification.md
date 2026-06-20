@@ -127,11 +127,11 @@ container-side tool platform:
 
 release asset は `SHA256SUMS` で検証できる。GitHub Actions release workflow は build provenance attestation を作成し、release publish 前に全 asset を draft release に添付する。
 
-source checkout からの local install は `cargo run --locked -p xtask -- install --locked` を公式入口とする。この command は container-side tools bundle を build/check し、`DECUNE_CONTAINER_TOOLS_BUNDLE=required` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` を設定したうえで `cargo install --path . --profile dist --bin decune` を実行する。container-side tools bundle を埋め込まない build は正式な install 手順ではない。
+source checkout からの local install は `cargo run --locked -p xtask -- install --locked` を公式入口とする。この command は `target/decune-xtask/container-tools-bundle` に container-side tools bundle を build/check し、bundle を埋め込んだ `decune` を `cargo install --path . --profile dist --bin decune` で install する。container-side tools bundle を埋め込まない build は正式な install 手順ではない。
 
 `decune --version` は release tag から作る公式 artifact では `decune {version}` を表示する。source checkout からの local build では、tag 外 commit や dirty worktree を公式 artifact と区別できるように SemVer build metadata suffix を表示してよい。Git 情報を取得できない source build では source build であることを示す suffix を表示してよい。
 
-開発・debug 用 override として `DECUNE_CONTAINER_TOOLS_DIR` を残す。build-time の bundle 制御は `DECUNE_CONTAINER_TOOLS_BUNDLE` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` で行うが、通常の local/CI command では `xtask` が内部で設定する。
+開発・debug 用 override として `DECUNE_CONTAINER_TOOLS_DIR` を残す。build-time の bundle 制御は通常 `xtask` が内部で行い、bundle dir の既定値は `target/decune-xtask/container-tools-bundle` とする。`DECUNE_CONTAINER_TOOLS_BUNDLE` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` は低レベル build 用の内部 override として扱い、通常の local/CI 手順では利用者に要求しない。
 
 ## CLI
 

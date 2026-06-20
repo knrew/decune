@@ -40,11 +40,13 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
       - name: Build container tools bundle
-        run: cargo run --locked -p xtask -- build-container-tools --out target/decune-dist/container-tools-bundle --locked
+        run: cargo run --locked -p xtask -- build-container-tools --locked
       - name: Check container tools bundle
-        run: cargo run --locked -p xtask -- check-container-tools --dir target/decune-dist/container-tools-bundle
+        run: cargo run --locked -p xtask -- check-container-tools
       - name: Pack container tools bundle
-        run: tar -C target/decune-dist -czf target/decune-dist/container-tools-bundle.tar.gz container-tools-bundle
+        run: |
+          mkdir -p target/decune-dist
+          tar -C target/decune-xtask -czf target/decune-dist/container-tools-bundle.tar.gz container-tools-bundle
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error
@@ -85,7 +87,9 @@ jobs:
           name: container-tools-bundle
           path: target/decune-dist
       - name: Unpack container tools bundle
-        run: tar -C target/decune-dist -xzf target/decune-dist/container-tools-bundle.tar.gz
+        run: |
+          mkdir -p target/decune-xtask
+          tar -C target/decune-xtask -xzf target/decune-dist/container-tools-bundle.tar.gz
       - name: Build and package
         run: |
           cargo run --locked -p xtask -- dist \
@@ -93,7 +97,7 @@ jobs:
             --version "${{ inputs.version }}" \
             --locked \
             --dist-dir target/decune-dist/assets \
-            --container-tools-dir "${{ github.workspace }}/target/decune-dist/container-tools-bundle"
+            --container-tools-dir "${{ github.workspace }}/target/decune-xtask/container-tools-bundle"
       - name: Smoke test dist archive
         shell: bash
         run: |

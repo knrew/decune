@@ -18,13 +18,11 @@ xtask のインストールコマンドを実行します。
 cargo run --locked -p xtask -- install --locked
 ```
 
-同等の Cargo 手順は以下です。
+この command は `target/decune-xtask/container-tools-bundle` に bundle を build/check し、bundle を埋め込んだ `decune` を `cargo install` します。bundle の build/check だけを個別に確認する場合は、以下を実行します。
 
 ```sh
-cargo run --locked -p xtask -- build-container-tools --out target/decune-source-install/container-tools --locked
-DECUNE_CONTAINER_TOOLS_BUNDLE=required \
-  DECUNE_CONTAINER_TOOLS_BUNDLE_DIR=target/decune-source-install/container-tools \
-  cargo install --path . --locked --profile dist --bin decune
+cargo run --locked -p xtask -- build-container-tools --locked
+cargo run --locked -p xtask -- check-container-tools
 ```
 
 コンテナ側ツールの bundle を埋め込まない build は公式インストール手順ではありません。軽いローカル確認だけならインストールせず、通常の Cargo コマンドを使ってください。
