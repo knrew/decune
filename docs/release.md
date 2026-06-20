@@ -46,6 +46,10 @@
    署名環境がない場合:
 
    ```sh
+   git fetch origin
+   git checkout master
+   git pull --ff-only origin master
+   cargo run --locked -p xtask -- release-preflight --tag v0.1.0 --version 0.1.0
    git tag -a v0.1.0 -m "decune v0.1.0"
    git push origin v0.1.0
    ```
