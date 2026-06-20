@@ -20,14 +20,13 @@ use crate::{
     },
     devcontainer::features::{prepare_feature_install_plan, remove_feature_lock_file},
     docker::{
-        build::{DockerBuildInput, build_hash_input, build_image},
+        build::build_hash_input,
         client::DockerClient,
         container::{ContainerCreateSpec, ContainerHostConfig, create_container, start_container},
         image::{
             ImageStartupCommand, LocalImagePresence, PullPolicy, ensure_image,
             image_devcontainer_metadata_layers_if_present_with_forward_ports,
-            image_devcontainer_metadata_layers_with_forward_ports,
-            image_has_devcontainer_metadata_label_if_present, image_startup_command,
+            image_devcontainer_metadata_layers_with_forward_ports, image_startup_command,
             local_image_presence, remove_image, tag_image,
         },
         mounts::{DockerMountSpec, devcontainer_mount_type},
@@ -57,13 +56,14 @@ use crate::{
             build_up_plan_with_image_metadata_and_forwarding_resolution,
             expand_runtime_devcontainer_fields, expand_static_plan_fields,
             feature_lock_hash_inputs, final_image_source,
+            rebuild_up_plan_with_image_metadata_layers,
         },
         start::wait_for_container_exit_code,
         types::{ForwardingResolution, MountResolution, UpPlan, UpPlanResolution},
         uid_gid::{
             effective_user_input_from_plan, effective_users_depend_on_image_config_user,
-            plan_requires_uid_gid_sync_layer, pre_uid_gid_sync_layer_resources,
-            uid_gid_sync_hash_input, uid_gid_sync_plan_requires_layer, uid_gid_sync_warning,
+            plan_requires_uid_gid_sync_layer, uid_gid_sync_hash_input,
+            uid_gid_sync_plan_requires_layer, uid_gid_sync_warning,
         },
     },
     workspace::Workspace,
@@ -97,8 +97,6 @@ pub(in crate::up) async fn build_existing_container_decision_plan(
     resolution: UpPlanResolution,
 ) -> Result<UpPlan> {
     if preliminary_plan.build_context.is_some() {
-        let image = existing_container_image_id.unwrap_or(&preliminary_plan.image);
-        warn_about_unsupported_dockerfile_image_metadata(client, image).await?;
         return build_up_plan_with_forwarding_resolution(
             workspace,
             explicit_config_path,
@@ -279,10 +277,21 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     let using_existing_remote_user_image = remote_user_image.is_some();
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
     let mut lookup_base_image = None;
+    let mut stale_lookup_images = Vec::new();
     let mut image_prepared = false;
+    let mut deferred_workspace_layer = false;
     plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
     if lookup_image.is_none() {
-        if plan_requires_workspace_layer(&plan) {
+        if plan.build_context.is_some() {
+            let Some((pull, no_cache)) = build_for_lookup else {
+                return Ok((plan, false));
+            };
+            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
+            lookup_base_image = Some(plan.base_image.clone());
+            lookup_image = Some(plan.base_image.clone());
+            image_prepared = true;
+            deferred_workspace_layer = plan_requires_workspace_layer(&plan);
+        } else if plan_requires_workspace_layer(&plan) {
             let Some((pull, no_cache)) = build_for_lookup else {
                 return Ok((plan, false));
             };
@@ -291,34 +300,51 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
             build_feature_layer_image(client, &plan, no_cache).await?;
             lookup_image = Some(plan.image.clone());
             image_prepared = true;
-        } else if let Some(context) = plan.build_context.clone() {
-            let Some((pull, no_cache)) = build_for_lookup else {
-                return Ok((plan, false));
-            };
-            let mut build_options = plan.build_options.clone();
-            build_options.pull = pull;
-            build_options.no_cache = no_cache;
-            build_image(
-                client,
-                DockerBuildInput {
-                    image_tag: plan.base_image.clone(),
-                    labels: pre_uid_gid_sync_layer_resources(&plan)
-                        .labels
-                        .clone()
-                        .into_iter()
-                        .collect(),
-                    context,
-                    options: build_options,
-                },
-            )
-            .await?;
-            lookup_image = Some(plan.base_image.clone());
-            image_prepared = true;
         } else {
             lookup_image = Some(plan.base_image.clone());
         }
     };
     let mut lookup_image = lookup_image.expect("lookup image must be set");
+    let dockerfile_metadata =
+        dockerfile_image_metadata_for_plan(client, &plan, &lookup_image, options.forwarding)
+            .await?;
+    if !dockerfile_metadata.layers.is_empty() {
+        plan = rebuild_up_plan_with_image_metadata_layers(
+            workspace,
+            plan,
+            dockerfile_metadata.layers,
+            options.forwarding == ForwardingResolution::IgnoreDetached
+                && dockerfile_metadata.has_forward_ports,
+            MountResolution::Resolve,
+            UpPlanResolution::new(options.forwarding, update_features),
+        )?;
+        plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
+        if plan_requires_workspace_layer(&plan) && !using_existing_remote_user_image {
+            let Some((pull, no_cache)) = build_for_lookup else {
+                return Ok((plan, false));
+            };
+            if lookup_image != plan.base_image {
+                stale_lookup_images.push(lookup_image.clone());
+            }
+            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
+            lookup_base_image = Some(plan.base_image.clone());
+            build_feature_layer_image(client, &plan, no_cache).await?;
+            lookup_image = plan.image.clone();
+            image_prepared = true;
+            deferred_workspace_layer = false;
+        }
+    }
+    if deferred_workspace_layer
+        && plan_requires_workspace_layer(&plan)
+        && !using_existing_remote_user_image
+    {
+        let Some((_, no_cache)) = build_for_lookup else {
+            return Ok((plan, false));
+        };
+        build_feature_layer_image(client, &plan, no_cache).await?;
+        lookup_image = plan.image.clone();
+        image_prepared = true;
+    }
     let lookup = ImageLookupPreparation {
         image: &mut lookup_image,
         remote_user_image,
@@ -369,16 +395,58 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         tag_image(client, &lookup_image, &plan.image).await?;
         remove_image(client, &lookup_image, false).await?;
     }
+    for stale_lookup_image in stale_lookup_images {
+        if stale_lookup_image != plan.image
+            && stale_lookup_image != plan.base_image
+            && stale_lookup_image != lookup_image
+        {
+            remove_image(client, &stale_lookup_image, false).await?;
+        }
+    }
 
     Ok((plan, image_prepared))
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy)]
 pub(in crate::up) struct FinalizeUpPlanMountsOptions<'a> {
+    pub(in crate::up) forwarding: ForwardingResolution,
     pub(in crate::up) update_features: bool,
     pub(in crate::up) compose_canonical_model: Option<&'a JsonValue>,
     pub(in crate::up) compose_primary_service_user: Option<&'a str>,
     pub(in crate::up) compose_primary_service: Option<&'a ComposeConfigService>,
+}
+
+impl Default for FinalizeUpPlanMountsOptions<'_> {
+    fn default() -> Self {
+        Self {
+            forwarding: ForwardingResolution::Resolve,
+            update_features: false,
+            compose_canonical_model: None,
+            compose_primary_service_user: None,
+            compose_primary_service: None,
+        }
+    }
+}
+
+async fn dockerfile_image_metadata_for_plan(
+    client: &DockerClient,
+    plan: &UpPlan,
+    image: &str,
+    forwarding: ForwardingResolution,
+) -> Result<crate::docker::image::ImageMetadataLayers> {
+    if plan.build_context.is_none() {
+        return Ok(crate::docker::image::ImageMetadataLayers {
+            layers: Vec::new(),
+            has_forward_ports: false,
+        });
+    }
+
+    image_devcontainer_metadata_layers_with_forward_ports(
+        client,
+        image,
+        forwarding == ForwardingResolution::Resolve,
+    )
+    .await
 }
 
 async fn finalize_mounts_and_resources_for_plan(
@@ -1310,19 +1378,6 @@ fn unsupported_single_port_attribute_warnings(
     }
 
     warnings
-}
-
-pub(in crate::up) async fn warn_about_unsupported_dockerfile_image_metadata(
-    client: &DockerClient,
-    image: &str,
-) -> Result<()> {
-    if image_has_devcontainer_metadata_label_if_present(client, image).await? == Some(true) {
-        ui::warn(&format!(
-            "Dockerfile image label devcontainer.metadata is not merged in decune v0.1: {image}. Move this metadata to devcontainer.json or use an image-based devcontainer."
-        ));
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

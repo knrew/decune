@@ -348,6 +348,7 @@ pub(in crate::up) async fn ensure_container_started(
                 .and_then(existing::existing_container_config_hash),
             Some((options.pull, options.no_cache)),
             FinalizeUpPlanMountsOptions {
+                forwarding: forwarding_resolution,
                 update_features: options.update_features,
                 compose_canonical_model: None,
                 compose_primary_service_user: None,
@@ -423,6 +424,7 @@ pub(in crate::up) async fn ensure_container_started(
         None,
         Some((options.pull, options.no_cache)),
         FinalizeUpPlanMountsOptions {
+            forwarding: forwarding_resolution,
             update_features: options.update_features,
             compose_canonical_model: None,
             compose_primary_service_user: None,
@@ -592,6 +594,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
             .and_then(existing::existing_container_config_hash),
         Some((false, false)),
         FinalizeUpPlanMountsOptions {
+            forwarding: forwarding_resolution,
             update_features: options.update_features,
             compose_canonical_model: Some(&user_config.canonical_model),
             compose_primary_service_user,
@@ -795,6 +798,7 @@ async fn start_compose_project(
             .and_then(existing::existing_container_config_hash),
         Some((options.pull && !primary_service_has_build, options.no_cache)),
         FinalizeUpPlanMountsOptions {
+            forwarding: forwarding_resolution,
             update_features: options.update_features,
             compose_canonical_model: Some(&user_config.canonical_model),
             compose_primary_service_user,
@@ -1745,11 +1749,6 @@ async fn prepare_image_for_create(
             )
             .await?;
         }
-        crate::up::metadata::warn_about_unsupported_dockerfile_image_metadata(
-            client,
-            &plan.base_image,
-        )
-        .await?;
     } else if !image_prepared {
         ensure_image(
             client,

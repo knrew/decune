@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
 
@@ -151,6 +151,117 @@ pub(super) fn build_up_plan_with_image_metadata_and_forwarding_resolution(
         MountResolution::Resolve,
         UpPlanResolution::new(forwarding_resolution, update_features),
     )
+}
+
+pub(super) fn rebuild_up_plan_with_image_metadata_layers(
+    workspace: &Workspace,
+    mut plan: UpPlan,
+    image_metadata: Vec<ConfigLayer>,
+    ignored_image_metadata_forwarding: bool,
+    mount_resolution: MountResolution,
+    resolution: UpPlanResolution,
+) -> Result<UpPlan> {
+    let devcontainer_file = PathBuf::from(
+        plan.resources
+            .labels
+            .get("devcontainer.config_file")
+            .context("Up plan is missing devcontainer.config_file label")?,
+    );
+    plan.config_layers.image_metadata = image_metadata;
+    plan.config_layers.feature_metadata.clear();
+    let config_layers = plan.config_layers.clone();
+    let workspace_validation = match mount_resolution {
+        MountResolution::Resolve => WorkspaceLocationValidation::ConfigResolved,
+        MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
+    };
+    let mut config = resolve_config(config_layers.clone());
+    let static_expansion = expand_static_plan_fields(
+        workspace,
+        &devcontainer_file,
+        &mut config,
+        workspace_validation,
+    )?;
+    let mount_variables = static_mount_variable_context(
+        workspace,
+        &static_expansion.workspace_location.workspace_folder,
+        &config,
+    );
+    let compose_project = compose_project_plan(workspace, &devcontainer_file, &config)?;
+    let mount_plan = workspace_mount_plan_from_resolved(
+        static_expansion.workspace_location.workspace_mount.clone(),
+        workspace.root(),
+        &config,
+        &mount_variables,
+        mount_resolution,
+        workspace.paths().state_dir(),
+    )?;
+    let mounts = mount_plan.mounts;
+    let mut hash_input = ConfigHashInput::new(&config);
+    if let Some(context) = &static_expansion.build_context {
+        hash_input.build = Some(build_hash_input(context)?);
+    }
+    hash_input.sensitive_build_arg_keys = static_expansion
+        .sensitive_build_args
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect();
+    if let Some(compose_project) = &compose_project {
+        hash_input.compose_files = compose_project.config_hash_files().to_vec();
+    }
+    hash_input.feature_locks = feature_lock_hash_inputs(
+        workspace,
+        &devcontainer_file,
+        &config,
+        resolution.update_features,
+    )?;
+    if mount_resolution == MountResolution::Resolve {
+        hash_input.resolved_mounts = mount_hash_inputs(&mounts);
+    }
+    add_internal_hash_versions(&mut hash_input, &config);
+    hash_input.uid_gid_sync =
+        static_uid_gid_sync_hash_input(&config_layers, config.devcontainer.update_remote_user_uid);
+    let hash = config_hash(&hash_input);
+    let resources =
+        DockerResources::from_workspace(workspace, hash, devcontainer_file.display().to_string());
+    let base_image = base_image_source(&config, &resources, &UidGidSyncPlan::default())?;
+    let image = final_image_source(&config, &resources, &UidGidSyncPlan::default())?;
+    let forward_ports = match resolution.forwarding {
+        ForwardingResolution::Resolve => {
+            validate_service_qualified_forward_ports(&config)?;
+            resolve_forward_ports(&config.ports.entries)?
+        }
+        ForwardingResolution::IgnoreDetached => Vec::new(),
+    };
+    let ignored_detached_forwarding = resolution.forwarding == ForwardingResolution::IgnoreDetached
+        && (plan.ignored_detached_forwarding
+            || ignored_image_metadata_forwarding
+            || !config.ports.entries.is_empty());
+
+    Ok(UpPlan {
+        image,
+        base_image,
+        build_context: static_expansion.build_context,
+        build_options: static_expansion.build_options,
+        feature_install: None,
+        feature_build_context_dir: None,
+        uid_gid_sync_build_context_dir: None,
+        resources,
+        pre_uid_gid_sync_resources: None,
+        compose_project,
+        config_layers,
+        config,
+        sensitive_container_env: Default::default(),
+        sensitive_build_args: static_expansion.sensitive_build_args,
+        compose_interpolation_env: Default::default(),
+        compose_interpolation_redactions: Vec::new(),
+        effective_users: EffectiveUsers::root(),
+        uid_gid_sync_plan: UidGidSyncPlan::default(),
+        workspace_folder: static_expansion.workspace_location.workspace_folder,
+        mounts,
+        dotfile_skeletons: mount_plan.dotfile_skeletons,
+        forward_ports,
+        ignored_detached_forwarding,
+    })
 }
 
 fn build_up_plan_inner(

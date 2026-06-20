@@ -14,7 +14,6 @@ use crate::{
         user::{UidGidSyncPlan, image_config_user, uid_gid_sync_runtime_user},
     },
     up::{
-        metadata::warn_about_unsupported_dockerfile_image_metadata,
         plan::config_requires_workspace_layer,
         types::UpPlan,
         uid_gid::{
@@ -44,7 +43,6 @@ pub(in crate::up) async fn prepare_base_image_for_plan(
             },
         )
         .await?;
-        warn_about_unsupported_dockerfile_image_metadata(client, &plan.base_image).await?;
     } else {
         ensure_image(
             client,

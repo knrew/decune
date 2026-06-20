@@ -234,23 +234,6 @@ pub(crate) async fn image_devcontainer_metadata_layers_if_present_with_forward_p
         .map(Some)
 }
 
-pub(crate) async fn image_has_devcontainer_metadata_label_if_present(
-    client: &DockerClient,
-    image: &str,
-) -> Result<Option<bool>> {
-    let Some(inspect) = client
-        .cli()
-        .inspect_image_if_present(image)
-        .await
-        .with_context(|| format!("Failed to inspect Docker image metadata: {image}"))?
-    else {
-        return Ok(None);
-    };
-    let labels = inspect.config.and_then(|config| config.labels);
-
-    Ok(Some(has_devcontainer_metadata_label(labels.as_ref())))
-}
-
 #[cfg(test)]
 fn parse_devcontainer_metadata_label(image: &str, label: Option<&str>) -> Result<Vec<ConfigLayer>> {
     parse_devcontainer_metadata_label_with_forward_ports(image, label, true)
@@ -309,6 +292,7 @@ pub(crate) fn parse_devcontainer_metadata_label_with_forward_ports(
     }
 }
 
+#[cfg(test)]
 fn has_devcontainer_metadata_label(labels: Option<&HashMap<String, String>>) -> bool {
     labels.is_some_and(|labels| labels.contains_key(DEVCONTAINER_METADATA_LABEL))
 }

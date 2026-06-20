@@ -123,7 +123,7 @@ cargo check --workspace --all-targets --all-features
 
 ### Dockerfile-based
 
-Dockerfile を build する場合は `build.dockerfile` を指定します。`build.options` は Docker build の argv として渡されますが、decune が管理する `--file`、`--tag`、`--label`、`--build-arg`、`--target`、`--cache-from`、`--no-cache`、`--pull`、output / metadata file 系 option は指定できません。build context path も decune が管理するため、`build.options` には書けません。
+Dockerfile を build する場合は `build.dockerfile` を指定します。build 後の image に `devcontainer.metadata` label がある場合、decune はその metadata を `devcontainer.json` と merge します。`build.options` は Docker build の argv として渡されますが、decune が管理する `--file`、`--tag`、`--label`、`--build-arg`、`--target`、`--cache-from`、`--no-cache`、`--pull`、output / metadata file 系 option は指定できません。build context path も decune が管理するため、`build.options` には書けません。
 
 ```jsonc
 // .devcontainer/devcontainer.json
