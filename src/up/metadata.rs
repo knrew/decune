@@ -1199,10 +1199,13 @@ pub(in crate::up) fn security_notices(config: &ResolvedConfig) -> Vec<String> {
     if config.credentials.git.enabled
         && (config.credentials.git.copy_user
             || config.credentials.git.copy_global_config
-            || config.credentials.git.https == GitHttpsMode::HostHelper)
+            || matches!(
+                config.credentials.git.https,
+                GitHttpsMode::HostHelper | GitHttpsMode::HostHelperReadOnly
+            ))
     {
         notices.push(
-            "Git credential forwarding is enabled; set [credentials.git].enabled = false before running untrusted repositories."
+            "Git credential forwarding is enabled; use https = \"host-helper-read-only\" or set [credentials.git].enabled = false before running untrusted repositories."
                 .to_owned(),
         );
     }
@@ -1237,7 +1240,6 @@ pub(in crate::up) fn deferred_config_warnings(config: &ResolvedConfig) -> Vec<St
         );
     }
     warnings.extend(unsupported_port_attribute_warnings(config));
-
     warnings
 }
 

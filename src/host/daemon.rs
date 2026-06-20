@@ -14,12 +14,15 @@ use tokio::{
     task::JoinHandle,
 };
 
-use crate::host::{
-    credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
-    protocol::{HostDaemonResponse, handle_host_daemon_request},
-    runtime::{
-        create_runtime_dir, set_private_runtime_parent, set_runtime_dir_mode,
-        validate_runtime_dir_mode,
+use crate::{
+    config::types::GitHttpsMode,
+    host::{
+        credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
+        protocol::{HostDaemonResponse, handle_host_daemon_request},
+        runtime::{
+            create_runtime_dir, set_private_runtime_parent, set_runtime_dir_mode,
+            validate_runtime_dir_mode,
+        },
     },
 };
 
@@ -110,10 +113,29 @@ struct HostDaemonMetadata {
     protocol_version: u16,
     allowed_peer_uid: u32,
     remote_gid: u32,
+    git_https_mode: HostDaemonGitHttpsMode,
     runtime_dir_mode: u32,
     socket_mode: u32,
     socket_dev: u64,
     socket_ino: u64,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum HostDaemonGitHttpsMode {
+    Off,
+    HostHelper,
+    HostHelperReadOnly,
+}
+
+impl From<GitHttpsMode> for HostDaemonGitHttpsMode {
+    fn from(value: GitHttpsMode) -> Self {
+        match value {
+            GitHttpsMode::Off => Self::Off,
+            GitHttpsMode::HostHelper => Self::HostHelper,
+            GitHttpsMode::HostHelperReadOnly => Self::HostHelperReadOnly,
+        }
+    }
 }
 
 impl HostDaemonMetadata {
@@ -132,6 +154,7 @@ impl HostDaemon {
             .await
     }
 
+    #[cfg(test)]
     pub(crate) async fn start_for_remote_user(
         runtime_dir: impl AsRef<Path>,
         remote_uid: u32,
@@ -143,6 +166,24 @@ impl HostDaemon {
             remote_uid,
             remote_gid,
             Arc::new(SystemGitCredentialExecutor),
+            GitHttpsMode::HostHelper,
+        )
+        .await
+    }
+
+    pub(crate) async fn start_for_remote_user_with_git_https_mode(
+        runtime_dir: impl AsRef<Path>,
+        remote_uid: u32,
+        remote_gid: u32,
+        git_https_mode: GitHttpsMode,
+    ) -> Result<Self> {
+        Self::start_with_access(
+            runtime_dir,
+            HostDaemonAccess::for_remote_user(remote_uid, remote_gid),
+            remote_uid,
+            remote_gid,
+            Arc::new(SystemGitCredentialExecutor),
+            git_https_mode,
         )
         .await
     }
@@ -158,6 +199,7 @@ impl HostDaemon {
             current_uid(),
             current_gid(),
             git_credentials,
+            GitHttpsMode::HostHelper,
         )
         .await
     }
@@ -168,6 +210,7 @@ impl HostDaemon {
         allowed_peer_uid: u32,
         remote_gid: u32,
         git_credentials: Arc<dyn GitCredentialExecutor>,
+        git_https_mode: GitHttpsMode,
     ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
         prepare_runtime_dir(&runtime_dir, access)?;
@@ -187,6 +230,7 @@ impl HostDaemon {
             &socket_path,
             allowed_peer_uid,
             remote_gid,
+            git_https_mode,
             access,
         )
         .inspect_err(|_| {
@@ -194,7 +238,12 @@ impl HostDaemon {
             cleanup_host_daemon_socket_file(&socket_path);
         })?;
 
-        let task = tokio::spawn(run_host_daemon(listener, allowed_peer_uid, git_credentials));
+        let task = tokio::spawn(run_host_daemon(
+            listener,
+            allowed_peer_uid,
+            git_credentials,
+            git_https_mode,
+        ));
 
         Ok(Self {
             socket_path,
@@ -287,6 +336,7 @@ fn write_host_daemon_metadata(
     socket_path: &Path,
     allowed_peer_uid: u32,
     remote_gid: u32,
+    git_https_mode: GitHttpsMode,
     access: HostDaemonAccess,
 ) -> Result<()> {
     let socket_metadata = fs::symlink_metadata(socket_path).with_context(|| {
@@ -299,6 +349,7 @@ fn write_host_daemon_metadata(
         protocol_version: crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION,
         allowed_peer_uid,
         remote_gid,
+        git_https_mode: git_https_mode.into(),
         runtime_dir_mode: access.runtime_dir_mode,
         socket_mode: access.socket_mode,
         socket_dev: socket_metadata.dev(),
@@ -324,6 +375,7 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
     runtime_dir: &Path,
     remote_uid: u32,
     remote_gid: u32,
+    git_https_mode: GitHttpsMode,
 ) -> Result<bool> {
     let metadata_path = runtime_dir.join(HOST_DAEMON_METADATA_NAME);
     let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
@@ -342,6 +394,7 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
 
     if metadata.protocol_version != crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION
         || metadata.allowed_peer_uid != remote_uid
+        || metadata.git_https_mode != git_https_mode.into()
         || metadata.socket_dev != socket_metadata.dev()
         || metadata.socket_ino != socket_metadata.ino()
     {
@@ -361,7 +414,14 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
             )
         })?;
     if metadata.remote_gid != remote_gid || existing_access != access {
-        write_host_daemon_metadata(&metadata_path, &socket_path, remote_uid, remote_gid, access)?;
+        write_host_daemon_metadata(
+            &metadata_path,
+            &socket_path,
+            remote_uid,
+            remote_gid,
+            git_https_mode,
+            access,
+        )?;
     }
 
     Ok(true)
@@ -371,8 +431,14 @@ pub(crate) async fn ensure_host_daemon_available_for_remote_user(
     runtime_dir: &Path,
     remote_uid: u32,
     remote_gid: u32,
+    git_https_mode: GitHttpsMode,
 ) -> Result<bool> {
-    if !ensure_host_daemon_access_for_remote_user(runtime_dir, remote_uid, remote_gid)? {
+    if !ensure_host_daemon_access_for_remote_user(
+        runtime_dir,
+        remote_uid,
+        remote_gid,
+        git_https_mode,
+    )? {
         return Ok(false);
     }
 
@@ -517,6 +583,7 @@ async fn run_host_daemon(
     listener: UnixListener,
     allowed_peer_uid: u32,
     git_credentials: Arc<dyn GitCredentialExecutor>,
+    git_https_mode: GitHttpsMode,
 ) {
     loop {
         let Ok((stream, _)) = listener.accept().await else {
@@ -525,7 +592,11 @@ async fn run_host_daemon(
         if !peer_uid_is_allowed(&stream, allowed_peer_uid) {
             continue;
         }
-        tokio::spawn(handle_connection(stream, Arc::clone(&git_credentials)));
+        tokio::spawn(handle_connection(
+            stream,
+            Arc::clone(&git_credentials),
+            git_https_mode,
+        ));
     }
 }
 
@@ -538,6 +609,7 @@ fn peer_uid_is_allowed(stream: &UnixStream, allowed_uid: u32) -> bool {
 async fn handle_connection(
     mut stream: UnixStream,
     git_credentials: Arc<dyn GitCredentialExecutor>,
+    git_https_mode: GitHttpsMode,
 ) {
     let mut request = Vec::new();
     let read_failed = {
@@ -551,7 +623,7 @@ async fn handle_connection(
     let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES as usize {
         HostDaemonResponse::request_too_large(MAX_HOST_DAEMON_REQUEST_BYTES as usize)
     } else {
-        handle_host_daemon_request(&request, git_credentials.as_ref())
+        handle_host_daemon_request(&request, git_credentials.as_ref(), git_https_mode)
     };
     let Ok(response) = serde_json::to_vec(&response) else {
         return;

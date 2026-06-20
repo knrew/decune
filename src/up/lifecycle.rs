@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use tokio::task::JoinHandle;
 
 use crate::{
+    config::{resolved::ResolvedGitCredentials, types::GitHttpsMode},
     devcontainer::lifecycle::{
         LifecycleRunContext, PreparedLifecycleRunContext, prepare_container_lifecycle,
         run_attach_lifecycle, run_container_start_lifecycle,
@@ -36,13 +37,19 @@ impl HostDaemonGuard {
         }
     }
 
-    fn reused(runtime_dir: PathBuf, remote_uid: u32, remote_gid: u32) -> Self {
+    fn reused(
+        runtime_dir: PathBuf,
+        remote_uid: u32,
+        remote_gid: u32,
+        git_https_mode: GitHttpsMode,
+    ) -> Self {
         Self {
             _daemon: None,
             monitor_task: Some(tokio::spawn(monitor_reused_host_daemon(
                 runtime_dir,
                 remote_uid,
                 remote_gid,
+                git_https_mode,
             ))),
         }
     }
@@ -117,8 +124,17 @@ pub(in crate::up) async fn start_host_daemon_for_up(
         started.workspace.id(),
         remote_user.uid,
         remote_user.gid,
+        daemon_git_https_mode(&started.plan.config.credentials.git),
     )
     .await
+}
+
+fn daemon_git_https_mode(credentials: &ResolvedGitCredentials) -> GitHttpsMode {
+    if credentials.enabled {
+        credentials.https
+    } else {
+        GitHttpsMode::Off
+    }
 }
 
 async fn start_host_daemon_for_remote_user(
@@ -126,18 +142,31 @@ async fn start_host_daemon_for_remote_user(
     workspace_id: &str,
     remote_uid: u32,
     remote_gid: u32,
+    git_https_mode: GitHttpsMode,
 ) -> Result<HostDaemonGuard> {
-    match HostDaemon::start_for_remote_user(runtime_dir, remote_uid, remote_gid).await {
+    match HostDaemon::start_for_remote_user_with_git_https_mode(
+        runtime_dir,
+        remote_uid,
+        remote_gid,
+        git_https_mode,
+    )
+    .await
+    {
         Ok(daemon) => Ok(HostDaemonGuard::owned(daemon)),
         Err(error) => {
             if HostDaemonStartError::is_socket_already_in_use(&error) {
-                match ensure_host_daemon_access_for_remote_user(runtime_dir, remote_uid, remote_gid)
-                {
+                match ensure_host_daemon_access_for_remote_user(
+                    runtime_dir,
+                    remote_uid,
+                    remote_gid,
+                    git_https_mode,
+                ) {
                     Ok(true) => {
                         return Ok(HostDaemonGuard::reused(
                             runtime_dir.to_path_buf(),
                             remote_uid,
                             remote_gid,
+                            git_https_mode,
                         ));
                     }
                     Ok(false) => {}
@@ -155,7 +184,12 @@ async fn start_host_daemon_for_remote_user(
     }
 }
 
-async fn monitor_reused_host_daemon(runtime_dir: PathBuf, remote_uid: u32, remote_gid: u32) {
+async fn monitor_reused_host_daemon(
+    runtime_dir: PathBuf,
+    remote_uid: u32,
+    remote_gid: u32,
+    git_https_mode: GitHttpsMode,
+) {
     let mut _daemon = None;
     let mut warned_failure = false;
     let mut interval = tokio::time::interval(REUSED_HOST_DAEMON_MONITOR_INTERVAL);
@@ -163,8 +197,13 @@ async fn monitor_reused_host_daemon(runtime_dir: PathBuf, remote_uid: u32, remot
     loop {
         interval.tick().await;
 
-        match ensure_host_daemon_available_for_remote_user(&runtime_dir, remote_uid, remote_gid)
-            .await
+        match ensure_host_daemon_available_for_remote_user(
+            &runtime_dir,
+            remote_uid,
+            remote_gid,
+            git_https_mode,
+        )
+        .await
         {
             Ok(true) => {
                 warned_failure = false;
@@ -177,7 +216,14 @@ async fn monitor_reused_host_daemon(runtime_dir: PathBuf, remote_uid: u32, remot
             }
         }
 
-        match HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, remote_gid).await {
+        match HostDaemon::start_for_remote_user_with_git_https_mode(
+            &runtime_dir,
+            remote_uid,
+            remote_gid,
+            git_https_mode,
+        )
+        .await
+        {
             Ok(restarted) => {
                 _daemon = Some(restarted);
                 warned_failure = false;
@@ -187,6 +233,7 @@ async fn monitor_reused_host_daemon(runtime_dir: PathBuf, remote_uid: u32, remot
                     &runtime_dir,
                     remote_uid,
                     remote_gid,
+                    git_https_mode,
                 ) {
                     Ok(true) => warned_failure = false,
                     Ok(false) => {
@@ -249,8 +296,36 @@ mod tests {
     use tempfile::TempDir;
     use tokio::net::{UnixListener, UnixStream};
 
-    use super::start_host_daemon_for_remote_user;
-    use crate::host::daemon::HostDaemon;
+    use super::{daemon_git_https_mode, start_host_daemon_for_remote_user};
+    use crate::{
+        config::{resolved::ResolvedGitCredentials, types::GitHttpsMode},
+        host::daemon::HostDaemon,
+    };
+
+    #[test]
+    fn disabled_git_credentials_force_daemon_https_mode_off() {
+        let credentials = ResolvedGitCredentials {
+            enabled: false,
+            https: GitHttpsMode::HostHelper,
+            ..Default::default()
+        };
+
+        assert_eq!(daemon_git_https_mode(&credentials), GitHttpsMode::Off);
+    }
+
+    #[test]
+    fn enabled_git_credentials_preserve_daemon_https_mode() {
+        let credentials = ResolvedGitCredentials {
+            enabled: true,
+            https: GitHttpsMode::HostHelperReadOnly,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            daemon_git_https_mode(&credentials),
+            GitHttpsMode::HostHelperReadOnly
+        );
+    }
 
     #[test]
     fn host_daemon_skips_startup_when_daemon_already_running() {
@@ -273,6 +348,7 @@ mod tests {
                 "workspace-test",
                 remote_uid,
                 remote_gid,
+                GitHttpsMode::HostHelper,
             )
             .await
             .unwrap();
@@ -305,6 +381,7 @@ mod tests {
                 "workspace-test",
                 remote_uid,
                 remote_gid,
+                GitHttpsMode::HostHelper,
             )
             .await
             .unwrap();
@@ -345,6 +422,7 @@ mod tests {
                 "workspace-test",
                 remote_uid,
                 world_access_gid,
+                GitHttpsMode::HostHelper,
             )
             .await
             .unwrap();
@@ -383,6 +461,7 @@ mod tests {
                 "workspace-test",
                 remote_uid,
                 group_access_gid,
+                GitHttpsMode::HostHelper,
             )
             .await
             .unwrap();
@@ -391,6 +470,41 @@ mod tests {
             assert_eq!(mode(&runtime_dir.join("host-daemon.sock")), 0o666);
 
             drop(guard);
+            existing.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn host_daemon_reuse_requires_matching_git_https_mode() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        runtime.block_on(async {
+            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing = HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, remote_gid)
+                .await
+                .unwrap();
+
+            let error = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                remote_uid,
+                remote_gid,
+                GitHttpsMode::HostHelperReadOnly,
+            )
+            .await
+            .unwrap_err();
+
+            assert!(
+                format!("{error:#}").contains("Host daemon socket is already in use"),
+                "{error:#}"
+            );
+
             existing.stop().await.unwrap();
         });
     }
@@ -410,10 +524,15 @@ mod tests {
         runtime.block_on(async {
             let _listener = UnixListener::bind(target_dir.join("host-daemon.sock")).unwrap();
 
-            let error =
-                start_host_daemon_for_remote_user(&runtime_dir, "workspace-test", 20001, 20001)
-                    .await
-                    .unwrap_err();
+            let error = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                20001,
+                20001,
+                GitHttpsMode::HostHelper,
+            )
+            .await
+            .unwrap_err();
 
             assert!(
                 error
@@ -440,10 +559,15 @@ mod tests {
         runtime.block_on(async {
             let _listener = UnixListener::bind(runtime_dir.join("host-daemon.sock")).unwrap();
 
-            let error =
-                start_host_daemon_for_remote_user(&runtime_dir, "workspace-test", 20001, 20001)
-                    .await
-                    .unwrap_err();
+            let error = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                20001,
+                20001,
+                GitHttpsMode::HostHelper,
+            )
+            .await
+            .unwrap_err();
 
             assert!(
                 error

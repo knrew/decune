@@ -1094,6 +1094,7 @@ fn git_https_mode_name(value: GitHttpsMode) -> &'static str {
     match value {
         GitHttpsMode::Off => "off",
         GitHttpsMode::HostHelper => "host-helper",
+        GitHttpsMode::HostHelperReadOnly => "host-helper-read-only",
     }
 }
 
@@ -2285,6 +2286,28 @@ enabled = false
         );
 
         assert_ne!(hash_for(&enabled), hash_for(&disabled));
+    }
+
+    #[test]
+    fn git_https_mode_change_changes_hash() {
+        let host_helper = resolved_config(
+            r#"
+version = 1
+
+[credentials.git]
+https = "host-helper"
+"#,
+        );
+        let read_only = resolved_config(
+            r#"
+version = 1
+
+[credentials.git]
+https = "host-helper-read-only"
+"#,
+        );
+
+        assert_ne!(hash_for(&host_helper), hash_for(&read_only));
     }
 
     #[test]

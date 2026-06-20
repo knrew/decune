@@ -2,7 +2,10 @@ use serde::{Deserialize, Serialize};
 
 use decune_container_protocol::GitCredentialHostRequest;
 
-use crate::host::credentials::{GitCredentialExecutor, handle_git_credential_request};
+use crate::{
+    config::types::GitHttpsMode,
+    host::credentials::{GitCredentialExecutor, handle_git_credential_request},
+};
 
 pub(crate) const HOST_DAEMON_PROTOCOL_VERSION: u16 =
     decune_container_protocol::HOST_DAEMON_PROTOCOL_VERSION;
@@ -66,6 +69,7 @@ impl HostDaemonResponse {
 pub(crate) fn handle_host_daemon_request(
     bytes: &[u8],
     git_credentials: &dyn GitCredentialExecutor,
+    git_https_mode: GitHttpsMode,
 ) -> HostDaemonResponse {
     let request = match serde_json::from_slice::<HostDaemonRequest>(bytes) {
         Ok(request) => request,
@@ -88,7 +92,9 @@ pub(crate) fn handle_host_daemon_request(
     }
 
     match request.request_type.as_str() {
-        REQUEST_TYPE_CREDENTIAL => handle_credential_request(bytes, git_credentials),
+        REQUEST_TYPE_CREDENTIAL => {
+            handle_credential_request(bytes, git_credentials, git_https_mode)
+        }
         REQUEST_TYPE_PORT_FORWARD => HostDaemonResponse::error(
             "not_implemented",
             "Host daemon request is not implemented yet: portForward",
@@ -103,6 +109,7 @@ pub(crate) fn handle_host_daemon_request(
 fn handle_credential_request(
     bytes: &[u8],
     git_credentials: &dyn GitCredentialExecutor,
+    git_https_mode: GitHttpsMode,
 ) -> HostDaemonResponse {
     let request = match serde_json::from_slice::<GitCredentialHostRequest>(bytes) {
         Ok(request) => request,
@@ -114,7 +121,7 @@ fn handle_credential_request(
         }
     };
 
-    match handle_git_credential_request(request, git_credentials) {
+    match handle_git_credential_request(request, git_credentials, git_https_mode) {
         Ok(output) => HostDaemonResponse::ok(output),
         Err(error) => HostDaemonResponse::error("credential_failed", error.to_string()),
     }
@@ -128,6 +135,7 @@ mod tests {
     use serde_json::json;
 
     use super::handle_host_daemon_request;
+    use crate::config::types::GitHttpsMode;
     use crate::host::credentials::{GitCredentialCommand, GitCredentialExecutor};
 
     #[derive(Debug)]
@@ -171,6 +179,7 @@ mod tests {
         let response = handle_host_daemon_request(
             br#"{"version":1,"type":"credential","action":"get","input":"protocol=https\nhost=github.com\n\n"}"#,
             &executor,
+            GitHttpsMode::HostHelper,
         );
 
         assert_eq!(
@@ -197,6 +206,7 @@ mod tests {
         let response = handle_host_daemon_request(
             br#"{"version":1,"type":"credential","action":"store","input":"protocol=https\nhost=github.com\nusername=octo\npassword=SECRET\n\n"}"#,
             &executor,
+            GitHttpsMode::HostHelper,
         );
 
         assert_eq!(
@@ -221,6 +231,7 @@ mod tests {
         let response = handle_host_daemon_request(
             br#"{"version":1,"type":"credential","action":"get","input":"password=SECRET\n\n"}"#,
             &executor,
+            GitHttpsMode::HostHelper,
         );
         let response = serde_json::to_value(response).unwrap();
 
@@ -231,5 +242,27 @@ mod tests {
             "Host git credential fill failed"
         );
         assert!(!response.to_string().contains("SECRET"));
+    }
+
+    #[test]
+    fn credential_off_mode_rejects_request_without_invoking_executor() {
+        let executor =
+            RecordingGitCredentialExecutor::with_output("username=octo\npassword=SECRET\n");
+
+        let response = handle_host_daemon_request(
+            br#"{"version":1,"type":"credential","action":"get","input":"password=SECRET\n\n"}"#,
+            &executor,
+            GitHttpsMode::Off,
+        );
+        let response = serde_json::to_value(response).unwrap();
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "credential_failed");
+        assert_eq!(
+            response["error"]["message"],
+            "Git HTTPS credential forwarding is disabled"
+        );
+        assert!(!response.to_string().contains("SECRET"));
+        assert!(executor.calls.lock().unwrap().is_empty());
     }
 }
