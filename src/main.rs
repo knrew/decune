@@ -10,6 +10,7 @@ mod state;
 mod terminal;
 mod ui;
 mod up;
+mod version;
 mod workspace;
 
 use anyhow::Result;

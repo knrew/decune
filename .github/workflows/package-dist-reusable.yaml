@@ -7,6 +7,11 @@ on:
         description: Version to use in dist archive names and manifests
         required: true
         type: string
+      verify-display-version:
+        description: Strictly compare decune --version with the input version
+        required: false
+        default: false
+        type: boolean
       checkout-ref:
         description: Git ref to check out before packaging
         required: false
@@ -89,7 +94,7 @@ jobs:
             --locked \
             --dist-dir target/decune-dist/assets \
             --container-tools-dir "${{ github.workspace }}/target/decune-dist/container-tools-bundle"
-      - name: Smoke test release archive
+      - name: Smoke test dist archive
         shell: bash
         run: |
           archive="target/decune-dist/assets/decune-v${{ inputs.version }}-${{ matrix.target }}.tar.gz"
@@ -100,7 +105,17 @@ jobs:
           tar -xzf "$archive" -C target/smoke
           test -x "target/smoke/$root/decune"
           "target/smoke/$root/decune" --help
-          "target/smoke/$root/decune" --version
+          version_output="$("target/smoke/$root/decune" --version)"
+          case "$version_output" in
+            "decune "?*) ;;
+            *)
+              echo "Unexpected version output: $version_output" >&2
+              exit 1
+              ;;
+          esac
+          if [ "${{ inputs.verify-display-version }}" = "true" ]; then
+            test "$version_output" = "decune ${{ inputs.version }}"
+          fi
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error

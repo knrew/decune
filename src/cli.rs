@@ -1,4 +1,4 @@
-use std::{path::PathBuf, str::FromStr};
+use std::{ffi::OsStr, path::PathBuf, str::FromStr};
 
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
@@ -14,7 +14,7 @@ use crate::up::{UpOptions, run_attached_up, run_detached_up};
 #[derive(Debug, Parser)]
 #[command(
     name = "decune",
-    version,
+    version = env!("DECUNE_DISPLAY_VERSION"),
     about = "Run dev containers from the command line."
 )]
 pub(crate) struct Cli {
@@ -136,7 +136,13 @@ impl FromStr for ManualPort {
 }
 
 pub(crate) async fn run() -> Result<i32> {
-    let cli = Cli::parse();
+    let args = std::env::args_os().collect::<Vec<_>>();
+    if is_standalone_version_request(&args) {
+        println!("decune {}", crate::version::display_version());
+        return Ok(0);
+    }
+
+    let cli = Cli::parse_from(args);
     run_cli(cli).await
 }
 
@@ -357,6 +363,27 @@ fn normalize_host_ip(value: &str) -> std::result::Result<String, String> {
     }
 }
 
+fn is_standalone_version_request<I, S>(args: I) -> bool
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<OsStr>,
+{
+    let mut args = args.into_iter();
+    if args.next().is_none() {
+        return false;
+    }
+
+    let Some(flag) = args.next() else {
+        return false;
+    };
+    if args.next().is_some() {
+        return false;
+    }
+
+    let flag = flag.as_ref();
+    flag == OsStr::new("--version") || flag == OsStr::new("-V")
+}
+
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
@@ -365,13 +392,30 @@ mod tests {
 
     use super::Cli;
     use super::{
-        Commands, PortProtocol, cli_config_layer, rebuild_up_options_from_args,
-        reject_detached_cli_ports,
+        Commands, PortProtocol, cli_config_layer, is_standalone_version_request,
+        rebuild_up_options_from_args, reject_detached_cli_ports,
     };
 
     #[test]
     fn clap_definition_is_valid() {
         Cli::command().debug_assert();
+    }
+
+    #[test]
+    fn standalone_version_request_detects_top_level_version_flags() {
+        assert!(is_standalone_version_request(["decune", "--version"]));
+        assert!(is_standalone_version_request(["decune", "-V"]));
+        assert!(!is_standalone_version_request(["decune"]));
+        assert!(!is_standalone_version_request([
+            "decune",
+            "up",
+            "--version"
+        ]));
+        assert!(!is_standalone_version_request([
+            "decune",
+            "--version",
+            "up"
+        ]));
     }
 
     #[test]

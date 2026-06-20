@@ -9,6 +9,7 @@
 - release notes は GitHub Releases の generated release notes を使います。必要な見出しや除外条件が増えた場合は、GitHub の release notes 設定で調整します。
 - 成果物は GitHub Actions 上で作り、ローカルで作ったバイナリは配布しません。
 - 可能なら署名付き annotated tag を使います。署名環境がない場合も lightweight tag ではなく annotated tag を使います。
+- 通常開発中は `Cargo.toml` の version を直近リリース版のままにし、release PR でだけリリース予定版へ更新します。tag から作る release artifact の `decune --version` は build metadata suffix なしの `decune MAJOR.MINOR.PATCH` として確認します。
 
 ## 通常フロー
 
