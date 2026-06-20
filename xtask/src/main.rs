@@ -847,34 +847,42 @@ fn require_clean_worktree(workspace: &Path) -> Result<()> {
 }
 
 fn workspace_package_versions(workspace: &Path) -> Result<Vec<PackageVersion>> {
-    let root_manifest = workspace.join("Cargo.toml");
-    let source = fs::read_to_string(&root_manifest)
-        .with_context(|| format!("Failed to read {}", root_manifest.display()))?;
-    let parsed: toml::Value =
-        toml::from_str(&source).context("Failed to parse Cargo.toml for release preflight")?;
-    let members = parsed
-        .get("workspace")
-        .and_then(|workspace| workspace.get("members"))
-        .and_then(toml::Value::as_array)
-        .context("Cargo.toml workspace.members is missing or not an array")?;
-
-    let mut packages = Vec::new();
-    for member in members {
-        let member = member
-            .as_str()
-            .context("Cargo.toml workspace member is not a string")?;
-        if member.contains('*') {
-            bail!("Release preflight does not support workspace member globs: {member}");
-        }
-        let manifest = workspace.join(member).join("Cargo.toml");
-        let source = fs::read_to_string(&manifest)
-            .with_context(|| format!("Failed to read {}", manifest.display()))?;
-        packages.push(PackageVersion {
-            manifest,
-            version: package_version_from_toml(&source)?,
-        });
+    let output = Command::new("cargo")
+        .current_dir(workspace)
+        .args(["metadata", "--locked", "--no-deps", "--format-version", "1"])
+        .output()
+        .context("Failed to run cargo metadata for release preflight")?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!(
+            "Failed to run cargo metadata for release preflight: {}",
+            stderr.trim()
+        );
     }
-    Ok(packages)
+    workspace_package_versions_from_metadata(&output.stdout)
+}
+
+fn workspace_package_versions_from_metadata(bytes: &[u8]) -> Result<Vec<PackageVersion>> {
+    let metadata: CargoMetadata = serde_json::from_slice(bytes)
+        .context("Failed to parse cargo metadata for release preflight")?;
+    let mut packages_by_id = BTreeMap::new();
+    for package in metadata.packages {
+        packages_by_id.insert(package.id.clone(), package);
+    }
+
+    metadata
+        .workspace_members
+        .into_iter()
+        .map(|id| {
+            let package = packages_by_id
+                .remove(&id)
+                .with_context(|| format!("cargo metadata did not include workspace member {id}"))?;
+            Ok(PackageVersion {
+                manifest: package.manifest_path,
+                version: package.version,
+            })
+        })
+        .collect()
 }
 
 fn is_release_version(version: &str) -> bool {
@@ -1213,17 +1221,6 @@ fn resolve_dist_dir(workspace: &Path, path: Option<&Path>) -> Result<PathBuf> {
     }
 }
 
-fn package_version_from_toml(source: &str) -> Result<String> {
-    let parsed: toml::Value =
-        toml::from_str(source).context("Failed to parse Cargo.toml for release preflight")?;
-    parsed
-        .get("package")
-        .and_then(|package| package.get("version"))
-        .and_then(|version| version.as_str())
-        .map(str::to_owned)
-        .context("Cargo.toml package.version is missing or not a string")
-}
-
 #[derive(Debug, Clone, Copy)]
 struct ContainerTool {
     name: &'static str,
@@ -1264,6 +1261,19 @@ struct ReleaseArtifact {
     file: String,
     target: String,
     sha256: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<CargoMetadataPackage>,
+    workspace_members: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadataPackage {
+    id: String,
+    manifest_path: PathBuf,
+    version: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1652,25 +1662,55 @@ mod tests {
     }
 
     #[test]
-    fn package_version_from_toml_reads_package_version() {
-        let version = package_version_from_toml(
-            r#"
-            [package]
-            name = "decune"
-            version     = "0.1.0"
-            "#,
-        )
-        .unwrap();
+    fn workspace_package_versions_from_metadata_reads_workspace_members() {
+        let metadata = br#"
+        {
+          "packages": [
+            {
+              "name": "decune",
+              "version": "0.1.0",
+              "id": "path+file:///workspace#0.1.0",
+              "manifest_path": "/workspace/Cargo.toml"
+            },
+            {
+              "name": "tools",
+              "version": "0.1.0",
+              "id": "path+file:///workspace/tools#0.1.0",
+              "manifest_path": "/workspace/tools/Cargo.toml"
+            }
+          ],
+          "workspace_members": [
+            "path+file:///workspace#0.1.0",
+            "path+file:///workspace/tools#0.1.0"
+          ]
+        }
+        "#;
 
-        assert_eq!(version, "0.1.0");
+        let versions = workspace_package_versions_from_metadata(metadata).unwrap();
+
+        assert_eq!(
+            versions,
+            [
+                PackageVersion {
+                    manifest: PathBuf::from("/workspace/Cargo.toml"),
+                    version: "0.1.0".to_owned(),
+                },
+                PackageVersion {
+                    manifest: PathBuf::from("/workspace/tools/Cargo.toml"),
+                    version: "0.1.0".to_owned(),
+                },
+            ]
+        );
     }
 
     #[test]
-    fn package_version_from_toml_rejects_missing_package_version() {
-        let error = package_version_from_toml(
-            r#"
-            [package]
-            name = "decune"
+    fn workspace_package_versions_from_metadata_rejects_missing_member_package() {
+        let error = workspace_package_versions_from_metadata(
+            br#"
+            {
+              "packages": [],
+              "workspace_members": ["path+file:///workspace#0.1.0"]
+            }
             "#,
         )
         .unwrap_err();
@@ -1678,50 +1718,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("Cargo.toml package.version is missing")
-        );
-    }
-
-    #[test]
-    fn workspace_package_versions_reads_workspace_members() {
-        let temp = TempDir::new().unwrap();
-        fs::write(
-            temp.path().join("Cargo.toml"),
-            r#"
-            [package]
-            name = "decune"
-            version = "0.1.0"
-
-            [workspace]
-            members = [".", "tools"]
-            "#,
-        )
-        .unwrap();
-        fs::create_dir(temp.path().join("tools")).unwrap();
-        fs::write(
-            temp.path().join("tools/Cargo.toml"),
-            r#"
-            [package]
-            name = "tools"
-            version = "0.1.0"
-            "#,
-        )
-        .unwrap();
-
-        let versions = workspace_package_versions(temp.path()).unwrap();
-
-        assert_eq!(
-            versions,
-            [
-                PackageVersion {
-                    manifest: temp.path().join("./Cargo.toml"),
-                    version: "0.1.0".to_owned(),
-                },
-                PackageVersion {
-                    manifest: temp.path().join("tools/Cargo.toml"),
-                    version: "0.1.0".to_owned(),
-                },
-            ]
+                .contains("cargo metadata did not include workspace member")
         );
     }
 

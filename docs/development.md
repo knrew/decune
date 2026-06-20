@@ -31,9 +31,9 @@ cargo run --locked -p xtask -- check-container-tools
 
 ## 開発ビルドのバージョン表示
 
-リリース直後の開発中は、次のリリース番号を先に固定しないため `Cargo.toml` の `package.version` は直近リリース版のままにします。`decune --version` は clean な release tag では `decune 0.1.0` のように表示し、tag 外や未コミット変更を含む build では `decune 0.1.0+g<commit>` または `decune 0.1.0+g<commit>.dirty` のように Git 由来の build metadata を付けます。
+リリース直後の開発中は、次のリリース番号を先に固定しないため root `Cargo.toml` の `[workspace.package]` version は直近リリース版のままにします。`decune --version` は clean な release tag では `decune 0.1.0` のように表示し、tag 外や未コミット変更を含む build では `decune 0.1.0+g<commit>` または `decune 0.1.0+g<commit>.dirty` のように Git 由来の build metadata を付けます。
 
-Git 情報を取得できない source build では `+source` suffix を付けます。この suffix は表示用であり、Docker label などの内部 metadata には `Cargo.toml` の package version を使います。
+Git 情報を取得できない source build では `+source` suffix を付けます。この suffix は表示用であり、Docker label などの内部 metadata には Cargo が解決した package version を使います。
 
 ## 標準検証
 

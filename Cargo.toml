@@ -9,7 +9,7 @@ publish.workspace      = true
 readme                 = "README.md"
 repository.workspace   = true
 rust-version.workspace = true
-version                = "0.1.0"
+version.workspace      = true
 
 [workspace]
 members = [
@@ -26,6 +26,7 @@ license      = "MIT"
 publish      = false
 repository   = "https://github.com/knrew/decune"
 rust-version = "1.95"
+version      = "0.1.0"
 
 [profile.dist]
 codegen-units = 1
