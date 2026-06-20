@@ -87,6 +87,11 @@ pub(crate) fn parse_str(contents: &str) -> Result<Value> {
 }
 
 fn normalize_jsonc(contents: &str) -> Result<String> {
+    // This is a narrow JSONC normalizer, not a JSON5 parser. It preserves byte
+    // positions by replacing supported comments (`//`, `/* */`) and trailing
+    // commas with whitespace, leaves JSON strings untouched, and intentionally
+    // keeps JSON5-only syntax such as single-quoted strings, unquoted keys,
+    // hex numbers, and `#` comments invalid for serde_json to reject.
     remove_trailing_commas(&strip_jsonc_comments(contents)?)
 }
 
@@ -517,17 +522,35 @@ mod tests {
         let value = parse_str(
             r#"
             {
-              "url": "https://example.test/path",
-              "glob": "/* keep */",
+              "url": "https://example.com/a//b",
+              "block": "not /* a comment */",
+              "quote": "escaped \" // not comment",
               "comma": "value,]"
             }
             "#,
         )
         .unwrap();
 
-        assert_eq!(value["url"], json!("https://example.test/path"));
-        assert_eq!(value["glob"], json!("/* keep */"));
+        assert_eq!(value["url"], json!("https://example.com/a//b"));
+        assert_eq!(value["block"], json!("not /* a comment */"));
+        assert_eq!(value["quote"], json!("escaped \" // not comment"));
         assert_eq!(value["comma"], json!("value,]"));
+    }
+
+    #[test]
+    fn preserves_escaped_backslashes_and_quotes_inside_strings() {
+        let value = parse_str(
+            r#"
+            {
+              "path": "C:\\tmp\\file",
+              "value": "\\\"//not-comment"
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value["path"], json!(r#"C:\tmp\file"#));
+        assert_eq!(value["value"], json!(r#"\"//not-comment"#));
     }
 
     #[test]
@@ -551,6 +574,61 @@ mod tests {
             json!("ghcr.io/devcontainers/features/github-cli:1")
         );
         assert_eq!(value["containerEnv"]["RUST_LOG"], json!("debug"));
+    }
+
+    #[test]
+    fn parses_block_comments_with_newlines() {
+        let value = parse_str(
+            r#"
+            {
+              /* line1
+                 line2 */
+              "image": "ubuntu",
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value["image"], json!("ubuntu"));
+    }
+
+    #[test]
+    fn parses_crlf_jsonc() {
+        let value = parse_str("{\r\n  // comment\r\n  \"image\": \"ubuntu\",\r\n}\r\n").unwrap();
+
+        assert_eq!(value["image"], json!("ubuntu"));
+    }
+
+    #[test]
+    fn removes_trailing_commas_after_each_json_value_kind() {
+        let value = parse_str(
+            r#"
+            {
+              "s": "x",
+              "n": 1,
+              "neg": -1,
+              "float": 1.2,
+              "exp": 1e-3,
+              "t": true,
+              "f": false,
+              "null": null,
+              "arr": [1, 2,],
+              "obj": {"a": 1,},
+            }
+            "#,
+        )
+        .unwrap();
+
+        assert_eq!(value["s"], json!("x"));
+        assert_eq!(value["n"], json!(1));
+        assert_eq!(value["neg"], json!(-1));
+        assert_eq!(value["float"], json!(1.2));
+        assert_eq!(value["exp"], json!(1e-3));
+        assert_eq!(value["t"], json!(true));
+        assert_eq!(value["f"], json!(false));
+        assert_eq!(value["null"], json!(null));
+        assert_eq!(value["arr"], json!([1, 2]));
+        assert_eq!(value["obj"], json!({"a": 1}));
     }
 
     #[test]
@@ -584,6 +662,22 @@ mod tests {
 
             assert!(!error.to_string().is_empty());
         }
+    }
+
+    #[test]
+    fn invalid_commas_are_rejected() {
+        for contents in [r#"{,}"#, r#"[,]"#, r#"{"a":,}"#, r#"{"a": true,,}"#] {
+            let error = parse_str(contents).unwrap_err();
+
+            assert!(!error.to_string().is_empty());
+        }
+    }
+
+    #[test]
+    fn unterminated_string_is_rejected() {
+        let error = parse_str(r#"{"image": "ubuntu}"#).unwrap_err();
+
+        assert!(!error.to_string().is_empty());
     }
 
     #[test]
