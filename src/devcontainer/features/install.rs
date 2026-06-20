@@ -121,7 +121,6 @@ pub(crate) fn prepare_feature_install_plan(
     let mut prepared_entries = Vec::new();
     let mut metadata_layers = Vec::new();
     let mut lock_entries = Vec::new();
-    let mut cumulative_container_env = BTreeMap::new();
     for entry in entries {
         let source = resolver.sources.get(&entry.source_key).ok_or_else(|| {
             anyhow!(
@@ -129,14 +128,13 @@ pub(crate) fn prepare_feature_install_plan(
                 entry.feature.canonical_id
             )
         })?;
-        cumulative_container_env.extend(source.container_env.clone());
         prepared_entries.push(PreparedFeatureInstallEntry {
             feature: entry.feature,
             source_dir: source.source_dir.clone(),
             option_env: entry.option_env,
-            container_env: cumulative_container_env.clone(),
+            container_env: source.container_env.clone(),
         });
-        metadata_layers.push(source.layer.clone());
+        metadata_layers.push(feature_runtime_metadata_layer(&source.layer));
         lock_entries.push(FeatureLockHashEntry {
             feature_id: entry.instance_key,
             digest: source.digest.clone(),
@@ -486,6 +484,14 @@ fn feature_layer_container_env(layer: &ConfigLayer) -> BTreeMap<String, String> 
         .as_ref()
         .map(|devcontainer| devcontainer.container_env.clone())
         .unwrap_or_default()
+}
+
+fn feature_runtime_metadata_layer(layer: &ConfigLayer) -> ConfigLayer {
+    let mut layer = layer.clone();
+    if let Some(devcontainer) = &mut layer.devcontainer {
+        devcontainer.container_env.clear();
+    }
+    layer
 }
 
 fn feature_source_key(reference: &FeatureRef) -> String {
@@ -1081,6 +1087,63 @@ mod tests {
                 .feature_id
                 .contains("./features/./tool")
         );
+    }
+
+    #[test]
+    fn feature_install_plan_keeps_container_env_for_build_but_not_runtime_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let devcontainer_dir = workspace_root.join(".devcontainer");
+        let feature_dir = devcontainer_dir.join("features/tool");
+        let cache_root = temp.path().join("cache");
+        fs::create_dir_all(&feature_dir).unwrap();
+        fs::write(devcontainer_dir.join("devcontainer.json"), "{}").unwrap();
+        fs::write(
+            feature_dir.join("devcontainer-feature.json"),
+            r#"{
+              "id": "tool",
+              "version": "1.0.0",
+              "name": "Tool",
+              "containerEnv": {
+                "PATH": "/opt/tool/bin:${PATH}",
+                "FROM_FEATURE": "yes"
+              },
+              "postStartCommand": "test -n \"$FROM_FEATURE\""
+            }"#,
+        )
+        .unwrap();
+        write_local_feature_install_script(&feature_dir);
+        let features = vec![ResolvedFeature {
+            id: "./features/tool".to_owned(),
+            canonical_id: "local:features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+
+        let plan = prepare_feature_install_plan(
+            &features,
+            &devcontainer_dir.join("devcontainer.json"),
+            &workspace_root,
+            &cache_root,
+            &cache_root.join("extracted"),
+            &[],
+            false,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            plan.entries[0]
+                .container_env
+                .get("PATH")
+                .map(String::as_str),
+            Some("/opt/tool/bin:${PATH}")
+        );
+        let metadata = plan.metadata_layers[0]
+            .devcontainer
+            .as_ref()
+            .expect("Feature metadata layer should contain devcontainer metadata");
+        assert!(metadata.container_env.is_empty());
+        assert!(metadata.lifecycle.is_some());
     }
 
     #[test]

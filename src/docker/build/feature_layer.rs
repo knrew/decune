@@ -131,10 +131,20 @@ pub(crate) fn prepare_feature_layer_build_context(
 fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
     validate_image_name(&input.base_image)?;
     let final_user = dockerfile_user(&input.final_user)?;
-    Ok(format!(
-        "FROM {}\nUSER root\nRUN mkdir -p /usr/local/share/decune\nCOPY {FEATURE_ENTRYPOINT_WRAPPER_FILE} {FEATURE_ENTRYPOINT_WRAPPER}\nCOPY {FEATURE_ENTRYPOINTS_FILE} {FEATURE_ENTRYPOINTS_TARGET}\nRUN chmod +x {FEATURE_ENTRYPOINT_WRAPPER}\nCOPY . /tmp/decune-features/\nRUN /bin/sh /tmp/decune-features/install-features.sh\nUSER {final_user}\n",
+    let mut dockerfile = format!(
+        "FROM {}\nUSER root\nRUN mkdir -p /usr/local/share/decune\nCOPY {FEATURE_ENTRYPOINT_WRAPPER_FILE} {FEATURE_ENTRYPOINT_WRAPPER}\nCOPY {FEATURE_ENTRYPOINTS_FILE} {FEATURE_ENTRYPOINTS_TARGET}\nRUN chmod +x {FEATURE_ENTRYPOINT_WRAPPER}\nCOPY . /tmp/decune-features/\n",
         input.base_image
-    ))
+    );
+    for (index, feature) in input.features.iter().enumerate() {
+        dockerfile.push_str(&feature_container_env_dockerfile(feature)?);
+        let name = feature_context_name(index, &feature.id);
+        dockerfile.push_str(&format!(
+            "RUN /bin/sh /tmp/decune-features/install-features.sh install {name}\n"
+        ));
+    }
+    dockerfile.push_str("RUN /bin/sh /tmp/decune-features/install-features.sh finish\n");
+    dockerfile.push_str(&format!("USER {final_user}\n"));
+    Ok(dockerfile)
 }
 
 fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String> {
@@ -147,10 +157,14 @@ fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String
     if [ -z "$user" ]; then
         return 0
     fi
-    if command -v getent >/dev/null 2>&1; then
-        record="$(getent passwd "$user" || true)"
+    if PATH="$DECUNE_WRAPPER_PATH" command -v getent >/dev/null 2>&1; then
+        record="$(PATH="$DECUNE_WRAPPER_PATH" getent passwd "$user" || true)"
         if [ -n "$record" ]; then
-            printf '%s\n' "$record" | cut -d: -f6
+            old_ifs=$IFS
+            IFS=:
+            set -- $record
+            IFS=$old_ifs
+            printf '%s\n' "${6:-}"
             return 0
         fi
     fi
@@ -172,19 +186,31 @@ decune_fix_feature_ownership() {
     if [ -z "$fix_home" ] || [ ! -d "$fix_home" ]; then
         return 0
     fi
-    chown -R "$fix_user:" "$fix_home"
+    PATH="$DECUNE_WRAPPER_PATH" chown -R "$fix_user:" "$fix_home"
+}
+decune_install_feature() {
+    feature_name="${1:-}"
+    if [ -z "$feature_name" ]; then
+        echo "decune Feature install target is missing" >&2
+        exit 2
+    fi
+    (
+    set -a
+    . /tmp/decune-features/"$feature_name"/devcontainer-features.env
+    _CONTAINER_USER_HOME="$(decune_feature_user_home "${_CONTAINER_USER:-}")"
+    _REMOTE_USER_HOME="$(decune_feature_user_home "${_REMOTE_USER:-}")"
+    export _CONTAINER_USER_HOME _REMOTE_USER_HOME
+    set +a
+    PATH="$DECUNE_WRAPPER_PATH" chmod +x /tmp/decune-features/"$feature_name"/install.sh
+    cd /tmp/decune-features/"$feature_name"
+    ./install.sh
+    )
 }
 "#,
     );
-    for (index, feature) in input.features.iter().enumerate() {
-        let name = feature_context_name(index, &feature.id);
-        script.push_str(&format!(
-            "(\nset -a\n. /tmp/decune-features/{name}/devcontainer-features.env\n_CONTAINER_USER_HOME=\"$(decune_feature_user_home \"${{_CONTAINER_USER:-}}\")\"\n_REMOTE_USER_HOME=\"$(decune_feature_user_home \"${{_REMOTE_USER:-}}\")\"\nexport _CONTAINER_USER_HOME _REMOTE_USER_HOME\nset +a\n"
-        ));
-        script.push_str(&format!(
-            "chmod +x /tmp/decune-features/{name}/install.sh\ncd /tmp/decune-features/{name}\n./install.sh\n)\n"
-        ));
-    }
+    script.push_str(
+        "DECUNE_WRAPPER_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\n",
+    );
     let remote_user = input
         .install_env
         .get("_REMOTE_USER")
@@ -197,18 +223,76 @@ decune_fix_feature_ownership() {
         .unwrap_or("");
     if !remote_user.is_empty() {
         script.push_str(&format!(
-            "decune_fix_feature_ownership {}\n",
+            "DECUNE_REMOTE_USER={}\n",
             shell_quote(remote_user)
         ));
+    } else {
+        script.push_str("DECUNE_REMOTE_USER=''\n");
     }
     if !container_user.is_empty() && container_user != remote_user {
         script.push_str(&format!(
-            "decune_fix_feature_ownership {}\n",
+            "DECUNE_CONTAINER_USER={}\n",
             shell_quote(container_user)
         ));
+    } else {
+        script.push_str("DECUNE_CONTAINER_USER=''\n");
     }
-    script.push_str("rm -rf /tmp/decune-features\n");
+    script.push_str(
+        r#"case "${1:-}" in
+    install)
+        decune_install_feature "${2:-}"
+        ;;
+    finish)
+        if [ -n "$DECUNE_REMOTE_USER" ]; then
+            decune_fix_feature_ownership "$DECUNE_REMOTE_USER"
+        fi
+        if [ -n "$DECUNE_CONTAINER_USER" ]; then
+            decune_fix_feature_ownership "$DECUNE_CONTAINER_USER"
+        fi
+        PATH="$DECUNE_WRAPPER_PATH" rm -rf /tmp/decune-features
+        ;;
+    *)
+        echo "unsupported decune Feature install command: ${1:-}" >&2
+        exit 2
+        ;;
+esac
+"#,
+    );
     Ok(script)
+}
+
+fn feature_container_env_dockerfile(feature: &FeatureLayerBuildFeature) -> Result<String> {
+    let mut output = String::new();
+    for (key, value) in &feature.container_env {
+        validate_feature_env_key(&feature.id, key)?;
+        output.push_str(&format!(
+            "ENV {key}=\"{}\"\n",
+            dockerfile_env_value(&feature.id, key, value)?
+        ));
+    }
+
+    Ok(output)
+}
+
+fn dockerfile_env_value(feature_id: &str, key: &str, value: &str) -> Result<String> {
+    if value
+        .chars()
+        .any(|character| character == '\0' || character == '\n' || character == '\r')
+    {
+        bail!(
+            "Feature containerEnv value contains unsupported control characters for {feature_id}.{key}"
+        );
+    }
+
+    let mut escaped = String::with_capacity(value.len());
+    for character in value.chars() {
+        match character {
+            '"' => escaped.push_str("\\\""),
+            '\\' => escaped.push_str("\\\\"),
+            _ => escaped.push(character),
+        }
+    }
+    Ok(escaped)
 }
 
 fn feature_entrypoints_file(entrypoints: &[String], devcontainer_id: &str) -> Result<String> {
@@ -265,7 +349,7 @@ fn feature_env_file(
     input: &FeatureLayerBuildInput,
     feature: &FeatureLayerBuildFeature,
 ) -> Result<String> {
-    let mut env = feature.container_env.clone();
+    let mut env = BTreeMap::new();
     env.extend(feature.option_env.clone());
     env.extend(input.install_env.clone());
 
@@ -436,7 +520,13 @@ mod tests {
                     "VERSION".to_owned(),
                     "1.2'$(echo unsafe)".to_owned(),
                 )]),
-                container_env: BTreeMap::new(),
+                container_env: BTreeMap::from([
+                    ("PATH".to_owned(), "/opt/tool/bin:${PATH}".to_owned()),
+                    (
+                        "TOOL_FLAGS".to_owned(),
+                        r#"quote" slash\ dollar$"#.to_owned(),
+                    ),
+                ]),
             }],
         })
         .unwrap();
@@ -462,7 +552,12 @@ mod tests {
             "000-ghcr-io-example-features-tool/devcontainer-features.env"
         ));
         assert!(dockerfile.contains("FROM alpine:3.20"));
-        assert!(dockerfile.contains("/bin/sh /tmp/decune-features/install-features.sh"));
+        assert!(dockerfile.contains("ENV PATH=\"/opt/tool/bin:${PATH}\""));
+        assert!(dockerfile.contains("ENV TOOL_FLAGS=\"quote\\\" slash\\\\ dollar$\""));
+        assert!(dockerfile.contains(
+            "RUN /bin/sh /tmp/decune-features/install-features.sh install 000-ghcr-io-example-features-tool"
+        ));
+        assert!(dockerfile.contains("RUN /bin/sh /tmp/decune-features/install-features.sh finish"));
         assert!(dockerfile.contains(FEATURE_ENTRYPOINT_WRAPPER));
         assert!(dockerfile.contains("USER vscode"));
         assert!(wrapper.contains(FEATURE_ENTRYPOINT_SENTINEL));
@@ -494,12 +589,21 @@ mod tests {
             .unwrap(),
             "VERSION='1.2'\"'\"'$(echo unsafe)'\n_CONTAINER_USER='root'\n_CONTAINER_USER_HOME='/root'\n_REMOTE_USER='vscode'\n_REMOTE_USER_HOME='/home/vscode'\n"
         );
+        let env_file = fs::read_to_string(
+            context
+                .context_dir
+                .join("000-ghcr-io-example-features-tool/devcontainer-features.env"),
+        )
+        .unwrap();
+        assert!(!env_file.contains("PATH="));
+        assert!(!env_file.contains("TOOL_FLAGS="));
         assert!(install_script.contains("decune_fix_feature_ownership()"));
-        assert!(install_script.contains("decune_fix_feature_ownership 'vscode'"));
-        assert!(install_script.contains("decune_fix_feature_ownership 'root'"));
+        assert!(install_script.contains("DECUNE_REMOTE_USER='vscode'"));
+        assert!(install_script.contains("DECUNE_CONTAINER_USER='root'"));
+        assert!(install_script.contains("PATH=\"$DECUNE_WRAPPER_PATH\" chmod +x"));
         let install_pos = install_script.find("./install.sh").unwrap();
         let fix_pos = install_script
-            .find("decune_fix_feature_ownership 'vscode'")
+            .find("decune_fix_feature_ownership \"$DECUNE_REMOTE_USER\"")
             .unwrap();
         let cleanup_pos = install_script.find("rm -rf /tmp/decune-features").unwrap();
         assert!(install_pos < fix_pos);
@@ -594,6 +698,44 @@ mod tests {
             error.to_string().contains("ghcr.io/example/features/tool"),
             "{error:#}"
         );
+    }
+
+    #[test]
+    fn feature_layer_build_context_rejects_multiline_container_env_value() {
+        let temp = tempdir("feature-layer-build-context-multiline-env");
+        let source = temp.path().join("source");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
+        fs::write(
+            source.join("devcontainer-feature.json"),
+            r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
+        )
+        .unwrap();
+        let context_dir = temp.path().join("context");
+
+        let error = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
+            base_image: "alpine:3.20".to_owned(),
+            devcontainer_id: "workspace-id".to_owned(),
+            final_user: "root".to_owned(),
+            entrypoints: Vec::new(),
+            install_env: BTreeMap::new(),
+            context_dir,
+            features: vec![FeatureLayerBuildFeature {
+                id: "ghcr.io/example/features/tool".to_owned(),
+                source_dir: source,
+                option_env: BTreeMap::new(),
+                container_env: BTreeMap::from([("TOOL_FLAGS".to_owned(), "one\ntwo".to_owned())]),
+            }],
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Feature containerEnv value contains unsupported control characters"),
+            "{error:#}"
+        );
+        assert!(error.to_string().contains("TOOL_FLAGS"), "{error:#}");
     }
 
     #[test]

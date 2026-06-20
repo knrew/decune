@@ -54,7 +54,8 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
                 }
               },
               "containerEnv": {
-                "FROM_FEATURE": "yes"
+                "FROM_FEATURE": "yes",
+                "PATH": "/opt/env-tool/bin:${PATH}"
               }
             }
             "#,
@@ -68,6 +69,9 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             test "${VALUE:-}" = "from-option"
             test "${DEFAULT_VALUE:-}" = "from-default"
             test "${FROM_FEATURE:-}" = yes
+            case "$PATH" in *'${PATH}'*) exit 51;; esac
+            case ":$PATH:" in *:/opt/env-tool/bin:*) ;; *) exit 52;; esac
+            case ":$PATH:" in *:/bin:*) ;; *) exit 53;; esac
             test "${_CONTAINER_USER:-}" = root
             test "${_REMOTE_USER:-}" = remoteuser
             test "${_CONTAINER_USER_HOME:-}" = /root
@@ -105,6 +109,13 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             let config = inspect.config.unwrap_or_default();
             let env = config.env.unwrap_or_default();
             assert!(env.iter().any(|entry| entry == "FROM_FEATURE=yes"));
+            let path = env
+                .iter()
+                .find_map(|entry| entry.strip_prefix("PATH="))
+                .expect("container env should include PATH from Feature image");
+            assert!(path.contains("/opt/env-tool/bin"), "{path}");
+            assert!(path.contains("/bin"), "{path}");
+            assert!(!path.contains("${PATH}"), "{path}");
             assert!(
                 config
                     .image
