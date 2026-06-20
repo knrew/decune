@@ -6,7 +6,7 @@ name                   = "decune-container-tools"
 publish.workspace      = true
 repository.workspace   = true
 rust-version.workspace = true
-version                = "0.1.0"
+version.workspace      = true
 
 [dependencies]
 anyhow                    = "1.0.102"
