@@ -34,7 +34,19 @@ v0.1 は image-based / Dockerfile-based / Docker Compose-based devcontainer を�
 
 ## Known limitations
 
-- v0.1 の Dockerfile-based mode では、`build.dockerfile` が解決後の `build.context` 配下にある必要があります。decune は build context tar を生成して `docker build -` に渡すため、context 外の Dockerfile を tar 内の `--file` として参照できません。回避策は、`build.context` を Dockerfile を含む上位 directory にするか、Dockerfile を context 内に移動することです。
+### Compose mode limitations
+
+decune は Compose service の runtime 設定を Docker Compose に委譲し、以下の Dev Container properties を generated Compose override へ自動変換しません。
+
+- `workspaceMount` は Compose mode では unsupported error です。workspace bind mount は primary Compose service の `volumes` に書いてください。
+- `appPort` は Compose mode では unsupported error です。Docker publish 設定は Compose service の `ports` に書いてください。
+- `runArgs` は Compose mode では unsupported error です。代替として `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose service の field に書いてください。
+- Docker publish 系設定は Compose file に委譲します。decune forwarding は引き続き `forwardPorts`、decune TOML `[[ports]]`、CLI `-p` を使います。
+- decune は Compose mode でも、対応している cross-orchestrator properties を primary service に適用します: `containerEnv`、`remoteEnv`、`containerUser`、`remoteUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles mount、credentials/runtime mount、lifecycle command、remote shell、automatic forwarding。
+
+### Dockerfile-based context limitation
+
+v0.1 の Dockerfile-based mode では、`build.dockerfile` が解決後の `build.context` 配下にある必要があります。decune は build context tar を生成して `docker build -` に渡すため、context 外の Dockerfile を tar 内の `--file` として参照できません。回避策は、`build.context` を Dockerfile を含む上位 directory にするか、Dockerfile を context 内に移動することです。
 
 詳細な仕様は [docs/specification.md](docs/specification.md) を参照してください。
 
@@ -362,7 +374,7 @@ shell = true
 
 CLI `-p` と `appPort` の IPv6 host IP は `[::1]:8080:3000` のような bracketed form で指定します。unbracketed IPv6 は曖昧なためエラーになります。
 
-Compose mode の publish は Compose file の `ports` に委譲します。Compose sidecar service へ forwarding する場合は、`forwardPorts` の `"service:port"` 形式、または decune TOML の `[[ports]].service` を使います。
+Compose mode の publish は Compose file の `ports` に委譲します。Dev Container `appPort` は Compose mode では unsupported error です。Compose sidecar service へ forwarding する場合は、`forwardPorts` の `"service:port"` 形式、または decune TOML の `[[ports]].service` を使います。
 
 ## 認証とセキュリティ
 
@@ -393,7 +405,7 @@ GitHub CLI 連携を有効にすると、host の `gh auth token` から得た t
 
 `containerEnv` は container 作成時の環境変数です。container 内プロセスや Docker inspect から見えるため、decune は `containerEnv` を secret storage として扱いません。`${localEnv:VAR}` から展開された `containerEnv` / `remoteEnv` / `build.args` の値は state、config hash、generated Compose override、argv、通常の error 表示に平文保存しないよう redaction します。`containerEnv` と `build.args` は config hash に平文ではなく非可逆 digest として変更検出情報を含め、host 側の値が変わった既存 container / Compose project は再利用しません。Docker build arg は image layer や build output に残る可能性があるため、build secret には Docker BuildKit secret を使ってください。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser` も secret storage ではありません。literal に書かれた secret 文字列は decune が secret と判定できません。
 
-Dev Container `runArgs` は Docker option の完全 pass-through ではなく allowlist です。image/Dockerfile mode では `--init`、`--privileged`、`--cap-add`、`--security-opt`、`--add-host`、`--dns`、`--dns-search`、`--network`、`--network-alias`、`--hostname`、`--device`、`--group-add`、`--ulimit`、`--ipc`、`--shm-size`、`--gpus` を受け付けます。`--mount`、`--volume`、`--env`、`--env-file`、`--publish`、`--user`、`--workdir`、`--entrypoint`、`--label`、`--name` など decune が管理する option は拒否されます。Compose mode では `runArgs` は unsupported のため、Compose service の field に書いてください。
+Dev Container `runArgs` は Docker option の完全 pass-through ではなく allowlist です。image/Dockerfile mode では `--init`、`--privileged`、`--cap-add`、`--security-opt`、`--add-host`、`--dns`、`--dns-search`、`--network`、`--network-alias`、`--hostname`、`--device`、`--group-add`、`--ulimit`、`--ipc`、`--shm-size`、`--gpus` を受け付けます。`--mount`、`--volume`、`--env`、`--env-file`、`--publish`、`--user`、`--workdir`、`--entrypoint`、`--label`、`--name` など decune が管理する option は拒否されます。Compose mode では `runArgs` は unsupported error のため、`init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose service の field に書いてください。
 
 SSH agent forwarding は `SSH_AUTH_SOCK` を `/run/decune/ssh-agent.sock` として container に渡します。`ssh_agent = "required"` の場合、host 側 socket が使えないと `up` は失敗します。
 

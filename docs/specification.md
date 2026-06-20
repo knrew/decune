@@ -252,7 +252,7 @@ workspace root から以下の順で検出する。
 | `overrideFeatureInstallOrder` | yes | yes | yes | Feature install order に反映 |
 | `overrideCommand` | yes | yes | yes | image/Dockerfile 既定 true、Compose 既定 false |
 | `mounts` | partial | partial | partial | bind/volume 対応。Compose mode は primary service に override として追加。tmpfs は v0.1 error |
-| `workspaceMount` | yes | yes | no | Compose mode は Compose file の `volumes` を使う |
+| `workspaceMount` | yes | yes | no | Compose mode は unsupported error。Compose file の primary service `volumes` を使う |
 | `workspaceFolder` | yes | yes | yes | Compose mode の既定は `/` |
 | `containerEnv` | yes | yes | yes | Compose mode は primary service `environment` override。secret storage ではない |
 | `remoteEnv` | yes | yes | yes | exec/lifecycle/shell に適用。`${localEnv:...}` 由来 value は argv/log redaction 対象 |
@@ -263,8 +263,8 @@ workspace root から以下の順で検出する。
 | `forwardPorts` | yes | yes | yes | Compose mode は `"service:port"` を受け付ける |
 | `portsAttributes` | partial | partial | partial | `label`, `onAutoForward`, `requireLocalPort`。`protocol`, `elevateIfNeeded` は warning して無視 |
 | `otherPortsAttributes` | partial | partial | partial | automatic forwarding の既定。unsupported fields は warning |
-| `appPort` | yes | yes | no | Compose mode は Compose file の `ports` を使う |
-| `runArgs` | partial | partial | no | Compose mode は Compose file の service attributes を使う |
+| `appPort` | yes | yes | no | Compose mode は unsupported error。Compose file の service `ports` を使う |
+| `runArgs` | partial | partial | no | Compose mode は unsupported error。Compose file の service attributes を使う |
 | `init` | yes | yes | yes | Compose mode は primary service `init` override |
 | `privileged` | yes | yes | yes | Compose mode は primary service `privileged` override |
 | `capAdd` | yes | yes | yes | Compose mode は primary service `cap_add` override |
@@ -307,7 +307,7 @@ value を取る option は `--foo=value` と `--foo value` の両方を受け付
 
 上記以外は unsupported error とする。特に decune が container identity、environment、user/workdir、mount、publish、label、entrypoint、lifecycle/control を管理するため、`--name`、`--env` / `-e`、`--env-file`、`--user` / `-u`、`--workdir` / `-w`、`--mount`、`--volume` / `-v`、`--tmpfs`、`--volumes-from`、`--publish` / `-p`、`--publish-all` / `-P`、`--expose`、`--entrypoint`、`--label`、`--label-file`、`--rm`、`--detach` / `-d`、`--restart` は reserved option として拒否する。publish は `appPort` または decune forwarding、mount は `mounts`、user は `containerUser`、working directory は `workspaceFolder`、環境変数は `containerEnv` を使う。
 
-Compose mode では `runArgs` を unsupported error とする。Compose service の `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`ports`、`volumes`、`user`、`environment` などを Compose file に書くか、Dev Container の cross-orchestrator property を使う。
+Compose mode では `runArgs` を unsupported error とする。Compose service の `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode`、`ports`、`volumes`、`user`、`environment` などを Compose file に書くか、Dev Container の cross-orchestrator property を使う。
 
 ### `workspaceMount` / `workspaceFolder`
 
@@ -316,6 +316,20 @@ image/Dockerfile mode では、`workspaceMount` を明示する場合は `worksp
 Compose mode では `workspaceMount` は unsupported error とする。workspace の mount は Compose file の primary service `volumes` に定義する。`workspaceFolder` 未指定時の既定は `/` である。
 
 ## Docker Compose mode
+
+### Compose mode limitations
+
+Compose mode では Compose service の runtime 設定を Docker Compose に委譲する。decune は以下の Dev Container properties を generated Compose override へ自動変換せず、metadata validation で unsupported error とする。
+
+| Dev Container property | Compose mode の扱い | 代替 |
+| --- | --- | --- |
+| `workspaceMount` | unsupported error | workspace bind mount を primary service の `volumes` に書く |
+| `appPort` | unsupported error | Docker publish 設定を Compose service の `ports` に書く |
+| `runArgs` | unsupported error | `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose service の field に書く |
+
+Docker publish 系設定は Compose file に委譲する。Compose mode で外部公開が必要な port は Compose service の `ports` を使い、decune forwarding は `forwardPorts`、decune `[[ports]]`、CLI `-p` を使う。
+
+Compose mode でも decune は、対応している cross-orchestrator properties と runtime 機能を primary service または primary service container に適用する。対象は `containerEnv`、`remoteEnv`、`containerUser`、`remoteUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles mount、credentials/runtime mount、lifecycle command、remote shell、automatic forwarding である。`remoteEnv` は primary service container で実行する lifecycle command、hook、remote shell に適用する。
 
 ### Compose file 解決
 
