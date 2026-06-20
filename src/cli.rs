@@ -39,6 +39,9 @@ struct UpArgs {
     /// Devcontainer metadata file.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
+    /// Do not apply the global decune config.
+    #[arg(long)]
+    no_global_config: bool,
     /// Start the container without attaching a shell.
     #[arg(long)]
     detach: bool,
@@ -67,6 +70,9 @@ struct RebuildArgs {
     /// Devcontainer metadata file.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
+    /// Do not apply the global decune config.
+    #[arg(long)]
+    no_global_config: bool,
     /// Start the container without attaching a shell.
     #[arg(long)]
     detach: bool,
@@ -146,6 +152,7 @@ async fn run_cli(cli: Cli) -> Result<i32> {
 async fn run_up(args: UpArgs) -> Result<i32> {
     let UpArgs {
         config,
+        no_global_config,
         detach,
         rebuild,
         no_cache,
@@ -160,6 +167,7 @@ async fn run_up(args: UpArgs) -> Result<i32> {
     let options = UpOptions {
         workspace,
         config_path: config,
+        skip_global_config: no_global_config,
         cli_layer: cli_config_layer(ports, no_auto_forward),
         pull,
         rebuild,
@@ -190,6 +198,7 @@ async fn run_rebuild(args: RebuildArgs) -> Result<i32> {
 fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
     let RebuildArgs {
         config,
+        no_global_config,
         detach,
         no_cache,
         pull,
@@ -204,6 +213,7 @@ fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
     Ok(UpOptions {
         workspace,
         config_path: config,
+        skip_global_config: no_global_config,
         cli_layer: cli_config_layer(ports, no_auto_forward),
         pull,
         rebuild: true,
@@ -371,6 +381,7 @@ mod tests {
             "up",
             "--config",
             ".devcontainer/rust/devcontainer.json",
+            "--no-global-config",
             "--detach",
             "--rebuild",
             "--no-cache",
@@ -392,6 +403,7 @@ mod tests {
             args.config.as_deref(),
             Some(PathBuf::from(".devcontainer/rust/devcontainer.json").as_path())
         );
+        assert!(args.no_global_config);
         assert!(args.detach);
         assert!(args.rebuild);
         assert!(args.no_cache);
@@ -487,6 +499,7 @@ mod tests {
             "rebuild",
             "--config",
             ".devcontainer.json",
+            "--no-global-config",
             "--detach",
             "--no-cache",
             "--pull",
@@ -505,6 +518,7 @@ mod tests {
             args.config.as_deref(),
             Some(PathBuf::from(".devcontainer.json").as_path())
         );
+        assert!(args.no_global_config);
         assert!(args.detach);
         assert!(args.no_cache);
         assert!(args.pull);
@@ -525,6 +539,18 @@ mod tests {
         let options = rebuild_up_options_from_args(args).unwrap();
 
         assert!(options.update_features);
+    }
+
+    #[test]
+    fn rebuild_no_global_config_is_passed_to_up_options() {
+        let cli = Cli::parse_from(["decune", "rebuild", "--no-global-config"]);
+        let Commands::Rebuild(args) = cli.command else {
+            panic!("expected rebuild command");
+        };
+
+        let options = rebuild_up_options_from_args(args).unwrap();
+
+        assert!(options.skip_global_config);
     }
 
     #[test]

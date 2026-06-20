@@ -10,6 +10,7 @@ use toml::Value;
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawDecuneConfig {
     pub(crate) version: Option<u32>,
+    pub(crate) use_global_config: Option<bool>,
     pub(crate) shell: Option<String>,
     #[serde(default)]
     pub(crate) features: BTreeMap<String, RawFeatureConfig>,
@@ -29,6 +30,7 @@ impl RawDecuneConfig {
     pub(crate) fn empty() -> Self {
         Self {
             version: None,
+            use_global_config: None,
             shell: None,
             features: BTreeMap::new(),
             dotfiles: Vec::new(),

@@ -42,13 +42,19 @@ pub(crate) enum StartupVerification {
 pub(crate) struct UpPlanResolution {
     pub(crate) forwarding: ForwardingResolution,
     pub(crate) update_features: bool,
+    pub(crate) skip_global_config: bool,
 }
 
 impl UpPlanResolution {
-    pub(crate) fn new(forwarding: ForwardingResolution, update_features: bool) -> Self {
+    pub(crate) fn new(
+        forwarding: ForwardingResolution,
+        update_features: bool,
+        skip_global_config: bool,
+    ) -> Self {
         Self {
             forwarding,
             update_features,
+            skip_global_config,
         }
     }
 }
@@ -116,6 +122,7 @@ pub(crate) struct UpPlan {
 pub(crate) struct UpOptions {
     pub(crate) workspace: PathBuf,
     pub(crate) config_path: Option<PathBuf>,
+    pub(crate) skip_global_config: bool,
     pub(crate) cli_layer: ConfigLayer,
     pub(crate) pull: bool,
     pub(crate) rebuild: bool,

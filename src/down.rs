@@ -412,6 +412,7 @@ async fn compose_lifecycle_plan(
         ConfigLayer::default(),
         ForwardingResolution::IgnoreDetached,
         false,
+        false,
     )?;
     let Some(compose_project) = &plan.compose_project else {
         return Ok(None);

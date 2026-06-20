@@ -162,6 +162,7 @@ decune up [OPTIONS] [WORKSPACE]
 - `--rebuild`: 既存 container/project を破棄または再作成する。decune 管理 volume は保持する。
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
 - `--pull`: base image または Compose service image を pull してから build/create する。Compose mode では config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
+- `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
 - `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000/tcp`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。複数指定可。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は v0.1 unsupported error。Compose mode で service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
 
@@ -181,6 +182,7 @@ decune rebuild [OPTIONS] [WORKSPACE]
 - `--no-cache`
 - `--pull`
 - `--update-features`: feature lock より registry/tag の再解決を優先する。
+- `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
 - `-p, --port <SPEC>`
 
@@ -453,6 +455,8 @@ project 設定は Git 管理してよい。秘密情報を設定 file に直接�
 6. project decune config
 7. CLI flags
 
+`decune up --no-global-config` / `decune rebuild --no-global-config`、または project config の `use_global_config = false` を指定した場合、4 の global decune config は読み込まず、合成対象にも含めない。global config を読み込まないため、global config file の parse / validation error も発生しない。CLI option は一時的な強制無効化として扱い、project config で再有効化できない。
+
 `--config <PATH>` は devcontainer metadata file を選択するだけであり、decune TOML overlay の追加指定ではない。
 
 ### merge rule
@@ -472,6 +476,7 @@ project 設定は Git 管理してよい。秘密情報を設定 file に直接�
 
 ```toml
 version = 1
+use_global_config = true
 shell = "/bin/zsh"
 
 [features."ghcr.io/devcontainers/features/github-cli:1"]
@@ -529,6 +534,7 @@ shell = true
 ### top-level
 
 - `version`: 必須。v0.1 では `1` のみ。
+- `use_global_config`: 任意。既定 true。project config で false にすると global decune config を適用しない。
 - `shell`: 任意。`decune up` で attach する shell path または command 名。
 - 未知の key は error。
 

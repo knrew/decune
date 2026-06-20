@@ -57,7 +57,7 @@ pub(crate) fn build_up_plan(
         Vec::new(),
         false,
         MountResolution::Resolve,
-        UpPlanResolution::new(ForwardingResolution::Resolve, false),
+        UpPlanResolution::new(ForwardingResolution::Resolve, false, false),
     )
 }
 
@@ -75,7 +75,7 @@ pub(crate) fn build_up_plan_with_update_features(
         Vec::new(),
         false,
         MountResolution::Resolve,
-        UpPlanResolution::new(ForwardingResolution::Resolve, update_features),
+        UpPlanResolution::new(ForwardingResolution::Resolve, update_features, false),
     )
 }
 
@@ -93,7 +93,7 @@ pub(crate) fn build_up_plan_with_image_metadata(
         image_metadata,
         false,
         MountResolution::Resolve,
-        UpPlanResolution::new(ForwardingResolution::Resolve, false),
+        UpPlanResolution::new(ForwardingResolution::Resolve, false, false),
     )
 }
 
@@ -103,6 +103,7 @@ pub(super) fn build_preliminary_up_plan_with_forwarding_resolution(
     cli_layer: ConfigLayer,
     forwarding_resolution: ForwardingResolution,
     update_features: bool,
+    skip_global_config: bool,
 ) -> Result<UpPlan> {
     build_up_plan_inner(
         workspace,
@@ -111,7 +112,7 @@ pub(super) fn build_preliminary_up_plan_with_forwarding_resolution(
         Vec::new(),
         false,
         MountResolution::DeferConfigMounts,
-        UpPlanResolution::new(forwarding_resolution, update_features),
+        UpPlanResolution::new(forwarding_resolution, update_features, skip_global_config),
     )
 }
 
@@ -121,6 +122,7 @@ pub(crate) fn build_up_plan_with_forwarding_resolution(
     cli_layer: ConfigLayer,
     forwarding_resolution: ForwardingResolution,
     update_features: bool,
+    skip_global_config: bool,
 ) -> Result<UpPlan> {
     build_up_plan_inner(
         workspace,
@@ -129,7 +131,7 @@ pub(crate) fn build_up_plan_with_forwarding_resolution(
         Vec::new(),
         false,
         MountResolution::Resolve,
-        UpPlanResolution::new(forwarding_resolution, update_features),
+        UpPlanResolution::new(forwarding_resolution, update_features, skip_global_config),
     )
 }
 
@@ -139,8 +141,7 @@ pub(super) fn build_up_plan_with_image_metadata_and_forwarding_resolution(
     cli_layer: ConfigLayer,
     image_metadata: Vec<ConfigLayer>,
     ignored_image_metadata_forwarding: bool,
-    forwarding_resolution: ForwardingResolution,
-    update_features: bool,
+    resolution: UpPlanResolution,
 ) -> Result<UpPlan> {
     build_up_plan_inner(
         workspace,
@@ -149,7 +150,7 @@ pub(super) fn build_up_plan_with_image_metadata_and_forwarding_resolution(
         image_metadata,
         ignored_image_metadata_forwarding,
         MountResolution::Resolve,
-        UpPlanResolution::new(forwarding_resolution, update_features),
+        resolution,
     )
 }
 
@@ -279,17 +280,24 @@ fn build_up_plan_inner(
         ForwardingResolution::Resolve => metadata.to_config_layer()?,
         ForwardingResolution::IgnoreDetached => metadata.to_config_layer_without_forward_ports()?,
     };
-    let global_layer = ConfigLayer::from_raw_decune_with_origin(
-        load_config_file(workspace.paths().global_config_path())?,
-        crate::config::path::ConfigPathOrigin::Global,
-    );
+    let project_raw = load_config_file(workspace.paths().project_config_path())?;
+    let use_global_config =
+        !resolution.skip_global_config && project_raw.use_global_config.unwrap_or(true);
+    let global_layer = if use_global_config {
+        Some(ConfigLayer::from_raw_decune_with_origin(
+            load_config_file(workspace.paths().global_config_path())?,
+            crate::config::path::ConfigPathOrigin::Global,
+        ))
+    } else {
+        None
+    };
     let project_layer = ConfigLayer::from_raw_decune_with_origin(
-        load_config_file(workspace.paths().project_config_path())?,
+        project_raw,
         crate::config::path::ConfigPathOrigin::Project,
     );
     let config_layers = ConfigMergeInput {
         image_metadata,
-        global: Some(global_layer),
+        global: global_layer,
         devcontainer: Some(devcontainer_layer),
         project: Some(project_layer),
         cli: Some(cli_layer),
@@ -787,10 +795,11 @@ mod tests {
 
     use crate::{
         config::{ConfigLayer, layer::LayerRunArg, types::MountType},
+        up::ForwardingResolution,
         workspace::Workspace,
     };
 
-    use super::build_up_plan;
+    use super::{build_up_plan, build_up_plan_with_forwarding_resolution};
 
     struct EnvVarGuard {
         name: &'static str,
@@ -825,6 +834,14 @@ mod tests {
         fs::write(devcontainer_dir.join("devcontainer.json"), contents).unwrap();
     }
 
+    fn set_xdg_config_home(path: &std::path::Path) -> EnvVarGuard {
+        let guard = EnvVarGuard::capture("XDG_CONFIG_HOME");
+        unsafe {
+            std::env::set_var("XDG_CONFIG_HOME", path);
+        }
+        guard
+    }
+
     #[test]
     fn build_up_plan_uses_image_source_and_default_workspace_mount() {
         let temp = tempfile::tempdir().unwrap();
@@ -852,6 +869,65 @@ mod tests {
         assert_eq!(plan.mounts[0].target, "/workspaces/Image Plan!");
         assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
         assert!(!plan.mounts[0].read_only);
+    }
+
+    #[test]
+    fn build_up_plan_keeps_global_layer_by_default() {
+        let config_home = tempfile::tempdir().unwrap();
+        let _guard = set_xdg_config_home(config_home.path());
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Global Config Default");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert!(plan.config_layers.global.is_some());
+    }
+
+    #[test]
+    fn project_config_can_skip_global_layer() {
+        let config_home = tempfile::tempdir().unwrap();
+        let _guard = set_xdg_config_home(config_home.path());
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Project Global Opt Out");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            "version = 1\nuse_global_config = false\n",
+        )
+        .unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert!(plan.config_layers.global.is_none());
+    }
+
+    #[test]
+    fn cli_skip_global_config_can_skip_global_layer() {
+        let config_home = tempfile::tempdir().unwrap();
+        let _guard = set_xdg_config_home(config_home.path());
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("Cli Global Opt Out");
+        fs::create_dir(&root).unwrap();
+        let workspace = Workspace::resolve(&root).unwrap();
+        write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
+
+        let plan = build_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::Resolve,
+            false,
+            true,
+        )
+        .unwrap();
+
+        assert!(plan.config_layers.global.is_none());
     }
 
     #[test]
