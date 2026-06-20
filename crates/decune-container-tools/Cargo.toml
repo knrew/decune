@@ -1,11 +1,12 @@
 [package]
-authors     = ["knrew"]
-description = "Linux container-side tools for decune"
-edition     = "2024"
-license     = "MIT"
-name        = "decune-container-tools"
-publish     = false
-version     = "0.1.0"
+description            = "Linux container-side tools for decune"
+edition.workspace      = true
+license.workspace      = true
+name                   = "decune-container-tools"
+publish.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
 
 [dependencies]
 anyhow                    = "1.0.102"

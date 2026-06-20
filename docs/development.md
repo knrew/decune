@@ -6,6 +6,8 @@
 
 ソースコードからのインストールは、公式のローカルインストール手順です。Git credential forwarding と port forwarding に必要なコンテナ側ツールを build し、ホスト側バイナリに埋め込んでから `decune` をインストールします。
 
+Rust toolchain は `Cargo.toml` の `rust-version` 以上の stable を使います。decune の MSRV は current stable 追従方針で、古い Rust minor version の長期サポートは v0.1 の対象外です。
+
 Linux 用のコンテナ側ツールを build するため、以下の Rust target が必要です。
 
 ```sh

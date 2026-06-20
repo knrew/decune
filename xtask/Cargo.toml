@@ -1,8 +1,12 @@
 [package]
-edition = "2024"
-name    = "xtask"
-publish = false
-version = "0.1.0"
+description            = "Maintainer automation tasks for decune"
+edition.workspace      = true
+license.workspace      = true
+name                   = "xtask"
+publish.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
 
 [dependencies]
 anyhow     = "1.0.102"

@@ -97,4 +97,4 @@
 
 ## crates.io publish を導入する場合
 
-将来 crates.io を公式配布に含める場合は、`publish = false` を外すだけでは不十分です。Cargo の publish 要件に合わせて `description`、`license`、`repository`、`readme` などの metadata を整備し、`cargo publish --dry-run` または `cargo package` と `cargo package --list` で公開内容を確認してから publish します。
+将来 crates.io を公式配布に含める場合は、`publish = false` を外すだけでは不十分です。Cargo の publish 要件に合わせて metadata、公開対象 file、package size を再確認し、`cargo publish --dry-run` または `cargo package` と `cargo package --list` で公開内容を確認してから publish します。
