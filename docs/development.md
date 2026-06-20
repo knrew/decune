@@ -1,6 +1,6 @@
 # decune の開発
 
-この文書は、コントリビューター向けの環境構築、検証、リリース成果物の作成コマンドをまとめます。利用手順は [usage.md](usage.md)、公開挙動は [specification.md](specification.md) を参照してください。
+この文書は、コントリビューター向けの環境構築、検証、リリース成果物の作成コマンドをまとめます。利用手順は [usage.md](usage.md)、公開挙動は [specification.md](specification.md)、maintainer 向けのリリース手順は [release.md](release.md) を参照してください。
 
 ## ソースからのローカルインストール
 
@@ -65,7 +65,7 @@ cargo run --locked -p xtask -- compose-integration
 
 ## リリース成果物
 
-配布アーカイブを作成します。
+配布アーカイブを手元で作成します。正式リリースでは、tag push 後に GitHub Actions の `Release` workflow が同じ `xtask` を使って成果物を作成します。tag 作成から公開後確認までの手順は [release.md](release.md) を参照してください。
 
 ```sh
 cargo run --locked -p xtask -- dist \
@@ -89,6 +89,7 @@ cargo run --locked -p xtask -- release-manifest --dist-dir target/dist --version
 - 操作手順を中心にした利用者向け説明は [usage.md](usage.md) に置く。
 - [specification.md](specification.md) は公開挙動、CLI の契約、設定スキーマ、セキュリティ境界の正本として保つ。
 - コントリビューター向けの環境構築、検証、リリース成果物の作成コマンドはこの文書に置く。
+- maintainer 向けのリリース runbook は [release.md](release.md) に置く。
 - プロジェクト用語は [glossary.md](glossary.md) に揃える。
 
 公開挙動、CLI option、設定 key、セキュリティ境界を変更した場合は、同じ変更で関連する利用者向けドキュメントも更新してください。
