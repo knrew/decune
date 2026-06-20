@@ -45,7 +45,7 @@ decune --help
 - `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
-ソースコードからのインストールは [development.md](development.md#ソースからのローカルインストール) を参照してください。
+ソースコードからのインストールには、`Cargo.toml` の `rust-version` 以上の Rust stable が必要です。手順は [development.md](development.md#ソースからのローカルインストール) を参照してください。
 
 ## 要件
 

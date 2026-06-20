@@ -1,12 +1,15 @@
 [package]
-authors     = ["knrew"]
-description = ""
-edition     = "2024"
-license     = "MIT"
-name        = "decune"
-publish     = false
-repository  = "https://github.com/knrew/decune"
-version     = "0.1.0"
+categories             = ["command-line-utilities", "development-tools"]
+description            = "Run Dev Container configurations from a standalone Rust CLI."
+edition.workspace      = true
+keywords               = ["cli", "compose", "devcontainer", "docker"]
+license.workspace      = true
+name                   = "decune"
+publish.workspace      = true
+readme                 = "README.md"
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
 
 [workspace]
 members = [
@@ -16,6 +19,13 @@ members = [
   "xtask",
 ]
 resolver = "3"
+
+[workspace.package]
+edition      = "2024"
+license      = "MIT"
+publish      = false
+repository   = "https://github.com/knrew/decune"
+rust-version = "1.95"
 
 [profile.dist]
 codegen-units = 1

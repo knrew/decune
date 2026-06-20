@@ -1,11 +1,12 @@
 [package]
-authors     = ["knrew"]
-description = "Shared protocol types for decune container-side tools"
-edition     = "2024"
-license     = "MIT"
-name        = "decune-container-protocol"
-publish     = false
-version     = "0.1.0"
+description            = "Shared protocol types for decune container-side tools"
+edition.workspace      = true
+license.workspace      = true
+name                   = "decune-container-protocol"
+publish.workspace      = true
+repository.workspace   = true
+rust-version.workspace = true
+version                = "0.1.0"
 
 [dependencies]
 serde = {features = ["derive"], version = "1.0.228"}
