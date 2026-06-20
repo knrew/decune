@@ -70,7 +70,9 @@ jobs:
     if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-24.04
     permissions:
+      attestations: write
       contents: write
+      id-token: write
     steps:
       - uses: actions/checkout@v6
         with:
@@ -80,6 +82,10 @@ jobs:
         with:
           name: dist-assets
           path: target/dist
+      - name: Attest release assets
+        uses: actions/attest@v4
+        with:
+          subject-path: target/dist/*
       - name: Create GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -87,4 +93,6 @@ jobs:
           gh release create "${{ needs.preflight.outputs.tag }}" target/dist/* \
             --verify-tag \
             --title "${{ needs.preflight.outputs.tag }}" \
-            --generate-notes
+            --generate-notes \
+            --draft
+          gh release edit "${{ needs.preflight.outputs.tag }}" --draft=false

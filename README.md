@@ -30,7 +30,7 @@ v0.1 は image-based / Dockerfile-based / Docker Compose-based devcontainer を�
 - GPG agent forwarding
 - コンテナから任意の host command を実行する API
 - Windows host 向け公式配布
-- `cargo install` / `cargo install --git` を公式インストール手段として扱うこと
+- crates.io または `cargo install --git` による公式インストール
 
 ## Known limitations
 
@@ -72,30 +72,56 @@ v0.1 の Dockerfile-based mode では、`build.dockerfile` が解決後の `buil
 公式導線は GitHub Releases の prebuilt archive です。archive には `decune` binary、`LICENSE`、`README.md` が含まれます。
 
 ```sh
-# 例: release asset を取得して展開する
-curl -L -o decune.tar.gz \
-  https://github.com/knrew/decune/releases/download/v0.1.0/decune-v0.1.0-x86_64-unknown-linux-musl.tar.gz
+curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.1.0/scripts/install.sh | sh -s -- --version 0.1.0
+```
 
-tar -xzf decune.tar.gz
-sudo install -m 0755 decune-v0.1.0-x86_64-unknown-linux-musl/decune /usr/local/bin/decune
+手動で release asset を選ぶ場合は、host に合わせた `target` を指定して取得します。
+
+```sh
+version=0.1.0
+target=x86_64-unknown-linux-musl
+archive="decune-v${version}-${target}.tar.gz"
+base="https://github.com/knrew/decune/releases/download/v${version}"
+
+curl -L -O "$base/$archive"
+curl -L -O "$base/SHA256SUMS"
+grep "  $archive$" SHA256SUMS > SHA256SUMS.selected
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum -c SHA256SUMS.selected
+else
+  shasum -a 256 -c SHA256SUMS.selected
+fi
+
+tar -xzf "$archive"
+sudo install -m 0755 "decune-v${version}-${target}/decune" /usr/local/bin/decune
 
 decune --help
 ```
 
-配布 archive の checksum は同じ Release に含まれる `SHA256SUMS` で確認します。
+`target` は host に合わせて以下から選びます。
+
+- `x86_64-unknown-linux-musl`
+- `aarch64-unknown-linux-musl`
+- `x86_64-apple-darwin`
+- `aarch64-apple-darwin`
+
+source checkout からの local install も公式手順です。Git credential helper と port forward agent に必要な container-side tools bundle を生成し、host binary に埋め込んでから `cargo install --path .` を実行します。Linux container tools 用に Rust target `x86_64-unknown-linux-musl` と `aarch64-unknown-linux-musl` が必要です。
 
 ```sh
-sha256sum -c SHA256SUMS
+rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+cargo run --locked -p xtask -- install --locked
 ```
 
-開発用に source checkout から動かす場合は、container-side tools bundle が必要になる機能があります。Git credential helper と port forward agent を使う場合は、bundle を生成してから build してください。
+同等の raw Cargo 手順は以下です。
 
 ```sh
-cargo run --locked -p xtask -- build-container-tools --out assets/container-tools --locked
-cargo build --release --locked
+cargo run --locked -p xtask -- build-container-tools --out target/decune-source-install/container-tools --locked
+DECUNE_CONTAINER_TOOLS_BUNDLE=required \
+  DECUNE_CONTAINER_TOOLS_BUNDLE_DIR=target/decune-source-install/container-tools \
+  cargo install --path . --locked --profile dist --bin decune
 ```
 
-軽い `cargo check` だけを行う場合は、通常の Cargo command を実行できます。
+container-side tools bundle を埋め込まない build は正式な install 手順ではありません。軽い `cargo check` だけを行う場合は、通常の Cargo command を実行できます。
 
 ```sh
 cargo check --workspace --all-targets --all-features
