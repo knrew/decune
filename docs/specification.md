@@ -817,6 +817,7 @@ Feature:
 - OCI Feature は `<workspace>/.decune/features.lock.toml` に digest lock を記録する。
 - `rebuild --update-features` は lock より再解決を優先する。
 - Feature metadata は required field `id`, `version`, `name` を要求する。
+- `installsAfter` は soft dependency として扱い、install worklist に存在しない Feature を追加しない。仕様上は version tag / digest を含められないが、互換性のため matching 用には tag / digest を落とした canonical Feature ID として扱う。
 - Feature option は Features 仕様に従って env key に変換し、default option も export する。env key collision は error。
 - Feature metadata の `containerEnv` は、Feature layer Dockerfile の `ENV` として各 Feature の `install.sh` 実行前に適用し、後続 Feature と最終 image に継承する。`PATH="/tool:${PATH}"` のような Dockerfile environment replacement は Docker builder に委譲する。Feature 由来 `containerEnv` は container create / generated Compose override の `environment` には再投入せず、user/devcontainer/project 由来の `containerEnv` だけを runtime override として適用する。
 
