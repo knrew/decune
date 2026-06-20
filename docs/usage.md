@@ -1,6 +1,6 @@
 # decune の使い方
 
-この文書は、`decune` のインストール方法と利用手順をまとめた利用者向けガイドです。v0.1 の正確な公開挙動、設定スキーマ、セキュリティ境界は [specification.md](specification.md) を参照してください。
+この文書は、`decune` のインストール方法と利用手順をまとめた利用者向けガイドです。正確な公開挙動、設定スキーマ、セキュリティ境界は [specification.md](specification.md) を参照してください。
 
 ## インストール
 
@@ -110,7 +110,7 @@ Dockerfile から development container を build する場合は `build.dockerf
 
 `build.options` の値はプロセス引数に出ます。secret の実値は書かず、`--secret id=npm,env=NPM_TOKEN` のように Docker BuildKit secret reference を使ってください。
 
-v0.1 では、`build.dockerfile` が解決後の `build.context` 配下にある必要があります。context 外の Dockerfile を使う場合は、Dockerfile を context 内に移動するか、`build.context` を Dockerfile を含むディレクトリへ広げてください。
+`build.dockerfile` は解決後の `build.context` 配下にある必要があります。context 外の Dockerfile を使う場合は、Dockerfile を context 内に移動するか、`build.context` を Dockerfile を含むディレクトリへ広げてください。
 
 ### Docker Compose-Based
 
@@ -276,7 +276,7 @@ install_feature_if_missing = true
 
 Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。Dev Container `appPort` は Compose モードでは unsupported error です。
 
-v0.1 では decune port forwarding と対応する published port metadata は TCP-only です。`/udp` は unsupported error です。
+decune port forwarding と対応する published port metadata は TCP-only です。`/udp` は unsupported error です。
 
 ## 認証情報とセキュリティ
 
@@ -304,4 +304,4 @@ GitHub CLI integration は一時 token file を read-only で container に moun
 - Compose モードでは `workspaceMount`、`appPort`、`runArgs` を generated Compose override へ変換しません。
 - Compose sidecar service への port forwarding は `forwardPorts` の service syntax または `[[ports]].service` で明示します。
 - Dockerfile-based モードでは Dockerfile が build context 配下にある必要があります。
-- v0.1 は UDP forwarding と UDP published port metadata に対応しません。
+- UDP forwarding と UDP published port metadata には対応しません。

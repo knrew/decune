@@ -16,9 +16,9 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 
 ## 対象範囲
 
-v0.1 は Linux / macOS ホストと Docker CLI / Docker Compose v2 を対象にします。Docker Compose-based 構成では、`devcontainer.json` の `service` で指定した Compose サービスを primary service として扱い、シェル接続、ライフサイクルコマンド、Features、dotfiles、認証情報、automatic port forwarding を適用します。
+Linux / macOS ホストと Docker CLI / Docker Compose v2 を対象にします。Docker Compose-based 構成では、`devcontainer.json` の `service` で指定した Compose サービスを primary service として扱い、シェル接続、ライフサイクルコマンド、Features、dotfiles、認証情報、automatic port forwarding を適用します。
 
-v0.1 では以下を意図的に対象外にします。
+以下を意図的に対象外にします。
 
 - 旧 `docker-compose` v1 standalone binary の公式対応
 - Kubernetes、Swarm stack、Docker Desktop UI、cloud provider 固有 orchestrator の直接サポート
@@ -122,7 +122,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 ## ドキュメント
 
 - [docs/usage.md](docs/usage.md): 利用手順、利用例、インストール詳細、運用上の注意
-- [docs/specification.md](docs/specification.md): v0.1 の公開挙動、設定スキーマ、セキュリティ境界
+- [docs/specification.md](docs/specification.md): 公開挙動、設定スキーマ、セキュリティ境界
 - [docs/development.md](docs/development.md): 開発環境の準備、ローカルインストール、検証、リリース成果物の作成コマンド
 - [docs/release.md](docs/release.md): maintainer 向けのリリース手順
 - [docs/glossary.md](docs/glossary.md): プロジェクト用語と表記基準
