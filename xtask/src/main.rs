@@ -467,7 +467,7 @@ fn compose_integration(workspace: &Path, release: bool) -> Result<()> {
     )?;
     compose_integration_preflight()?;
 
-    let bundle_dir = prepare_xtask_container_tools_bundle(workspace)?;
+    let bundle_dir = prepare_xtask_container_tools_bundle(workspace, true)?;
     let command = compose_integration_cargo_command(workspace, release, &bundle_dir);
 
     run_command_spec(command, "Failed to run Docker Compose integration tests")
@@ -506,20 +506,37 @@ fn compose_integration_preflight() -> Result<()> {
 }
 
 fn workspace_test(workspace: &Path, release: bool) -> Result<()> {
-    let bundle_dir = prepare_xtask_container_tools_bundle(workspace)?;
+    let bundle_dir = prepare_xtask_container_tools_bundle(workspace, true)?;
     let command = workspace_test_cargo_command(workspace, release, &bundle_dir);
 
     run_command_spec(command, "Failed to run workspace tests")
 }
 
 fn install(workspace: &Path, locked: bool, force: bool, root: Option<&Path>) -> Result<()> {
-    let bundle_dir = prepare_xtask_container_tools_bundle(workspace)?;
-    let command = install_cargo_command(workspace, locked, force, root, &bundle_dir);
+    let plan = install_plan(workspace, locked, force, root);
+    prepare_container_tools_bundle(workspace, &plan.bundle_dir, plan.bundle_locked)?;
 
     run_command_spec(
-        command,
+        plan.command,
         "Failed to install decune from local source checkout",
     )
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct InstallPlan {
+    bundle_dir: PathBuf,
+    bundle_locked: bool,
+    command: ChildCommand,
+}
+
+fn install_plan(workspace: &Path, locked: bool, force: bool, root: Option<&Path>) -> InstallPlan {
+    let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
+    let command = install_cargo_command(workspace, locked, force, root, &bundle_dir);
+    InstallPlan {
+        bundle_dir,
+        bundle_locked: locked,
+        command,
+    }
 }
 
 fn compose_integration_cargo_command(
@@ -596,11 +613,16 @@ fn install_cargo_command(
     command
 }
 
-fn prepare_xtask_container_tools_bundle(workspace: &Path) -> Result<PathBuf> {
+fn prepare_xtask_container_tools_bundle(workspace: &Path, locked: bool) -> Result<PathBuf> {
     let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
-    build_container_tools(workspace, &bundle_dir, true)?;
-    check_container_tools(&bundle_dir)?;
+    prepare_container_tools_bundle(workspace, &bundle_dir, locked)?;
     Ok(bundle_dir)
+}
+
+fn prepare_container_tools_bundle(workspace: &Path, bundle_dir: &Path, locked: bool) -> Result<()> {
+    build_container_tools(workspace, bundle_dir, locked)?;
+    check_container_tools(bundle_dir)?;
+    Ok(())
 }
 
 fn default_xtask_container_tools_bundle_dir(workspace: &Path) -> PathBuf {
@@ -1449,6 +1471,29 @@ mod tests {
             command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR"),
             Some(&bundle_dir.as_os_str().to_owned())
         );
+    }
+
+    #[test]
+    fn install_plan_uses_same_locked_mode_for_bundle_build_and_install_command() {
+        let workspace = Path::new("/workspace/decune");
+
+        let unlocked = install_plan(workspace, false, false, None);
+
+        assert!(!unlocked.bundle_locked);
+        assert_eq!(
+            unlocked.bundle_dir,
+            PathBuf::from("/workspace/decune/target/decune-xtask/container-tools-bundle")
+        );
+        assert!(!unlocked.command.args.iter().any(|arg| arg == "--locked"));
+
+        let locked = install_plan(workspace, true, false, None);
+
+        assert!(locked.bundle_locked);
+        assert_eq!(
+            locked.bundle_dir,
+            PathBuf::from("/workspace/decune/target/decune-xtask/container-tools-bundle")
+        );
+        assert!(locked.command.args.iter().any(|arg| arg == "--locked"));
     }
 
     #[test]
