@@ -601,6 +601,8 @@ ssh_agent = "auto"
 
 `host-helper-read-only` は同じ helper staging/mount を使うが、container からの credential lookup だけを許可する。Git credential `get` は host の `git credential fill` に forwarding し、`store` / `erase` は host の `approve` / `reject` に渡さず success no-op として空出力を返す。untrusted repository では host credential store の mutation を避けるため、`host-helper-read-only` または `off` を推奨する。`host-helper-read-only` は SSH agent forwarding を変更しないため、SSH agent が不要な場合は `ssh_agent = "off"` も設定する。
 
+`https = "off"` または `enabled = false` の場合、host daemon は Git credential request を host の Git credential helper に渡してはならない。
+
 ### `[credentials.github]`
 
 ```toml

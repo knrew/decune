@@ -111,6 +111,9 @@ pub(crate) fn handle_git_credential_request(
     mode: GitHttpsMode,
 ) -> Result<String> {
     let command = GitCredentialCommand::from_action(request.action);
+    if mode == GitHttpsMode::Off {
+        bail!("Git HTTPS credential forwarding is disabled");
+    }
     if mode == GitHttpsMode::HostHelperReadOnly && command.is_mutating() {
         return Ok(String::new());
     }
@@ -747,6 +750,31 @@ mod tests {
                 .unwrap();
 
         assert_eq!(output, "");
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn off_handler_rejects_all_actions_without_invoking_host_git() {
+        let executor =
+            RecordingGitCredentialExecutor::with_output("username=octo\npassword=SECRET\n");
+
+        for action in [
+            GitCredentialAction::Get,
+            GitCredentialAction::Store,
+            GitCredentialAction::Erase,
+        ] {
+            let error = handle_git_credential_request(
+                GitCredentialHostRequest::new(action, "password=SECRET\n\n"),
+                &executor,
+                GitHttpsMode::Off,
+            )
+            .unwrap_err();
+
+            let message = format!("{error:#}");
+            assert!(message.contains("Git HTTPS credential forwarding is disabled"));
+            assert!(!message.contains("SECRET"));
+        }
+
         assert!(executor.calls.lock().unwrap().is_empty());
     }
 

@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use tokio::task::JoinHandle;
 
 use crate::{
-    config::types::GitHttpsMode,
+    config::{resolved::ResolvedGitCredentials, types::GitHttpsMode},
     devcontainer::lifecycle::{
         LifecycleRunContext, PreparedLifecycleRunContext, prepare_container_lifecycle,
         run_attach_lifecycle, run_container_start_lifecycle,
@@ -124,9 +124,17 @@ pub(in crate::up) async fn start_host_daemon_for_up(
         started.workspace.id(),
         remote_user.uid,
         remote_user.gid,
-        started.plan.config.credentials.git.https,
+        daemon_git_https_mode(&started.plan.config.credentials.git),
     )
     .await
+}
+
+fn daemon_git_https_mode(credentials: &ResolvedGitCredentials) -> GitHttpsMode {
+    if credentials.enabled {
+        credentials.https
+    } else {
+        GitHttpsMode::Off
+    }
 }
 
 async fn start_host_daemon_for_remote_user(
@@ -288,8 +296,36 @@ mod tests {
     use tempfile::TempDir;
     use tokio::net::{UnixListener, UnixStream};
 
-    use super::start_host_daemon_for_remote_user;
-    use crate::{config::types::GitHttpsMode, host::daemon::HostDaemon};
+    use super::{daemon_git_https_mode, start_host_daemon_for_remote_user};
+    use crate::{
+        config::{resolved::ResolvedGitCredentials, types::GitHttpsMode},
+        host::daemon::HostDaemon,
+    };
+
+    #[test]
+    fn disabled_git_credentials_force_daemon_https_mode_off() {
+        let credentials = ResolvedGitCredentials {
+            enabled: false,
+            https: GitHttpsMode::HostHelper,
+            ..Default::default()
+        };
+
+        assert_eq!(daemon_git_https_mode(&credentials), GitHttpsMode::Off);
+    }
+
+    #[test]
+    fn enabled_git_credentials_preserve_daemon_https_mode() {
+        let credentials = ResolvedGitCredentials {
+            enabled: true,
+            https: GitHttpsMode::HostHelperReadOnly,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            daemon_git_https_mode(&credentials),
+            GitHttpsMode::HostHelperReadOnly
+        );
+    }
 
     #[test]
     fn host_daemon_skips_startup_when_daemon_already_running() {

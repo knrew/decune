@@ -383,6 +383,7 @@ enabled = false
 完全に credential を渡したくない場合は `[credentials.git].enabled = false` にしてください。
 
 `[credentials.git].https = "host-helper"` は container の Git credential `get` / `store` / `erase` を host の `git credential fill` / `approve` / `reject` に forwarding します。`host-helper-read-only` は helper の staging と mount は同じですが、`get` だけを host に forwarding し、`store` / `erase` は host に送らず成功 no-op として扱います。SSH agent forwarding は別の認証経路なので、不要な場合は `ssh_agent = "off"` を設定してください。
+`https = "off"` または `[credentials.git].enabled = false` の場合、host daemon は Git credential request を host の Git credential helper に渡しません。
 
 GitHub CLI 連携を有効にすると、host の `gh auth token` から得た token は一時 file として container に read-only mount されます。token は Docker label、container env、state、config hash、image layer には保存しませんが、container 内プロセスからは token file に到達できます。
 

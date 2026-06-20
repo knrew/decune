@@ -243,4 +243,26 @@ mod tests {
         );
         assert!(!response.to_string().contains("SECRET"));
     }
+
+    #[test]
+    fn credential_off_mode_rejects_request_without_invoking_executor() {
+        let executor =
+            RecordingGitCredentialExecutor::with_output("username=octo\npassword=SECRET\n");
+
+        let response = handle_host_daemon_request(
+            br#"{"version":1,"type":"credential","action":"get","input":"password=SECRET\n\n"}"#,
+            &executor,
+            GitHttpsMode::Off,
+        );
+        let response = serde_json::to_value(response).unwrap();
+
+        assert_eq!(response["ok"], false);
+        assert_eq!(response["error"]["code"], "credential_failed");
+        assert_eq!(
+            response["error"]["message"],
+            "Git HTTPS credential forwarding is disabled"
+        );
+        assert!(!response.to_string().contains("SECRET"));
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
 }
