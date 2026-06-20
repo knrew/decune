@@ -773,7 +773,10 @@ state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存す�
 4. Dockerfile build 結果 image に Feature を重ねる。
 5. 必要なら UID/GID sync layer と entrypoint shim layer を重ねる。
 
-v0.1 では Dockerfile が build context 外にある構成を unsupported error とする。Dockerfile-based final image の `devcontainer.metadata` label は config hash と final image tag 決定の循環を避けるため merge せず、検出時は warning に留める。
+Known limitations:
+
+- v0.1 では、Dockerfile が build context 外にある構成を unsupported error とする。decune は build context tar を生成して `docker build -` に渡すため、`--file` は tar 内の path を指す必要がある。このため `build.dockerfile` は解決後の `build.context` 配下に存在しなければならない。回避策は、`build.context` を Dockerfile を含む上位 directory に広げるか、Dockerfile を context 内へ移動することである。将来互換性を上げる場合は、context 外 Dockerfile を synthetic tar entry として追加し、Dockerfile-specific ignore file と context digest の semantics を Docker CLI と揃える必要がある。
+- Dockerfile-based final image の `devcontainer.metadata` label は config hash と final image tag 決定の循環を避けるため merge せず、検出時は warning に留める。
 
 ### Docker Compose-based
 
