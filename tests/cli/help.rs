@@ -17,6 +17,25 @@ fn root_help_is_displayed() {
 }
 
 #[test]
+fn version_is_displayed() {
+    let output = decune()
+        .arg("--version")
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    let base = format!("decune {}", env!("CARGO_PKG_VERSION"));
+
+    assert!(
+        output == format!("{base}\n") || output.starts_with(&format!("{base}+")),
+        "unexpected version output: {output:?}"
+    );
+}
+
+#[test]
 fn command_help_is_displayed() {
     for command in ["up", "down", "clean", "rebuild"] {
         decune()

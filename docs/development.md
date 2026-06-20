@@ -29,6 +29,12 @@ DECUNE_CONTAINER_TOOLS_BUNDLE=required \
 
 コンテナ側ツールの bundle を埋め込まない build は公式インストール手順ではありません。軽いローカル確認だけならインストールせず、通常の Cargo コマンドを使ってください。
 
+## 開発ビルドのバージョン表示
+
+リリース直後の開発中は、次のリリース番号を先に固定しないため `Cargo.toml` の `package.version` は直近リリース版のままにします。`decune --version` は clean な release tag では `decune 0.1.0` のように表示し、tag 外や未コミット変更を含む build では `decune 0.1.0+g<commit>` または `decune 0.1.0+g<commit>.dirty` のように Git 由来の build metadata を付けます。
+
+Git 情報を取得できない source build では `+source` suffix を付けます。この suffix は表示用であり、Docker label などの内部 metadata には `Cargo.toml` の package version を使います。
+
 ## 標準検証
 
 通常の変更では formatting と lint を確認します。

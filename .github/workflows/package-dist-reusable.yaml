@@ -100,7 +100,8 @@ jobs:
           tar -xzf "$archive" -C target/smoke
           test -x "target/smoke/$root/decune"
           "target/smoke/$root/decune" --help
-          "target/smoke/$root/decune" --version
+          version_output="$("target/smoke/$root/decune" --version)"
+          test "$version_output" = "decune ${{ inputs.version }}"
       - uses: actions/upload-artifact@v6
         with:
           if-no-files-found: error

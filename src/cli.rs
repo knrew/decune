@@ -14,7 +14,7 @@ use crate::up::{UpOptions, run_attached_up, run_detached_up};
 #[derive(Debug, Parser)]
 #[command(
     name = "decune",
-    version,
+    version = env!("DECUNE_DISPLAY_VERSION"),
     about = "Run dev containers from the command line."
 )]
 pub(crate) struct Cli {

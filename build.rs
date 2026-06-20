@@ -2,6 +2,7 @@ use std::{
     collections::BTreeSet,
     env, fs,
     path::{Component, Path, PathBuf},
+    process::Command,
 };
 
 use anyhow::{Context, Result, bail};
@@ -14,6 +15,8 @@ const TOOLS: [&str; 2] = ["git-credential-decune", "decune-forward-agent"];
 const PLATFORMS: [&str; 2] = ["linux-amd64", "linux-arm64"];
 
 fn main() -> Result<()> {
+    emit_display_version()?;
+
     println!("cargo:rerun-if-env-changed=DECUNE_CONTAINER_TOOLS_BUNDLE");
     println!("cargo:rerun-if-env-changed=DECUNE_CONTAINER_TOOLS_BUNDLE_DIR");
     println!("cargo:rerun-if-changed=assets/container-tools/manifest.json");
@@ -47,6 +50,95 @@ fn main() -> Result<()> {
             "Unsupported DECUNE_CONTAINER_TOOLS_BUNDLE value: {other}. Expected auto, required, or off."
         ),
     }
+}
+
+fn emit_display_version() -> Result<()> {
+    let manifest_dir =
+        PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR is not set")?);
+    let package_version = env::var("CARGO_PKG_VERSION").context("CARGO_PKG_VERSION is not set")?;
+
+    emit_display_version_rerun_instructions(&manifest_dir);
+    println!(
+        "cargo:rustc-env=DECUNE_DISPLAY_VERSION={}",
+        display_version(&manifest_dir, &package_version)
+    );
+    Ok(())
+}
+
+fn emit_display_version_rerun_instructions(manifest_dir: &Path) {
+    for path in [
+        "build.rs",
+        "Cargo.toml",
+        "Cargo.lock",
+        "src",
+        ".git/HEAD",
+        ".git/index",
+        ".git/packed-refs",
+        ".git/refs/heads",
+        ".git/refs/tags",
+    ] {
+        let absolute = manifest_dir.join(path);
+        if absolute.exists() {
+            println!("cargo:rerun-if-changed={}", absolute.display());
+        }
+    }
+}
+
+fn display_version(workspace: &Path, package_version: &str) -> String {
+    let commit = match git_output(workspace, ["rev-parse", "--short=12", "HEAD"]) {
+        Some(commit) if is_git_hash(&commit) => commit,
+        _ => return format!("{package_version}+source"),
+    };
+
+    let dirty = git_dirty(workspace).unwrap_or(true);
+    if !dirty && head_has_release_tag(workspace, package_version).unwrap_or(false) {
+        return package_version.to_owned();
+    }
+
+    let dirty_suffix = if dirty { ".dirty" } else { "" };
+    format!("{package_version}+g{commit}{dirty_suffix}")
+}
+
+fn git_dirty(workspace: &Path) -> Option<bool> {
+    git_output(
+        workspace,
+        [
+            "--no-optional-locks",
+            "status",
+            "--porcelain",
+            "--untracked-files=normal",
+        ],
+    )
+    .map(|status| !status.is_empty())
+}
+
+fn head_has_release_tag(workspace: &Path, package_version: &str) -> Option<bool> {
+    let release_tag = format!("v{package_version}");
+    git_output(
+        workspace,
+        ["tag", "--points-at", "HEAD", "--list", &release_tag],
+    )
+    .map(|tags| tags.lines().any(|tag| tag == release_tag))
+}
+
+fn git_output<const N: usize>(workspace: &Path, args: [&str; N]) -> Option<String> {
+    let output = Command::new("git")
+        .current_dir(workspace)
+        .args(args)
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn is_git_hash(value: &str) -> bool {
+    value.len() >= 7
+        && value.len() <= 64
+        && value
+            .chars()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
 }
 
 fn resolve_bundle_dir() -> Result<PathBuf> {
