@@ -58,6 +58,8 @@ impl From<RawMountCreate> for MountCreate {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum PortProtocol {
     Tcp,
+    // Kept for future UDP support; v0.1 input parsers reject UDP explicitly.
+    #[allow(dead_code)]
     Udp,
 }
 

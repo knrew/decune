@@ -370,6 +370,10 @@ shell = true
 
 `forwardPorts`、decune TOML の `[[ports]]`、CLI の `-p` は decune forwarding です。host 側の既定 listen address は `127.0.0.1` で、container 内の `127.0.0.1:<port>` にだけ listen している開発 server にも届くよう、container-side agent 経由で転送します。
 
+v0.1 の port forwarding / publish は TCP-only です。protocol suffix がない port は TCP として扱い、`/tcp` suffix は明示的な TCP 指定として受け付けます。`/udp` は未対応のため明示的にエラーになります。UDP 対応は将来課題です。
+
+automatic forwarding も TCP listening socket のみを対象にします。container agent は TCP の LISTEN port を検出し、UDP socket は検出・転送しません。
+
 `appPort` は image/Dockerfile mode の Docker publish です。container 作成時に決まるため、既存 container への後付けはできません。host IP を省略した publish は Docker の既定により localhost 限定にならない可能性があります。localhost 限定が必要な場合は `forwardPorts`、`[[ports]]`、または `decune up -p` を使ってください。
 
 CLI `-p` と `appPort` の IPv6 host IP は `[::1]:8080:3000` のような bracketed form で指定します。unbracketed IPv6 は曖昧なためエラーになります。

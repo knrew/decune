@@ -163,7 +163,7 @@ decune up [OPTIONS] [WORKSPACE]
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
 - `--pull`: base image または Compose service image を pull してから build/create する。Compose mode では config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
-- `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。複数指定可。Compose mode で service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
+- `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000/tcp`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。複数指定可。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は v0.1 unsupported error。Compose mode で service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
 
 `--detach` では `up` process 終了時に host daemon も停止するため、manual/automatic forwarding と Git HTTPS host-helper は維持されない。detached container で外部公開が必要な port は、image/Dockerfile mode では `appPort`、Compose mode では Compose file の `ports` を使う。`--detach` と CLI `-p` / `--port` の併用は error とする。設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視する。
 
@@ -260,10 +260,10 @@ workspace root から以下の順で検出する。
 | `containerUser` | yes | yes | yes | Compose mode は primary service `user` override |
 | `updateRemoteUserUID` | yes | yes | yes | Linux host で既定 true |
 | `userEnvProbe` | yes | yes | yes | `none`, `loginShell`, `interactiveShell`, `loginInteractiveShell` |
-| `forwardPorts` | yes | yes | yes | Compose mode は `"service:port"` を受け付ける |
+| `forwardPorts` | yes | yes | yes | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose mode は `"service:port"` を受け付ける |
 | `portsAttributes` | partial | partial | partial | `label`, `onAutoForward`, `requireLocalPort`。`protocol`, `elevateIfNeeded` は warning して無視 |
 | `otherPortsAttributes` | partial | partial | partial | automatic forwarding の既定。unsupported fields は warning |
-| `appPort` | yes | yes | no | Compose mode は unsupported error。Compose file の service `ports` を使う |
+| `appPort` | yes | yes | no | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose mode は unsupported error。Compose file の service `ports` を使う |
 | `runArgs` | partial | partial | no | Compose mode は unsupported error。Compose file の service attributes を使う |
 | `init` | yes | yes | yes | Compose mode は primary service `init` override |
 | `privileged` | yes | yes | yes | Compose mode は primary service `privileged` override |
@@ -580,7 +580,7 @@ manual forwarding 設定。Docker publish ではない。
 - `container`: container 側 port。必須。
 - `host`: host 側 port。省略時は `container` と同じ番号を試し、占有済みなら空き port を探索する。
 - `host_ip`: 既定 `127.0.0.1`。`0.0.0.0` は明示された場合のみ許可。
-- `protocol`: v0.1 は `tcp` のみ。
+- `protocol`: v0.1 は `tcp` のみ。省略時も TCP。`udp` は unsupported error。
 - `service`: Compose mode で対象 service を指定する任意 field。未指定は primary service。image/Dockerfile mode では指定不可。
 - `enabled`: 既定 true。
 - `require_local`: true の場合、host port が占有済みなら別 port に fallback せず失敗。
@@ -875,7 +875,9 @@ Compose mode では GitHub token file mount は primary service にのみ追加�
 
 `forwardPorts`、decune `[[ports]]`、CLI `-p` は forwarding であり Docker publish ではない。host 側 listen address の既定は `127.0.0.1`。container 内で `127.0.0.1:<container port>` にだけ listen している process にも届くよう、container-side `decune-forward-agent` 経由で proxy する。
 
-`appPort` は image/Dockerfile mode の Docker publish であり container create 時に決まる。host IP が指定されない場合、Docker の既定で全 interface に公開される可能性があるため warning 対象とする。
+v0.1 の port forwarding / publish は TCP-only とする。CLI `-p`、decune `[[ports]]`、Dev Container `forwardPorts`、Dev Container `appPort` は protocol suffix なしを TCP として扱い、`/tcp` は明示的な TCP 指定として受け付ける。`/udp` は unsupported error とし、UDP 対応は将来課題とする。
+
+`appPort` は image/Dockerfile mode の Docker publish であり container create 時に決まる。host IP が指定されない場合、Docker の既定で全 interface に公開される可能性があるため warning 対象とする。v0.1 では `appPort` の Docker publish も TCP-only である。
 
 CLI `-p` と Dev Container `appPort` の host IP は IPv4 / hostname / bracketed IPv6 を受け付ける。IPv6 host IP は `[::1]:8080:3000` のように bracketed form で指定し、内部 model では bracket なしで保持する。unbracketed IPv6 は colon 区切りと曖昧なため error とする。`forwardPorts` string の `[::1]:3000` は host IP `::1` への forwarding として扱い、`[::1]:8080:3000` のような host-port mapping は `forwardPorts` では unsupported error とする。
 
@@ -904,7 +906,7 @@ Compose mode の service 解決:
 
 sidecar service forwarding は、その service の container ID を解決し、必要な container-side tool を runtime install して forward-agent を起動する。対象 service には forwarding runtime mount と decune identity label だけを generated override で追加し、credentials、dotfiles、GitHub token、SSH agent は自動注入しない。service の replica が 2 以上なら error とする。
 
-automatic forwarding は container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、LISTEN port を検出する。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済み、Docker publish 済み、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose mode の automatic forwarding は primary service のみを対象にする。
+automatic forwarding は TCP listening socket のみを対象にする。container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、TCP LISTEN port を検出する。UDP socket は v0.1 では検出・転送しない。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済み、Docker publish 済み、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose mode の automatic forwarding は primary service のみを対象にする。
 
 ## Host daemon と security boundary
 

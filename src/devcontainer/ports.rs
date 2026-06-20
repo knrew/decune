@@ -276,7 +276,7 @@ fn parse_forwarding_port_protocol(value: &str) -> Result<(&str, PortProtocol)> {
         None => Ok((value, PortProtocol::Tcp)),
         Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
         Some((_, protocol)) => Err(anyhow!(
-            "Unsupported devcontainer port protocol: {protocol}"
+            "Unsupported devcontainer port protocol: {protocol}. decune v0.1 supports tcp only"
         )),
     }
 }
@@ -285,9 +285,8 @@ fn parse_publish_port_protocol(value: &str) -> Result<(&str, PortProtocol)> {
     match value.split_once('/') {
         None => Ok((value, PortProtocol::Tcp)),
         Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
-        Some((port, "udp")) => Ok((port, PortProtocol::Udp)),
         Some((_, protocol)) => Err(anyhow!(
-            "Unsupported devcontainer port protocol: {protocol}"
+            "Unsupported devcontainer port protocol: {protocol}. decune v0.1 supports tcp only"
         )),
     }
 }
@@ -383,11 +382,9 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("Unsupported devcontainer port protocol")
-        );
+        assert!(error.to_string().contains(
+            "Unsupported devcontainer port protocol: udp. decune v0.1 supports tcp only"
+        ));
     }
 
     #[test]
@@ -529,21 +526,15 @@ mod tests {
     }
 
     #[test]
-    fn app_port_accepts_udp_protocol_for_docker_publish() {
-        let port = publish_port_to_layer(&DevcontainerPort::String(
+    fn app_port_rejects_udp_protocol_for_docker_publish() {
+        let error = publish_port_to_layer(&DevcontainerPort::String(
             "127.0.0.1:5353:53/udp".to_owned(),
         ))
-        .unwrap();
+        .unwrap_err();
 
-        assert_eq!(
-            port,
-            LayerPublishPort {
-                container: 53,
-                host: Some(5353),
-                host_ip: Some(DEFAULT_PORT_HOST_IP.to_owned()),
-                protocol: PortProtocol::Udp,
-            }
-        );
+        assert!(error.to_string().contains(
+            "Unsupported devcontainer port protocol: udp. decune v0.1 supports tcp only"
+        ));
     }
 
     #[test]
