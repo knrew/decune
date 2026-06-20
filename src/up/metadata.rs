@@ -20,7 +20,7 @@ use crate::{
     },
     devcontainer::features::{prepare_feature_install_plan, remove_feature_lock_file},
     docker::{
-        build::{DockerBuildInput, build_hash_input, build_image},
+        build::build_hash_input,
         client::DockerClient,
         container::{ContainerCreateSpec, ContainerHostConfig, create_container, start_container},
         image::{
@@ -62,8 +62,8 @@ use crate::{
         types::{ForwardingResolution, MountResolution, UpPlan, UpPlanResolution},
         uid_gid::{
             effective_user_input_from_plan, effective_users_depend_on_image_config_user,
-            plan_requires_uid_gid_sync_layer, pre_uid_gid_sync_layer_resources,
-            uid_gid_sync_hash_input, uid_gid_sync_plan_requires_layer, uid_gid_sync_warning,
+            plan_requires_uid_gid_sync_layer, uid_gid_sync_hash_input,
+            uid_gid_sync_plan_requires_layer, uid_gid_sync_warning,
         },
     },
     workspace::Workspace,
@@ -277,10 +277,21 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     let using_existing_remote_user_image = remote_user_image.is_some();
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
     let mut lookup_base_image = None;
+    let mut stale_lookup_images = Vec::new();
     let mut image_prepared = false;
+    let mut deferred_workspace_layer = false;
     plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
     if lookup_image.is_none() {
-        if plan_requires_workspace_layer(&plan) {
+        if plan.build_context.is_some() {
+            let Some((pull, no_cache)) = build_for_lookup else {
+                return Ok((plan, false));
+            };
+            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
+            lookup_base_image = Some(plan.base_image.clone());
+            lookup_image = Some(plan.base_image.clone());
+            image_prepared = true;
+            deferred_workspace_layer = plan_requires_workspace_layer(&plan);
+        } else if plan_requires_workspace_layer(&plan) {
             let Some((pull, no_cache)) = build_for_lookup else {
                 return Ok((plan, false));
             };
@@ -288,29 +299,6 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
             lookup_base_image = Some(plan.base_image.clone());
             build_feature_layer_image(client, &plan, no_cache).await?;
             lookup_image = Some(plan.image.clone());
-            image_prepared = true;
-        } else if let Some(context) = plan.build_context.clone() {
-            let Some((pull, no_cache)) = build_for_lookup else {
-                return Ok((plan, false));
-            };
-            let mut build_options = plan.build_options.clone();
-            build_options.pull = pull;
-            build_options.no_cache = no_cache;
-            build_image(
-                client,
-                DockerBuildInput {
-                    image_tag: plan.base_image.clone(),
-                    labels: pre_uid_gid_sync_layer_resources(&plan)
-                        .labels
-                        .clone()
-                        .into_iter()
-                        .collect(),
-                    context,
-                    options: build_options,
-                },
-            )
-            .await?;
-            lookup_image = Some(plan.base_image.clone());
             image_prepared = true;
         } else {
             lookup_image = Some(plan.base_image.clone());
@@ -335,12 +323,27 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
             let Some((pull, no_cache)) = build_for_lookup else {
                 return Ok((plan, false));
             };
+            if lookup_image != plan.base_image {
+                stale_lookup_images.push(lookup_image.clone());
+            }
             prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
             lookup_base_image = Some(plan.base_image.clone());
             build_feature_layer_image(client, &plan, no_cache).await?;
             lookup_image = plan.image.clone();
             image_prepared = true;
+            deferred_workspace_layer = false;
         }
+    }
+    if deferred_workspace_layer
+        && plan_requires_workspace_layer(&plan)
+        && !using_existing_remote_user_image
+    {
+        let Some((_, no_cache)) = build_for_lookup else {
+            return Ok((plan, false));
+        };
+        build_feature_layer_image(client, &plan, no_cache).await?;
+        lookup_image = plan.image.clone();
+        image_prepared = true;
     }
     let lookup = ImageLookupPreparation {
         image: &mut lookup_image,
@@ -391,6 +394,14 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     } else if image_prepared && plan.image != lookup_image {
         tag_image(client, &lookup_image, &plan.image).await?;
         remove_image(client, &lookup_image, false).await?;
+    }
+    for stale_lookup_image in stale_lookup_images {
+        if stale_lookup_image != plan.image
+            && stale_lookup_image != plan.base_image
+            && stale_lookup_image != lookup_image
+        {
+            remove_image(client, &stale_lookup_image, false).await?;
+        }
     }
 
     Ok((plan, image_prepared))

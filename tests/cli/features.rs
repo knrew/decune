@@ -126,6 +126,107 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
 }
 
 #[test]
+fn up_detach_uses_dockerfile_metadata_user_for_feature_install_env() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .create_dir(".devcontainer/features/metadata-user-tool")
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "build": {
+                "dockerfile": "Dockerfile"
+              },
+              "features": {
+                "./features/metadata-user-tool": {}
+              },
+              "postStartCommand": "test -f /usr/local/share/decune-metadata-user-feature-installed"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            r#"
+            FROM alpine:3.20
+            RUN adduser -D -u 1002 -h /home/metadatauser metadatauser
+            LABEL devcontainer.metadata="{\"remoteUser\":\"metadatauser\",\"containerUser\":\"metadatauser\",\"updateRemoteUserUID\":false}"
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/metadata-user-tool/devcontainer-feature.json",
+            r#"
+            {
+              "id": "metadata-user-tool",
+              "version": "1.0.0",
+              "name": "Metadata User Tool"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/metadata-user-tool/install.sh",
+            r#"
+            set -eu
+            test "${_CONTAINER_USER:-}" = metadatauser
+            test "${_REMOTE_USER:-}" = metadatauser
+            test "${_CONTAINER_USER_HOME:-}" = /home/metadatauser
+            test "${_REMOTE_USER_HOME:-}" = /home/metadatauser
+            mkdir -p /usr/local/share
+            echo installed > /usr/local/share/decune-metadata-user-feature-installed
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_images(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+    });
+
+    runtime.block_on(async {
+        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
+        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        container_cleanup.and(image_cleanup).unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[test]
 fn up_detach_rejects_feature_metadata_remote_user() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
