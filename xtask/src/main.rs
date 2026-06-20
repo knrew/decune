@@ -96,14 +96,14 @@ struct Args {
 #[derive(Debug, Subcommand)]
 enum XtaskCommand {
     BuildContainerTools {
-        #[arg(long, default_value = "assets/container-tools")]
-        out: PathBuf,
+        #[arg(long)]
+        out: Option<PathBuf>,
         #[arg(long)]
         locked: bool,
     },
     CheckContainerTools {
-        #[arg(long, default_value = "assets/container-tools")]
-        dir: PathBuf,
+        #[arg(long)]
+        dir: Option<PathBuf>,
     },
     ComposeIntegration {
         #[arg(long)]
@@ -158,10 +158,12 @@ fn main() -> Result<()> {
     let workspace = workspace_root()?;
     match args.command {
         XtaskCommand::BuildContainerTools { out, locked } => {
+            let out = resolve_container_tools_bundle_arg(&workspace, out.as_deref())?;
             build_container_tools(&workspace, &out, locked)
         }
         XtaskCommand::CheckContainerTools { dir } => {
-            check_container_tools(&workspace_relative(&workspace, &dir)?)?;
+            let dir = resolve_container_tools_bundle_arg(&workspace, dir.as_deref())?;
+            check_container_tools(&dir)?;
             Ok(())
         }
         XtaskCommand::ComposeIntegration { release } => compose_integration(&workspace, release),
@@ -631,6 +633,13 @@ fn default_xtask_container_tools_bundle_dir(workspace: &Path) -> PathBuf {
         .join("container-tools-bundle")
 }
 
+fn resolve_container_tools_bundle_arg(workspace: &Path, path: Option<&Path>) -> Result<PathBuf> {
+    match path {
+        Some(path) => workspace_relative(workspace, path),
+        None => Ok(default_xtask_container_tools_bundle_dir(workspace)),
+    }
+}
+
 fn dist_build_command(
     workspace: &Path,
     target: &str,
@@ -664,12 +673,14 @@ fn dist(
     dist_dir: Option<&Path>,
     container_tools_dir: Option<&Path>,
 ) -> Result<()> {
-    let bundle_dir = container_tools_dir
-        .map(Path::to_path_buf)
-        .or_else(|| env::var_os("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR").map(PathBuf::from))
-        .unwrap_or_else(|| workspace.join("assets/container-tools"));
-    let bundle_dir = workspace_relative(workspace, &bundle_dir)?;
-    check_container_tools(&bundle_dir)?;
+    let bundle_dir = match container_tools_dir {
+        Some(bundle_dir) => {
+            let bundle_dir = workspace_relative(workspace, bundle_dir)?;
+            check_container_tools(&bundle_dir)?;
+            bundle_dir
+        }
+        None => prepare_xtask_container_tools_bundle(workspace, locked)?,
+    };
 
     let command = dist_build_command(workspace, target, locked, &bundle_dir);
     run_command_spec(command, "Failed to build decune release binary")?;
@@ -1441,11 +1452,11 @@ mod tests {
     }
 
     #[test]
-    fn compose_integration_cargo_command_runs_ignored_tests_without_env_gate() {
+    fn compose_integration_cargo_command_runs_ignored_tests_with_prepared_bundle() {
         let workspace = Path::new("/workspace/decune");
-        let bundle_dir = Path::new("/workspace/decune/target/decune-xtask/container-tools-bundle");
+        let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
 
-        let command = compose_integration_cargo_command(workspace, false, bundle_dir);
+        let command = compose_integration_cargo_command(workspace, false, &bundle_dir);
 
         assert_eq!(command.program, "cargo");
         assert_eq!(command.current_dir.as_deref(), Some(workspace));
@@ -1474,11 +1485,11 @@ mod tests {
     }
 
     #[test]
-    fn workspace_test_cargo_command_hides_container_tool_env_from_ci_yaml() {
+    fn workspace_test_cargo_command_uses_prepared_bundle_dir() {
         let workspace = Path::new("/workspace/decune");
-        let bundle_dir = Path::new("/workspace/decune/target/decune-xtask/container-tools-bundle");
+        let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
 
-        let command = workspace_test_cargo_command(workspace, true, bundle_dir);
+        let command = workspace_test_cargo_command(workspace, true, &bundle_dir);
 
         assert_eq!(
             command.args,
@@ -1495,16 +1506,20 @@ mod tests {
             command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE"),
             Some(&std::ffi::OsString::from("required"))
         );
+        assert_eq!(
+            command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR"),
+            Some(&bundle_dir.as_os_str().to_owned())
+        );
         assert!(!command.env.contains_key("DECUNE_COMPOSE_INTEGRATION"));
     }
 
     #[test]
     fn install_cargo_command_installs_local_checkout_with_required_bundle() {
         let workspace = Path::new("/workspace/decune");
-        let bundle_dir = Path::new("/workspace/decune/target/decune-xtask/container-tools-bundle");
         let root = Path::new("/workspace/decune/target/install-smoke");
+        let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
 
-        let command = install_cargo_command(workspace, true, true, Some(root), bundle_dir);
+        let command = install_cargo_command(workspace, true, true, Some(root), &bundle_dir);
 
         assert_eq!(command.program, "cargo");
         assert_eq!(command.current_dir.as_deref(), Some(workspace));
@@ -1545,6 +1560,13 @@ mod tests {
             unlocked.bundle_dir,
             PathBuf::from("/workspace/decune/target/decune-xtask/container-tools-bundle")
         );
+        assert_eq!(
+            unlocked
+                .command
+                .env
+                .get("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR"),
+            Some(&unlocked.bundle_dir.as_os_str().to_owned())
+        );
         assert!(!unlocked.command.args.iter().any(|arg| arg == "--locked"));
 
         let locked = install_plan(workspace, true, false, None);
@@ -1553,6 +1575,10 @@ mod tests {
         assert_eq!(
             locked.bundle_dir,
             PathBuf::from("/workspace/decune/target/decune-xtask/container-tools-bundle")
+        );
+        assert_eq!(
+            locked.command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR"),
+            Some(&locked.bundle_dir.as_os_str().to_owned())
         );
         assert!(locked.command.args.iter().any(|arg| arg == "--locked"));
     }
@@ -1584,6 +1610,24 @@ mod tests {
                 "decune",
                 "--locked",
             ]
+        );
+    }
+
+    #[test]
+    fn dist_build_command_uses_prepared_container_tools_dir() {
+        let workspace = Path::new("/workspace/decune");
+        let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
+
+        let command =
+            dist_build_command(workspace, "x86_64-unknown-linux-musl", false, &bundle_dir);
+
+        assert_eq!(
+            command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE"),
+            Some(&std::ffi::OsString::from("required"))
+        );
+        assert_eq!(
+            command.env.get("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR"),
+            Some(&bundle_dir.as_os_str().to_owned())
         );
     }
 

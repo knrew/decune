@@ -19,12 +19,7 @@ fn main() -> Result<()> {
 
     println!("cargo:rerun-if-env-changed=DECUNE_CONTAINER_TOOLS_BUNDLE");
     println!("cargo:rerun-if-env-changed=DECUNE_CONTAINER_TOOLS_BUNDLE_DIR");
-    println!("cargo:rerun-if-changed=assets/container-tools/manifest.json");
-    for platform in PLATFORMS {
-        for tool in TOOLS {
-            println!("cargo:rerun-if-changed=assets/container-tools/{platform}/{tool}");
-        }
-    }
+    println!("cargo:rerun-if-env-changed=CARGO_TARGET_DIR");
 
     let out_dir = PathBuf::from(env::var_os("OUT_DIR").context("OUT_DIR is not set")?);
     let generated_path = out_dir.join("container_tools_bundle.rs");
@@ -216,11 +211,25 @@ fn resolve_bundle_dir() -> Result<PathBuf> {
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR is not set")?);
     let bundle_dir = env::var_os("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR")
         .map(PathBuf::from)
-        .unwrap_or_else(|| manifest_dir.join("assets/container-tools"));
+        .unwrap_or_else(|| default_bundle_dir(&manifest_dir));
     if bundle_dir.is_absolute() {
         Ok(bundle_dir)
     } else {
         Ok(manifest_dir.join(bundle_dir))
+    }
+}
+
+fn default_bundle_dir(manifest_dir: &Path) -> PathBuf {
+    target_dir(manifest_dir)
+        .join("decune-xtask")
+        .join("container-tools-bundle")
+}
+
+fn target_dir(manifest_dir: &Path) -> PathBuf {
+    match env::var_os("CARGO_TARGET_DIR").map(PathBuf::from) {
+        Some(path) if path.is_absolute() => path,
+        Some(path) => manifest_dir.join(path),
+        None => manifest_dir.join("target"),
     }
 }
 
