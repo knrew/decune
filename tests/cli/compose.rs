@@ -573,7 +573,7 @@ exit 91
     assert!(generated_override.contains("'app':"));
     assert!(generated_override.contains("image: 'decune/"));
     assert!(generated_override.contains("pull_policy: 'never'"));
-    assert!(generated_override.contains("'FROM_PRIMARY_FEATURE': 'yes'"));
+    assert!(!generated_override.contains("FROM_PRIMARY_FEATURE"));
     assert!(!generated_override.contains("sidecar"));
 
     let commands = fs::read_to_string(command_log).unwrap();

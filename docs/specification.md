@@ -818,6 +818,7 @@ Feature:
 - `rebuild --update-features` は lock より再解決を優先する。
 - Feature metadata は required field `id`, `version`, `name` を要求する。
 - Feature option は Features 仕様に従って env key に変換し、default option も export する。env key collision は error。
+- Feature metadata の `containerEnv` は、Feature layer Dockerfile の `ENV` として各 Feature の `install.sh` 実行前に適用し、後続 Feature と最終 image に継承する。`PATH="/tool:${PATH}"` のような Dockerfile environment replacement は Docker builder に委譲する。Feature 由来 `containerEnv` は container create / generated Compose override の `environment` には再投入せず、user/devcontainer/project 由来の `containerEnv` だけを runtime override として適用する。
 
 ## Container create/start と user
 

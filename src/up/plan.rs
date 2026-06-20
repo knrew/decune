@@ -43,6 +43,7 @@ use super::{
 };
 
 const FEATURE_ENTRYPOINT_SHIM_HASH_VERSION: &str = "3";
+const FEATURE_LAYER_HASH_VERSION: &str = "2";
 
 #[cfg(test)]
 pub(crate) fn build_up_plan(
@@ -712,6 +713,12 @@ pub(super) fn feature_lock_hash_inputs(
 }
 
 pub(super) fn add_internal_hash_versions(input: &mut ConfigHashInput<'_>, config: &ResolvedConfig) {
+    if !config.features.is_empty() {
+        input.internal_versions.insert(
+            "feature_layer".to_owned(),
+            FEATURE_LAYER_HASH_VERSION.to_owned(),
+        );
+    }
     if !config.devcontainer.entrypoints.is_empty() {
         input.internal_versions.insert(
             "feature_entrypoint_shim".to_owned(),
