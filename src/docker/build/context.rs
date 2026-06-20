@@ -38,16 +38,14 @@ pub(crate) fn resolve_build_context(
         "Docker build context",
     )?;
     let dockerfile_path = resolve_existing_file(devcontainer_dir, &build.dockerfile, "Dockerfile")?;
-    let dockerfile_in_context = dockerfile_path
-        .strip_prefix(&context_dir)
-        .with_context(|| {
-            format!(
-                "Dockerfile outside build context is unsupported in decune v0.1: {} is outside {}",
-                dockerfile_path.display(),
-                context_dir.display()
-            )
-        })?
-        .to_path_buf();
+    let dockerfile_in_context = match dockerfile_path.strip_prefix(&context_dir) {
+        Ok(path) => path.to_path_buf(),
+        Err(_) => bail!(
+            "Dockerfile outside build context is unsupported in decune v0.1: Dockerfile {} is outside build context {}. build.dockerfile must be under build.context because decune sends a generated tar context to docker build -. Workaround: set build.context to a parent directory that contains the Dockerfile, or move the Dockerfile into the context.",
+            dockerfile_path.display(),
+            context_dir.display()
+        ),
+    };
     let dockerignore_path = dockerignore_path(&context_dir, &dockerfile_path);
 
     Ok(ResolvedBuildContext {
@@ -545,6 +543,8 @@ mod tests {
         fs::create_dir_all(devcontainer_file.parent().unwrap()).unwrap();
         fs::write(root.join(".devcontainer/Dockerfile"), "FROM alpine\n").unwrap();
         fs::create_dir_all(root.join("app")).unwrap();
+        let dockerfile_path = root.join(".devcontainer/Dockerfile");
+        let context_path = root.join("app");
         let build = LayerDevcontainerBuild {
             dockerfile: "../.devcontainer/Dockerfile".to_owned(),
             context: Some("../app".to_owned()),
@@ -555,12 +555,17 @@ mod tests {
         };
 
         let error = resolve_build_context(root, &devcontainer_file, &build).unwrap_err();
+        let message = error.to_string();
 
+        assert!(message.contains("Dockerfile outside build context is unsupported in decune v0.1"));
+        assert!(message.contains(&dockerfile_path.display().to_string()));
+        assert!(message.contains(&context_path.display().to_string()));
+        assert!(message.contains("build.dockerfile must be under build.context"));
         assert!(
-            error
-                .to_string()
-                .contains("Dockerfile outside build context is unsupported in decune v0.1")
+            message
+                .contains("set build.context to a parent directory that contains the Dockerfile")
         );
+        assert!(message.contains("move the Dockerfile into the context"));
     }
 
     fn tempdir(name: &str) -> TempDir {

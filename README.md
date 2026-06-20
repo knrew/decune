@@ -32,6 +32,10 @@ v0.1 は image-based / Dockerfile-based / Docker Compose-based devcontainer を�
 - Windows host 向け公式配布
 - `cargo install` / `cargo install --git` を公式インストール手段として扱うこと
 
+## Known limitations
+
+- v0.1 の Dockerfile-based mode では、`build.dockerfile` が解決後の `build.context` 配下にある必要があります。decune は build context tar を生成して `docker build -` に渡すため、context 外の Dockerfile を tar 内の `--file` として参照できません。回避策は、`build.context` を Dockerfile を含む上位 directory にするか、Dockerfile を context 内に移動することです。
+
 詳細な仕様は [docs/specification.md](docs/specification.md) を参照してください。
 
 ## 必要なもの
