@@ -585,7 +585,6 @@ fn soft_order_feature_target(
     dependency: &str,
     property: &str,
 ) -> Result<FeatureDependencyTarget> {
-    ensure_feature_order_identifier_is_unpinned(dependency, property)?;
     dependency_feature_target(parent, dependency)
         .with_context(|| format!("Failed to resolve Feature {property} ref: {dependency}"))
 }
@@ -1988,17 +1987,52 @@ mod tests {
     }
 
     #[test]
-    fn feature_install_order_rejects_versioned_soft_order_ids() {
-        let installs_after_error = resolve_feature_install_order(
+    fn feature_install_order_allows_pinned_installs_after_when_dependency_is_missing() {
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let plan = resolve_feature_install_order(
+            vec![feature_install_input(
+                "ghcr.io/example/features/tool:1",
+                FeatureMetadata {
+                    installs_after: vec![
+                        "base:1".to_owned(),
+                        format!("ghcr.io/example/features/common@{digest}"),
+                    ],
+                    ..FeatureMetadata::default()
+                },
+            )],
+            &[],
+            missing_feature_dependency,
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["ghcr.io/example/features/tool:1"]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_matches_pinned_installs_after_by_canonical_id() {
+        let digest = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
+        let plan = resolve_feature_install_order(
             vec![
                 feature_install_input(
-                    "ghcr.io/example/features/base:1",
+                    "ghcr.io/example/features/tool:1",
                     FeatureMetadata::default(),
                 ),
                 feature_install_input(
-                    "ghcr.io/example/features/tool:1",
+                    &format!("ghcr.io/example/features/common@{digest}"),
+                    FeatureMetadata::default(),
+                ),
+                feature_install_input(
+                    "ghcr.io/example/features/lint:1",
                     FeatureMetadata {
-                        installs_after: vec!["base:1".to_owned()],
+                        installs_after: vec![
+                            "tool:2".to_owned(),
+                            format!("ghcr.io/example/features/common@{digest}"),
+                        ],
                         ..FeatureMetadata::default()
                     },
                 ),
@@ -2006,12 +2040,22 @@ mod tests {
             &[],
             missing_feature_dependency,
         )
-        .unwrap_err();
-        assert!(
-            installs_after_error.to_string().contains("installsAfter"),
-            "{installs_after_error:#}"
-        );
+        .unwrap();
 
+        assert_eq!(
+            plan.iter()
+                .map(|entry| entry.feature.canonical_id.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                "ghcr.io/example/features/common",
+                "ghcr.io/example/features/tool",
+                "ghcr.io/example/features/lint",
+            ]
+        );
+    }
+
+    #[test]
+    fn feature_install_order_rejects_versioned_override_order_ids() {
         let override_error = resolve_feature_install_order(
             vec![feature_install_input(
                 "ghcr.io/example/features/tool:1",
