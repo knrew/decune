@@ -83,7 +83,7 @@ decune up
 decune rebuild --no-cache
 ```
 
-decune が管理するコンテナまたは Compose プロジェクトを停止します。volume と状態は保持します。
+decune が管理するコンテナまたは Compose プロジェクトを停止します。volume、state、image は保持します。
 
 ```sh
 decune down
