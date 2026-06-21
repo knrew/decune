@@ -54,6 +54,13 @@ impl DockerResources {
     pub(crate) fn image_repository_for_workspace(workspace: &Workspace) -> String {
         docker_image_repository(workspace.safe_slug(), workspace.id())
     }
+
+    pub(crate) fn image_repository_for_slug_and_id(
+        safe_workspace_slug: &str,
+        workspace_id: &str,
+    ) -> String {
+        docker_image_repository(safe_workspace_slug, workspace_id)
+    }
 }
 
 #[cfg(test)]

@@ -190,6 +190,16 @@ impl DockerCli {
             .await
     }
 
+    pub(crate) async fn list_all_managed_container_inspects(
+        &self,
+    ) -> Result<Vec<ContainerInspect>> {
+        self.list_container_inspects_with_filters(
+            "decune-managed containers",
+            &["label=decune.managed=true".to_owned()],
+        )
+        .await
+    }
+
     pub(crate) async fn list_standalone_workspace_containers(
         &self,
         workspace_id: &str,
@@ -462,6 +472,34 @@ impl DockerCli {
             .collect())
     }
 
+    pub(crate) async fn list_all_managed_volume_inspects(
+        &self,
+    ) -> Result<Vec<DockerVolumeInspect>> {
+        let command = docker_cmd([
+            "volume",
+            "ls",
+            "--filter",
+            "label=decune.managed=true",
+            "--format",
+            "{{.Name}}",
+        ]);
+        let output = self.runner.run_capture(command.clone()).await?;
+        ensure_success(
+            "list decune-managed Docker volumes",
+            "decune-managed volumes",
+            &command,
+            &output,
+        )?;
+        let names = lines_from_output(output.stdout_string()?);
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let command = docker_cmd(["volume", "inspect"]).args(names.iter().map(String::as_str));
+        self.run_json_command("inspect Docker volumes", "decune-managed volumes", command)
+            .await
+    }
+
     pub(crate) async fn remove_volume(&self, volume: &str, force: bool) -> Result<()> {
         let mut command = docker_cmd(["volume", "rm"]);
         if force {
@@ -710,6 +748,13 @@ fn compose_project_name_from_labels(labels: &BTreeMap<String, String>) -> Option
 struct DockerPsRow {
     #[serde(rename = "ID")]
     id: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct DockerVolumeInspect {
+    pub(crate) name: Option<String>,
+    pub(crate) labels: Option<BTreeMap<String, String>>,
 }
 
 fn up_container_summary_from_inspect(container: ContainerInspect) -> Result<UpContainerSummary> {

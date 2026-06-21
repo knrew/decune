@@ -235,16 +235,22 @@ decune ports [--json] [WORKSPACE]
 ```text
 decune remove [--no-confirm] [--images] [WORKSPACE]
 decune rm     [--no-confirm] [--images] [WORKSPACE]
+decune remove [--no-confirm] [--images] --all-workspaces
+decune rm     [--no-confirm] [--images] --all-workspaces
 ```
 
 - image/Dockerfile モード: decune が管理する container、decune が管理する volume、state/runtime を削除する。`--images` 指定時だけ generated image を削除する。
 - Compose モード: decune が管理する Compose project を `docker compose down --volumes --remove-orphans` 相当で削除し、state/runtime を削除する。external volume/network は Compose の標準挙動に従い削除しない。`--images` 指定時だけ decune generated image を削除する。user が Compose file で指定した image を `--rmi all` で削除してはならない。
 - Compose モードで現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、または service rename 等で既存 resource と一致しない場合も、state または Docker label から decune が管理する Compose project を特定して削除する。
 - 現在の設定が Compose モードでも、同じ workspace に過去の image/Dockerfile モード由来で decune が管理する container や volume が残っている場合は削除する。
+- `--all-workspaces` は、すべての workspace で decune が管理する Dev Container 環境を削除する。`WORKSPACE` とは排他である。
+- `--all-workspaces` の探索対象は `decune.managed=true` と有効な `decune.workspace_id` を持つ Docker container / volume、および `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` の有効な state file とする。有効な workspace id は Docker label 由来・state directory 名由来のいずれも 12 桁の lowercase hex (`[0-9a-f]{12}`) に完全一致する値だけである。無効な label value や state directory 名は対象外として無視し、state/runtime path の組み立てに使わない。読み込めない state file は warning を出して無視する。
+- `--all-workspaces` で Compose project を削除する場合は、decune が管理する container の `com.docker.compose.project` label または decune state の `compose_project_name` から所有を確認できる project だけを対象にする。project name prefix だけでは user が管理する Compose project を対象にしない。
+- `--all-workspaces` は対象 workspace の state/runtime を削除する。workspace cache と共有 Feature archive cache は削除しない。
 
 `rm` は `remove` の alias とする。`--no-confirm` は確認プロンプトだけを省略し、decune が管理するリソースだけを対象にする安全境界や使用中のリソースの保護は迂回しない。
 
-TTY でない環境で `remove` を `--no-confirm` なしで実行した場合は、確認不能として error にする。
+削除対象がある状態で TTY でない環境から `remove` を `--no-confirm` なしで実行した場合は、確認不能として error にする。`--all-workspaces` で削除対象が 0 件の場合は、TTY でない環境でも確認せず success とする。
 
 ## devcontainer.json サポート
 
@@ -774,6 +780,8 @@ workspace id:
 ```text
 hex(sha256(canonical_workspace_path))[0..12]
 ```
+
+Docker/Compose label から読み取る `decune.workspace_id` は、12 桁の lowercase hex (`[0-9a-f]{12}`) に完全一致する場合だけ workspace identity や state/runtime path の解決に使う。
 
 image/Dockerfile モードの Docker resource name には workspace basename をそのまま使わず、ASCII safe slug と workspace id を組み合わせる。
 

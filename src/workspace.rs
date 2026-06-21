@@ -120,6 +120,29 @@ impl WorkspacePaths {
     }
 }
 
+pub(crate) fn decune_state_root() -> Result<PathBuf> {
+    Ok(PathRoots::from_env()?.state_root()?.join("decune"))
+}
+
+pub(crate) fn state_dir_for_workspace_id(workspace_id: &str) -> Result<PathBuf> {
+    Ok(decune_state_root()?.join(workspace_id))
+}
+
+pub(crate) fn runtime_dir_for_workspace_id(workspace_id: &str) -> Result<PathBuf> {
+    Ok(PathRoots::from_env()?.runtime_dir(workspace_id))
+}
+
+pub(crate) fn is_valid_workspace_id(value: &str) -> bool {
+    value.len() == WORKSPACE_ID_HEX_LEN
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+pub(crate) fn safe_workspace_slug_for_name(name: &str) -> String {
+    safe_workspace_slug(name)
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PathRoots {
     home: Option<PathBuf>,

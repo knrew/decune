@@ -69,6 +69,7 @@ fn remove_help_lists_no_confirm_and_not_force() {
             .success()
             .stdout(predicate::str::contains("--no-confirm"))
             .stdout(predicate::str::contains("--images"))
+            .stdout(predicate::str::contains("--all-workspaces"))
             .stdout(predicate::str::contains("--force").not())
             .stderr(predicate::str::is_empty());
     }
