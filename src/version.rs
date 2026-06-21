@@ -110,8 +110,8 @@ mod tests {
     #[test]
     fn runtime_dirty_on_build_commit_adds_dirty_suffix() {
         let metadata = BuildVersionMetadata {
-            package_version: "0.1.0",
-            display_version: "0.1.0",
+            package_version: "1.2.3",
+            display_version: "1.2.3",
             source_root: Some("/workspace/decune"),
             full_commit: Some("1234567890abcdef"),
             short_commit: Some("1234567890ab"),
@@ -124,15 +124,15 @@ mod tests {
 
         assert_eq!(
             display_version_from(&metadata, &probe),
-            "0.1.0+g1234567890ab.dirty"
+            "1.2.3+g1234567890ab.dirty"
         );
     }
 
     #[test]
     fn runtime_clean_release_tag_keeps_plain_package_version() {
         let metadata = BuildVersionMetadata {
-            package_version: "0.1.0",
-            display_version: "0.1.0",
+            package_version: "1.2.3",
+            display_version: "1.2.3",
             source_root: Some("/workspace/decune"),
             full_commit: Some("1234567890abcdef"),
             short_commit: Some("1234567890ab"),
@@ -143,14 +143,14 @@ mod tests {
             dirty: Some(false),
         };
 
-        assert_eq!(display_version_from(&metadata, &probe), "0.1.0");
+        assert_eq!(display_version_from(&metadata, &probe), "1.2.3");
     }
 
     #[test]
     fn runtime_clean_non_release_tag_keeps_commit_metadata() {
         let metadata = BuildVersionMetadata {
-            package_version: "0.1.0",
-            display_version: "0.1.0+g1234567890ab",
+            package_version: "1.2.3",
+            display_version: "1.2.3+g1234567890ab",
             source_root: Some("/workspace/decune"),
             full_commit: Some("1234567890abcdef"),
             short_commit: Some("1234567890ab"),
@@ -163,15 +163,15 @@ mod tests {
 
         assert_eq!(
             display_version_from(&metadata, &probe),
-            "0.1.0+g1234567890ab"
+            "1.2.3+g1234567890ab"
         );
     }
 
     #[test]
     fn runtime_missing_source_root_falls_back_to_build_display_version() {
         let metadata = BuildVersionMetadata {
-            package_version: "0.1.0",
-            display_version: "0.1.0+g1234567890ab",
+            package_version: "1.2.3",
+            display_version: "1.2.3+g1234567890ab",
             source_root: None,
             full_commit: Some("1234567890abcdef"),
             short_commit: Some("1234567890ab"),
@@ -184,15 +184,15 @@ mod tests {
 
         assert_eq!(
             display_version_from(&metadata, &probe),
-            "0.1.0+g1234567890ab"
+            "1.2.3+g1234567890ab"
         );
     }
 
     #[test]
     fn runtime_head_mismatch_falls_back_to_build_display_version() {
         let metadata = BuildVersionMetadata {
-            package_version: "0.1.0",
-            display_version: "0.1.0+g1234567890ab",
+            package_version: "1.2.3",
+            display_version: "1.2.3+g1234567890ab",
             source_root: Some("/workspace/decune"),
             full_commit: Some("1234567890abcdef"),
             short_commit: Some("1234567890ab"),
@@ -205,15 +205,15 @@ mod tests {
 
         assert_eq!(
             display_version_from(&metadata, &probe),
-            "0.1.0+g1234567890ab"
+            "1.2.3+g1234567890ab"
         );
     }
 
     #[test]
     fn runtime_git_failure_falls_back_to_build_display_version() {
         let metadata = BuildVersionMetadata {
-            package_version: "0.1.0",
-            display_version: "0.1.0+g1234567890ab",
+            package_version: "1.2.3",
+            display_version: "1.2.3+g1234567890ab",
             source_root: Some("/workspace/decune"),
             full_commit: Some("1234567890abcdef"),
             short_commit: Some("1234567890ab"),
@@ -226,7 +226,7 @@ mod tests {
 
         assert_eq!(
             display_version_from(&metadata, &probe),
-            "0.1.0+g1234567890ab"
+            "1.2.3+g1234567890ab"
         );
     }
 

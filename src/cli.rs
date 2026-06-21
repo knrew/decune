@@ -433,7 +433,7 @@ fn parse_port_protocol(value: &str) -> std::result::Result<(&str, PortProtocol),
         None => Ok((value, PortProtocol::Tcp)),
         Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
         Some((_, protocol)) => Err(format!(
-            "unsupported manual port protocol: {protocol}. decune v0.1 supports tcp only"
+            "unsupported manual port protocol: {protocol}. decune supports tcp only"
         )),
     }
 }
@@ -878,7 +878,7 @@ mod tests {
         assert!(
             error
                 .to_string()
-                .contains("unsupported manual port protocol: udp. decune v0.1 supports tcp only")
+                .contains("unsupported manual port protocol: udp. decune supports tcp only")
         );
     }
 

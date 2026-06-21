@@ -276,7 +276,7 @@ fn parse_forwarding_port_protocol(value: &str) -> Result<(&str, PortProtocol)> {
         None => Ok((value, PortProtocol::Tcp)),
         Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
         Some((_, protocol)) => Err(anyhow!(
-            "Unsupported devcontainer port protocol: {protocol}. decune v0.1 supports tcp only"
+            "Unsupported devcontainer port protocol: {protocol}. decune supports tcp only"
         )),
     }
 }
@@ -286,7 +286,7 @@ fn parse_publish_port_protocol(value: &str) -> Result<(&str, PortProtocol)> {
         None => Ok((value, PortProtocol::Tcp)),
         Some((port, "tcp")) => Ok((port, PortProtocol::Tcp)),
         Some((_, protocol)) => Err(anyhow!(
-            "Unsupported devcontainer port protocol: {protocol}. decune v0.1 supports tcp only"
+            "Unsupported devcontainer port protocol: {protocol}. decune supports tcp only"
         )),
     }
 }
@@ -382,9 +382,11 @@ mod tests {
         )
         .unwrap_err();
 
-        assert!(error.to_string().contains(
-            "Unsupported devcontainer port protocol: udp. decune v0.1 supports tcp only"
-        ));
+        assert!(
+            error
+                .to_string()
+                .contains("Unsupported devcontainer port protocol: udp. decune supports tcp only")
+        );
     }
 
     #[test]
@@ -532,9 +534,11 @@ mod tests {
         ))
         .unwrap_err();
 
-        assert!(error.to_string().contains(
-            "Unsupported devcontainer port protocol: udp. decune v0.1 supports tcp only"
-        ));
+        assert!(
+            error
+                .to_string()
+                .contains("Unsupported devcontainer port protocol: udp. decune supports tcp only")
+        );
     }
 
     #[test]

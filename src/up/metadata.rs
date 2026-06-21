@@ -1372,12 +1372,12 @@ fn unsupported_single_port_attribute_warnings(
 
     if let Some(protocol) = &attributes.unsupported_protocol {
         warnings.push(format!(
-            "{path}.protocol is ignored in decune v0.1 (value: {protocol}); raw TCP forwarding only supports label, onAutoForward, and requireLocalPort."
+            "{path}.protocol is ignored (value: {protocol}); raw TCP forwarding only supports label, onAutoForward, and requireLocalPort."
         ));
     }
     if attributes.unsupported_elevate_if_needed.is_some() {
         warnings.push(format!(
-            "{path}.elevateIfNeeded is ignored in decune v0.1; low-port privilege elevation is not supported."
+            "{path}.elevateIfNeeded is ignored; low-port privilege elevation is not supported."
         ));
     }
 
