@@ -7,7 +7,7 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 ## 主な機能
 
 - `decune up` で development container を起動し、remote user のシェルに接続
-- `decune rebuild` / `decune down` / `decune clean` による明示的なライフサイクル管理
+- `decune rebuild` / `decune down` / `decune remove` による明示的なライフサイクル管理
 - `decune ports` で実行中の port forwarding の対応関係を確認
 - `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
 - image-based / Dockerfile-based / Docker Compose-based の Dev Container 構成を起動
@@ -89,10 +89,10 @@ decune が管理するコンテナまたは Compose プロジェクトを停止�
 decune down
 ```
 
-decune が管理するリソースを削除します。
+decune が管理する Dev Container 環境を削除します。
 
 ```sh
-decune clean --force
+decune remove --no-confirm
 ```
 
 Dockerfile-based / Docker Compose-based の例は [docs/usage.md](docs/usage.md#クイックスタート) を参照してください。
@@ -109,7 +109,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `decune rebuild`: development container または Compose プロジェクトを再作成
 - `decune down`: decune が管理するリソースを停止し、volume、状態、image を保持
 - `decune ports`: `--detach` なしで実行中の `decune up` が維持している port forwarding の対応関係を表示
-- `decune clean`: decune が管理するリソースを削除。`--images` で decune が生成した image も削除
+- `decune remove` / `decune rm`: decune が管理する Dev Container 環境を削除。`--images` で decune が生成した image も削除
 
 実際にインストールされた CLI のリファレンスは `decune --help` または `decune <COMMAND> --help` で確認してください。詳しい利用手順は [docs/usage.md](docs/usage.md#コマンド) を参照してください。
 

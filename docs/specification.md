@@ -43,7 +43,7 @@ README と usage はこの仕様を要約できるが、この仕様と矛盾す
 - manual port forwarding と automatic port forwarding。
 - Linux host での `updateRemoteUserUID` による UID/GID sync。
 - lifecycle command と decune 固有 hooks。
-- `up`、`rebuild`、`down`、`clean` コマンド。
+- `up`、`rebuild`、`down`、`remove` / `rm`、`ports` コマンド。
 - GitHub Releases のビルド済みアーカイブによる公式配布。
 
 ### Docker Compose サポートの定義
@@ -166,7 +166,7 @@ decune up [OPTIONS] [WORKSPACE]
 
 - `--config <PATH>`: `devcontainer.json` を明示する。relative path は workspace root 相対。
 - `--detach`: shell に接続せず起動だけ行う。
-- `--rebuild`: 既存 container/project を破棄または再作成する。decune 管理 volume は保持する。
+- `--rebuild`: 既存 container/project を破棄または再作成する。decune が管理する volume は保持する。
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
 - `--pull`: base image または Compose service image を pull してから build/create する。Compose モードでは config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-global-config`: global decune config を適用しない。
@@ -181,7 +181,7 @@ decune up [OPTIONS] [WORKSPACE]
 decune rebuild [OPTIONS] [WORKSPACE]
 ```
 
-`up --rebuild` と同等の明示サブコマンドである。既存 container/project を停止・削除または force recreate し、再 build/create/start する。decune 管理 volume は保持する。
+`up --rebuild` と同等の明示サブコマンドである。既存 container/project を停止・削除または force recreate し、再 build/create/start する。decune が管理する volume は保持する。
 
 主なオプション:
 
@@ -201,10 +201,10 @@ Compose モードでは、`docker compose build` と `docker compose up -d --for
 decune down [--timeout <SECONDS>] [WORKSPACE]
 ```
 
-- image/Dockerfile モード: decune 管理 container を停止する。volume、state、image は削除しない。
-- Compose モード: decune 管理 Compose project を停止する。volume、state、image は削除しない。`runServices` 指定時も、Compose が `depends_on` 等で起動した dependency service を残さないよう project 全体を停止対象にする。
-- Compose モードで現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、または service rename 等で既存 resource と一致しない場合も、state または Docker label から decune 管理 Compose project を特定して停止する。
-- 現在の設定が Compose モードでも、同じ workspace に過去の image/Dockerfile モード由来の decune-managed container が残っている場合は停止する。
+- image/Dockerfile モード: decune が管理する container を停止する。volume、state、image は削除しない。
+- Compose モード: decune が管理する Compose project を停止する。volume、state、image は削除しない。`runServices` 指定時も、Compose が `depends_on` 等で起動した dependency service を残さないよう project 全体を停止対象にする。
+- Compose モードで現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、または service rename 等で既存 resource と一致しない場合も、state または Docker label から decune が管理する Compose project を特定して停止する。
+- 現在の設定が Compose モードでも、同じ workspace に過去の image/Dockerfile モード由来で decune が管理する container が残っている場合は停止する。
 
 明示的な `decune down` は `shutdownAction` に関係なく停止を行う。
 
@@ -230,18 +230,21 @@ decune ports [--json] [WORKSPACE]
 
 `--json` は `host_ip`、`host_port`、`requested_host_port`、`service`、`container_port`、`protocol`、`source`、`label` を持つ JSON array を stdout に出力する。
 
-### `clean`
+### `remove` / `rm`
 
 ```text
-decune clean [--force] [--images] [WORKSPACE]
+decune remove [--no-confirm] [--images] [WORKSPACE]
+decune rm     [--no-confirm] [--images] [WORKSPACE]
 ```
 
-- image/Dockerfile モード: managed container、managed volume、state/runtime を削除する。`--images` 指定時だけ generated image を削除する。
-- Compose モード: managed Compose project を `docker compose down --volumes --remove-orphans` 相当で削除し、state/runtime を削除する。external volume/network は Compose の標準挙動に従い削除しない。`--images` 指定時だけ decune generated image を削除する。user が Compose file で指定した image を `--rmi all` で削除してはならない。
-- Compose モードで現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、または service rename 等で既存 resource と一致しない場合も、state または Docker label から decune 管理 Compose project を特定して削除する。
-- 現在の設定が Compose モードでも、同じ workspace に過去の image/Dockerfile モード由来の decune-managed container や managed volume が残っている場合は削除する。
+- image/Dockerfile モード: decune が管理する container、decune が管理する volume、state/runtime を削除する。`--images` 指定時だけ generated image を削除する。
+- Compose モード: decune が管理する Compose project を `docker compose down --volumes --remove-orphans` 相当で削除し、state/runtime を削除する。external volume/network は Compose の標準挙動に従い削除しない。`--images` 指定時だけ decune generated image を削除する。user が Compose file で指定した image を `--rmi all` で削除してはならない。
+- Compose モードで現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、または service rename 等で既存 resource と一致しない場合も、state または Docker label から decune が管理する Compose project を特定して削除する。
+- 現在の設定が Compose モードでも、同じ workspace に過去の image/Dockerfile モード由来で decune が管理する container や volume が残っている場合は削除する。
 
-TTY でない `clean` without `--force` は確認不能として error にする。
+`rm` は `remove` の alias とする。`--no-confirm` は確認プロンプトだけを省略し、decune が管理するリソースだけを対象にする安全境界や使用中のリソースの保護は迂回しない。
+
+TTY でない環境で `remove` を `--no-confirm` なしで実行した場合は、確認不能として error にする。
 
 ## devcontainer.json サポート
 
@@ -273,7 +276,7 @@ workspace root から以下の順で検出する。
 | `build.dockerfile` | no | yes | no | Dockerfile-based モード |
 | `build.context` | no | yes | no | `devcontainer.json` からの相対 path |
 | `build.args` | no | yes | no | string value のみ |
-| `build.options` | no | partial | no | Docker build argv に渡す。decune 管理 option と context path は不可 |
+| `build.options` | no | partial | no | Docker build argv に渡す。decune が管理する option と context path は不可 |
 | `build.target` | no | yes | no | multi-stage build target |
 | `build.cacheFrom` | no | partial | no | Docker CLI で扱える形式 |
 | `dockerComposeFile` | no | no | yes | string / string array。local path のみ |
@@ -303,7 +306,7 @@ workspace root から以下の順で検出する。
 | lifecycle commands | yes | yes | yes | Feature metadata 由来 command は user command より前に実行 |
 | `waitFor` | partial | partial | partial | parse するが attached `up` は `postAttachCommand` まで同期実行 |
 | `name` | ignored | ignored | ignored | runtime behavior には使わない |
-| `shutdownAction` | partial | partial | partial | attached `up` 終了時に適用。明示 `down` / `clean` が正 |
+| `shutdownAction` | partial | partial | partial | attached `up` 終了時に適用。明示 `down` / `remove` が正 |
 | `hostRequirements` | ignored | ignored | ignored | warning |
 | `customizations` | ignored | ignored | ignored | preserve するが実行しない |
 
@@ -424,7 +427,7 @@ Generated override file は user の `dockerComposeFile` より後に `-f` で�
 - `runServices` 指定あり: primary `service` と `runServices` の和集合を service 引数として `docker compose up -d <services...>` に渡す。
 - image / Dockerfile mode、または `dockerComposeFile` と `service` が揃っていない構成で `runServices` を指定した場合は error とする。
 - service dependencies の起動順、`depends_on`、healthcheck、profiles の扱いは Compose CLI に委譲する。
-- `down` / attached `up` 終了時の `stopCompose` は、`runServices` の service 引数で対象を狭めず、Compose project 全体を停止する。これは Compose が `depends_on` 等で暗黙に起動した dependency service を残さないためである。`clean` は project 全体を削除対象にする。
+- `down` / attached `up` 終了時の `stopCompose` は、`runServices` の service 引数で対象を狭めず、Compose project 全体を停止する。これは Compose が `depends_on` 等で暗黙に起動した dependency service を残さないためである。`remove` は project 全体を削除対象にする。
 
 ### Build / pull / recreate
 
@@ -445,7 +448,7 @@ Dockerfile-based モードの `build.options` は、Docker build の context 引
 
 `--platform`、`--ssh`、`--secret`、`--add-host`、`--network` など Docker CLI に委譲できる build option は指定できる。ただし `build.options` の値は argv に出るため、secret 文字列そのものを直接書かない。secret は `--secret id=npm,env=NPM_TOKEN` のように host 環境変数や file path を参照する形にする。
 
-`rebuild` は generated image と Compose service を再作成する。anonymous volume は保持する。`clean --images` 以外で user image や Compose service image を削除してはならない。
+`rebuild` は generated image と Compose service を再作成する。anonymous volume は保持する。`remove --images` 以外で user image や Compose service image を削除してはならない。
 
 ### shutdownAction
 
@@ -460,7 +463,7 @@ attached `up` で shell が終了したとき:
 - `stopContainer`: primary container だけ停止する。
 - `stopCompose`: Compose モードでは Compose project 全体を停止する。image/Dockerfile モードでは `stopContainer` と同じ。
 
-明示的な `decune down` / `decune clean` は user 操作として扱い、`shutdownAction` によって no-op にはしない。
+明示的な `decune down` / `decune remove` は user 操作として扱い、`shutdownAction` によって no-op にはしない。
 
 ## decune TOML 設定
 
@@ -905,7 +908,7 @@ Compose モードでは SSH agent socket mount は primary service にのみ追�
 
 ### GitHub CLI
 
-host の `gh auth token` が成功した場合、token を runtime directory に mode 0600 の file として作り、container には `/run/decune/secrets/github-token` として read-only mount する。`GH_CONFIG_DIR=/run/decune/gh` は writable ephemeral directory とする。token file は `up` 終了時に scrub し、`down` / `clean` で削除する。
+host の `gh auth token` が成功した場合、token を runtime directory に mode 0600 の file として作り、container には `/run/decune/secrets/github-token` として read-only mount する。`GH_CONFIG_DIR=/run/decune/gh` は writable ephemeral directory とする。token file は `up` 終了時に scrub し、`down` / `remove` で削除する。
 
 Compose モードでは GitHub token file mount は primary service にのみ追加する。
 
@@ -979,7 +982,7 @@ Security note:
 
 コントリビューター向けの検証コマンドは [development.md](development.md) に置く。この仕様の test coverage は、少なくとも以下の挙動グループを含める。
 
-- image-based / Dockerfile-based / Docker Compose-based の `up` / `rebuild` / `down` / `clean`。
+- image-based / Dockerfile-based / Docker Compose-based の `up` / `rebuild` / `down` / `remove`。
 - Dockerfile build の入力、`.dockerignore` の扱い、`--no-cache`、`--pull`、未対応の Dockerfile/context 組み合わせ。
 - Compose の `dockerComposeFile`、`service`、`runServices`、profiles、複数 file の merge、generated override の挙動、project cleanup の安全性。
 - Feature 解決、lock の扱い、metadata merge、option env/default の扱い、local Feature の制約、UID/GID sync、entrypoint shim の挙動。

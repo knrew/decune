@@ -272,7 +272,7 @@ pub(crate) async fn create_term_marker_container(workspace_root: &Path) -> anyho
     ensure_alpine_image(&docker).await?;
 
     let workspace_id = workspace_id(workspace_root);
-    let name = format!("decune-clean-term-test-{workspace_id}");
+    let name = format!("decune-remove-term-test-{workspace_id}");
     let _ = docker_status(["rm", "--force", "--volumes", &name]);
     docker_status([
         "create",
