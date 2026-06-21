@@ -26,7 +26,7 @@ license      = "MIT"
 publish      = false
 repository   = "https://github.com/knrew/decune"
 rust-version = "1.95"
-version      = "0.1.0"
+version      = "0.2.0"
 
 [profile.dist]
 codegen-units = 1
