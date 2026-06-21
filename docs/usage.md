@@ -8,7 +8,7 @@
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.1.0/scripts/install.sh | sh -s -- --version 0.1.0 --dir "$HOME/.local/bin"
+curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.2.0/scripts/install.sh | sh -s -- --version 0.2.0 --dir "$HOME/.local/bin"
 ```
 
 `$HOME/.local/bin` が `PATH` に含まれていない場合は、利用しているシェルの設定で追加してください。
@@ -18,7 +18,7 @@ curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.1.0/scripts/install
 ホストに合う target triple を選び、チェックサムを検証してからインストールします。
 
 ```sh
-version=0.1.0
+version=0.2.0
 target=x86_64-unknown-linux-musl
 archive="decune-v${version}-${target}.tar.gz"
 base="https://github.com/knrew/decune/releases/download/v${version}"

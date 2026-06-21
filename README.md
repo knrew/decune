@@ -47,7 +47,7 @@ Linux / macOS ホストと Docker CLI / Docker Compose v2 を対象にします�
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.1.0/scripts/install.sh | sh -s -- --version 0.1.0 --dir "$HOME/.local/bin"
+curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.2.0/scripts/install.sh | sh -s -- --version 0.2.0 --dir "$HOME/.local/bin"
 ```
 
 `$HOME/.local/bin` が `PATH` に含まれていない場合は、利用しているシェルの設定で追加してください。
