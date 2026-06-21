@@ -5,6 +5,7 @@ mod docker;
 mod down;
 mod error;
 mod host;
+mod ports;
 mod runtime;
 mod state;
 mod terminal;

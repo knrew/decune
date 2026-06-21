@@ -10,10 +10,11 @@ use crate::{
     docker::exec::{ExecCommandSpec, exec_capture, exec_detached},
     docker::ports::ResolvedForwardPort,
     host::forward::{
-        AutoForwardConfig, ForwardAgentStatus, ForwardSession, forward_agent_command_at,
-        forward_agent_session_socket_name, forward_agent_socket_target_from_name,
-        new_forward_agent_secret, new_forward_agent_socket_id, service_forward_runtime_dir,
-        start_forward_session_with_auto, wait_for_forward_agent_with_status,
+        AutoForwardConfig, ForwardAgentStatus, ForwardSession, ForwardStatusRegistry,
+        ForwardStatusServer, forward_agent_command_at, forward_agent_session_socket_name,
+        forward_agent_socket_target_from_name, forward_status_dir, new_forward_agent_secret,
+        new_forward_agent_socket_id, service_forward_runtime_dir, start_forward_session_with_auto,
+        start_forward_status_server, wait_for_forward_agent_with_status,
     },
     runtime::compose_cli::{ComposeIntrospector, ComposePsContainer},
     ui,
@@ -41,9 +42,13 @@ pub(in crate::up) async fn start_forwarding_for_up(
         return Ok(None);
     }
 
+    let status_server =
+        start_forward_status_server(forward_status_dir(started.workspace.paths().runtime_dir()))
+            .await?;
+    let status_registry = status_server.registry();
     let mut sessions = Vec::new();
     for target in targets {
-        match start_forwarding_target(started, target).await {
+        match start_forwarding_target(started, target, status_registry.clone()).await {
             Ok(session) => sessions.push(session),
             Err(error) => {
                 stop_started_forward_sessions(sessions).await;
@@ -52,12 +57,16 @@ pub(in crate::up) async fn start_forwarding_for_up(
         }
     }
 
-    Ok(Some(ForwardingSession { sessions }))
+    Ok(Some(ForwardingSession {
+        sessions,
+        status_server: Some(status_server),
+    }))
 }
 
 async fn start_forwarding_target(
     started: &StartedUpContainer,
     target: ForwardingAgentTarget,
+    status_registry: ForwardStatusRegistry,
 ) -> Result<ForwardSession> {
     let secret = new_forward_agent_secret()?;
     let socket_id = new_forward_agent_socket_id()?;
@@ -91,6 +100,7 @@ async fn start_forwarding_target(
         target.auto_forward,
         agent_socket_path,
         secret,
+        Some(status_registry),
     )
     .await
     .context("Failed to start port forwarding listeners")
@@ -110,12 +120,16 @@ pub(in crate::up) async fn stop_forwarding(forwarding: Option<ForwardingSession>
 
 pub(in crate::up) struct ForwardingSession {
     sessions: Vec<ForwardSession>,
+    status_server: Option<ForwardStatusServer>,
 }
 
 impl ForwardingSession {
-    pub(crate) async fn stop(self) {
-        for session in self.sessions {
+    pub(crate) async fn stop(mut self) {
+        for session in self.sessions.drain(..) {
             session.stop().await;
+        }
+        if let Some(status_server) = self.status_server.take() {
+            status_server.stop().await;
         }
     }
 }

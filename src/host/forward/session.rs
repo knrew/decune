@@ -16,6 +16,7 @@ use crate::{config::types::PortProtocol, docker::ports::ResolvedForwardPort, ui}
 use super::{
     agent::{send_agent_shutdown, write_agent_request},
     auto::{AutoForwardConfig, run_auto_forward_loop},
+    status::{ForwardStatusRegistry, ForwardStatusSource},
 };
 
 #[derive(Debug)]
@@ -51,6 +52,7 @@ pub(crate) async fn start_forward_session_with_auto(
     auto_forward: Option<AutoForwardConfig>,
     agent_socket_path: PathBuf,
     secret: String,
+    status_registry: Option<ForwardStatusRegistry>,
 ) -> Result<ForwardSession> {
     let listeners = match start_forward_listeners(forward_ports, &agent_socket_path, &secret).await
     {
@@ -64,12 +66,18 @@ pub(crate) async fn start_forward_session_with_auto(
         .iter()
         .map(|listener| listener.port.clone())
         .collect::<Vec<_>>();
+    if let Some(registry) = &status_registry {
+        for port in &active_forward_ports {
+            registry.record(port, ForwardStatusSource::Configured);
+        }
+    }
     let auto_task = auto_forward.map(|config| {
         tokio::spawn(run_auto_forward_loop(
             active_forward_ports,
             config,
             agent_socket_path.clone(),
             secret.clone(),
+            status_registry.clone(),
         ))
     });
 
@@ -310,6 +318,7 @@ mod tests {
                 None,
                 agent_socket.clone(),
                 "test-secret".to_owned(),
+                None,
             )
             .await
             .unwrap();
@@ -354,6 +363,7 @@ mod tests {
                 None,
                 agent_socket,
                 "test-secret".to_owned(),
+                None,
             )
             .await
             .unwrap();
@@ -397,6 +407,7 @@ mod tests {
                 None,
                 agent_socket.clone(),
                 "test-secret".to_owned(),
+                None,
             )
             .await
             .unwrap();
@@ -440,6 +451,7 @@ mod tests {
                 None,
                 agent_socket.clone(),
                 "test-secret".to_owned(),
+                None,
             )
             .await
             .unwrap_err();
