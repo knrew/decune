@@ -14,8 +14,10 @@ use serde::Serialize;
 
 use crate::{
     devcontainer::features::FeatureCacheLock,
-    docker::client::DockerClient,
-    down::{managed_workspace_id_from_container, managed_workspace_id_from_labels},
+    docker::{
+        client::DockerClient,
+        resource::{managed_workspace_id_from_container, managed_workspace_id_from_labels},
+    },
     host::forward::forward_status_dir,
     ui,
     workspace::{

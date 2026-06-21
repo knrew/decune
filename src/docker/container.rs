@@ -203,9 +203,17 @@ pub(crate) struct ContainerInspectConfig {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct ContainerState {
+    pub(crate) status: Option<String>,
     pub(crate) running: Option<bool>,
     pub(crate) exit_code: Option<i64>,
     pub(crate) pid: Option<i64>,
+    pub(crate) health: Option<ContainerHealth>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ContainerHealth {
+    pub(crate) status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
