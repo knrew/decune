@@ -216,7 +216,7 @@ decune remove --all-workspaces --no-confirm
 
 指定した workspace に対応する、decune が管理する Dev Container 環境を削除します。対象は decune が管理するコンテナまたは Compose プロジェクト、decune が管理する volume、decune の状態ファイルと実行時ファイルです。`--images` を付けると decune が生成した image も削除します。Compose モードでは利用者が Compose file で指定した image を削除しません。
 
-`--all-workspaces` は、Docker label と decune state から見つかるすべての workspace について、通常の `remove` と同じ削除処理を適用します。Docker label 上の workspace id が decune の有効な形式でない resource は無視します。state file と runtime file は削除し、workspace cache と共有 Feature archive cache は削除しません。`--all-workspaces` と `WORKSPACE` は同時に指定できません。
+`--all-workspaces` は、Docker label と decune state から見つかるすべての workspace について、通常の `remove` と同じ削除処理を適用します。Docker label 上または state directory 名の workspace id が decune の有効な形式でない resource / state は無視します。state file と runtime file は削除し、workspace cache と共有 Feature archive cache は削除しません。`--all-workspaces` と `WORKSPACE` は同時に指定できません。
 
 `--no-confirm` は確認プロンプトだけを省略します。削除対象は decune が管理するリソースに限定され、利用者が管理する image / volume を削除しない挙動は変わりません。
 

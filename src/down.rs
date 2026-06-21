@@ -499,6 +499,14 @@ fn load_all_workspace_states() -> Result<Vec<StateRemovalEntry>> {
         else {
             continue;
         };
+        if !is_valid_workspace_id(&workspace_id) {
+            if path.join("state.toml").is_file() {
+                ui::warn(&format!(
+                    "Ignoring decune state directory with invalid workspace id: {workspace_id}"
+                ));
+            }
+            continue;
+        }
         match load_state_file(&path) {
             Ok(Some(state)) => states.push(StateRemovalEntry {
                 workspace_id,

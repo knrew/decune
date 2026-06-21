@@ -665,6 +665,113 @@ exit 91
 }
 
 #[test]
+fn remove_all_workspaces_ignores_invalid_state_directory_workspace_ids() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let bin_dir = temp.path().join("bin");
+    let state_home = temp.path().join("state");
+    let runtime_home = temp.path().join("runtime");
+    let invalid_workspace_id = "not-a-workspace";
+    let invalid_state_dir = state_home.join("decune").join(invalid_workspace_id);
+    let invalid_runtime_dir = runtime_home.join("decune").join(invalid_workspace_id);
+    let state_workspace = temp.path().join("state-workspace");
+    let command_log = temp.path().join("docker.log");
+    fs::create_dir_all(&bin_dir).unwrap();
+    fs::create_dir_all(&invalid_state_dir).unwrap();
+    fs::create_dir_all(&invalid_runtime_dir).unwrap();
+    fs::create_dir_all(&state_workspace).unwrap();
+    fs::write(invalid_state_dir.join("marker"), "keep\n").unwrap();
+    fs::write(invalid_runtime_dir.join("marker"), "keep\n").unwrap();
+    fs::write(
+        invalid_state_dir.join("state.toml"),
+        format!(
+            r#"version = 1
+workspace = "{}"
+container_id = "state-container"
+image = "decune/state-workspace-not-a-workspace:statehash"
+config_hash = "statehash"
+compose_project_name = "user-owned"
+created_at = "unix:1"
+last_started_at = "unix:1"
+"#,
+            state_workspace.display()
+        ),
+    )
+    .unwrap();
+    let docker_path = bin_dir.join("docker");
+    fs::write(
+        &docker_path,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+
+if [ "${1:-}" = ps ]; then
+  case "$*" in
+    *"label=decune.managed=true"*)
+      exit 0
+      ;;
+    *"label=com.docker.compose.project=user-owned"*)
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
+  case "$*" in
+    *"label=decune.managed=true"*)
+      exit 0
+      ;;
+    *"label=com.docker.compose.project=user-owned"*)
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "${1:-}" = network ] && [ "${2:-}" = ls ]; then
+  case "$*" in
+    *"label=com.docker.compose.project=user-owned"*)
+      exit 0
+      ;;
+  esac
+fi
+
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_RUNTIME_DIR", &runtime_home)
+        .args(["remove", "--all-workspaces", "--no-confirm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "No decune-managed workspace environments found",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(invalid_state_dir.join("marker")).unwrap(),
+        "keep\n"
+    );
+    assert_eq!(
+        fs::read_to_string(invalid_runtime_dir.join("marker")).unwrap(),
+        "keep\n"
+    );
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(!commands.contains("user-owned"), "{commands}");
+}
+
+#[test]
 fn remove_all_workspaces_no_confirm_removes_owned_resources_and_images() {
     let temp = support::TempWorkspace::new().unwrap();
     let bin_dir = temp.path().join("bin");

@@ -244,7 +244,7 @@ decune rm     [--no-confirm] [--images] --all-workspaces
 - Compose モードで現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、または service rename 等で既存 resource と一致しない場合も、state または Docker label から decune が管理する Compose project を特定して削除する。
 - 現在の設定が Compose モードでも、同じ workspace に過去の image/Dockerfile モード由来で decune が管理する container や volume が残っている場合は削除する。
 - `--all-workspaces` は、すべての workspace で decune が管理する Dev Container 環境を削除する。`WORKSPACE` とは排他である。
-- `--all-workspaces` の探索対象は `decune.managed=true` と有効な `decune.workspace_id` を持つ Docker container / volume、および `$XDG_STATE_HOME/decune/*/state.toml` の有効な state file とする。有効な Docker label 由来 workspace id は 12 桁の lowercase hex (`[0-9a-f]{12}`) に完全一致する値だけである。無効な label value は対象外として無視し、state/runtime path の組み立てに使わない。読み込めない state file は warning を出して無視する。
+- `--all-workspaces` の探索対象は `decune.managed=true` と有効な `decune.workspace_id` を持つ Docker container / volume、および `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` の有効な state file とする。有効な workspace id は Docker label 由来・state directory 名由来のいずれも 12 桁の lowercase hex (`[0-9a-f]{12}`) に完全一致する値だけである。無効な label value や state directory 名は対象外として無視し、state/runtime path の組み立てに使わない。読み込めない state file は warning を出して無視する。
 - `--all-workspaces` で Compose project を削除する場合は、decune が管理する container の `com.docker.compose.project` label または decune state の `compose_project_name` から所有を確認できる project だけを対象にする。project name prefix だけでは user が管理する Compose project を対象にしない。
 - `--all-workspaces` は対象 workspace の state/runtime を削除する。workspace cache と共有 Feature archive cache は削除しない。
 
