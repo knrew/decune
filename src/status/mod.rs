@@ -664,6 +664,14 @@ fn config_status(
         return ConfigStatus::Unreadable;
     }
     if let Some(current_hash) = current_config.and_then(|config| config.config_hash.as_deref()) {
+        let hashes = docker_config_hashes(evidence);
+        if !hashes.is_empty() {
+            return if hashes.len() == 1 && hashes.contains(current_hash) {
+                ConfigStatus::Current
+            } else {
+                ConfigStatus::NeedsRebuild
+            };
+        }
         if let Some(state) = state {
             return if state.config_hash == current_hash {
                 ConfigStatus::Current
@@ -671,19 +679,7 @@ fn config_status(
                 ConfigStatus::NeedsRebuild
             };
         }
-        let hashes = evidence
-            .containers
-            .iter()
-            .filter_map(|container| container.config_hash.as_deref())
-            .collect::<BTreeSet<_>>();
-        if hashes.is_empty() {
-            return ConfigStatus::Current;
-        }
-        return if hashes.len() == 1 && hashes.contains(current_hash) {
-            ConfigStatus::Current
-        } else {
-            ConfigStatus::NeedsRebuild
-        };
+        return ConfigStatus::Current;
     }
     if state.is_none() && has_docker_evidence(evidence) {
         return ConfigStatus::Missing;
@@ -694,11 +690,7 @@ fn config_status(
     let Some(state) = state else {
         return ConfigStatus::Unknown;
     };
-    let hashes = evidence
-        .containers
-        .iter()
-        .filter_map(|container| container.config_hash.as_deref())
-        .collect::<BTreeSet<_>>();
+    let hashes = docker_config_hashes(evidence);
     if hashes.is_empty() {
         return ConfigStatus::Unknown;
     }
@@ -707,6 +699,14 @@ fn config_status(
     } else {
         ConfigStatus::NeedsRebuild
     }
+}
+
+fn docker_config_hashes(evidence: &WorkspaceEvidence) -> BTreeSet<&str> {
+    evidence
+        .containers
+        .iter()
+        .filter_map(|container| container.config_hash.as_deref())
+        .collect()
 }
 
 fn health_status(evidence: &WorkspaceEvidence, docker_unavailable: bool) -> HealthStatus {
@@ -1574,6 +1574,71 @@ mod tests {
     }
 
     #[test]
+    fn current_config_uses_docker_label_hash_before_state_hash() {
+        let workspace = workspace_status_with_config(
+            WORKSPACE_ID.to_owned(),
+            WorkspaceEvidence {
+                state: Some(Ok(state("container-id", "hash"))),
+                containers: vec![container(
+                    WORKSPACE_ID,
+                    "container-id",
+                    None,
+                    Some("old-hash"),
+                    ContainerRunState::Running,
+                    HealthStatus::None,
+                )],
+                volumes: Vec::new(),
+            },
+            false,
+            Some(current_config("hash")),
+        );
+
+        assert_eq!(workspace.config_status, ConfigStatus::NeedsRebuild);
+        assert_issue(&workspace, "config-mismatch");
+    }
+
+    #[test]
+    fn current_config_ignores_containers_without_config_hash_labels() {
+        let workspace = workspace_status_with_config(
+            WORKSPACE_ID.to_owned(),
+            WorkspaceEvidence {
+                state: Some(Ok(state("container-id", "old-hash"))),
+                containers: vec![
+                    container(
+                        WORKSPACE_ID,
+                        "container-id",
+                        None,
+                        Some("hash"),
+                        ContainerRunState::Running,
+                        HealthStatus::None,
+                    ),
+                    container(
+                        WORKSPACE_ID,
+                        "sidecar-id",
+                        None,
+                        None,
+                        ContainerRunState::Running,
+                        HealthStatus::None,
+                    ),
+                ],
+                volumes: Vec::new(),
+            },
+            false,
+            Some(current_config("hash")),
+        );
+
+        assert_eq!(workspace.config_status, ConfigStatus::Current);
+        assert!(
+            !workspace
+                .issues
+                .iter()
+                .any(|issue| issue.code == "config-mismatch"),
+            "{:?}",
+            workspace.issues
+        );
+    }
+
+    #[test]
     fn public_model_debug_does_not_include_raw_sensitive_evidence() {
         let inventory = build_status_inventory(
             vec![state_evidence(
@@ -1880,6 +1945,15 @@ mod tests {
             last_started_at: "unix:2".to_owned(),
             last_used_at: None,
             lifecycle: LifecycleState::default(),
+        }
+    }
+
+    fn current_config(config_hash: &str) -> CurrentWorkspaceConfig {
+        CurrentWorkspaceConfig {
+            mode: WorkspaceMode::Image,
+            config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+            config_hash: Some(config_hash.to_owned()),
+            error: None,
         }
     }
 
