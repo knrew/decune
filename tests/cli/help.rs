@@ -11,6 +11,7 @@ fn root_help_is_displayed() {
         ))
         .stdout(predicate::str::contains("up"))
         .stdout(predicate::str::contains("down"))
+        .stdout(predicate::str::contains("status"))
         .stdout(predicate::str::contains("ports"))
         .stdout(predicate::str::contains("remove"))
         .stdout(predicate::str::contains("clean"))
@@ -49,7 +50,7 @@ fn short_version_is_displayed() {
 
 #[test]
 fn command_help_is_displayed() {
-    for command in ["up", "down", "ports", "remove", "rm", "rebuild"] {
+    for command in ["up", "down", "status", "ports", "remove", "rm", "rebuild"] {
         decune()
             .args([command, "--help"])
             .assert()
@@ -58,6 +59,19 @@ fn command_help_is_displayed() {
             .stdout(predicate::str::contains("WORKSPACE"))
             .stderr(predicate::str::is_empty());
     }
+}
+
+#[test]
+fn status_help_lists_workspace_and_no_unimplemented_options() {
+    decune()
+        .args(["status", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("WORKSPACE"))
+        .stdout(predicate::str::contains("--json").not())
+        .stdout(predicate::str::contains("--ports").not())
+        .stdout(predicate::str::contains("--resources").not())
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]

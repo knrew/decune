@@ -1,18 +1,17 @@
-#![expect(
-    dead_code,
-    reason = "Status inventory is implemented before the CLI status surface consumes it."
-)]
-
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     fs, io,
-    path::Path,
+    path::{Path, PathBuf},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result};
 use serde::Serialize;
 
 use crate::{
+    config::{ConfigLayer, resolved::ResolvedDevcontainerSource},
+    devcontainer::json::discover as discover_devcontainer_json,
     docker::{
         client::DockerClient,
         container::ContainerInspect,
@@ -21,10 +20,21 @@ use crate::{
             managed_workspace_id_from_labels, workspace_path_from_labels,
         },
     },
+    ports::{
+        PortInventory, PortInventoryEntry, PortUsageType, collect_all_ports,
+        collect_workspace_ports, render_ports_table, sort_ports,
+    },
     runtime::docker_cli::{DockerCli, DockerVolumeInspect},
     state::{WorkspaceState, container_ids_match, load_state_file},
-    workspace::{decune_state_root, is_valid_workspace_id},
+    ui,
+    up::{ForwardingResolution, build_up_plan_with_forwarding_resolution},
+    workspace::{Workspace, decune_state_root, is_valid_workspace_id},
 };
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct StatusOptions {
+    pub(crate) workspace: Option<PathBuf>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct StatusInventory {
@@ -36,11 +46,119 @@ pub(crate) struct StatusInventory {
 pub(crate) struct WorkspaceStatus {
     pub(crate) workspace_id: String,
     pub(crate) workspace_path: Option<String>,
+    pub(crate) mode: WorkspaceMode,
+    pub(crate) config_file: Option<String>,
+    pub(crate) created_at: Option<String>,
+    pub(crate) last_started_at: Option<String>,
+    pub(crate) last_used_at: Option<String>,
+    pub(crate) containers: Vec<ContainerStatusSummary>,
+    pub(crate) volumes: Vec<VolumeStatusSummary>,
     pub(crate) environment_status: EnvironmentStatus,
     pub(crate) config_status: ConfigStatus,
     pub(crate) health_status: HealthStatus,
     pub(crate) lifecycle_status: LifecycleStatus,
+    pub(crate) lifecycle: Option<crate::state::LifecycleState>,
     pub(crate) issues: Vec<StatusIssue>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum WorkspaceMode {
+    Image,
+    Dockerfile,
+    Compose,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct ContainerStatusSummary {
+    pub(crate) id: Option<String>,
+    pub(crate) name: Option<String>,
+    pub(crate) service: Option<String>,
+    pub(crate) run_state: RuntimeRunState,
+    pub(crate) health_status: HealthStatus,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct VolumeStatusSummary {
+    pub(crate) name: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum RuntimeRunState {
+    Running,
+    Stopped,
+    Unknown,
+}
+
+impl WorkspaceMode {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Image => "image",
+            Self::Dockerfile => "dockerfile",
+            Self::Compose => "compose",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl EnvironmentStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Stopped => "stopped",
+            Self::Partial => "partial",
+            Self::Missing => "missing",
+            Self::NotCreated => "not-created",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl ConfigStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Current => "current",
+            Self::NeedsRebuild => "needs-rebuild",
+            Self::Missing => "missing",
+            Self::Unreadable => "unreadable",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl HealthStatus {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Healthy => "healthy",
+            Self::Unhealthy => "unhealthy",
+            Self::Starting => "starting",
+            Self::None => "none",
+            Self::Mixed => "mixed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl RuntimeRunState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::Stopped => "stopped",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+impl StatusIssueSeverity {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Info => "info",
+            Self::Warning => "warning",
+            Self::Error => "error",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -115,6 +233,8 @@ struct DockerEvidence {
 struct ContainerEvidence {
     workspace_id: String,
     id: Option<String>,
+    name: Option<String>,
+    service: Option<String>,
     workspace_path: Option<String>,
     config_hash: Option<String>,
     run_state: ContainerRunState,
@@ -124,6 +244,7 @@ struct ContainerEvidence {
 #[derive(Debug, Clone)]
 struct VolumeEvidence {
     workspace_id: String,
+    name: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -140,6 +261,25 @@ struct WorkspaceEvidence {
     volumes: Vec<VolumeEvidence>,
 }
 
+#[derive(Debug, Clone)]
+struct CurrentWorkspaceConfig {
+    mode: WorkspaceMode,
+    config_file: Option<String>,
+    config_hash: Option<String>,
+    error: Option<String>,
+}
+
+struct WorkspaceIssueInput<'a> {
+    evidence: &'a WorkspaceEvidence,
+    state: Option<&'a WorkspaceState>,
+    state_unreadable: bool,
+    docker_unavailable: bool,
+    environment_status: EnvironmentStatus,
+    config_status: ConfigStatus,
+    health_status: HealthStatus,
+    current_config: Option<&'a CurrentWorkspaceConfig>,
+}
+
 pub(crate) async fn discover_status_inventory() -> Result<StatusInventory> {
     let state_entries = load_status_states(&decune_state_root()?)?;
     let docker_evidence = match DockerClient::connect_from_env() {
@@ -150,6 +290,133 @@ pub(crate) async fn discover_status_inventory() -> Result<StatusInventory> {
     };
 
     Ok(build_status_inventory(state_entries, docker_evidence))
+}
+
+pub(crate) async fn run_status(options: StatusOptions) -> Result<()> {
+    match options.workspace {
+        Some(path) => {
+            let workspace = Workspace::resolve(path)?;
+            let current_config = current_workspace_config(&workspace)?;
+            let status = discover_workspace_status(&workspace, current_config.clone()).await?;
+            let mut ports = collect_workspace_ports(&workspace, false).await?;
+            for warning in &ports.warnings {
+                ui::warn(warning);
+            }
+            sort_ports(&mut ports.ports);
+            print!("{}", render_workspace_detail(&status, &ports.ports));
+        }
+        None => {
+            let inventory = discover_status_inventory().await?;
+            for issue in &inventory.issues {
+                ui::warn(&issue.message);
+            }
+            let mut ports = collect_all_ports().await?;
+            for warning in &ports.warnings {
+                ui::warn(warning);
+            }
+            sort_ports(&mut ports.ports);
+            print!("{}", render_status_summary(&inventory, &ports));
+        }
+    }
+
+    Ok(())
+}
+
+fn current_workspace_config(workspace: &Workspace) -> Result<CurrentWorkspaceConfig> {
+    let config_file = match discover_devcontainer_json(workspace.root(), None) {
+        Ok(path) => Some(path.display().to_string()),
+        Err(error) if is_missing_devcontainer_metadata_error(&error) => return Err(error),
+        Err(error) => {
+            return Ok(CurrentWorkspaceConfig {
+                mode: WorkspaceMode::Unknown,
+                config_file: None,
+                config_hash: None,
+                error: Some(format!("{error:#}")),
+            });
+        }
+    };
+
+    match build_up_plan_with_forwarding_resolution(
+        workspace,
+        None,
+        ConfigLayer::default(),
+        ForwardingResolution::IgnoreDetached,
+        false,
+        false,
+    ) {
+        Ok(plan) => Ok(CurrentWorkspaceConfig {
+            mode: mode_from_source(plan.config.devcontainer.source.as_ref()),
+            config_file,
+            config_hash: Some(plan.resources.config_hash),
+            error: None,
+        }),
+        Err(error) => Ok(CurrentWorkspaceConfig {
+            mode: WorkspaceMode::Unknown,
+            config_file,
+            config_hash: None,
+            error: Some(format!("{error:#}")),
+        }),
+    }
+}
+
+async fn discover_workspace_status(
+    workspace: &Workspace,
+    current_config: CurrentWorkspaceConfig,
+) -> Result<WorkspaceStatus> {
+    let state = match load_state_file(workspace.paths().state_dir()) {
+        Ok(Some(state)) => Some(Ok(state)),
+        Ok(None) => None,
+        Err(error) => Some(Err(format!("{error:#}"))),
+    };
+    let docker_evidence = match DockerClient::connect_from_env() {
+        Ok(client) => collect_workspace_docker_evidence(client.cli(), workspace.id())
+            .await
+            .map_err(|error| format!("Failed to read decune-managed Docker resources: {error:#}")),
+        Err(error) => Err(format!("Failed to connect to Docker: {error:#}")),
+    };
+    let docker_unavailable = docker_evidence.is_err();
+    let docker_evidence = docker_evidence.unwrap_or_default();
+
+    let evidence = WorkspaceEvidence {
+        state,
+        containers: docker_evidence.containers,
+        volumes: docker_evidence.volumes,
+    };
+    let mut status = workspace_status_with_config(
+        workspace.id().to_owned(),
+        evidence,
+        docker_unavailable,
+        Some(current_config),
+    );
+    status.workspace_path = Some(workspace.root().display().to_string());
+
+    Ok(status)
+}
+
+async fn collect_workspace_docker_evidence(
+    cli: &DockerCli,
+    workspace_id: &str,
+) -> Result<DockerEvidence> {
+    let containers = cli
+        .list_workspace_container_inspects(workspace_id)
+        .await?
+        .into_iter()
+        .filter_map(container_evidence)
+        .collect();
+    let volumes = cli
+        .list_volumes(workspace_id)
+        .await?
+        .into_iter()
+        .map(|name| VolumeEvidence {
+            workspace_id: workspace_id.to_owned(),
+            name: Some(name),
+        })
+        .collect();
+
+    Ok(DockerEvidence {
+        containers,
+        volumes,
+    })
 }
 
 fn load_status_states(root: &Path) -> Result<Vec<StateEvidence>> {
@@ -257,7 +524,7 @@ fn build_status_inventory(
     let workspaces = workspaces
         .into_iter()
         .map(|(workspace_id, evidence)| {
-            workspace_status(workspace_id, evidence, docker_unavailable)
+            workspace_status_with_config(workspace_id, evidence, docker_unavailable, None)
         })
         .collect();
 
@@ -267,10 +534,11 @@ fn build_status_inventory(
     }
 }
 
-fn workspace_status(
+fn workspace_status_with_config(
     workspace_id: String,
     evidence: WorkspaceEvidence,
     docker_unavailable: bool,
+    current_config: Option<CurrentWorkspaceConfig>,
 ) -> WorkspaceStatus {
     let state = evidence
         .state
@@ -283,27 +551,63 @@ fn workspace_status(
             .iter()
             .find_map(|container| container.workspace_path.clone())
     });
-    let environment_status = environment_status(&evidence, state, docker_unavailable);
-    let config_status = config_status(&evidence, state, state_unreadable, docker_unavailable);
+    let environment_status = environment_status(
+        &evidence,
+        state,
+        docker_unavailable,
+        current_config.as_ref(),
+    );
+    let config_status = config_status(
+        &evidence,
+        state,
+        state_unreadable,
+        docker_unavailable,
+        current_config.as_ref(),
+    );
     let health_status = health_status(&evidence, docker_unavailable);
     let lifecycle_status = lifecycle_status(state, state_unreadable);
-    let issues = workspace_issues(
-        &evidence,
+    let mode = current_config
+        .as_ref()
+        .map(|config| config.mode)
+        .unwrap_or(WorkspaceMode::Unknown);
+    let config_file = current_config
+        .as_ref()
+        .and_then(|config| config.config_file.clone())
+        .or_else(|| state.and_then(|state| state.config_file.clone()));
+    let issues = workspace_issues(WorkspaceIssueInput {
+        evidence: &evidence,
         state,
         state_unreadable,
         docker_unavailable,
         environment_status,
         config_status,
         health_status,
-    );
+        current_config: current_config.as_ref(),
+    });
 
     WorkspaceStatus {
         workspace_id,
         workspace_path,
+        mode,
+        config_file,
+        created_at: state.map(|state| state.created_at.clone()),
+        last_started_at: state.map(|state| state.last_started_at.clone()),
+        last_used_at: state.and_then(|state| state.last_used_at.clone()),
+        containers: evidence
+            .containers
+            .iter()
+            .map(ContainerStatusSummary::from)
+            .collect(),
+        volumes: evidence
+            .volumes
+            .iter()
+            .map(VolumeStatusSummary::from)
+            .collect(),
         environment_status,
         config_status,
         health_status,
         lifecycle_status,
+        lifecycle: state.map(|state| state.lifecycle),
         issues,
     }
 }
@@ -312,9 +616,13 @@ fn environment_status(
     evidence: &WorkspaceEvidence,
     state: Option<&WorkspaceState>,
     docker_unavailable: bool,
+    current_config: Option<&CurrentWorkspaceConfig>,
 ) -> EnvironmentStatus {
     if docker_unavailable {
         return EnvironmentStatus::Unknown;
+    }
+    if state.is_none() && !has_docker_evidence(evidence) && current_config.is_some() {
+        return EnvironmentStatus::NotCreated;
     }
     if evidence.containers.is_empty() {
         return EnvironmentStatus::Missing;
@@ -347,9 +655,35 @@ fn config_status(
     state: Option<&WorkspaceState>,
     state_unreadable: bool,
     docker_unavailable: bool,
+    current_config: Option<&CurrentWorkspaceConfig>,
 ) -> ConfigStatus {
     if state_unreadable {
         return ConfigStatus::Unreadable;
+    }
+    if current_config.is_some_and(|config| config.error.is_some()) {
+        return ConfigStatus::Unreadable;
+    }
+    if let Some(current_hash) = current_config.and_then(|config| config.config_hash.as_deref()) {
+        if let Some(state) = state {
+            return if state.config_hash == current_hash {
+                ConfigStatus::Current
+            } else {
+                ConfigStatus::NeedsRebuild
+            };
+        }
+        let hashes = evidence
+            .containers
+            .iter()
+            .filter_map(|container| container.config_hash.as_deref())
+            .collect::<BTreeSet<_>>();
+        if hashes.is_empty() {
+            return ConfigStatus::Current;
+        }
+        return if hashes.len() == 1 && hashes.contains(current_hash) {
+            ConfigStatus::Current
+        } else {
+            ConfigStatus::NeedsRebuild
+        };
     }
     if state.is_none() && has_docker_evidence(evidence) {
         return ConfigStatus::Missing;
@@ -418,15 +752,17 @@ fn lifecycle_status(state: Option<&WorkspaceState>, state_unreadable: bool) -> L
     }
 }
 
-fn workspace_issues(
-    evidence: &WorkspaceEvidence,
-    state: Option<&WorkspaceState>,
-    state_unreadable: bool,
-    docker_unavailable: bool,
-    environment_status: EnvironmentStatus,
-    config_status: ConfigStatus,
-    health_status: HealthStatus,
-) -> Vec<StatusIssue> {
+fn workspace_issues(input: WorkspaceIssueInput<'_>) -> Vec<StatusIssue> {
+    let WorkspaceIssueInput {
+        evidence,
+        state,
+        state_unreadable,
+        docker_unavailable,
+        environment_status,
+        config_status,
+        health_status,
+        current_config,
+    } = input;
     let mut issues = Vec::new();
     if docker_unavailable {
         issues.push(docker_unavailable_issue(None));
@@ -437,6 +773,25 @@ fn workspace_issues(
             StatusIssueSeverity::Error,
             "The workspace state file could not be read.",
             Some("Remove or repair the state file before relying on this environment."),
+        ));
+    }
+    if current_config
+        .and_then(|config| config.error.as_deref())
+        .is_some()
+    {
+        issues.push(StatusIssue {
+            code: "config-unreadable",
+            severity: StatusIssueSeverity::Warning,
+            message: "The current devcontainer configuration could not be read.".to_owned(),
+            action: Some("Fix the configuration error, then retry.".to_owned()),
+        });
+    }
+    if environment_status == EnvironmentStatus::NotCreated {
+        issues.push(issue(
+            "not-created",
+            StatusIssueSeverity::Info,
+            "No decune-managed environment exists for this workspace yet.",
+            Some("Run decune up to create the environment."),
         ));
     }
     if !docker_unavailable && state.is_some() && !has_docker_evidence(evidence) {
@@ -493,11 +848,14 @@ fn container_evidence(container: ContainerInspect) -> Option<ContainerEvidence> 
     let (workspace_id, labels) = managed_workspace_id_from_container(&container)?;
     let workspace_path = workspace_path_from_labels(labels);
     let config_hash = config_hash_from_labels(labels);
+    let service = compose_service_from_labels(labels);
     let run_state = container_run_state(&container.state);
     let health_status = container_health_status(&container.state);
     Some(ContainerEvidence {
         workspace_id,
         id: container.id,
+        name: container.name,
+        service,
         workspace_path,
         config_hash,
         run_state,
@@ -508,7 +866,40 @@ fn container_evidence(container: ContainerInspect) -> Option<ContainerEvidence> 
 fn volume_evidence(volume: DockerVolumeInspect) -> Option<VolumeEvidence> {
     let labels = volume.labels.as_ref()?;
     let workspace_id = managed_workspace_id_from_labels(labels)?;
-    Some(VolumeEvidence { workspace_id })
+    Some(VolumeEvidence {
+        workspace_id,
+        name: volume.name,
+    })
+}
+
+impl From<&ContainerEvidence> for ContainerStatusSummary {
+    fn from(value: &ContainerEvidence) -> Self {
+        Self {
+            id: value.id.clone(),
+            name: value.name.clone(),
+            service: value.service.clone(),
+            run_state: value.run_state.into(),
+            health_status: value.health_status,
+        }
+    }
+}
+
+impl From<ContainerRunState> for RuntimeRunState {
+    fn from(value: ContainerRunState) -> Self {
+        match value {
+            ContainerRunState::Running => RuntimeRunState::Running,
+            ContainerRunState::Stopped => RuntimeRunState::Stopped,
+            ContainerRunState::Unknown => RuntimeRunState::Unknown,
+        }
+    }
+}
+
+impl From<&VolumeEvidence> for VolumeStatusSummary {
+    fn from(value: &VolumeEvidence) -> Self {
+        Self {
+            name: value.name.clone(),
+        }
+    }
 }
 
 fn container_run_state(
@@ -559,6 +950,336 @@ fn state_container_is_present(state: &WorkspaceState, containers: &[ContainerEvi
 
 fn has_docker_evidence(evidence: &WorkspaceEvidence) -> bool {
     !evidence.containers.is_empty() || !evidence.volumes.is_empty()
+}
+
+fn mode_from_source(source: Option<&ResolvedDevcontainerSource>) -> WorkspaceMode {
+    match source {
+        Some(ResolvedDevcontainerSource::Image(_)) => WorkspaceMode::Image,
+        Some(ResolvedDevcontainerSource::Dockerfile(_)) => WorkspaceMode::Dockerfile,
+        Some(ResolvedDevcontainerSource::Compose(_)) => WorkspaceMode::Compose,
+        None => WorkspaceMode::Unknown,
+    }
+}
+
+fn compose_service_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
+    labels
+        .get("com.docker.compose.project")
+        .filter(|project| !project.trim().is_empty())?;
+    labels
+        .get("com.docker.compose.service")
+        .filter(|service| !service.trim().is_empty())
+        .cloned()
+}
+
+fn is_missing_devcontainer_metadata_error(error: &anyhow::Error) -> bool {
+    let message = format!("{error:#}");
+    message.contains("Devcontainer metadata file was not found")
+        || message.contains("Multiple devcontainer metadata files found")
+}
+
+fn render_status_summary(inventory: &StatusInventory, port_inventory: &PortInventory) -> String {
+    if inventory.workspaces.is_empty() {
+        return "No decune-managed workspace environments found\n".to_owned();
+    }
+
+    let mut workspaces = inventory.workspaces.iter().collect::<Vec<_>>();
+    sort_workspaces_for_display(&mut workspaces);
+
+    let mut output = String::new();
+    let running = workspaces
+        .iter()
+        .filter(|workspace| workspace.environment_status == EnvironmentStatus::Running)
+        .count();
+    let stopped = workspaces
+        .iter()
+        .filter(|workspace| workspace.environment_status == EnvironmentStatus::Stopped)
+        .count();
+    let with_issues = workspaces
+        .iter()
+        .filter(|workspace| !workspace.issues.is_empty())
+        .count();
+    let _ = writeln!(
+        output,
+        "Found {} decune-managed workspace environments ({} running, {} stopped, {} with issues)",
+        workspaces.len(),
+        running,
+        stopped,
+        with_issues
+    );
+
+    let headers = [
+        "ID",
+        "WORKSPACE",
+        "RUNTIME",
+        "CONFIG",
+        "HEALTH",
+        "FWD/PUB",
+        "ISSUES",
+        "LAST_USED",
+    ];
+    let rows = workspaces
+        .iter()
+        .map(|workspace| summary_row(workspace, port_inventory))
+        .collect::<Vec<_>>();
+    let mut widths = headers
+        .iter()
+        .map(|header| header.len())
+        .collect::<Vec<_>>();
+    for row in &rows {
+        for (index, column) in row.iter().enumerate() {
+            widths[index] = widths[index].max(column.len());
+        }
+    }
+    write_columns(&mut output, &headers, &widths);
+    for row in rows {
+        let refs = row.iter().map(String::as_str).collect::<Vec<_>>();
+        write_columns(&mut output, &refs, &widths);
+    }
+
+    output
+}
+
+fn render_workspace_detail(status: &WorkspaceStatus, ports: &[PortInventoryEntry]) -> String {
+    let mut output = String::new();
+    let _ = writeln!(
+        output,
+        "Workspace: {}",
+        status.workspace_path.as_deref().unwrap_or("<unknown>")
+    );
+    let _ = writeln!(output, "ID: {}", status.workspace_id);
+    let _ = writeln!(output, "Mode: {}", status.mode.as_str());
+    output.push('\n');
+
+    output.push_str("Summary\n");
+    let _ = writeln!(output, "  Runtime: {}", status.environment_status.as_str());
+    let _ = writeln!(output, "  Config: {}", status.config_status.as_str());
+    let _ = writeln!(output, "  Health: {}", status.health_status.as_str());
+    let _ = writeln!(output, "  Containers: {}", status.containers.len());
+    let _ = writeln!(output, "  Volumes: {}", status.volumes.len());
+    let _ = writeln!(
+        output,
+        "  Last used: {}",
+        format_timestamp(status.last_used_at.as_deref())
+    );
+    output.push('\n');
+
+    output.push_str("Config\n");
+    let _ = writeln!(
+        output,
+        "  File: {}",
+        status.config_file.as_deref().unwrap_or("-")
+    );
+    let _ = writeln!(
+        output,
+        "  Created: {}",
+        status.created_at.as_deref().unwrap_or("-")
+    );
+    let _ = writeln!(
+        output,
+        "  Last started: {}",
+        status.last_started_at.as_deref().unwrap_or("-")
+    );
+    output.push('\n');
+
+    if !status.issues.is_empty() {
+        output.push_str("Issues\n");
+        for issue in &status.issues {
+            let _ = writeln!(output, "  {}: {}", issue.severity.as_str(), issue.message);
+        }
+        output.push('\n');
+    }
+
+    if status.mode == WorkspaceMode::Compose {
+        output.push_str("Services\n");
+        let services = compose_services(status);
+        if services.is_empty() {
+            output.push_str("  -\n");
+        } else {
+            for service in services {
+                let _ = writeln!(output, "  {service}");
+            }
+        }
+        output.push('\n');
+    }
+
+    output.push_str("Runtime\n");
+    if status.containers.is_empty() {
+        output.push_str("  No containers\n");
+    } else {
+        for container in &status.containers {
+            let name = container
+                .name
+                .as_deref()
+                .or(container.id.as_deref())
+                .unwrap_or("<unknown>");
+            let service = container.service.as_deref().unwrap_or("-");
+            let _ = writeln!(
+                output,
+                "  {}  service={}  state={}  health={}",
+                name.trim_start_matches('/'),
+                service,
+                container.run_state.as_str(),
+                container.health_status.as_str()
+            );
+        }
+    }
+    output.push('\n');
+
+    output.push_str("Ports\n");
+    for line in render_ports_table(ports, false).lines() {
+        let _ = writeln!(output, "  {line}");
+    }
+    output.push('\n');
+
+    output.push_str("Resources\n");
+    let _ = writeln!(output, "  Containers: {}", status.containers.len());
+    let _ = writeln!(output, "  Volumes: {}", status.volumes.len());
+    output.push('\n');
+
+    if status.lifecycle_status == LifecycleStatus::Incomplete {
+        output.push_str("Lifecycle\n");
+        if let Some(lifecycle) = status.lifecycle {
+            let _ = writeln!(
+                output,
+                "  onCreateCommand: {}",
+                completion(
+                    lifecycle.on_create_completed,
+                    lifecycle.after_on_create_completed
+                )
+            );
+            let _ = writeln!(
+                output,
+                "  updateContentCommand: {}",
+                completion(
+                    lifecycle.update_content_completed,
+                    lifecycle.after_update_content_completed
+                )
+            );
+            let _ = writeln!(
+                output,
+                "  postCreateCommand: {}",
+                completion(
+                    lifecycle.post_create_completed,
+                    lifecycle.after_post_create_completed
+                )
+            );
+        } else {
+            output.push_str("  unknown\n");
+        }
+        output.push('\n');
+    }
+
+    if let Some(action) = status
+        .issues
+        .iter()
+        .find_map(|issue| issue.action.as_deref())
+    {
+        output.push_str("Action\n");
+        let _ = writeln!(output, "  {action}");
+    }
+
+    output
+}
+
+fn sort_workspaces_for_display(workspaces: &mut [&WorkspaceStatus]) {
+    workspaces.sort_by(|left, right| {
+        (
+            left.workspace_path.as_deref().unwrap_or("\u{10ffff}"),
+            left.workspace_id.as_str(),
+        )
+            .cmp(&(
+                right.workspace_path.as_deref().unwrap_or("\u{10ffff}"),
+                right.workspace_id.as_str(),
+            ))
+    });
+}
+
+fn summary_row(workspace: &WorkspaceStatus, port_inventory: &PortInventory) -> Vec<String> {
+    let (forwarded, published) = port_counts(&workspace.workspace_id, &port_inventory.ports);
+    vec![
+        workspace.workspace_id.clone(),
+        workspace
+            .workspace_path
+            .as_deref()
+            .unwrap_or("<unknown>")
+            .to_owned(),
+        workspace.environment_status.as_str().to_owned(),
+        workspace.config_status.as_str().to_owned(),
+        workspace.health_status.as_str().to_owned(),
+        format!("{forwarded}/{published}"),
+        workspace.issues.len().to_string(),
+        format_timestamp(workspace.last_used_at.as_deref()),
+    ]
+}
+
+fn port_counts(workspace_id: &str, ports: &[PortInventoryEntry]) -> (usize, usize) {
+    let mut forwarded = 0;
+    let mut published = 0;
+    for port in ports
+        .iter()
+        .filter(|port| port.workspace_id.as_deref() == Some(workspace_id))
+    {
+        match port.kind {
+            PortUsageType::Forwarded => forwarded += 1,
+            PortUsageType::Published => published += 1,
+        }
+    }
+    (forwarded, published)
+}
+
+fn write_columns(output: &mut String, columns: &[&str], widths: &[usize]) {
+    for (index, column) in columns.iter().enumerate() {
+        if index > 0 {
+            output.push_str("  ");
+        }
+        let _ = write!(output, "{:<width$}", column, width = widths[index]);
+    }
+    output.push('\n');
+}
+
+fn format_timestamp(value: Option<&str>) -> String {
+    let Some(value) = value else {
+        return "-".to_owned();
+    };
+    let Some(seconds) = value
+        .strip_prefix("unix:")
+        .and_then(|value| value.parse::<u64>().ok())
+    else {
+        return "-".to_owned();
+    };
+    let Ok(now) = SystemTime::now().duration_since(UNIX_EPOCH) else {
+        return "-".to_owned();
+    };
+    let now = now.as_secs();
+    if seconds > now {
+        return "-".to_owned();
+    }
+    let elapsed = now - seconds;
+    match elapsed {
+        0..=59 => format!("{elapsed}s ago"),
+        60..=3_599 => format!("{}m ago", elapsed / 60),
+        3_600..=86_399 => format!("{}h ago", elapsed / 3_600),
+        _ => format!("{}d ago", elapsed / 86_400),
+    }
+}
+
+fn compose_services(status: &WorkspaceStatus) -> Vec<String> {
+    let mut services = status
+        .containers
+        .iter()
+        .filter_map(|container| container.service.clone())
+        .collect::<Vec<_>>();
+    services.sort();
+    services.dedup();
+    services
+}
+
+fn completion(command: bool, after_hook: bool) -> &'static str {
+    match (command, after_hook) {
+        (true, true) => "complete",
+        (true, false) => "after-hook-pending",
+        (false, _) => "pending",
+    }
 }
 
 fn docker_unavailable_issue(detail: Option<&str>) -> StatusIssue {
@@ -987,6 +1708,86 @@ mod tests {
         }
     }
 
+    #[test]
+    fn summary_renderer_reports_empty_inventory() {
+        let output = render_status_summary(
+            &StatusInventory {
+                workspaces: Vec::new(),
+                issues: Vec::new(),
+            },
+            &PortInventory::default(),
+        );
+
+        assert_eq!(output, "No decune-managed workspace environments found\n");
+    }
+
+    #[test]
+    fn summary_renderer_sorts_paths_and_does_not_fallback_last_used() {
+        let mut alpha = rendered_status("bbbbbbbbbbbb", Some("/alpha"));
+        alpha.created_at = Some("unix:1".to_owned());
+        alpha.last_started_at = Some("unix:2".to_owned());
+        let beta = rendered_status("aaaaaaaaaaaa", Some("/beta"));
+        let unknown = rendered_status("cccccccccccc", None);
+        let output = render_status_summary(
+            &StatusInventory {
+                workspaces: vec![unknown, beta, alpha],
+                issues: Vec::new(),
+            },
+            &PortInventory::default(),
+        );
+
+        let alpha_index = output.find("/alpha").unwrap();
+        let beta_index = output.find("/beta").unwrap();
+        let unknown_index = output.find("<unknown>").unwrap();
+        assert!(alpha_index < beta_index);
+        assert!(beta_index < unknown_index);
+        assert!(output.contains("LAST_USED"));
+        assert!(output.lines().any(|line| {
+            line.contains("bbbbbbbbbbbb") && line.split_whitespace().last() == Some("-")
+        }));
+    }
+
+    #[test]
+    fn detail_renderer_reports_not_created_and_omits_complete_lifecycle() {
+        let mut status = rendered_status(WORKSPACE_ID, Some("/workspace"));
+        status.mode = WorkspaceMode::Image;
+        status.environment_status = EnvironmentStatus::NotCreated;
+        status.lifecycle_status = LifecycleStatus::Complete;
+        status.lifecycle = Some(LifecycleState::all_completed());
+        status.issues.push(issue(
+            "not-created",
+            StatusIssueSeverity::Info,
+            "No decune-managed environment exists for this workspace yet.",
+            Some("Run decune up to create the environment."),
+        ));
+
+        let output = render_workspace_detail(&status, &[]);
+
+        assert!(output.contains("Runtime: not-created"));
+        assert!(output.contains("No active ports for this workspace"));
+        assert!(output.contains("Run decune up to create the environment."));
+        assert!(!output.contains("Lifecycle\n"));
+    }
+
+    #[test]
+    fn renderers_do_not_include_sensitive_raw_values() {
+        let mut status = rendered_status(WORKSPACE_ID, Some("/workspace"));
+        status.config_file = Some("/workspace/.devcontainer/devcontainer.json".to_owned());
+        status.issues.push(StatusIssue {
+            code: "config-unreadable",
+            severity: StatusIssueSeverity::Warning,
+            message: "The current devcontainer configuration could not be read.".to_owned(),
+            action: Some("Fix the configuration error, then retry.".to_owned()),
+        });
+        let output = render_workspace_detail(&status, &[]);
+
+        assert!(!output.contains("secret-config-hash"));
+        assert!(!output.contains("decune.config_hash"));
+        assert!(!output.contains("TOKEN="));
+        assert!(!output.contains("build.args"));
+        assert!(!output.contains("raw-compose"));
+    }
+
     fn env_for(
         states: Vec<ContainerRunState>,
         state_container_id: Option<&str>,
@@ -1093,6 +1894,8 @@ mod tests {
         ContainerEvidence {
             workspace_id: workspace_id.to_owned(),
             id: Some(id.to_owned()),
+            name: Some(format!("/{id}")),
+            service: None,
             workspace_path: workspace_path.map(str::to_owned),
             config_hash: config_hash.map(str::to_owned),
             run_state,
@@ -1103,6 +1906,27 @@ mod tests {
     fn volume(workspace_id: &str) -> VolumeEvidence {
         VolumeEvidence {
             workspace_id: workspace_id.to_owned(),
+            name: None,
+        }
+    }
+
+    fn rendered_status(workspace_id: &str, workspace_path: Option<&str>) -> WorkspaceStatus {
+        WorkspaceStatus {
+            workspace_id: workspace_id.to_owned(),
+            workspace_path: workspace_path.map(str::to_owned),
+            mode: WorkspaceMode::Unknown,
+            config_file: None,
+            created_at: None,
+            last_started_at: None,
+            last_used_at: None,
+            containers: Vec::new(),
+            volumes: Vec::new(),
+            environment_status: EnvironmentStatus::Missing,
+            config_status: ConfigStatus::Unknown,
+            health_status: HealthStatus::Unknown,
+            lifecycle_status: LifecycleStatus::Unknown,
+            lifecycle: None,
+            issues: Vec::new(),
         }
     }
 

@@ -54,41 +54,41 @@ pub(crate) async fn run_ports(options: PortsOptions) -> Result<()> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct PortInventory {
-    ports: Vec<PortInventoryEntry>,
-    warnings: Vec<String>,
+pub(crate) struct PortInventory {
+    pub(crate) ports: Vec<PortInventoryEntry>,
+    pub(crate) warnings: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-struct PortInventoryEntry {
+pub(crate) struct PortInventoryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
-    workspace: Option<String>,
+    pub(crate) workspace: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    workspace_id: Option<String>,
-    host_ip: String,
-    host_port: u16,
+    pub(crate) workspace_id: Option<String>,
+    pub(crate) host_ip: String,
+    pub(crate) host_port: u16,
     #[serde(rename = "type")]
-    kind: PortUsageType,
-    service: Option<String>,
-    container_port: u16,
-    protocol: String,
-    source: String,
+    pub(crate) kind: PortUsageType,
+    pub(crate) service: Option<String>,
+    pub(crate) container_port: u16,
+    pub(crate) protocol: String,
+    pub(crate) source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
-    requested_host_ip: Option<String>,
+    pub(crate) requested_host_ip: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    requested_host_port: Option<u16>,
-    label: Option<String>,
+    pub(crate) requested_host_port: Option<u16>,
+    pub(crate) label: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
-enum PortUsageType {
+pub(crate) enum PortUsageType {
     Forwarded,
     Published,
 }
 
 impl PortUsageType {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Forwarded => "forwarded",
             Self::Published => "published",
@@ -115,7 +115,7 @@ struct PublishedContainerInspect {
     context: Option<WorkspacePortContext>,
 }
 
-async fn collect_workspace_ports(
+pub(crate) async fn collect_workspace_ports(
     workspace: &Workspace,
     include_workspace: bool,
 ) -> Result<PortInventory> {
@@ -207,7 +207,7 @@ async fn collect_workspace_ports(
     Ok(inventory)
 }
 
-async fn collect_all_ports() -> Result<PortInventory> {
+pub(crate) async fn collect_all_ports() -> Result<PortInventory> {
     let states = load_port_states(&decune_state_root()?)?;
     let mut contexts = BTreeMap::<String, WorkspacePortContext>::new();
     let mut compose_projects = BTreeMap::<String, WorkspacePortContext>::new();
@@ -494,7 +494,7 @@ fn forwarded_inventory_entry(
     }
 }
 
-fn sort_ports(ports: &mut [PortInventoryEntry]) {
+pub(crate) fn sort_ports(ports: &mut [PortInventoryEntry]) {
     ports.sort_by(|left, right| {
         (
             left.workspace.as_deref().unwrap_or("\u{10ffff}"),
@@ -523,7 +523,7 @@ fn sort_ports(ports: &mut [PortInventoryEntry]) {
     });
 }
 
-fn render_ports_table(ports: &[PortInventoryEntry], include_workspace: bool) -> String {
+pub(crate) fn render_ports_table(ports: &[PortInventoryEntry], include_workspace: bool) -> String {
     if ports.is_empty() {
         return if include_workspace {
             "No active ports\n".to_owned()

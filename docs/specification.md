@@ -43,7 +43,7 @@ README と usage はこの仕様を要約できるが、この仕様と矛盾す
 - manual port forwarding と automatic port forwarding。
 - Linux host での `updateRemoteUserUID` による UID/GID sync。
 - lifecycle command と decune 固有 hooks。
-- `up`、`rebuild`、`down`、`remove` / `rm`、`ports` コマンド。
+- `up`、`rebuild`、`down`、`status`、`remove` / `rm`、`ports` コマンド。
 - GitHub Releases のビルド済みアーカイブによる公式配布。
 
 ### Docker Compose サポートの定義
@@ -207,6 +207,39 @@ decune down [--timeout <SECONDS>] [WORKSPACE]
 - 現在の設定が Compose モードでも、同じ workspace に過去の image/Dockerfile モード由来で decune が管理する container が残っている場合は停止する。
 
 明示的な `decune down` は `shutdownAction` に関係なく停止を行う。
+
+### `status`
+
+```text
+decune status [WORKSPACE]
+```
+
+役割:
+
+- `WORKSPACE` なしでは、state file と decune が付けた Docker label から見つかる workspace environment の summary を表示する。
+- `WORKSPACE` 指定時は、その workspace の detail を表示する。workspace は通常の workspace 解決と同じく Git repository root を workspace root とする。
+- `status` は read-only command とする。state、runtime file、Docker resource を修復、削除、更新しない。`last_used_at` も更新しない。
+
+summary:
+
+- 対象は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` の有効な state file、および `decune.managed=true` と有効な `decune.workspace_id` label を持つ Docker container / volume である。
+- runtime directory や port-status directory だけが残っている workspace は summary 対象に含めない。
+- 対象が 0 件の場合も success とし、`No decune-managed workspace environments found` を表示する。
+- 1 件以上の場合は aggregate line と table を表示する。table column は `ID WORKSPACE RUNTIME CONFIG HEALTH FWD/PUB ISSUES LAST_USED` とする。
+- sort は display workspace path の辞書順、tie-break は workspace id とする。workspace path が不明な entry は末尾に置く。
+- `LAST_USED` は state の `last_used_at` だけから表示する。`created_at` や `last_started_at` へ fallback しない。値がない、invalid、future の場合は `-` とする。
+- `FWD/PUB` は現在有効な forwarded port count と Docker published port count を `<forwarded>/<published>` 形式で表示する。
+
+detail:
+
+- `WORKSPACE` 指定時は devcontainer metadata を必須とする。metadata が見つからない、または複数候補がある場合は error にする。
+- metadata があり state/Docker evidence がない場合は `not-created` として success し、`Run decune up to create the environment.` を action として表示する。
+- detail は header (`Workspace`, `ID`, `Mode`) と、`Summary`、`Config`、issue がある場合の `Issues`、Compose mode の `Services`、`Runtime`、`Ports`、`Resources`、未完了 lifecycle がある場合の `Lifecycle`、必要な場合の `Action` を表示する。
+- lifecycle が正常完了している場合は lifecycle step detail を表示しない。
+- `Ports` section は `decune ports` の単一 workspace table と同じ形式を使う。active port がない場合は `No active ports for this workspace` を表示する。
+- current config hash は、workspace path と config が読める場合に read-only で計算し、state または Docker label 由来の config hash と比較して `current` / `needs-rebuild` を判定する。計算できない場合は `unreadable` または `unknown` issue として表示し、state は変更しない。
+- output には secret value、raw label、raw Compose model、container env、build arg、mount source の過剰な列挙、config hash 値を出してはならない。
+- JSON 出力、`--ports`、`--resources` などの status option は提供しない。
 
 ### `ports`
 
