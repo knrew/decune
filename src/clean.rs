@@ -152,7 +152,7 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     }
 
     if !options.dry_run {
-        apply_clean_report(&mut report)?;
+        apply_clean_report(&mut report).await?;
     }
 
     if options.json {
@@ -663,15 +663,13 @@ fn workspace_path_kinds(paths: &[WorkspacePathKind]) -> String {
         .join(",")
 }
 
-fn apply_clean_report(report: &mut CleanReport) -> Result<()> {
+async fn apply_clean_report(report: &mut CleanReport) -> Result<()> {
     for target in &mut report.targets {
         match target {
             CleanTargetReport::Workspace(target) if target.action == CleanAction::Remove => {
-                remove_dir_if_exists(&target.removal_paths.cache)?;
-                remove_dir_if_exists(&target.removal_paths.state)?;
-                remove_dir_if_exists(&target.removal_paths.runtime)?;
-                remove_dir_if_exists(&target.removal_paths.port_status)?;
-                target.removed = true;
+                let workspace_id = target.workspace_id.clone();
+                let refreshed = revalidate_workspace_clean_target(&workspace_id).await?;
+                apply_workspace_clean_target(target, refreshed)?;
             }
             CleanTargetReport::FeatureCache(target) if target.action == CleanAction::Remove => {
                 let _lock = FeatureCacheLock::acquire_exclusive(&target.removal_path)?;
@@ -682,6 +680,30 @@ fn apply_clean_report(report: &mut CleanReport) -> Result<()> {
         }
     }
     report.summary = summarize_targets(&report.targets);
+    Ok(())
+}
+
+async fn revalidate_workspace_clean_target(workspace_id: &str) -> Result<WorkspaceCleanTarget> {
+    let managed_workspace_ids = discover_managed_workspace_ids()
+        .await
+        .context("Failed to determine reusable decune-managed Docker resources before removal")?;
+    workspace_clean_target(workspace_id, false, &managed_workspace_ids)
+}
+
+fn apply_workspace_clean_target(
+    target: &mut WorkspaceCleanTarget,
+    refreshed: WorkspaceCleanTarget,
+) -> Result<()> {
+    *target = refreshed;
+    if target.action != CleanAction::Remove {
+        return Ok(());
+    }
+
+    remove_dir_if_exists(&target.removal_paths.cache)?;
+    remove_dir_if_exists(&target.removal_paths.state)?;
+    remove_dir_if_exists(&target.removal_paths.runtime)?;
+    remove_dir_if_exists(&target.removal_paths.port_status)?;
+    target.removed = true;
     Ok(())
 }
 
@@ -789,7 +811,7 @@ mod tests {
         };
         report.summary = summarize_targets(&report.targets);
 
-        apply_clean_report(&mut report).unwrap();
+        apply_clean_report_for_test(&mut report, &BTreeSet::new()).unwrap();
 
         assert!(!cache.exists());
         assert!(!state.exists());
@@ -827,7 +849,7 @@ mod tests {
         };
         report.summary = summarize_targets(&report.targets);
 
-        apply_clean_report(&mut report).unwrap();
+        apply_clean_report_for_test(&mut report, &BTreeSet::new()).unwrap();
 
         assert!(!cache.exists());
         assert!(!state.exists());
@@ -883,6 +905,56 @@ mod tests {
 
         let target = workspace_clean_target(workspace_id, false, &BTreeSet::new()).unwrap();
 
+        assert_eq!(target.action, CleanAction::Skip);
+        assert_eq!(target.reason, CleanReason::ActiveRuntime);
+        flock(lock.as_raw_fd(), libc::LOCK_UN).unwrap();
+    }
+
+    #[test]
+    fn workspace_target_is_revalidated_before_removal() {
+        let roots = TestRoots::new();
+        let workspace_id = "123456abcdef";
+        let cache = roots.cache_home.path().join("decune").join(workspace_id);
+        let state = roots.state_home.path().join("decune").join(workspace_id);
+        let runtime = roots.runtime_home.path().join("decune").join(workspace_id);
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(cache.join("marker"), "cache\n").unwrap();
+        fs::write(state.join("marker"), "state\n").unwrap();
+        fs::write(runtime.join("marker"), "runtime\n").unwrap();
+        let _env = roots.apply();
+
+        let mut report = CleanReport {
+            dry_run: false,
+            include_feature_cache: false,
+            summary: CleanSummary::default(),
+            targets: vec![CleanTargetReport::Workspace(
+                workspace_clean_target(workspace_id, false, &BTreeSet::new()).unwrap(),
+            )],
+        };
+        report.summary = summarize_targets(&report.targets);
+
+        let lock = OpenOptions::new()
+            .create(true)
+            .read(true)
+            .write(true)
+            .truncate(false)
+            .open(runtime.join("active.lock"))
+            .unwrap();
+        flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB).unwrap();
+
+        apply_clean_report_for_test(&mut report, &BTreeSet::new()).unwrap();
+
+        assert!(cache.exists());
+        assert!(state.exists());
+        assert!(runtime.exists());
+        assert_eq!(report.summary.remove_candidates, 0);
+        assert_eq!(report.summary.skipped, 1);
+        assert_eq!(report.summary.removed, 0);
+        let CleanTargetReport::Workspace(target) = &report.targets[0] else {
+            panic!("expected workspace target");
+        };
         assert_eq!(target.action, CleanAction::Skip);
         assert_eq!(target.reason, CleanReason::ActiveRuntime);
         flock(lock.as_raw_fd(), libc::LOCK_UN).unwrap();
@@ -953,7 +1025,7 @@ mod tests {
         };
         report.summary = summarize_targets(&report.targets);
 
-        apply_clean_report(&mut report).unwrap();
+        apply_clean_report_for_test(&mut report, &BTreeSet::new()).unwrap();
 
         assert!(!cache.exists());
         assert_eq!(report.summary.removed, 1);
@@ -982,7 +1054,7 @@ mod tests {
         };
         report.summary = summarize_targets(&report.targets);
 
-        apply_clean_report(&mut report).unwrap();
+        apply_clean_report_for_test(&mut report, &BTreeSet::new()).unwrap();
 
         assert!(!cache.exists());
         assert_eq!(report.summary.removed, 1);
@@ -1068,5 +1140,28 @@ mod tests {
         unsafe {
             std::env::set_var(key, value);
         }
+    }
+
+    fn apply_clean_report_for_test(
+        report: &mut CleanReport,
+        managed_workspace_ids: &BTreeSet<String>,
+    ) -> Result<()> {
+        for target in &mut report.targets {
+            match target {
+                CleanTargetReport::Workspace(target) if target.action == CleanAction::Remove => {
+                    let refreshed =
+                        workspace_clean_target(&target.workspace_id, false, managed_workspace_ids)?;
+                    apply_workspace_clean_target(target, refreshed)?;
+                }
+                CleanTargetReport::FeatureCache(target) if target.action == CleanAction::Remove => {
+                    let _lock = FeatureCacheLock::acquire_exclusive(&target.removal_path)?;
+                    remove_dir_if_exists(&target.removal_path)?;
+                    target.removed = true;
+                }
+                _ => {}
+            }
+        }
+        report.summary = summarize_targets(&report.targets);
+        Ok(())
     }
 }

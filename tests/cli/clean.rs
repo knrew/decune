@@ -143,6 +143,43 @@ fn clean_skips_workspace_with_reusable_managed_resource() {
 }
 
 #[test]
+fn clean_revalidates_managed_resource_before_removal() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
+    paths.create_workspace_data();
+    let fake_path = fake_docker_path(
+        &temp,
+        fake_docker_becomes_managed_on_second_discovery(
+            WORKSPACE_ID,
+            &temp.path().join("ps-count"),
+        ),
+    );
+
+    let output = decune()
+        .env("PATH", &fake_path)
+        .env("XDG_CACHE_HOME", &paths.cache_home)
+        .env("XDG_STATE_HOME", &paths.state_home)
+        .env("XDG_RUNTIME_DIR", &paths.runtime_home)
+        .args(["clean", "--no-confirm", "--json"])
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["summary"]["remove_candidates"], 0);
+    assert_eq!(json["summary"]["removed"], 0);
+    assert_eq!(json["summary"]["skipped"], 1);
+    assert_eq!(json["targets"][0]["action"], "skip");
+    assert_eq!(json["targets"][0]["reason"], "managed_resource");
+    assert!(paths.cache_dir.exists());
+    assert!(paths.state_dir.exists());
+    assert!(paths.runtime_dir.exists());
+}
+
+#[test]
 fn clean_dry_run_human_output_keeps_workspace_data() {
     let temp = support::TempWorkspace::new().unwrap();
     let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
@@ -262,5 +299,44 @@ fi
 echo "unexpected fake docker command: $*" >&2
 exit 91
 "#
+    )
+}
+
+fn fake_docker_becomes_managed_on_second_discovery(
+    workspace_id: &str,
+    count_file: &std::path::Path,
+) -> String {
+    format!(
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+
+count_file='{count_file}'
+
+if [ "${{1:-}}" = ps ]; then
+  count=0
+  if [ -f "$count_file" ]; then
+    count="$(cat "$count_file")"
+  fi
+  count=$((count + 1))
+  printf '%s\n' "$count" > "$count_file"
+  if [ "$count" -ge 2 ]; then
+    printf '{{"ID":"managed-container"}}\n'
+  fi
+  exit 0
+fi
+
+if [ "${{1:-}}" = container ] && [ "${{2:-}}" = inspect ]; then
+  printf '[{{"Id":"managed-container","Name":"/managed","Config":{{"Labels":{{"decune.managed":"true","decune.workspace_id":"{workspace_id}"}}}},"State":{{"Running":true}}}}]\n'
+  exit 0
+fi
+
+if [ "${{1:-}}" = volume ] && [ "${{2:-}}" = ls ]; then
+  exit 0
+fi
+
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        count_file = count_file.display()
     )
 }
