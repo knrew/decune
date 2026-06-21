@@ -75,6 +75,18 @@ fn status_help_lists_workspace_and_no_unimplemented_options() {
 }
 
 #[test]
+fn ports_help_lists_json_all_and_workspace() {
+    decune()
+        .args(["ports", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--all"))
+        .stdout(predicate::str::contains("WORKSPACE"))
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
 fn clean_help_lists_cleanup_options_and_not_force_or_all() {
     decune()
         .args(["clean", "--help"])

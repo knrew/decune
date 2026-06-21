@@ -1,4 +1,11 @@
 use crate::harness::*;
+use std::{
+    io::{Read, Write},
+    thread,
+};
+
+const WORKSPACE_A_ID: &str = "aaaaaaaaaaaa";
+const WORKSPACE_B_ID: &str = "bbbbbbbbbbbb";
 
 #[test]
 fn status_reports_no_managed_workspace_environments() {
@@ -53,6 +60,155 @@ fn status_workspace_reports_not_created() {
         .stderr(predicate::str::is_empty());
 }
 
+#[test]
+fn status_summary_reports_state_workspaces_sorted_by_path() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = status_roots(&temp);
+    let workspace_b = temp.create_dir("workspace-b").unwrap();
+    let workspace_a = temp.create_dir("workspace-a").unwrap();
+    write_state(&roots, WORKSPACE_B_ID, &workspace_b, None);
+    write_state(&roots, WORKSPACE_A_ID, &workspace_a, Some("unix:1"));
+
+    let output = decune()
+        .args(["status"])
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains("Found 2 decune-managed workspace environments"));
+    assert!(output.contains("ID"));
+    assert!(output.contains("FWD/PUB"));
+    assert!(output.contains("LAST_USED"));
+    let workspace_a_position = output.find(WORKSPACE_A_ID).unwrap();
+    let workspace_b_position = output.find(WORKSPACE_B_ID).unwrap();
+    assert!(workspace_a_position < workspace_b_position, "{output}");
+}
+
+#[test]
+fn status_summary_does_not_fallback_last_used_to_created_or_started() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = status_roots(&temp);
+    let workspace = temp.create_dir("workspace").unwrap();
+    write_state(&roots, WORKSPACE_A_ID, &workspace, None);
+
+    let output = decune()
+        .args(["status"])
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    let row = status_row(&output, WORKSPACE_A_ID);
+    let columns = row.split_whitespace().collect::<Vec<_>>();
+
+    assert_eq!(columns[5], "0/0");
+    assert_eq!(columns[7], "-");
+}
+
+#[test]
+fn status_summary_reports_corrupt_state_without_removing_it() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = status_roots(&temp);
+    let state_dir = roots.state.join("decune").join(WORKSPACE_A_ID);
+    fs::create_dir_all(&state_dir).unwrap();
+    let state_path = state_dir.join("state.toml");
+    fs::write(&state_path, "version = \"invalid\"\n").unwrap();
+
+    let output = decune()
+        .args(["status"])
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Ignoring invalid decune state file",
+        ))
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    let row = status_row(&output, WORKSPACE_A_ID);
+    let columns = row.split_whitespace().collect::<Vec<_>>();
+
+    assert_eq!(columns[1], "<unknown>");
+    assert_eq!(columns[3], "unreadable");
+    assert_eq!(columns[6], "1");
+    assert!(state_path.exists());
+}
+
+#[test]
+fn status_summary_reports_active_forwarded_port_count() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = status_roots(&temp);
+    let workspace = temp.create_dir("workspace").unwrap();
+    write_state(&roots, WORKSPACE_A_ID, &workspace, None);
+    let _server = fake_forward_status_server(&roots, WORKSPACE_A_ID);
+
+    let output = decune()
+        .args(["status"])
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+    let row = status_row(&output, WORKSPACE_A_ID);
+    let columns = row.split_whitespace().collect::<Vec<_>>();
+
+    assert_eq!(columns[5], "1/0");
+}
+
+#[test]
+fn status_workspace_without_devcontainer_metadata_is_an_error() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = status_roots(&temp);
+
+    decune()
+        .args(["status"])
+        .arg(workspace.path())
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .failure()
+        .stderr(predicate::str::contains(
+            "Devcontainer metadata file was not found",
+        ));
+}
+
 #[derive(Debug)]
 struct StatusRoots {
     state: PathBuf,
@@ -68,6 +224,69 @@ fn status_roots(temp: &support::TempWorkspace) -> StatusRoots {
         config: temp.create_dir("config").unwrap(),
         runtime: temp.create_dir("runtime").unwrap(),
     }
+}
+
+fn write_state(
+    roots: &StatusRoots,
+    workspace_id: &str,
+    workspace: &Path,
+    last_used_at: Option<&str>,
+) {
+    let state_dir = roots.state.join("decune").join(workspace_id);
+    fs::create_dir_all(&state_dir).unwrap();
+    let last_used = last_used_at
+        .map(|value| format!("last_used_at = \"{value}\"\n"))
+        .unwrap_or_default();
+    fs::write(
+        state_dir.join("state.toml"),
+        format!(
+            r#"version = 1
+workspace = "{}"
+container_id = "container-{workspace_id}"
+image = "decune:test"
+config_hash = "hash"
+created_at = "unix:1"
+last_started_at = "unix:1"
+{last_used}
+"#,
+            workspace.display()
+        ),
+    )
+    .unwrap();
+}
+
+fn status_row<'a>(output: &'a str, workspace_id: &str) -> &'a str {
+    output
+        .lines()
+        .find(|line| line.starts_with(workspace_id))
+        .unwrap_or_else(|| panic!("missing status row for {workspace_id} in:\n{output}"))
+}
+
+fn fake_forward_status_server(roots: &StatusRoots, workspace_id: &str) -> thread::JoinHandle<()> {
+    let status_dir = roots
+        .runtime
+        .join("decune")
+        .join(format!("{workspace_id}-ports"));
+    fs::create_dir_all(&status_dir).unwrap();
+    let socket_name = "forward-status-test.sock";
+    let socket_path = status_dir.join(socket_name);
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    fs::write(
+        status_dir.join("forward-status-test.json"),
+        format!(r#"{{"version":1,"session_id":"test","socket_name":"{socket_name}","pid":1}}"#),
+    )
+    .unwrap();
+
+    thread::spawn(move || {
+        let (mut stream, _) = listener.accept().unwrap();
+        let mut request = Vec::new();
+        stream.read_to_end(&mut request).unwrap();
+        stream
+            .write_all(
+                br#"{"version":1,"ports":[{"host_ip":"127.0.0.1","host_port":3100,"requested_host_port":3000,"service":null,"container_port":3000,"protocol":"tcp","source":"configured","label":"web"}]}"#,
+            )
+            .unwrap();
+    })
 }
 
 fn fake_empty_docker_path(temp: &support::TempWorkspace) -> String {

@@ -222,6 +222,8 @@ decune が管理している workspace について、現在有効な host 側 p
 
 `--json` を付けると、通常出力の table を再構成できる JSON array を出力します。各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持ち、必要に応じて `workspace`、`workspace_id`、`requested_host_ip`、`requested_host_port` を含みます。現在有効な host 側 port がない場合、通常出力は単一 workspace で `No active ports for this workspace`、`--all` で `No active ports`、JSON 出力は `[]` です。
 
+`ports` は read-only command です。state の `last_used_at` は更新せず、stale forwarding metadata や Docker resource の削除も行いません。
+
 ### `decune remove` / `decune rm`
 
 ```sh

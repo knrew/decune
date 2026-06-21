@@ -260,9 +260,7 @@ pub(crate) async fn list_active_forward_status_ports(
         let socket_path = status_dir.join(&metadata.socket_name);
         match query_forward_status_socket(&socket_path).await {
             Ok(mut active) => ports.append(&mut active),
-            Err(error) if is_stale_status_socket_error(&error) => {
-                cleanup_status_files(&metadata_path, &socket_path);
-            }
+            Err(error) if is_stale_status_socket_error(&error) => {}
             Err(error) => warnings.push(format!(
                 "Failed to query port forwarding status socket {}: {error:#}",
                 socket_path.display()
@@ -592,7 +590,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_status_metadata_is_removed() {
+    fn stale_status_metadata_is_ignored_without_removing_files() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -601,6 +599,9 @@ mod tests {
             let temp = TempDir::new().unwrap();
             let metadata_path = temp.path().join(forward_status_metadata_name("stale"));
             let socket_name = forward_status_socket_name("stale");
+            let socket_path = temp.path().join(&socket_name);
+            let listener = std::os::unix::net::UnixListener::bind(&socket_path).unwrap();
+            drop(listener);
             write_forward_status_metadata(
                 &metadata_path,
                 &ForwardStatusMetadata {
@@ -616,8 +617,8 @@ mod tests {
 
             assert!(list.ports.is_empty());
             assert!(list.warnings.is_empty());
-            assert!(!metadata_path.exists());
-            assert!(!temp.path().join(socket_name).exists());
+            assert!(metadata_path.exists());
+            assert!(socket_path.exists());
         });
     }
 }
