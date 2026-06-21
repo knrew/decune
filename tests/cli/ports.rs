@@ -18,7 +18,7 @@ fn ports_reports_no_active_forwarded_ports() {
         .arg(workspace.path())
         .assert()
         .success()
-        .stdout("No active forwarded ports\n")
+        .stdout("No active ports for this workspace\n")
         .stderr(predicate::str::is_empty());
 }
 
@@ -470,6 +470,32 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
         if let Err(error) = wait_for_forwarded_http_response(host_port) {
             panic!("published HTTP response did not arrive: {error}");
         }
+        decune()
+            .args(["ports", "--json"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains(r#""type": "published""#)
+                    .and(predicate::str::contains(r#""source": "appPort""#))
+                    .and(predicate::str::contains(r#""host_ip": "127.0.0.1""#))
+                    .and(predicate::str::contains(format!(
+                        r#""host_port": {host_port}"#
+                    )))
+                    .and(predicate::str::contains(r#""container_port": 4321"#)),
+            );
+        decune()
+            .args(["ports", "--all", "--json"])
+            .assert()
+            .success()
+            .stdout(
+                predicate::str::contains(r#""type": "published""#)
+                    .and(predicate::str::contains(r#""source": "appPort""#))
+                    .and(predicate::str::contains(format!(
+                        r#""workspace_id": "{}""#,
+                        workspace_id(&workspace_root)
+                    ))),
+            );
     });
 
     runtime.block_on(async {

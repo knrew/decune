@@ -32,7 +32,7 @@ enum Commands {
     Rebuild(RebuildArgs),
     /// Stop a managed dev container.
     Down(DownArgs),
-    /// List active port forwarding mappings.
+    /// List active host port usage.
     Ports(PortsArgs),
     /// Remove a managed dev environment.
     #[command(visible_alias = "rm")]
@@ -115,12 +115,15 @@ struct DownArgs {
 
 #[derive(Debug, Args)]
 struct PortsArgs {
-    /// Output active forwarded ports as JSON.
+    /// List ports for all decune-managed workspaces.
+    #[arg(long, conflicts_with = "workspace")]
+    all: bool,
+    /// Output active ports as JSON.
     #[arg(long)]
     json: bool,
-    /// Workspace directory.
-    #[arg(default_value = ".", value_name = "WORKSPACE")]
-    workspace: PathBuf,
+    /// Workspace directory. Defaults to the current directory unless --all is used.
+    #[arg(value_name = "WORKSPACE")]
+    workspace: Option<PathBuf>,
 }
 
 #[derive(Debug, Args)]
@@ -278,9 +281,18 @@ async fn run_down(args: DownArgs) -> Result<i32> {
 }
 
 async fn run_ports(args: PortsArgs) -> Result<i32> {
-    let PortsArgs { json, workspace } = args;
+    let PortsArgs {
+        all,
+        json,
+        workspace,
+    } = args;
 
-    crate::ports::run_ports(PortsOptions { workspace, json }).await?;
+    crate::ports::run_ports(PortsOptions {
+        workspace,
+        all,
+        json,
+    })
+    .await?;
     Ok(0)
 }
 
@@ -530,6 +542,14 @@ mod tests {
     }
 
     #[test]
+    fn ports_all_conflicts_with_workspace() {
+        let error = Cli::try_parse_from(["decune", "ports", "--all", "workspace"])
+            .expect_err("expected --all and WORKSPACE conflict");
+
+        assert!(error.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
     fn parses_manual_port_forms() {
         let cli = Cli::parse_from([
             "decune",
@@ -679,7 +699,7 @@ mod tests {
         };
 
         assert!(args.json);
-        assert_eq!(args.workspace, PathBuf::from("workspace"));
+        assert_eq!(args.workspace, Some(PathBuf::from("workspace")));
     }
 
     #[test]

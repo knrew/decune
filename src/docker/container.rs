@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
@@ -190,6 +190,7 @@ pub(crate) struct ContainerInspect {
     pub(crate) config: Option<ContainerInspectConfig>,
     pub(crate) state: Option<ContainerState>,
     pub(crate) mounts: Option<Vec<ContainerMount>>,
+    pub(crate) network_settings: Option<ContainerNetworkSettings>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -225,6 +226,19 @@ pub(crate) struct ContainerMount {
     pub(crate) destination: Option<String>,
     #[serde(rename = "RW")]
     pub(crate) rw: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ContainerNetworkSettings {
+    pub(crate) ports: Option<HashMap<String, Option<Vec<ContainerPortBinding>>>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ContainerPortBinding {
+    pub(crate) host_ip: Option<String>,
+    pub(crate) host_port: Option<String>,
 }
 
 #[cfg(test)]

@@ -190,6 +190,14 @@ impl DockerCli {
             .await
     }
 
+    pub(crate) async fn list_workspace_container_inspects(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ContainerInspect>> {
+        self.list_workspace_container_inspects_with_filters(workspace_id, &[])
+            .await
+    }
+
     pub(crate) async fn list_all_managed_container_inspects(
         &self,
     ) -> Result<Vec<ContainerInspect>> {

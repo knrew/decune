@@ -197,14 +197,17 @@ decune が管理するコンテナまたは Compose プロジェクトを停止�
 
 ```sh
 decune ports
+decune ports path/to/workspace
+decune ports --all
 decune ports --json
+decune ports --all --json
 ```
 
-`--detach` なしで実行中の `decune up` が維持している port forwarding の対応関係を表示します。host port が使用中で別の port に fallback した場合も、実際に listen している host 側 endpoint を確認できます。
+decune が管理している workspace について、現在有効な host 側 port の利用状況を表示します。`forwardPorts`、decune `[[ports]]`、CLI `-p`、automatic forwarding による port forwarding と、image/Dockerfile モードの `appPort`、Compose サービス `ports` による Docker published port を同じ一覧で確認できます。`TYPE` は `forwarded` または `published` です。
 
-通常出力では `LOCAL`、`TARGET`、`SOURCE`、`REQUESTED`、`LABEL` を表示します。`--json` を付けると `host_ip`、`host_port`、`requested_host_port`、`service`、`container_port`、`protocol`、`source`、`label` を持つ JSON array を出力します。
+通常出力では単一 workspace で `LOCAL`、`TYPE`、`TARGET`、`SOURCE`、`REQUESTED`、`LABEL` を表示します。`--all` では `WORKSPACE` と `ID` も表示します。host port が使用中で forwarding が別 port に fallback した場合、`REQUESTED` に要求 endpoint を表示します。Docker published port は Docker の実 binding を正として表示するため、`REQUESTED` は `-` です。
 
-`decune ports` は decune の port forwarding だけを対象にします。image/Dockerfile モードの `appPort` や Compose file の `ports` による Docker published port は表示しません。現在有効な forwarding がない場合、通常出力は `No active forwarded ports`、JSON 出力は `[]` です。
+`--json` を付けると、通常出力の table を再構成できる JSON array を出力します。各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持ち、必要に応じて `workspace`、`workspace_id`、`requested_host_ip`、`requested_host_port` を含みます。現在有効な host 側 port がない場合、通常出力は単一 workspace で `No active ports for this workspace`、`--all` で `No active ports`、JSON 出力は `[]` です。
 
 ### `decune remove` / `decune rm`
 
