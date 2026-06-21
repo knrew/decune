@@ -418,9 +418,6 @@ fn published_ports_from_container(
         let Some((container_port, protocol)) = parse_docker_port_key(&target) else {
             continue;
         };
-        if protocol != "tcp" {
-            continue;
-        }
         let Some(bindings) = bindings else {
             continue;
         };
@@ -863,14 +860,28 @@ mod tests {
 
         let ports = published_ports_from_containers(containers, None, true);
 
-        assert_eq!(ports.len(), 1);
-        assert_eq!(ports[0].workspace.as_deref(), Some("/workspace"));
-        assert_eq!(ports[0].workspace_id.as_deref(), Some("123456abcdef"));
-        assert_eq!(ports[0].kind, PortUsageType::Published);
-        assert_eq!(ports[0].source, "appPort");
-        assert_eq!(ports[0].host_ip, "127.0.0.1");
-        assert_eq!(ports[0].host_port, 18080);
-        assert_eq!(ports[0].container_port, 8080);
+        assert_eq!(ports.len(), 2);
+        let tcp = ports
+            .iter()
+            .find(|port| port.container_port == 8080 && port.protocol == "tcp")
+            .expect("expected tcp published port");
+        assert_eq!(tcp.workspace.as_deref(), Some("/workspace"));
+        assert_eq!(tcp.workspace_id.as_deref(), Some("123456abcdef"));
+        assert_eq!(tcp.kind, PortUsageType::Published);
+        assert_eq!(tcp.source, "appPort");
+        assert_eq!(tcp.host_ip, "127.0.0.1");
+        assert_eq!(tcp.host_port, 18080);
+
+        let udp = ports
+            .iter()
+            .find(|port| port.container_port == 5353 && port.protocol == "udp")
+            .expect("expected udp published port");
+        assert_eq!(udp.workspace.as_deref(), Some("/workspace"));
+        assert_eq!(udp.workspace_id.as_deref(), Some("123456abcdef"));
+        assert_eq!(udp.kind, PortUsageType::Published);
+        assert_eq!(udp.source, "appPort");
+        assert_eq!(udp.host_ip, "127.0.0.1");
+        assert_eq!(udp.host_port, 15353);
     }
 
     #[test]

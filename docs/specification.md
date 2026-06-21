@@ -981,13 +981,15 @@ Compose モードでは GitHub token file mount は primary service にのみ追
 
 `forwardPorts`、decune `[[ports]]`、CLI `-p` は port forwarding であり Docker published port ではない。host 側 listen address の既定は `127.0.0.1`。container 内で `127.0.0.1:<container port>` にだけ listen している process にも届くよう、container-side `decune-forward-agent` 経由で proxy する。
 
-port forwarding と published port metadata は TCP-only とする。CLI `-p`、decune `[[ports]]`、Dev Container `forwardPorts`、Dev Container `appPort` は protocol suffix なしを TCP として扱い、`/tcp` は明示的な TCP 指定として受け付ける。`/udp` は unsupported error とし、UDP 対応は将来課題とする。
+port forwarding と decune が生成する published port metadata は TCP-only とする。CLI `-p`、decune `[[ports]]`、Dev Container `forwardPorts`、Dev Container `appPort` は protocol suffix なしを TCP として扱い、`/tcp` は明示的な TCP 指定として受け付ける。`/udp` は unsupported error とする。decune は UDP forwarding と、Dev Container `appPort` からの UDP published port metadata 生成に対応しない。
 
 `appPort` は image/Dockerfile モードの Docker published port であり container create 時に決まる。host IP が指定されない場合、Docker の既定で全 interface に公開される可能性があるため warning 対象とする。`appPort` の published port metadata も TCP-only である。
 
 CLI `-p` と Dev Container `appPort` の host IP は IPv4 / hostname / bracketed IPv6 を受け付ける。IPv6 host IP は `[::1]:8080:3000` のように bracketed form で指定し、内部 model では bracket なしで保持する。unbracketed IPv6 は colon 区切りと曖昧なため error とする。`forwardPorts` string の `[::1]:3000` は host IP `::1` への forwarding として扱い、`[::1]:8080:3000` のような host-port mapping は `forwardPorts` では unsupported error とする。
 
 Compose モードでは Docker published port 設定は Compose file の `ports` に委譲する。`appPort` は unsupported error とする。
+
+`decune ports` は Docker container inspect の実 binding を表示するため、Docker published port に UDP binding が含まれる場合は、その binding も現在有効な host 側 port として表示する。
 
 manual forwarding source priority:
 

@@ -315,7 +315,7 @@ install_feature_if_missing = true
 
 Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。Dev Container `appPort` は Compose モードでは unsupported error です。
 
-decune port forwarding と対応する published port metadata は TCP-only です。`/udp` は unsupported error です。
+decune port forwarding と、Dev Container `appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error です。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧に表示されます。
 
 ## 認証情報とセキュリティ
 
@@ -343,4 +343,4 @@ GitHub CLI integration は一時 token file を read-only で container に moun
 - Compose モードでは `workspaceMount`、`appPort`、`runArgs` を generated Compose override へ変換しません。
 - Compose sidecar service への port forwarding は `forwardPorts` の service syntax または `[[ports]].service` で明示します。
 - Dockerfile-based モードでは Dockerfile が build context 配下にある必要があります。
-- UDP forwarding と UDP published port metadata には対応しません。
+- UDP forwarding と、Dev Container `appPort` から生成する UDP published port metadata には対応しません。
