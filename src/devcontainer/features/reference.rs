@@ -88,7 +88,7 @@ pub(crate) fn parse_feature_ref_from_devcontainer_dir(
     if value.contains("://") {
         return Err(invalid_feature_ref(
             value,
-            "URL scheme Feature refs are not supported in decune v0.1",
+            "URL scheme Feature refs are not supported",
         ));
     }
     if value == ".." || value.starts_with("../") {
@@ -114,7 +114,7 @@ pub(super) fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
     if value.starts_with("http://") || value.starts_with("https://") {
         return Err(invalid_feature_ref(
             value,
-            "direct HTTPS Feature tarballs are not supported in decune v0.1",
+            "direct HTTPS Feature tarballs are not supported",
         ));
     }
 

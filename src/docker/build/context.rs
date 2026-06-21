@@ -41,7 +41,7 @@ pub(crate) fn resolve_build_context(
     let dockerfile_in_context = match dockerfile_path.strip_prefix(&context_dir) {
         Ok(path) => path.to_path_buf(),
         Err(_) => bail!(
-            "Dockerfile outside build context is unsupported in decune v0.1: Dockerfile {} is outside build context {}. build.dockerfile must be under build.context because decune sends a generated tar context to docker build -. Workaround: set build.context to a parent directory that contains the Dockerfile, or move the Dockerfile into the context.",
+            "Dockerfile outside build context is unsupported: Dockerfile {} is outside build context {}. build.dockerfile must be under build.context because decune sends a generated tar context to docker build -. Workaround: set build.context to a parent directory that contains the Dockerfile, or move the Dockerfile into the context.",
             dockerfile_path.display(),
             context_dir.display()
         ),
@@ -557,7 +557,7 @@ mod tests {
         let error = resolve_build_context(root, &devcontainer_file, &build).unwrap_err();
         let message = error.to_string();
 
-        assert!(message.contains("Dockerfile outside build context is unsupported in decune v0.1"));
+        assert!(message.contains("Dockerfile outside build context is unsupported"));
         assert!(message.contains(&dockerfile_path.display().to_string()));
         assert!(message.contains(&context_path.display().to_string()));
         assert!(message.contains("build.dockerfile must be under build.context"));

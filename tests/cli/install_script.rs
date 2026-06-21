@@ -71,7 +71,7 @@ if [ -z "$out" ] || [ -z "$url" ]; then
 fi
 case "$url" in
   */SHA256SUMS)
-    printf '%s\n' "0000000000000000000000000000000000000000000000000000000000000000  decune-v0.1.0-aarch64-apple-darwin.tar.gz" > "$out"
+    printf '%s\n' "0000000000000000000000000000000000000000000000000000000000000000  decune-v1.2.3-aarch64-apple-darwin.tar.gz" > "$out"
     ;;
   *)
     printf '%s\n' archive > "$out"
@@ -119,7 +119,7 @@ chmod +x "$root/decune"
     let output = Command::new("sh")
         .arg(workspace_file("scripts/install.sh"))
         .arg("--version")
-        .arg("0.1.0")
+        .arg("1.2.3")
         .arg("--dir")
         .arg(&install_dir)
         .env("PATH", test_path)

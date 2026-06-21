@@ -1645,19 +1645,19 @@ mod tests {
     fn dist_archives_filters_by_version() {
         let temp = TempDir::new().unwrap();
         for name in [
-            "decune-v0.1.0-x86_64-unknown-linux-musl.tar.gz",
-            "decune-v0.2.0-x86_64-unknown-linux-musl.tar.gz",
+            "decune-v1.2.3-x86_64-unknown-linux-musl.tar.gz",
+            "decune-v2.0.0-x86_64-unknown-linux-musl.tar.gz",
             "notes.txt",
         ] {
             fs::write(temp.path().join(name), b"archive").unwrap();
         }
 
-        let archives = dist_archives_for_version(temp.path(), Some("0.1.0")).unwrap();
+        let archives = dist_archives_for_version(temp.path(), Some("1.2.3")).unwrap();
 
         assert_eq!(archives.len(), 1);
         assert_eq!(
             archives[0].file_name().and_then(|name| name.to_str()),
-            Some("decune-v0.1.0-x86_64-unknown-linux-musl.tar.gz")
+            Some("decune-v1.2.3-x86_64-unknown-linux-musl.tar.gz")
         );
     }
 
@@ -1668,20 +1668,20 @@ mod tests {
           "packages": [
             {
               "name": "decune",
-              "version": "0.1.0",
-              "id": "path+file:///workspace#0.1.0",
+              "version": "1.2.3",
+              "id": "path+file:///workspace#1.2.3",
               "manifest_path": "/workspace/Cargo.toml"
             },
             {
               "name": "tools",
-              "version": "0.1.0",
-              "id": "path+file:///workspace/tools#0.1.0",
+              "version": "1.2.3",
+              "id": "path+file:///workspace/tools#1.2.3",
               "manifest_path": "/workspace/tools/Cargo.toml"
             }
           ],
           "workspace_members": [
-            "path+file:///workspace#0.1.0",
-            "path+file:///workspace/tools#0.1.0"
+            "path+file:///workspace#1.2.3",
+            "path+file:///workspace/tools#1.2.3"
           ]
         }
         "#;
@@ -1693,11 +1693,11 @@ mod tests {
             [
                 PackageVersion {
                     manifest: PathBuf::from("/workspace/Cargo.toml"),
-                    version: "0.1.0".to_owned(),
+                    version: "1.2.3".to_owned(),
                 },
                 PackageVersion {
                     manifest: PathBuf::from("/workspace/tools/Cargo.toml"),
-                    version: "0.1.0".to_owned(),
+                    version: "1.2.3".to_owned(),
                 },
             ]
         );
@@ -1709,7 +1709,7 @@ mod tests {
             br#"
             {
               "packages": [],
-              "workspace_members": ["path+file:///workspace#0.1.0"]
+              "workspace_members": ["path+file:///workspace#1.2.3"]
             }
             "#,
         )
@@ -1725,11 +1725,11 @@ mod tests {
     #[test]
     fn release_version_allows_semver_core_and_prerelease_suffix() {
         for version in [
-            "0.1.0",
+            "1.2.3",
             "1.20.300",
-            "0.1.0-alpha",
-            "0.1.0-alpha.1",
-            "0.1.0-rc-1",
+            "1.2.3-alpha",
+            "1.2.3-alpha.1",
+            "1.2.3-rc-1",
         ] {
             assert!(is_release_version(version), "{version}");
         }
@@ -1738,17 +1738,17 @@ mod tests {
     #[test]
     fn release_version_rejects_invalid_semver_shapes() {
         for version in [
-            "0.1",
-            "0.1.0.1",
-            "0.1.x",
+            "1.2",
+            "1.2.3.4",
+            "1.2.x",
             "01.2.3",
             "1.02.3",
             "1.2.03",
-            "0.1.0-",
-            "0.1.0-alpha.",
-            "0.1.0-.alpha",
-            "0.1.0--alpha",
-            "0.1.0+build",
+            "1.2.3-",
+            "1.2.3-alpha.",
+            "1.2.3-.alpha",
+            "1.2.3--alpha",
+            "1.2.3+build",
         ] {
             assert!(!is_release_version(version), "{version}");
         }
