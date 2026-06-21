@@ -76,10 +76,32 @@ pub(crate) struct MountVolumeOptions {
     pub(crate) driver_config: Option<MountVolumeDriverConfig>,
     pub(crate) subpath: Option<String>,
 }
-pub(crate) fn config_mount_specs(
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostPathCreateMode {
+    Materialize,
+    ReadOnly,
+}
+
+#[cfg(test)]
+fn config_mount_specs(
     config: &ResolvedConfig,
     workspace_root: &Path,
     variables: &VariableContext,
+) -> Result<Vec<DockerMountSpec>> {
+    config_mount_specs_with_host_path_create(
+        config,
+        workspace_root,
+        variables,
+        HostPathCreateMode::Materialize,
+    )
+}
+
+pub(crate) fn config_mount_specs_with_host_path_create(
+    config: &ResolvedConfig,
+    workspace_root: &Path,
+    variables: &VariableContext,
+    host_path_create: HostPathCreateMode,
 ) -> Result<Vec<DockerMountSpec>> {
     let mut mounts = Vec::new();
 
@@ -90,14 +112,19 @@ pub(crate) fn config_mount_specs(
     {
         replace_mount_by_target(
             &mut mounts,
-            resolved_mount_spec(mount, workspace_root, variables)?,
+            resolved_mount_spec(mount, workspace_root, variables, host_path_create)?,
         );
     }
 
     for mount in &config.devcontainer.mounts {
         replace_mount_by_target(
             &mut mounts,
-            devcontainer_mount_spec(mount, workspace_root, variables)?,
+            devcontainer_mount_spec_with_host_path_create(
+                mount,
+                workspace_root,
+                variables,
+                host_path_create,
+            )?,
         );
     }
 
@@ -108,7 +135,7 @@ pub(crate) fn config_mount_specs(
     {
         replace_mount_by_target(
             &mut mounts,
-            resolved_mount_spec(mount, workspace_root, variables)?,
+            resolved_mount_spec(mount, workspace_root, variables, host_path_create)?,
         );
     }
 
@@ -129,6 +156,7 @@ fn resolved_mount_spec(
     mount: &ResolvedMount,
     workspace_root: &Path,
     variables: &VariableContext,
+    host_path_create: HostPathCreateMode,
 ) -> Result<DockerMountSpec> {
     let target = expand_variables(&mount.target, variables)
         .with_context(|| format!("Failed to expand mount target: {}", mount.target))?;
@@ -143,7 +171,7 @@ fn resolved_mount_spec(
             let source = resolve_bind_source(
                 source,
                 HostPathOptions::new(mount.origin, workspace_root, variables)
-                    .with_create(path_create(mount.create))
+                    .with_create(path_create(mount.create, host_path_create))
                     .with_symlink_resolution(symlink_resolution(mount.resolve_symlink)),
             )
             .with_context(|| {
@@ -184,10 +212,11 @@ fn resolved_mount_spec(
     }
 }
 
-pub(crate) fn devcontainer_mount_spec(
+pub(crate) fn devcontainer_mount_spec_with_host_path_create(
     mount: &LayerDevcontainerMount,
     workspace_root: &Path,
     variables: &VariableContext,
+    host_path_create: HostPathCreateMode,
 ) -> Result<DockerMountSpec> {
     let parsed = parse_devcontainer_mount(mount, variables)?;
     let target = validate_target(&parsed.target)?;
@@ -205,7 +234,10 @@ pub(crate) fn devcontainer_mount_spec(
                     workspace_root,
                     variables,
                 )
-                .with_create(bind_path_create(parsed.bind_options.as_ref())),
+                .with_create(bind_path_create(
+                    parsed.bind_options.as_ref(),
+                    host_path_create,
+                )),
             )
             .with_context(|| {
                 format!(
@@ -556,17 +588,27 @@ fn resolve_expanded_bind_source(source: &str, options: HostPathOptions<'_>) -> R
         .to_string())
 }
 
-fn path_create(create: Option<MountCreate>) -> PathCreate {
-    match create {
-        Some(MountCreate::Directory) => PathCreate::Directory,
-        None => PathCreate::None,
+fn path_create(create: Option<MountCreate>, host_path_create: HostPathCreateMode) -> PathCreate {
+    match (create, host_path_create) {
+        (Some(MountCreate::Directory), HostPathCreateMode::Materialize) => PathCreate::Directory,
+        (Some(MountCreate::Directory), HostPathCreateMode::ReadOnly) => {
+            PathCreate::DirectoryReadOnly
+        }
+        (None, _) => PathCreate::None,
     }
 }
 
-fn bind_path_create(bind_options: Option<&MountBindOptions>) -> PathCreate {
-    match bind_options.and_then(|options| options.create_mountpoint) {
-        Some(true) => PathCreate::Directory,
-        Some(false) | None => PathCreate::None,
+fn bind_path_create(
+    bind_options: Option<&MountBindOptions>,
+    host_path_create: HostPathCreateMode,
+) -> PathCreate {
+    match (
+        bind_options.and_then(|options| options.create_mountpoint),
+        host_path_create,
+    ) {
+        (Some(true), HostPathCreateMode::Materialize) => PathCreate::Directory,
+        (Some(true), HostPathCreateMode::ReadOnly) => PathCreate::DirectoryReadOnly,
+        (Some(false) | None, _) => PathCreate::None,
     }
 }
 
@@ -709,6 +751,35 @@ mod tests {
             mounts[0].source.as_deref(),
             Some(source.canonicalize().unwrap().to_str().unwrap())
         );
+    }
+
+    #[test]
+    fn read_only_decune_bind_directory_resolution_does_not_create_source() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("generated/cache");
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some("generated/cache".to_owned()),
+                target: "/cache".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+                resolve_symlink: true,
+                create: Some(MountCreate::Directory),
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts = config_mount_specs_with_host_path_create(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            HostPathCreateMode::ReadOnly,
+        )
+        .unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(mounts[0].source.as_deref(), Some(source.to_str().unwrap()));
     }
 
     #[cfg(unix)]
@@ -1004,6 +1075,37 @@ mod tests {
             config_mount_specs(&config, workspace.path(), &variables(workspace.path())).unwrap();
 
         assert!(source.is_dir());
+        assert_eq!(
+            mounts[0].bind_options.as_ref().unwrap().create_mountpoint,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn read_only_devcontainer_bind_create_source_does_not_create_source() {
+        let workspace = tempfile::tempdir().unwrap();
+        let source = workspace.path().join("generated/cache");
+        let config = ResolvedConfig {
+            devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                mounts: vec![LayerDevcontainerMount::String(
+                    "source=${localWorkspaceFolder}/generated/cache,target=/cache,type=bind,bind-create-src"
+                        .to_owned(),
+                )],
+                ..Default::default()
+            },
+            ..ResolvedConfig::default()
+        };
+
+        let mounts = config_mount_specs_with_host_path_create(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            HostPathCreateMode::ReadOnly,
+        )
+        .unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(mounts[0].source.as_deref(), Some(source.to_str().unwrap()));
         assert_eq!(
             mounts[0].bind_options.as_ref().unwrap().create_mountpoint,
             Some(true)

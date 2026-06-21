@@ -497,6 +497,7 @@ async fn finalize_mounts_and_resources_for_plan(
         workspace,
         &plan.config,
         WorkspaceLocationValidation::RuntimeResolved,
+        MountResolution::Resolve,
         |workspace_folder| {
             mount_variable_context(
                 workspace,
@@ -913,6 +914,7 @@ async fn prepare_feature_metadata_for_plan(
         &devcontainer_file,
         &mut plan.config,
         WorkspaceLocationValidation::Preliminary,
+        MountResolution::DeferConfigMounts,
     )?;
     plan.build_context = static_expansion.build_context;
     plan.build_options = static_expansion.build_options;
@@ -1061,6 +1063,7 @@ async fn command_probe_container_env(
         workspace,
         &plan.config,
         WorkspaceLocationValidation::RuntimeResolved,
+        MountResolution::Resolve,
         |workspace_folder| {
             mount_variable_context(
                 workspace,

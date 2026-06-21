@@ -1,9 +1,9 @@
 use std::{
-    env, fs,
+    env, fs, io,
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 
 use crate::{
     config::variables::{VariableContext, expand_variables},
@@ -20,6 +20,7 @@ pub(crate) enum ConfigPathOrigin {
 pub(crate) enum PathCreate {
     None,
     Directory,
+    DirectoryReadOnly,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -89,19 +90,94 @@ fn resolve_checked_host_path(input: String, options: &HostPathOptions<'_>) -> Re
     let absolute_path =
         absolutize_config_path(PathBuf::from(input), options.origin, options.workspace_root)?;
 
-    if options.create == PathCreate::Directory {
-        fs::create_dir_all(&absolute_path)
-            .with_path_context("create host path directory", &absolute_path)?;
+    match options.create {
+        PathCreate::None => resolve_existing_host_path(&absolute_path, options.symlink_resolution),
+        PathCreate::Directory => {
+            fs::create_dir_all(&absolute_path)
+                .with_path_context("create host path directory", &absolute_path)?;
+            resolve_existing_host_path(&absolute_path, options.symlink_resolution)
+        }
+        PathCreate::DirectoryReadOnly => {
+            resolve_read_only_directory_path(&absolute_path, options.symlink_resolution)
+        }
     }
+}
 
-    match options.symlink_resolution {
+fn resolve_existing_host_path(
+    absolute_path: &Path,
+    symlink_resolution: SymlinkResolution,
+) -> Result<PathBuf> {
+    match symlink_resolution {
         SymlinkResolution::Resolve => absolute_path
             .canonicalize()
-            .with_path_context("canonicalize host path", &absolute_path),
+            .with_path_context("canonicalize host path", absolute_path),
         SymlinkResolution::Preserve => {
-            fs::metadata(&absolute_path)
-                .with_path_context("read host path metadata", &absolute_path)?;
-            Ok(absolute_path)
+            fs::metadata(absolute_path)
+                .with_path_context("read host path metadata", absolute_path)?;
+            Ok(absolute_path.to_path_buf())
+        }
+    }
+}
+
+fn resolve_read_only_directory_path(
+    absolute_path: &Path,
+    symlink_resolution: SymlinkResolution,
+) -> Result<PathBuf> {
+    let mut current = absolute_path;
+    let mut missing_components = Vec::new();
+    loop {
+        match fs::metadata(current) {
+            Ok(metadata) => {
+                if !metadata.is_dir() {
+                    if missing_components.is_empty() {
+                        bail!("Host path is not a directory: {}", current.display());
+                    } else {
+                        bail!(
+                            "Host path ancestor is not a directory: {}",
+                            current.display()
+                        );
+                    }
+                }
+                if missing_components.is_empty() {
+                    return resolve_existing_host_path(absolute_path, symlink_resolution);
+                }
+                let mut resolved = current
+                    .canonicalize()
+                    .with_path_context("canonicalize host path ancestor", current)?;
+                for component in missing_components.iter().rev() {
+                    resolved.push(component);
+                }
+                return Ok(resolved);
+            }
+            Err(error)
+                if matches!(
+                    error.kind(),
+                    io::ErrorKind::NotFound | io::ErrorKind::NotADirectory
+                ) =>
+            {
+                if fs::symlink_metadata(current).is_ok() {
+                    return current
+                        .canonicalize()
+                        .with_path_context("canonicalize host path ancestor", current);
+                }
+                let Some(file_name) = current.file_name() else {
+                    return current
+                        .canonicalize()
+                        .with_path_context("canonicalize host path ancestor", current);
+                };
+                missing_components.push(file_name.to_os_string());
+                current = current.parent().ok_or_else(|| {
+                    anyhow!(
+                        "Host path has no existing ancestor: {}",
+                        absolute_path.display()
+                    )
+                })?;
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Failed to read host path metadata: {}", current.display())
+                });
+            }
         }
     }
 }
@@ -280,6 +356,34 @@ mod tests {
 
         assert!(source.is_dir());
         assert_eq!(path, source.canonicalize().unwrap());
+    }
+
+    #[test]
+    fn read_only_create_directory_resolves_missing_path_without_creating_it() {
+        let root = fixture_root("read-only-create-directory");
+        let variables = variables(&root);
+        let source = root.join("generated/cache");
+        let options = project_options(&root, &variables).with_create(PathCreate::DirectoryReadOnly);
+
+        let path = resolve_host_path("generated/cache", &options).unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(path, root.canonicalize().unwrap().join("generated/cache"));
+    }
+
+    #[test]
+    fn read_only_create_directory_rejects_existing_file_ancestor() {
+        let root = fixture_root("read-only-create-directory-file-ancestor");
+        let variables = variables(&root);
+        let source = root.join("generated");
+        fs::write(&source, b"not a directory").unwrap();
+        let options = project_options(&root, &variables).with_create(PathCreate::DirectoryReadOnly);
+
+        let error = resolve_host_path("generated/cache", &options).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Host path ancestor is not a directory"));
+        assert!(message.contains(&source.display().to_string()));
     }
 
     #[test]
