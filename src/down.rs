@@ -13,7 +13,10 @@ use crate::{
         client::DockerClient,
         container::{remove_container, stop_container},
         image::{remove_image, workspace_image_tags},
-        resource::DockerResources,
+        resource::{
+            DockerResources, managed_workspace_id_from_container, managed_workspace_id_from_labels,
+            workspace_path_from_labels,
+        },
         volume::{remove_volume, workspace_volumes},
     },
     host::{
@@ -520,35 +523,6 @@ fn load_all_workspace_states() -> Result<Vec<StateRemovalEntry>> {
     }
 
     Ok(states)
-}
-
-pub(crate) fn managed_workspace_id_from_container(
-    container: &crate::docker::container::ContainerInspect,
-) -> Option<(String, &BTreeMap<String, String>)> {
-    let labels = container.config.as_ref()?.labels.as_ref()?;
-    let workspace_id = managed_workspace_id_from_labels(labels)?;
-    Some((workspace_id, labels))
-}
-
-pub(crate) fn managed_workspace_id_from_labels(
-    labels: &BTreeMap<String, String>,
-) -> Option<String> {
-    let managed = labels.get("decune.managed")?;
-    if managed != "true" {
-        return None;
-    }
-    labels
-        .get("decune.workspace_id")
-        .filter(|workspace_id| is_valid_workspace_id(workspace_id))
-        .cloned()
-}
-
-fn workspace_path_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
-    labels
-        .get("decune.workspace")
-        .or_else(|| labels.get("devcontainer.local_folder"))
-        .filter(|workspace_path| !workspace_path.trim().is_empty())
-        .cloned()
 }
 
 fn container_name(container: &crate::docker::container::ContainerInspect) -> Option<String> {

@@ -9,6 +9,7 @@ mod host;
 mod ports;
 mod runtime;
 mod state;
+mod status;
 mod terminal;
 mod ui;
 mod up;

@@ -651,6 +651,7 @@ mod tests {
                 running: Some(true),
                 exit_code: None,
                 pid: None,
+                ..ContainerState::default()
             }),
             mounts: Some(vec![
                 ContainerMount {

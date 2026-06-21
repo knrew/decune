@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::workspace::Workspace;
+use crate::workspace::{Workspace, is_valid_workspace_id};
 
 const MANAGED_LABEL: &str = "decune.managed";
 const WORKSPACE_LABEL: &str = "decune.workspace";
@@ -75,6 +75,43 @@ pub(crate) fn managed_workspace_label_filters(workspace_id: &str) -> BTreeMap<St
     );
     filters
 }
+
+pub(crate) fn managed_workspace_id_from_labels(
+    labels: &BTreeMap<String, String>,
+) -> Option<String> {
+    let managed = labels.get(MANAGED_LABEL)?;
+    if managed != "true" {
+        return None;
+    }
+    labels
+        .get(WORKSPACE_ID_LABEL)
+        .filter(|workspace_id| is_valid_workspace_id(workspace_id))
+        .cloned()
+}
+
+pub(crate) fn managed_workspace_id_from_container(
+    container: &crate::docker::container::ContainerInspect,
+) -> Option<(String, &BTreeMap<String, String>)> {
+    let labels = container.config.as_ref()?.labels.as_ref()?;
+    let workspace_id = managed_workspace_id_from_labels(labels)?;
+    Some((workspace_id, labels))
+}
+
+pub(crate) fn workspace_path_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
+    labels
+        .get(WORKSPACE_LABEL)
+        .or_else(|| labels.get(DEVCONTAINER_LOCAL_FOLDER_LABEL))
+        .filter(|workspace_path| !workspace_path.trim().is_empty())
+        .cloned()
+}
+
+pub(crate) fn config_hash_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
+    labels
+        .get(CONFIG_HASH_LABEL)
+        .filter(|config_hash| !config_hash.trim().is_empty())
+        .cloned()
+}
+
 fn labels(entries: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, String> {
     entries
         .into_iter()
