@@ -30,6 +30,9 @@
 - project decune config: `<workspace>/.decune/config.toml`。
 - configuration layer: 最終的に merge される設定の入力。image metadata、Feature metadata、global config、project config、CLI options など。
 - config hash: decune が管理する既存のコンテナまたは Compose プロジェクトを再利用できるか判定する content hash。
+- generated data: decune が XDG cache/state/runtime 配下に生成し、管理している workspace data や共有 Feature archive cache。workspace file である `.decune/config.toml` や `.decune/features.lock.toml` は含めない。
+- workspace data: workspace id 単位で作られる decune の cache、state、runtime data。
+- Feature archive cache: OCI Feature archive を再利用するための共有 cache。`$XDG_CACHE_HOME/decune/features` または `~/.cache/decune/features`。
 
 ## Docker と Compose の用語
 

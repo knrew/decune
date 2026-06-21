@@ -124,12 +124,28 @@ pub(crate) fn decune_state_root() -> Result<PathBuf> {
     Ok(PathRoots::from_env()?.state_root()?.join("decune"))
 }
 
+pub(crate) fn decune_cache_root() -> Result<PathBuf> {
+    Ok(PathRoots::from_env()?.cache_root()?.join("decune"))
+}
+
+pub(crate) fn decune_runtime_root() -> Result<PathBuf> {
+    Ok(PathRoots::from_env()?.runtime_root())
+}
+
 pub(crate) fn state_dir_for_workspace_id(workspace_id: &str) -> Result<PathBuf> {
     Ok(decune_state_root()?.join(workspace_id))
 }
 
+pub(crate) fn cache_dir_for_workspace_id(workspace_id: &str) -> Result<PathBuf> {
+    Ok(decune_cache_root()?.join(workspace_id))
+}
+
 pub(crate) fn runtime_dir_for_workspace_id(workspace_id: &str) -> Result<PathBuf> {
     Ok(PathRoots::from_env()?.runtime_dir(workspace_id))
+}
+
+pub(crate) fn feature_archive_cache_dir() -> Result<PathBuf> {
+    Ok(decune_cache_root()?.join("features"))
 }
 
 pub(crate) fn is_valid_workspace_id(value: &str) -> bool {
@@ -191,11 +207,13 @@ impl PathRoots {
     }
 
     fn runtime_dir(&self, workspace_id: &str) -> PathBuf {
+        self.runtime_root().join(workspace_id)
+    }
+
+    fn runtime_root(&self) -> PathBuf {
         match &self.xdg_runtime_dir {
-            Some(runtime_root) => runtime_root.join("decune").join(workspace_id),
-            None => PathBuf::from("/tmp")
-                .join(format!("decune-{}", self.uid))
-                .join(workspace_id),
+            Some(runtime_root) => runtime_root.join("decune"),
+            None => PathBuf::from("/tmp").join(format!("decune-{}", self.uid)),
         }
     }
 }

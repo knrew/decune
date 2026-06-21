@@ -252,6 +252,56 @@ decune rm     [--no-confirm] [--images] --all-workspaces
 
 削除対象がある状態で TTY でない環境から `remove` を `--no-confirm` なしで実行した場合は、確認不能として error にする。`--all-workspaces` で削除対象が 0 件の場合は、TTY でない環境でも確認せず success とする。
 
+### `clean`
+
+```text
+decune clean [--dry-run] [--no-confirm] [--json]
+decune clean --include-feature-cache [--dry-run] [--no-confirm] [--json]
+```
+
+`clean` は decune が管理している generated data を削除する maintenance command とする。Docker container、Compose project、Docker volume、Docker image、Docker builder cache、利用者が管理している filesystem は削除しない。`--all` と `--force` は提供しない。
+
+既定の cleanup 対象は stale な workspace data だけである。
+
+- `$XDG_CACHE_HOME/decune/<workspace_id>` または `~/.cache/decune/<workspace_id>`
+- `$XDG_STATE_HOME/decune/<workspace_id>` または `~/.local/state/decune/<workspace_id>`
+- `$XDG_RUNTIME_DIR/decune/<workspace_id>` または `/tmp/decune-<uid>/<workspace_id>`
+- port forwarding status companion directory (`<runtime parent>/<workspace_id>-ports`)
+
+workspace data は workspace id 単位で扱い、cache/state/runtime の一部だけを意図的に削除する mode は提供しない。有効な workspace id は 12 桁の lowercase hex (`[0-9a-f]{12}`) に完全一致する値だけである。無効な directory name や Docker label value は cleanup path の組み立てに使わない。
+
+`--include-feature-cache` は既定の workspace data cleanup に共有 Feature archive cache (`$XDG_CACHE_HOME/decune/features` または `~/.cache/decune/features`) を追加する option とする。既定の `clean` は共有 Feature archive cache を削除しない。Feature archive cache の削除は Feature 取得・展開処理と同じ interprocess lock で保護し、`up` / `rebuild` と同時に archive cache を変更しない。
+
+Safety model:
+
+- 設定された XDG root と仕様で定義した fallback 配下の、decune が管理している path だけを探索する。
+- symlink は辿らない。cleanup 対象自体または配下 entry に symlink がある対象は `unsafe_path` として skip する。
+- decune が管理している root 外の path は削除しない。
+- Docker label から `decune.managed=true` と有効な `decune.workspace_id` を持つ container / volume が見つかる workspace は decune が管理している再利用可能な resource とみなし skip する。
+- runtime directory または port status directory 配下に接続可能な Unix socket、または取得できない lock file がある workspace は active とみなし skip する。
+- Docker resource discovery に失敗した場合、削除実行は safety 判定不能として error にする。`--dry-run` では filesystem candidate を `docker_unavailable` として skip 表示できる。
+- workspace file である `.decune/config.toml` と `.decune/features.lock.toml` は対象外である。
+- runtime directory の file content は stdout/stderr、state、label、log に出してはならない。
+
+TTY / non-TTY:
+
+- TTY + `--no-confirm` なし + deletion candidate あり: summary を表示し、`[y/N]` で確認する。
+- non-TTY + `--no-confirm` なし + deletion candidate あり: error にする。
+- `--no-confirm`: 確認プロンプトだけを省略する。active / reusable workspace 保護や symlink refusal は迂回しない。
+- `--dry-run`: 削除しないため確認不要。non-TTY でも実行できる。
+
+`--json` は stdout に JSON object を出力する。root は `dry_run`、`include_feature_cache`、`summary`、`targets` を持つ。`summary` は `remove_candidates`、`removed`、`skipped` を持つ。workspace target は以下を持つ。
+
+- `kind`: `"workspace"`
+- `workspace_id`
+- `action`: `"remove"` または `"skip"`
+- `reason`: `"stale_workspace_data"`、`"managed_resource"`、`"active_runtime"`、`"unsafe_path"`、`"docker_unavailable"`、`"missing"` のいずれか
+- `removed`: 実削除した場合だけ `true`
+- `paths`: `cache`、`state`、`runtime`、`port_status`
+- `existing_paths`: `"cache"`、`"state"`、`"runtime"`、`"port_status"` の array
+
+Feature cache target は `kind = "feature_cache"`、`action`、`reason`、`removed`、`path` を持つ。Feature cache の `reason` は `"feature_cache_included"`、`"unsafe_path"`、`"missing"` のいずれかである。
+
 ## devcontainer.json サポート
 
 ### 検出順序

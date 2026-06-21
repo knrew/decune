@@ -220,6 +220,23 @@ decune remove --all-workspaces --no-confirm
 
 `--no-confirm` は確認プロンプトだけを省略します。削除対象は decune が管理するリソースに限定され、利用者が管理する image / volume を削除しない挙動は変わりません。
 
+### `decune clean`
+
+```sh
+decune clean --dry-run
+decune clean --no-confirm
+decune clean --include-feature-cache --no-confirm
+decune clean --dry-run --json
+```
+
+stale な decune の生成データを workspace id 単位で確認・削除します。既定の対象は workspace cache、state、runtime data です。active な runtime socket / lock がある workspace や、Docker label から decune が管理している再利用可能なリソースが見つかる workspace は削除せずスキップします。
+
+`--include-feature-cache` は、既定の cleanup 対象に共有 Feature archive cache (`$XDG_CACHE_HOME/decune/features`) を追加します。この option は Feature cache だけを掃除する指定ではありません。既定の `clean` は共有 Feature archive cache を削除しません。
+
+`--dry-run` は削除せず候補を表示します。`--no-confirm` は確認プロンプトだけを省略し、使用中または再利用可能な workspace の保護や symlink traversal の拒否は迂回しません。
+
+`--json` は `dry_run`、`include_feature_cache`、`summary`、`targets` を持つ JSON object を stdout に出力します。`summary` は `remove_candidates`、`removed`、`skipped` を持ちます。workspace target は `kind = "workspace"`、`workspace_id`、`action`、`reason`、`removed`、`paths`、`existing_paths` を持ち、Feature cache target は `kind = "feature_cache"`、`action`、`reason`、`removed`、`path` を持ちます。
+
 ## decune TOML 設定
 
 decune TOML の重ね合わせ設定は以下の順で読み込まれます。基本は後勝ちですが、一部の field は仕様で定義した merge rule に従います。

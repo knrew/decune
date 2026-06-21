@@ -2,6 +2,7 @@
 pub(crate) mod support;
 
 mod build;
+mod clean;
 mod compose;
 mod compose_ci;
 mod compose_integration;

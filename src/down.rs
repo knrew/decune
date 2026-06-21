@@ -522,7 +522,7 @@ fn load_all_workspace_states() -> Result<Vec<StateRemovalEntry>> {
     Ok(states)
 }
 
-fn managed_workspace_id_from_container(
+pub(crate) fn managed_workspace_id_from_container(
     container: &crate::docker::container::ContainerInspect,
 ) -> Option<(String, &BTreeMap<String, String>)> {
     let labels = container.config.as_ref()?.labels.as_ref()?;
@@ -530,7 +530,9 @@ fn managed_workspace_id_from_container(
     Some((workspace_id, labels))
 }
 
-fn managed_workspace_id_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
+pub(crate) fn managed_workspace_id_from_labels(
+    labels: &BTreeMap<String, String>,
+) -> Option<String> {
     let managed = labels.get("decune.managed")?;
     if managed != "true" {
         return None;
