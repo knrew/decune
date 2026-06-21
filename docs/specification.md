@@ -255,6 +255,7 @@ decune ports [--json] --all
 - port forwarding は `forwardPorts`、decune `[[ports]]`、CLI `-p`、automatic forwarding を含む。
 - Docker published port は image/Dockerfile モードの `appPort` と Compose service `ports` を含む。
 - `--all` は decune が管理している workspace を横断して表示する。`--all` と `WORKSPACE` は同時指定できない。
+- `ports` は read-only command とする。state、runtime file、Docker resource を修復、削除、更新しない。`last_used_at` も更新しない。
 - 現在有効な host 側 port がない場合も success とし、通常出力は単一 workspace で `No active ports for this workspace`、`--all` で `No active ports`、JSON 出力は `[]` とする。
 
 通常出力:

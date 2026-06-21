@@ -10,7 +10,7 @@ use std::{
 use crate::harness::*;
 
 #[test]
-fn ports_reports_no_active_forwarded_ports() {
+fn ports_reports_no_active_host_ports() {
     let workspace = support::TempWorkspace::new().unwrap();
 
     decune()
@@ -23,12 +23,50 @@ fn ports_reports_no_active_forwarded_ports() {
 }
 
 #[test]
-fn ports_json_reports_no_active_forwarded_ports() {
+fn ports_json_reports_no_active_host_ports() {
     let workspace = support::TempWorkspace::new().unwrap();
 
     decune()
         .args(["ports", "--json"])
         .arg(workspace.path())
+        .assert()
+        .success()
+        .stdout("[]\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn ports_all_reports_no_active_host_ports() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = ports_roots(&temp);
+
+    decune()
+        .args(["ports", "--all"])
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stdout("No active ports\n")
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn ports_all_json_reports_no_active_host_ports() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = ports_roots(&temp);
+
+    decune()
+        .args(["ports", "--all", "--json"])
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
         .assert()
         .success()
         .stdout("[]\n")
@@ -44,6 +82,45 @@ fn up_detach_rejects_cli_port_before_workspace_resolution() {
         .stderr(predicate::str::contains(
             "Port forwarding is not supported with --detach",
         ));
+}
+
+#[derive(Debug)]
+struct PortsRoots {
+    state: PathBuf,
+    cache: PathBuf,
+    config: PathBuf,
+    runtime: PathBuf,
+}
+
+fn ports_roots(temp: &support::TempWorkspace) -> PortsRoots {
+    PortsRoots {
+        state: temp.create_dir("state").unwrap(),
+        cache: temp.create_dir("cache").unwrap(),
+        config: temp.create_dir("config").unwrap(),
+        runtime: temp.create_dir("runtime").unwrap(),
+    }
+}
+
+fn fake_empty_docker_path(temp: &support::TempWorkspace) -> String {
+    let bin_dir = temp.create_dir("bin").unwrap();
+    let docker_path = bin_dir.join("docker");
+    fs::write(
+        &docker_path,
+        r#"#!/bin/sh
+case "$*" in
+  "ps --all --filter label=decune.managed=true --format json") exit 0 ;;
+esac
+echo "unexpected fake docker command: $*" >&2
+exit 64
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
 }
 
 #[test]
