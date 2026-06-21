@@ -28,6 +28,8 @@ pub(crate) struct WorkspaceState {
     pub(crate) compose_project_name: Option<String>,
     pub(crate) created_at: String,
     pub(crate) last_started_at: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) last_used_at: Option<String>,
     #[serde(default)]
     pub(crate) lifecycle: LifecycleState,
 }
@@ -114,6 +116,13 @@ pub(crate) struct StateContainerSnapshot {
     pub(crate) config_file: Option<String>,
 }
 
+struct StateMetadata {
+    lifecycle: LifecycleState,
+    created_at: String,
+    last_started_at: String,
+    last_used_at: Option<String>,
+}
+
 pub(crate) fn load_state_file(state_dir: impl AsRef<Path>) -> Result<Option<WorkspaceState>> {
     let path = state_file_path(state_dir);
     let content = match fs::read_to_string(&path) {
@@ -163,37 +172,73 @@ pub(crate) fn sync_state_with_container_and_compose_project(
 ) -> Result<WorkspaceState> {
     let state_dir = state_dir.as_ref();
     let existing = load_state_file(state_dir).ok().flatten();
-    let lifecycle = existing
+    let matching_existing = existing
         .as_ref()
         .filter(|state| state_matches_container(state, &container))
+        .cloned();
+    let lifecycle = matching_existing
+        .as_ref()
         .map(|state| state.lifecycle)
         .unwrap_or(default_lifecycle);
-    let created_at = existing
+    let now = current_timestamp();
+    let created_at = matching_existing
         .as_ref()
-        .filter(|state| state_matches_container(state, &container))
         .map(|state| state.created_at.clone())
-        .unwrap_or_else(current_timestamp);
+        .unwrap_or_else(|| now.clone());
+    let last_used_at = matching_existing
+        .as_ref()
+        .and_then(|state| state.last_used_at.clone());
 
-    write_state_for_container(
+    write_state_for_container_with_metadata(
         state_dir,
         workspace_root,
         container,
         compose_project_name,
-        lifecycle,
-        Some(created_at),
+        StateMetadata {
+            lifecycle,
+            created_at,
+            last_started_at: now,
+            last_used_at,
+        },
     )
 }
 
-pub(crate) fn write_state_for_container(
+pub(crate) fn write_reused_state_for_container(
     state_dir: impl AsRef<Path>,
     workspace_root: &Path,
     container: StateContainerSnapshot,
     compose_project_name: Option<String>,
-    lifecycle: LifecycleState,
-    created_at: Option<String>,
+    existing: &WorkspaceState,
+    refresh_last_started_at: bool,
+) -> Result<WorkspaceState> {
+    let last_started_at = if refresh_last_started_at {
+        current_timestamp()
+    } else {
+        existing.last_started_at.clone()
+    };
+
+    write_state_for_container_with_metadata(
+        state_dir,
+        workspace_root,
+        container,
+        compose_project_name,
+        StateMetadata {
+            lifecycle: existing.lifecycle,
+            created_at: existing.created_at.clone(),
+            last_started_at,
+            last_used_at: existing.last_used_at.clone(),
+        },
+    )
+}
+
+fn write_state_for_container_with_metadata(
+    state_dir: impl AsRef<Path>,
+    workspace_root: &Path,
+    container: StateContainerSnapshot,
+    compose_project_name: Option<String>,
+    metadata: StateMetadata,
 ) -> Result<WorkspaceState> {
     let state_dir = state_dir.as_ref();
-    let now = current_timestamp();
     let state = WorkspaceState {
         version: STATE_VERSION,
         workspace: workspace_root.display().to_string(),
@@ -202,13 +247,22 @@ pub(crate) fn write_state_for_container(
         config_hash: container.config_hash,
         config_file: container.config_file,
         compose_project_name,
-        created_at: created_at.unwrap_or_else(|| now.clone()),
-        last_started_at: now,
-        lifecycle,
+        created_at: metadata.created_at,
+        last_started_at: metadata.last_started_at,
+        last_used_at: metadata.last_used_at,
+        lifecycle: metadata.lifecycle,
     };
     write_state_file(state_dir, &state)?;
 
     Ok(state)
+}
+
+pub(crate) fn mark_state_used(
+    state_dir: impl AsRef<Path>,
+    state: &mut WorkspaceState,
+) -> Result<()> {
+    state.last_used_at = Some(current_timestamp());
+    write_state_file(state_dir, state)
 }
 
 pub(crate) fn reconcile_state_without_container(state_dir: impl AsRef<Path>) -> Result<()> {
@@ -342,9 +396,10 @@ mod tests {
     use std::{fs, path::Path};
 
     use super::{
-        LifecycleState, StateContainerSnapshot, load_state_file, reconcile_state_without_container,
-        remove_state_runtime_dirs, state_file_path, sync_state_with_container,
-        sync_state_with_container_and_compose_project, write_state_file,
+        LifecycleState, StateContainerSnapshot, load_state_file, mark_state_used,
+        reconcile_state_without_container, remove_state_runtime_dirs, state_file_path,
+        sync_state_with_container, sync_state_with_container_and_compose_project,
+        write_reused_state_for_container, write_state_file,
     };
 
     #[test]
@@ -396,6 +451,7 @@ mod tests {
         assert!(content.contains("version = 1"));
         assert!(content.contains("container_id = \"container-a\""));
         assert!(content.contains("config_file = \"/workspace/custom/devcontainer.json\""));
+        assert!(!content.contains("last_used_at"));
         assert_eq!(load_state_file(&state_dir).unwrap(), Some(state));
         let temp_files = fs::read_dir(&state_dir)
             .unwrap()
@@ -443,6 +499,136 @@ mod tests {
         let legacy_state = load_state_file(&state_dir).unwrap().unwrap();
         assert_eq!(legacy_state.compose_project_name, None);
         assert_eq!(legacy_state.container_id, state.container_id);
+    }
+
+    #[test]
+    fn state_can_read_files_without_last_used_at() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+        fs::write(
+            state_file_path(&state_dir),
+            r#"
+version = 1
+workspace = "/workspace/project"
+container_id = "container-a"
+image = "decune/project:hash-a"
+config_hash = "hash-a"
+created_at = "unix:1"
+last_started_at = "unix:2"
+"#,
+        )
+        .unwrap();
+
+        let state = load_state_file(&state_dir).unwrap().unwrap();
+
+        assert_eq!(state.last_used_at, None);
+        assert_eq!(state.created_at, "unix:1");
+        assert_eq!(state.last_started_at, "unix:2");
+    }
+
+    #[test]
+    fn mark_state_used_records_last_used_at_and_preserves_existing_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let mut state = sync_state_with_container_and_compose_project(
+            &state_dir,
+            Path::new("/workspace/project"),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "decune/project:hash-a".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+            },
+            Some("decune-project-abc123".to_owned()),
+            LifecycleState {
+                on_create_completed: true,
+                after_on_create_completed: true,
+                update_content_completed: false,
+                after_update_content_completed: false,
+                post_create_completed: false,
+                after_post_create_completed: false,
+            },
+        )
+        .unwrap();
+        let before = state.clone();
+
+        mark_state_used(&state_dir, &mut state).unwrap();
+
+        let content = fs::read_to_string(state_file_path(&state_dir)).unwrap();
+        assert!(content.contains("last_used_at = \"unix:"));
+        let loaded = load_state_file(&state_dir).unwrap().unwrap();
+        assert!(
+            loaded
+                .last_used_at
+                .as_deref()
+                .is_some_and(|value| value.starts_with("unix:"))
+        );
+        assert_eq!(loaded.created_at, before.created_at);
+        assert_eq!(loaded.last_started_at, before.last_started_at);
+        assert_eq!(loaded.lifecycle, before.lifecycle);
+        assert_eq!(loaded.compose_project_name, before.compose_project_name);
+    }
+
+    #[test]
+    fn reused_state_preserves_last_used_at_and_controls_last_started_at() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let mut existing = sync_state_with_container_and_compose_project(
+            &state_dir,
+            Path::new("/workspace/project"),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "decune/project:hash-a".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: None,
+            },
+            Some("decune-project-abc123".to_owned()),
+            LifecycleState::all_completed(),
+        )
+        .unwrap();
+        existing.created_at = "unix:10".to_owned();
+        existing.last_started_at = "unix:20".to_owned();
+        existing.last_used_at = Some("unix:30".to_owned());
+        write_state_file(&state_dir, &existing).unwrap();
+
+        let running_reuse = write_reused_state_for_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "decune/project:hash-a".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: None,
+            },
+            Some("decune-project-abc123".to_owned()),
+            &existing,
+            false,
+        )
+        .unwrap();
+        assert_eq!(running_reuse.created_at, "unix:10");
+        assert_eq!(running_reuse.last_started_at, "unix:20");
+        assert_eq!(running_reuse.last_used_at.as_deref(), Some("unix:30"));
+        assert_eq!(running_reuse.lifecycle, LifecycleState::all_completed());
+
+        let started_reuse = write_reused_state_for_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "decune/project:hash-a".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: None,
+            },
+            Some("decune-project-abc123".to_owned()),
+            &existing,
+            true,
+        )
+        .unwrap();
+        assert_eq!(started_reuse.created_at, "unix:10");
+        assert_ne!(started_reuse.last_started_at, "unix:20");
+        assert_eq!(started_reuse.last_used_at.as_deref(), Some("unix:30"));
+        assert_eq!(started_reuse.lifecycle, LifecycleState::all_completed());
     }
 
     #[test]

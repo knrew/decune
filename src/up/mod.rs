@@ -18,6 +18,7 @@ use crate::{
     config::resolved::{ResolvedDevcontainerSource, ResolvedShutdownAction},
     docker::container::stop_container,
     runtime::compose_cli::{ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli},
+    state,
 };
 use attach::attach_shell;
 use forwarding::{start_forwarding_for_up, stop_forwarding, warn_about_detached_forwarding};
@@ -84,6 +85,7 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
         let lifecycle = prepare_up_lifecycle(&started).await?;
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
     }
+    mark_started_workspace_used(&started)?;
     report_up_success(&started, start_time.elapsed());
 
     Ok(started.outcome)
@@ -102,6 +104,7 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     let forwarding = start_forwarding_for_up(&started).await?;
     let attach_result = async {
         run_attach_lifecycle_for_up(&lifecycle).await?;
+        mark_started_workspace_used(&started)?;
         report_up_success(&started, start_time.elapsed());
 
         attach_shell(
@@ -118,6 +121,11 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     let exit_code = attach_result?;
     apply_shutdown_action_after_attached_up(&started).await?;
     Ok(shell::clamp_exit_code(exit_code))
+}
+
+fn mark_started_workspace_used(started: &start::StartedUpContainer) -> Result<()> {
+    let mut state = started.state.borrow_mut();
+    state::mark_state_used(started.workspace.paths().state_dir(), &mut state)
 }
 
 async fn apply_shutdown_action_after_attached_up(
