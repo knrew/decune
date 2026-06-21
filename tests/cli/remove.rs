@@ -563,6 +563,108 @@ exit 91
 }
 
 #[test]
+fn remove_all_workspaces_ignores_invalid_workspace_id_labels() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let bin_dir = temp.path().join("bin");
+    let state_home = temp.path().join("state");
+    let runtime_home = temp.path().join("runtime");
+    let victim_state_dir = state_home.join("victim");
+    let victim_runtime_dir = runtime_home.join("victim");
+    let command_log = temp.path().join("docker.log");
+    fs::create_dir_all(&bin_dir).unwrap();
+    fs::create_dir_all(&victim_state_dir).unwrap();
+    fs::create_dir_all(&victim_runtime_dir).unwrap();
+    fs::write(victim_state_dir.join("marker"), "keep\n").unwrap();
+    fs::write(victim_runtime_dir.join("marker"), "keep\n").unwrap();
+    let docker_path = bin_dir.join("docker");
+    fs::write(
+        &docker_path,
+        r#"#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+
+if [ "${1:-}" = ps ]; then
+  case "$*" in
+    *"label=decune.managed=true"*)
+      printf '{"ID":"invalid-container"}\n'
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
+  shift 2
+  case "$*" in
+    "invalid-container")
+      printf '[{"Id":"invalid-container","Name":"/invalid","Config":{"Labels":{"decune.managed":"true","decune.workspace_id":"../victim","decune.workspace":"/work/invalid"}},"State":{"Running":true}}]\n'
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
+  case "$*" in
+    *"label=decune.managed=true"*)
+      printf 'invalid-volume\n'
+      exit 0
+      ;;
+  esac
+fi
+
+if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Name":"invalid-volume","Labels":{"decune.managed":"true","decune.workspace_id":"../victim"}}]\n'
+  exit 0
+fi
+
+if [ "${1:-}" = stop ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = volume ] && [ "${2:-}" = rm ]; then
+  exit 0
+fi
+
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_RUNTIME_DIR", &runtime_home)
+        .args(["remove", "--all-workspaces", "--no-confirm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "No decune-managed workspace environments found",
+        ));
+
+    assert_eq!(
+        fs::read_to_string(victim_state_dir.join("marker")).unwrap(),
+        "keep\n"
+    );
+    assert_eq!(
+        fs::read_to_string(victim_runtime_dir.join("marker")).unwrap(),
+        "keep\n"
+    );
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(!commands.contains("rm --force --volumes invalid-container"));
+    assert!(!commands.contains("volume rm --force invalid-volume"));
+}
+
+#[test]
 fn remove_all_workspaces_no_confirm_removes_owned_resources_and_images() {
     let temp = support::TempWorkspace::new().unwrap();
     let bin_dir = temp.path().join("bin");

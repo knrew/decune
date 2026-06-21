@@ -28,8 +28,8 @@ use crate::{
     ui,
     up::{ForwardingResolution, build_up_plan_with_forwarding_resolution},
     workspace::{
-        Workspace, decune_state_root, runtime_dir_for_workspace_id, safe_workspace_slug_for_name,
-        state_dir_for_workspace_id,
+        Workspace, decune_state_root, is_valid_workspace_id, runtime_dir_for_workspace_id,
+        safe_workspace_slug_for_name, state_dir_for_workspace_id,
     },
 };
 
@@ -529,7 +529,7 @@ fn managed_workspace_id_from_labels(labels: &BTreeMap<String, String>) -> Option
     }
     labels
         .get("decune.workspace_id")
-        .filter(|workspace_id| !workspace_id.trim().is_empty())
+        .filter(|workspace_id| is_valid_workspace_id(workspace_id))
         .cloned()
 }
 
@@ -877,7 +877,7 @@ mod tests {
         workspace::Workspace,
     };
     use anyhow::Result;
-    use std::{fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path};
 
     #[test]
     fn remove_confirmation_is_required_only_for_interactive_runs_without_no_confirm() {
@@ -942,6 +942,48 @@ mod tests {
             .is_ok()
         );
         assert!(!prompted);
+    }
+
+    #[test]
+    fn managed_workspace_id_from_labels_rejects_invalid_workspace_ids() {
+        let labels_with_workspace_id = |workspace_id: &str| {
+            BTreeMap::from([
+                ("decune.managed".to_owned(), "true".to_owned()),
+                ("decune.workspace_id".to_owned(), workspace_id.to_owned()),
+            ])
+        };
+
+        assert_eq!(
+            super::managed_workspace_id_from_labels(&labels_with_workspace_id("123456abcdef")),
+            Some("123456abcdef".to_owned())
+        );
+
+        for workspace_id in [
+            "",
+            "123456abcde",
+            "123456abcdef0",
+            "123456ABCDE",
+            "123456abcdeg",
+            " 123456abcde",
+            "123456abcde ",
+            "../victim",
+            r"..\victim",
+            "123456/abcde",
+        ] {
+            assert_eq!(
+                super::managed_workspace_id_from_labels(&labels_with_workspace_id(workspace_id)),
+                None,
+                "{workspace_id:?}"
+            );
+        }
+
+        assert_eq!(
+            super::managed_workspace_id_from_labels(&BTreeMap::from([
+                ("decune.managed".to_owned(), "false".to_owned()),
+                ("decune.workspace_id".to_owned(), "123456abcdef".to_owned()),
+            ])),
+            None
+        );
     }
 
     #[test]
