@@ -6,7 +6,7 @@ use std::{
         fd::AsRawFd,
         unix::{fs::FileTypeExt, net::UnixStream},
     },
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
@@ -62,6 +62,8 @@ struct WorkspaceCleanTarget {
     reason: CleanReason,
     removed: bool,
     paths: WorkspaceCleanPaths,
+    #[serde(skip)]
+    removal_paths: WorkspaceCleanPathBufs,
     existing_paths: Vec<WorkspacePathKind>,
 }
 
@@ -71,6 +73,14 @@ struct WorkspaceCleanPaths {
     state: String,
     runtime: String,
     port_status: String,
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceCleanPathBufs {
+    cache: PathBuf,
+    state: PathBuf,
+    runtime: PathBuf,
+    port_status: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -88,6 +98,8 @@ struct FeatureCacheCleanTarget {
     reason: CleanReason,
     removed: bool,
     path: String,
+    #[serde(skip)]
+    removal_path: PathBuf,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -243,13 +255,8 @@ fn collect_workspace_ids_from_root(
     root: &Path,
     excluded_name: Option<&str>,
 ) -> Result<()> {
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error)
-                .with_context(|| format!("Failed to read decune data root: {}", root.display()));
-        }
+    let Some(entries) = read_non_symlink_root(root, "decune data root")? else {
+        return Ok(());
     };
 
     for entry in entries {
@@ -274,14 +281,8 @@ fn collect_workspace_ids_from_port_status_dirs(
     workspace_ids: &mut BTreeSet<String>,
     root: &Path,
 ) -> Result<()> {
-    let entries = match fs::read_dir(root) {
-        Ok(entries) => entries,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => {
-            return Err(error).with_context(|| {
-                format!("Failed to read decune runtime root: {}", root.display())
-            });
-        }
+    let Some(entries) = read_non_symlink_root(root, "decune runtime root")? else {
+        return Ok(());
     };
 
     for entry in entries {
@@ -305,6 +306,28 @@ fn collect_workspace_ids_from_port_status_dirs(
     Ok(())
 }
 
+fn read_non_symlink_root(root: &Path, description: &str) -> Result<Option<fs::ReadDir>> {
+    let metadata = match root.symlink_metadata() {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to inspect {description}: {}", root.display()));
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return Ok(None);
+    }
+
+    match fs::read_dir(root) {
+        Ok(entries) => Ok(Some(entries)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            Err(error).with_context(|| format!("Failed to read {description}: {}", root.display()))
+        }
+    }
+}
+
 fn workspace_clean_target(
     workspace_id: &str,
     docker_unavailable: bool,
@@ -319,6 +342,12 @@ fn workspace_clean_target(
         state: display_path(&state),
         runtime: display_path(&runtime),
         port_status: display_path(&port_status),
+    };
+    let removal_paths = WorkspaceCleanPathBufs {
+        cache: cache.clone(),
+        state: state.clone(),
+        runtime: runtime.clone(),
+        port_status: port_status.clone(),
     };
     let existing_paths = existing_workspace_paths(&cache, &state, &runtime, &port_status);
     let reason = if workspace_paths_are_unsafe(&cache, &state, &runtime, &port_status)? {
@@ -345,6 +374,7 @@ fn workspace_clean_target(
         reason,
         removed: false,
         paths,
+        removal_paths,
         existing_paths,
     })
 }
@@ -532,6 +562,7 @@ fn feature_cache_clean_target() -> Result<FeatureCacheCleanTarget> {
         reason,
         removed: false,
         path: display_path(&path),
+        removal_path: path,
     })
 }
 
@@ -636,15 +667,15 @@ fn apply_clean_report(report: &mut CleanReport) -> Result<()> {
     for target in &mut report.targets {
         match target {
             CleanTargetReport::Workspace(target) if target.action == CleanAction::Remove => {
-                remove_dir_if_exists(Path::new(&target.paths.cache))?;
-                remove_dir_if_exists(Path::new(&target.paths.state))?;
-                remove_dir_if_exists(Path::new(&target.paths.runtime))?;
-                remove_dir_if_exists(Path::new(&target.paths.port_status))?;
+                remove_dir_if_exists(&target.removal_paths.cache)?;
+                remove_dir_if_exists(&target.removal_paths.state)?;
+                remove_dir_if_exists(&target.removal_paths.runtime)?;
+                remove_dir_if_exists(&target.removal_paths.port_status)?;
                 target.removed = true;
             }
             CleanTargetReport::FeatureCache(target) if target.action == CleanAction::Remove => {
-                let _lock = FeatureCacheLock::acquire_exclusive(Path::new(&target.path))?;
-                remove_dir_if_exists(Path::new(&target.path))?;
+                let _lock = FeatureCacheLock::acquire_exclusive(&target.removal_path)?;
+                remove_dir_if_exists(&target.removal_path)?;
                 target.removed = true;
             }
             _ => {}
@@ -725,9 +756,9 @@ mod tests {
         fs::{self, OpenOptions},
         os::{
             fd::AsRawFd,
-            unix::{fs as unix_fs, net::UnixListener},
+            unix::{ffi::OsStringExt, fs as unix_fs, net::UnixListener},
         },
-        path::Path,
+        path::{Path, PathBuf},
         sync::{Mutex, MutexGuard, OnceLock},
     };
 
@@ -747,6 +778,44 @@ mod tests {
         fs::write(state.join("marker"), "state\n").unwrap();
         fs::write(runtime.join("marker"), "runtime\n").unwrap();
         let _env = roots.apply();
+
+        let mut report = CleanReport {
+            dry_run: false,
+            include_feature_cache: false,
+            summary: CleanSummary::default(),
+            targets: vec![CleanTargetReport::Workspace(
+                workspace_clean_target(workspace_id, false, &BTreeSet::new()).unwrap(),
+            )],
+        };
+        report.summary = summarize_targets(&report.targets);
+
+        apply_clean_report(&mut report).unwrap();
+
+        assert!(!cache.exists());
+        assert!(!state.exists());
+        assert!(!runtime.exists());
+        assert_eq!(report.summary.removed, 1);
+    }
+
+    #[test]
+    fn workspace_target_removes_non_utf8_workspace_paths_as_a_unit() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_id = "123456abcdef";
+        let cache_home = temp
+            .path()
+            .join(PathBuf::from(OsString::from_vec(b"cache-\xff".to_vec())));
+        let state_home = temp.path().join("state-home");
+        let runtime_home = temp.path().join("runtime-home");
+        let cache = cache_home.join("decune").join(workspace_id);
+        let state = state_home.join("decune").join(workspace_id);
+        let runtime = runtime_home.join("decune").join(workspace_id);
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(&state).unwrap();
+        fs::create_dir_all(&runtime).unwrap();
+        fs::write(cache.join("marker"), "cache\n").unwrap();
+        fs::write(state.join("marker"), "state\n").unwrap();
+        fs::write(runtime.join("marker"), "runtime\n").unwrap();
+        let _env = apply_env(&state_home, &cache_home, &runtime_home);
 
         let mut report = CleanReport {
             dry_run: false,
@@ -837,12 +906,71 @@ mod tests {
     }
 
     #[test]
+    fn workspace_discovery_skips_symlink_data_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_id = "123456abcdef";
+        let root = temp.path().join("decune");
+        let linked_root = temp.path().join("linked-root");
+        fs::create_dir_all(root.join(workspace_id)).unwrap();
+        unix_fs::symlink(&root, &linked_root).unwrap();
+        let mut workspace_ids = BTreeSet::new();
+
+        collect_workspace_ids_from_root(&mut workspace_ids, &linked_root, None).unwrap();
+
+        assert!(workspace_ids.is_empty());
+    }
+
+    #[test]
+    fn port_status_discovery_skips_symlink_runtime_root() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_id = "123456abcdef";
+        let root = temp.path().join("decune");
+        let linked_root = temp.path().join("linked-root");
+        fs::create_dir_all(root.join(format!("{workspace_id}-ports"))).unwrap();
+        unix_fs::symlink(&root, &linked_root).unwrap();
+        let mut workspace_ids = BTreeSet::new();
+
+        collect_workspace_ids_from_port_status_dirs(&mut workspace_ids, &linked_root).unwrap();
+
+        assert!(workspace_ids.is_empty());
+    }
+
+    #[test]
     fn feature_cache_is_additive_and_uses_its_own_target() {
         let roots = TestRoots::new();
         let cache = roots.cache_home.path().join("decune/features");
         fs::create_dir_all(&cache).unwrap();
         fs::write(cache.join("archive.tgz"), "archive\n").unwrap();
         let _env = roots.apply();
+
+        let mut report = CleanReport {
+            dry_run: false,
+            include_feature_cache: true,
+            summary: CleanSummary::default(),
+            targets: vec![CleanTargetReport::FeatureCache(
+                feature_cache_clean_target().unwrap(),
+            )],
+        };
+        report.summary = summarize_targets(&report.targets);
+
+        apply_clean_report(&mut report).unwrap();
+
+        assert!(!cache.exists());
+        assert_eq!(report.summary.removed, 1);
+    }
+
+    #[test]
+    fn feature_cache_removes_non_utf8_cache_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let cache_home = temp
+            .path()
+            .join(PathBuf::from(OsString::from_vec(b"cache-\xff".to_vec())));
+        let state_home = temp.path().join("state-home");
+        let runtime_home = temp.path().join("runtime-home");
+        let cache = cache_home.join("decune/features");
+        fs::create_dir_all(&cache).unwrap();
+        fs::write(cache.join("archive.tgz"), "archive\n").unwrap();
+        let _env = apply_env(&state_home, &cache_home, &runtime_home);
 
         let mut report = CleanReport {
             dry_run: false,
@@ -889,19 +1017,11 @@ mod tests {
         }
 
         fn apply(&self) -> EnvGuard {
-            let guard = env_mutex().lock().unwrap();
-            let original = [
-                ("XDG_STATE_HOME", std::env::var_os("XDG_STATE_HOME")),
-                ("XDG_CACHE_HOME", std::env::var_os("XDG_CACHE_HOME")),
-                ("XDG_RUNTIME_DIR", std::env::var_os("XDG_RUNTIME_DIR")),
-            ];
-            set_env("XDG_STATE_HOME", self.state_home.path());
-            set_env("XDG_CACHE_HOME", self.cache_home.path());
-            set_env("XDG_RUNTIME_DIR", self.runtime_home.path());
-            EnvGuard {
-                _guard: guard,
-                original,
-            }
+            apply_env(
+                self.state_home.path(),
+                self.cache_home.path(),
+                self.runtime_home.path(),
+            )
         }
     }
 
@@ -926,6 +1046,22 @@ mod tests {
     fn env_mutex() -> &'static Mutex<()> {
         static ENV_MUTEX: OnceLock<Mutex<()>> = OnceLock::new();
         ENV_MUTEX.get_or_init(|| Mutex::new(()))
+    }
+
+    fn apply_env(state_home: &Path, cache_home: &Path, runtime_home: &Path) -> EnvGuard {
+        let guard = env_mutex().lock().unwrap();
+        let original = [
+            ("XDG_STATE_HOME", std::env::var_os("XDG_STATE_HOME")),
+            ("XDG_CACHE_HOME", std::env::var_os("XDG_CACHE_HOME")),
+            ("XDG_RUNTIME_DIR", std::env::var_os("XDG_RUNTIME_DIR")),
+        ];
+        set_env("XDG_STATE_HOME", state_home);
+        set_env("XDG_CACHE_HOME", cache_home);
+        set_env("XDG_RUNTIME_DIR", runtime_home);
+        EnvGuard {
+            _guard: guard,
+            original,
+        }
     }
 
     fn set_env(key: &str, value: &Path) {
