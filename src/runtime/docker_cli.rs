@@ -190,6 +190,14 @@ impl DockerCli {
             .await
     }
 
+    pub(crate) async fn list_workspace_container_inspects(
+        &self,
+        workspace_id: &str,
+    ) -> Result<Vec<ContainerInspect>> {
+        self.list_workspace_container_inspects_with_filters(workspace_id, &[])
+            .await
+    }
+
     pub(crate) async fn list_all_managed_container_inspects(
         &self,
     ) -> Result<Vec<ContainerInspect>> {
@@ -254,6 +262,17 @@ impl DockerCli {
         .collect()
     }
 
+    pub(crate) async fn list_compose_project_container_inspects_by_project(
+        &self,
+        project_name: &str,
+    ) -> Result<Vec<ContainerInspect>> {
+        self.list_container_inspects_with_filters(
+            project_name,
+            &[format!("label=com.docker.compose.project={project_name}")],
+        )
+        .await
+    }
+
     pub(crate) async fn list_compose_project_containers(
         &self,
         workspace_id: &str,
@@ -293,10 +312,7 @@ impl DockerCli {
         project_name: &str,
     ) -> Result<Vec<UpContainerSummary>> {
         let containers = self
-            .list_container_inspects_with_filters(
-                project_name,
-                &[format!("label=com.docker.compose.project={project_name}")],
-            )
+            .list_compose_project_container_inspects_by_project(project_name)
             .await?;
         containers
             .into_iter()
@@ -1585,6 +1601,48 @@ mod tests {
         let ps_args = commands[0].args_vec();
         assert!(ps_args.contains(&"label=com.docker.compose.project=project".to_owned()));
         assert!(ps_args.contains(&"label=com.docker.compose.service=db".to_owned()));
+        assert!(
+            !ps_args
+                .iter()
+                .any(|arg| arg.contains("decune.managed") || arg.contains("decune.workspace_id"))
+        );
+    }
+
+    #[test]
+    fn list_compose_project_container_inspects_by_project_uses_compose_project_label_only() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(
+                br#"[{
+                    "Id": "app-id",
+                    "Name": "/project-app-1",
+                    "Config": {
+                        "Labels": {
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "app"
+                        }
+                    },
+                    "State": { "Running": true }
+                }]"#,
+            )),
+            Ok(output(
+                br#"{"ID":"app-id","Names":"project-app-1","ImageID":"sha256:image","State":"running","Labels":"com.docker.compose.project=project,com.docker.compose.service=app"}"#,
+            )),
+        ]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let containers = runtime
+            .block_on(client.list_compose_project_container_inspects_by_project("project"))
+            .unwrap();
+
+        assert_eq!(containers.len(), 1);
+        assert_eq!(containers[0].id.as_deref(), Some("app-id"));
+        let commands = runner.commands();
+        let ps_args = commands[0].args_vec();
+        assert!(ps_args.contains(&"label=com.docker.compose.project=project".to_owned()));
         assert!(
             !ps_args
                 .iter()

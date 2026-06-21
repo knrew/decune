@@ -212,23 +212,30 @@ decune down [--timeout <SECONDS>] [WORKSPACE]
 
 ```text
 decune ports [--json] [WORKSPACE]
+decune ports [--json] --all
 ```
 
 役割:
 
-- 実行中の attached `up` process が維持している port forwarding の対応関係を表示する。
-- Docker published port は表示しない。image/Dockerfile モードの `appPort` と Compose file の `ports` は対象外である。
-- 現在有効な forwarding がない場合も success とし、通常出力は `No active forwarded ports`、JSON 出力は `[]` とする。
+- decune が管理している workspace について、現在有効な host 側 port の利用状況を表示する。
+- 表示対象は、実行中の attached `up` process が維持している port forwarding と、Docker が現在 publish している port binding である。
+- port forwarding は `forwardPorts`、decune `[[ports]]`、CLI `-p`、automatic forwarding を含む。
+- Docker published port は image/Dockerfile モードの `appPort` と Compose service `ports` を含む。
+- `--all` は decune が管理している workspace を横断して表示する。`--all` と `WORKSPACE` は同時指定できない。
+- 現在有効な host 側 port がない場合も success とし、通常出力は単一 workspace で `No active ports for this workspace`、`--all` で `No active ports`、JSON 出力は `[]` とする。
 
 通常出力:
 
-- `LOCAL`: 実際に listen している host 側 endpoint。
-- `TARGET`: 転送先。primary service は `container:<port>/<protocol>`、sidecar service は `<service>:<port>/<protocol>`。
-- `SOURCE`: `configured` または `auto`。
+- `WORKSPACE`: `--all` の場合だけ表示する workspace path。不明なら `<unknown>`。
+- `ID`: `--all` の場合だけ表示する workspace id。
+- `LOCAL`: 実際に listen している、または publish されている host 側 endpoint。
+- `TYPE`: `forwarded` または `published`。
+- `TARGET`: 転送先、または Docker published port の container 側 endpoint。primary container は `container:<port>/<protocol>`、Compose service は `<service>:<port>/<protocol>`。
+- `SOURCE`: forwarding は `configured` または `auto`、published port は `appPort` または `compose`。
 - `REQUESTED`: 要求 host port と実 host port が異なる場合だけ要求 endpoint。異ならない場合は `-`。
 - `LABEL`: port label。未指定なら `-`。
 
-`--json` は `host_ip`、`host_port`、`requested_host_port`、`service`、`container_port`、`protocol`、`source`、`label` を持つ JSON array を stdout に出力する。
+`--json` は通常出力の table を再構成できる JSON array を stdout に出力する。各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持つ。`--all` では `workspace` と `workspace_id` も含める。要求 endpoint が実 endpoint と異なる forwarding entry では `requested_host_ip` と `requested_host_port` を含める。published port の requested endpoint は Docker の実 binding からは復元せず、省略する。
 
 ### `remove` / `rm`
 
@@ -974,13 +981,15 @@ Compose モードでは GitHub token file mount は primary service にのみ追
 
 `forwardPorts`、decune `[[ports]]`、CLI `-p` は port forwarding であり Docker published port ではない。host 側 listen address の既定は `127.0.0.1`。container 内で `127.0.0.1:<container port>` にだけ listen している process にも届くよう、container-side `decune-forward-agent` 経由で proxy する。
 
-port forwarding と published port metadata は TCP-only とする。CLI `-p`、decune `[[ports]]`、Dev Container `forwardPorts`、Dev Container `appPort` は protocol suffix なしを TCP として扱い、`/tcp` は明示的な TCP 指定として受け付ける。`/udp` は unsupported error とし、UDP 対応は将来課題とする。
+port forwarding と decune が生成する published port metadata は TCP-only とする。CLI `-p`、decune `[[ports]]`、Dev Container `forwardPorts`、Dev Container `appPort` は protocol suffix なしを TCP として扱い、`/tcp` は明示的な TCP 指定として受け付ける。`/udp` は unsupported error とする。decune は UDP forwarding と、Dev Container `appPort` からの UDP published port metadata 生成に対応しない。
 
 `appPort` は image/Dockerfile モードの Docker published port であり container create 時に決まる。host IP が指定されない場合、Docker の既定で全 interface に公開される可能性があるため warning 対象とする。`appPort` の published port metadata も TCP-only である。
 
 CLI `-p` と Dev Container `appPort` の host IP は IPv4 / hostname / bracketed IPv6 を受け付ける。IPv6 host IP は `[::1]:8080:3000` のように bracketed form で指定し、内部 model では bracket なしで保持する。unbracketed IPv6 は colon 区切りと曖昧なため error とする。`forwardPorts` string の `[::1]:3000` は host IP `::1` への forwarding として扱い、`[::1]:8080:3000` のような host-port mapping は `forwardPorts` では unsupported error とする。
 
 Compose モードでは Docker published port 設定は Compose file の `ports` に委譲する。`appPort` は unsupported error とする。
+
+`decune ports` は Docker container inspect の実 binding を表示するため、Docker published port に UDP binding が含まれる場合は、その binding も現在有効な host 側 port として表示する。
 
 manual forwarding source priority:
 
@@ -1007,7 +1016,7 @@ sidecar service forwarding は、その service の container ID を解決し、
 
 automatic forwarding は TCP listening socket のみを対象にする。container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、TCP LISTEN port を検出する。UDP socket は検出・転送しない。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済みの port、Docker published port として扱われる port、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose モードの automatic forwarding は primary service のみを対象にする。
 
-現在有効な forwarding の実効対応は `decune ports` で確認できる。`decune ports` は `decune up` process が runtime directory に公開する host-local status socket に問い合わせる。実効対応は `state.toml` には保存しない。stale metadata または接続不能な status socket は現在有効な forwarding ではないものとして無視する。
+現在有効な host 側 port の利用状況は `decune ports` で確認できる。forwarding の実効対応は、`decune up` process が runtime directory に公開する host-local status socket に問い合わせる。Docker published port は Docker container inspect の実 binding から読み取る。実効対応は `state.toml` には保存しない。stale metadata または接続不能な status socket は現在有効な forwarding ではないものとして無視する。
 
 ## Host daemon とセキュリティ境界
 

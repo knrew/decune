@@ -8,7 +8,7 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 
 - `decune up` で development container を起動し、remote user のシェルに接続
 - `decune rebuild` / `decune down` / `decune remove` による明示的なライフサイクル管理
-- `decune ports` で実行中の port forwarding の対応関係を確認
+- `decune ports` で実行中の port forwarding と Docker published port の host 側の利用状況を確認
 - `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
 - image-based / Dockerfile-based / Docker Compose-based の Dev Container 構成を起動
 - Dev Container Features、dotfiles、Git/GitHub 認証情報転送、ポートフォワーディング、Linux UID/GID 同期を適用
@@ -108,7 +108,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `decune up`: development container を作成または起動し、シェルに接続
 - `decune rebuild`: development container または Compose プロジェクトを再作成
 - `decune down`: decune が管理するリソースを停止し、volume、状態、image を保持
-- `decune ports`: `--detach` なしで実行中の `decune up` が維持している port forwarding の対応関係を表示
+- `decune ports`: decune が管理している workspace について、現在有効な host 側 port の利用状況を表示。port forwarding と Docker published port を区別して確認
 - `decune remove` / `decune rm`: decune が管理する Dev Container 環境を削除。`--all-workspaces` ですべての workspace を対象にし、`--images` で decune が生成した image も削除
 - `decune clean`: stale な decune の生成データを確認・削除。既定では workspace cache/state/runtime だけを対象にし、`--include-feature-cache` で共有 Feature archive cache も対象に追加
 
@@ -117,7 +117,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 ## 注意点
 
 - `forwardPorts`、decune `[[ports]]`、`decune up -p` は decune のポートフォワーディングであり、Docker の published port ではありません。
-- `decune ports` は decune が現在維持している port forwarding の対応関係だけを表示し、Docker published port は表示しません。
+- `decune ports` は decune が現在維持している port forwarding と Docker published port の両方を表示し、`TYPE` で `forwarded` / `published` を区別します。workspace 横断では `decune ports --all` を使います。
 - `appPort` は image/Dockerfile モードの Docker published port です。
 - Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。`appPort`、`workspaceMount`、`runArgs` は Compose モードでは unsupported error です。
 - `decune up` は Dockerfile instruction、Compose build、Feature `install.sh`、ライフサイクルコマンド、hook、シェル起動ファイルを実行し得ます。信頼していないリポジトリでは起動前に内容を確認してください。
