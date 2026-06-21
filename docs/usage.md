@@ -193,6 +193,19 @@ decune down
 
 decune が管理するコンテナまたは Compose プロジェクトを停止します。volume、状態、image は保持します。
 
+### `decune status`
+
+```sh
+decune status
+decune status path/to/workspace
+```
+
+`decune status` は、state file と decune が付けた Docker label から見つかる workspace environment の summary を表示します。summary には workspace id、workspace path、runtime/config/health、active forwarded/published port count、issue count、`last_used_at` 由来の last-used 表示が含まれます。`last_used_at` がない場合は `-` です。
+
+`WORKSPACE` を指定すると、その workspace の detail を表示します。devcontainer metadata が存在し、まだ decune environment が作成されていない場合は `not-created` として success します。devcontainer metadata が見つからない場合は error です。detail には summary、config file、issue、Compose service、runtime container、ports、resource count、未完了 lifecycle がある場合の lifecycle 状態、必要な action を表示します。
+
+`status` は read-only command です。state の `last_used_at` は更新せず、resource の修復や削除も行いません。JSON 出力や追加の detail option は提供しません。
+
 ### `decune ports`
 
 ```sh

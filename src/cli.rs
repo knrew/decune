@@ -11,6 +11,7 @@ use crate::config::{
 };
 use crate::down::{DownOptions, RemoveOptions, RemoveTarget};
 use crate::ports::PortsOptions;
+use crate::status::StatusOptions;
 use crate::up::{UpOptions, run_attached_up, run_detached_up};
 
 #[derive(Debug, Parser)]
@@ -32,6 +33,8 @@ enum Commands {
     Rebuild(RebuildArgs),
     /// Stop a managed dev container.
     Down(DownArgs),
+    /// Show managed dev environment status.
+    Status(StatusArgs),
     /// List active host port usage.
     Ports(PortsArgs),
     /// Remove a managed dev environment.
@@ -114,6 +117,13 @@ struct DownArgs {
 }
 
 #[derive(Debug, Args)]
+struct StatusArgs {
+    /// Workspace directory.
+    #[arg(value_name = "WORKSPACE")]
+    workspace: Option<PathBuf>,
+}
+
+#[derive(Debug, Args)]
 struct PortsArgs {
     /// List ports for all decune-managed workspaces.
     #[arg(long, conflicts_with = "workspace")]
@@ -190,6 +200,7 @@ async fn run_cli(cli: Cli) -> Result<i32> {
         Commands::Up(args) => run_up(args).await,
         Commands::Rebuild(args) => run_rebuild(args).await,
         Commands::Down(args) => run_down(args).await,
+        Commands::Status(args) => run_status(args).await,
         Commands::Ports(args) => run_ports(args).await,
         Commands::Remove(args) => run_remove(args).await,
         Commands::Clean(args) => run_clean(args).await,
@@ -291,6 +302,14 @@ async fn run_ports(args: PortsArgs) -> Result<i32> {
         workspace,
         all,
         json,
+    })
+    .await?;
+    Ok(0)
+}
+
+async fn run_status(args: StatusArgs) -> Result<i32> {
+    crate::status::run_status(StatusOptions {
+        workspace: args.workspace,
     })
     .await?;
     Ok(0)

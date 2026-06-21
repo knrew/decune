@@ -8,6 +8,7 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 
 - `decune up` で development container を起動し、remote user のシェルに接続
 - `decune rebuild` / `decune down` / `decune remove` による明示的なライフサイクル管理
+- `decune status` で decune が管理する workspace environment の summary/detail を確認
 - `decune ports` で実行中の port forwarding と Docker published port の host 側の利用状況を確認
 - `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
 - image-based / Dockerfile-based / Docker Compose-based の Dev Container 構成を起動
@@ -108,6 +109,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `decune up`: development container を作成または起動し、シェルに接続
 - `decune rebuild`: development container または Compose プロジェクトを再作成
 - `decune down`: decune が管理するリソースを停止し、volume、状態、image を保持
+- `decune status`: decune が管理する workspace environment の実行状態、設定状態、health、port count、issue を表示
 - `decune ports`: decune が管理している workspace について、現在有効な host 側 port の利用状況を表示。port forwarding と Docker published port を区別して確認
 - `decune remove` / `decune rm`: decune が管理する Dev Container 環境を削除。`--all-workspaces` ですべての workspace を対象にし、`--images` で decune が生成した image も削除
 - `decune clean`: stale な decune の生成データを確認・削除。既定では workspace cache/state/runtime だけを対象にし、`--include-feature-cache` で共有 Feature archive cache も対象に追加

@@ -21,3 +21,4 @@ mod ports;
 mod rebuild;
 mod remove;
 mod ssh_agent;
+mod status;
