@@ -8,7 +8,7 @@ use crate::config::{
     ports::{PortSpecSegments, split_port_spec},
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
-use crate::down::{CleanOptions, DownOptions};
+use crate::down::{DownOptions, RemoveOptions};
 use crate::ports::PortsOptions;
 use crate::up::{UpOptions, run_attached_up, run_detached_up};
 
@@ -33,8 +33,9 @@ enum Commands {
     Down(DownArgs),
     /// List active port forwarding mappings.
     Ports(PortsArgs),
-    /// Remove managed dev container resources.
-    Clean(CleanArgs),
+    /// Remove a managed dev environment.
+    #[command(visible_alias = "rm")]
+    Remove(RemoveArgs),
 }
 
 #[derive(Debug, Args)]
@@ -120,13 +121,13 @@ struct PortsArgs {
 }
 
 #[derive(Debug, Args)]
-struct CleanArgs {
+struct RemoveArgs {
     /// Remove decune generated workspace images.
     #[arg(long)]
     images: bool,
     /// Remove resources without confirmation.
     #[arg(long)]
-    force: bool,
+    no_confirm: bool,
     /// Workspace directory.
     #[arg(default_value = ".", value_name = "WORKSPACE")]
     workspace: PathBuf,
@@ -165,7 +166,7 @@ async fn run_cli(cli: Cli) -> Result<i32> {
         Commands::Rebuild(args) => run_rebuild(args).await,
         Commands::Down(args) => run_down(args).await,
         Commands::Ports(args) => run_ports(args).await,
-        Commands::Clean(args) => run_clean(args).await,
+        Commands::Remove(args) => run_remove(args).await,
     }
 }
 
@@ -260,17 +261,17 @@ async fn run_ports(args: PortsArgs) -> Result<i32> {
     Ok(0)
 }
 
-async fn run_clean(args: CleanArgs) -> Result<i32> {
-    let CleanArgs {
+async fn run_remove(args: RemoveArgs) -> Result<i32> {
+    let RemoveArgs {
         images,
-        force,
+        no_confirm,
         workspace,
     } = args;
 
-    crate::down::run_clean(CleanOptions {
+    crate::down::run_remove(RemoveOptions {
         workspace,
         images,
-        force,
+        no_confirm,
     })
     .await?;
     Ok(0)
@@ -666,7 +667,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_down_and_clean_options() {
+    fn parses_down_and_remove_options() {
         let down = Cli::parse_from(["decune", "down", "--timeout", "20", "workspace"]);
         let Commands::Down(down_args) = down.command else {
             panic!("expected down command");
@@ -675,14 +676,32 @@ mod tests {
         assert_eq!(down_args.workspace, PathBuf::from("workspace"));
         assert_eq!(down_args.timeout, 20);
 
-        let clean = Cli::parse_from(["decune", "clean", "--images", "--force", "workspace"]);
-        let Commands::Clean(clean_args) = clean.command else {
-            panic!("expected clean command");
+        let remove = Cli::parse_from(["decune", "remove", "--images", "--no-confirm", "workspace"]);
+        let Commands::Remove(remove_args) = remove.command else {
+            panic!("expected remove command");
         };
 
-        assert_eq!(clean_args.workspace, PathBuf::from("workspace"));
-        assert!(clean_args.images);
-        assert!(clean_args.force);
+        assert_eq!(remove_args.workspace, PathBuf::from("workspace"));
+        assert!(remove_args.images);
+        assert!(remove_args.no_confirm);
+    }
+
+    #[test]
+    fn parses_rm_as_remove_alias() {
+        let cli = Cli::parse_from(["decune", "rm", "--no-confirm", "workspace"]);
+        let Commands::Remove(args) = cli.command else {
+            panic!("expected remove command");
+        };
+
+        assert_eq!(args.workspace, PathBuf::from("workspace"));
+        assert!(args.no_confirm);
+    }
+
+    #[test]
+    fn remove_rejects_legacy_force_option() {
+        let error = Cli::try_parse_from(["decune", "remove", "--force"]).unwrap_err();
+
+        assert!(error.to_string().contains("unexpected argument '--force'"));
     }
 
     #[test]

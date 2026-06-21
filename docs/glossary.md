@@ -4,7 +4,7 @@
 
 ## CLI 用語
 
-- command: `up`、`rebuild`、`down`、`clean` など、decune の操作名。
+- command: `up`、`rebuild`、`down`、`remove` など、decune の操作名。
 - option: `--detach`、`--no-cache`、`-p` など、名前付きの指定。decune の CLI ドキュメントでは `flag` ではなく `option` を使う。
 - argument: `WORKSPACE` のような位置引数、または `--config <PATH>` の `PATH` のような option value。
 - subcommand: 実装説明で必要な場合だけ使う。利用者向けドキュメントでは原則 `command` を使う。
@@ -29,7 +29,7 @@
 - global decune config: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`。
 - project decune config: `<workspace>/.decune/config.toml`。
 - configuration layer: 最終的に merge される設定の入力。image metadata、Feature metadata、global config、project config、CLI options など。
-- config hash: 既存の managed container または Compose プロジェクトを再利用できるか判定する content hash。
+- config hash: decune が管理する既存のコンテナまたは Compose プロジェクトを再利用できるか判定する content hash。
 
 ## Docker と Compose の用語
 

@@ -12,7 +12,8 @@ fn root_help_is_displayed() {
         .stdout(predicate::str::contains("up"))
         .stdout(predicate::str::contains("down"))
         .stdout(predicate::str::contains("ports"))
-        .stdout(predicate::str::contains("clean"))
+        .stdout(predicate::str::contains("remove"))
+        .stdout(predicate::str::contains("clean").not())
         .stdout(predicate::str::contains("rebuild"))
         .stderr(predicate::str::is_empty());
 }
@@ -48,13 +49,27 @@ fn short_version_is_displayed() {
 
 #[test]
 fn command_help_is_displayed() {
-    for command in ["up", "down", "ports", "clean", "rebuild"] {
+    for command in ["up", "down", "ports", "remove", "rm", "rebuild"] {
         decune()
             .args([command, "--help"])
             .assert()
             .success()
             .stdout(predicate::str::contains("Workspace directory"))
             .stdout(predicate::str::contains("WORKSPACE"))
+            .stderr(predicate::str::is_empty());
+    }
+}
+
+#[test]
+fn remove_help_lists_no_confirm_and_not_force() {
+    for command in ["remove", "rm"] {
+        decune()
+            .args([command, "--help"])
+            .assert()
+            .success()
+            .stdout(predicate::str::contains("--no-confirm"))
+            .stdout(predicate::str::contains("--images"))
+            .stdout(predicate::str::contains("--force").not())
             .stderr(predicate::str::is_empty());
     }
 }

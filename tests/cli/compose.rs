@@ -2046,7 +2046,7 @@ exit 91
 }
 
 #[test]
-fn compose_clean_also_removes_leftover_image_mode_container() {
+fn compose_remove_also_removes_leftover_image_mode_container() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
@@ -2137,14 +2137,14 @@ exit 91
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_PS_COUNT", &ps_count)
-        .args(["clean", "--force"])
+        .args(["remove", "--no-confirm"])
         .arg(&workspace_root)
         .assert()
         .success()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("Removed Docker Compose project"))
         .stderr(predicate::str::contains("Removed dev container: old-image"))
-        .stderr(predicate::str::contains("Cleaned dev container resources"));
+        .stderr(predicate::str::contains("Removed dev container resources"));
 
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(commands.contains("compose down"));
@@ -2234,7 +2234,7 @@ exit 91
 }
 
 #[test]
-fn compose_clean_removes_existing_project_when_config_files_are_missing() {
+fn compose_remove_removes_existing_project_when_config_files_are_missing() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     let command_log = host_tools.path().join("commands.log");
@@ -2325,7 +2325,7 @@ exit 91
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_REMOVED_MARKER", &removed_marker)
         .env("DECUNE_FAKE_WORKSPACE_ID", &workspace_id)
-        .args(["clean", "--force"])
+        .args(["remove", "--no-confirm"])
         .arg(&workspace_root)
         .assert()
         .success()
@@ -2342,7 +2342,7 @@ exit 91
         .stderr(predicate::str::contains(
             "Removed Docker network: missing_project_default",
         ))
-        .stderr(predicate::str::contains("Cleaned dev container resources"));
+        .stderr(predicate::str::contains("Removed dev container resources"));
 
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(commands.contains("docker rm --force --volumes compose-primary-id"));
@@ -2354,7 +2354,7 @@ exit 91
 }
 
 #[test]
-fn compose_clean_images_removes_only_decune_generated_workspace_images() {
+fn compose_remove_images_removes_only_decune_generated_workspace_images() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
@@ -2448,7 +2448,7 @@ exit 91
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_IMAGE_REPOSITORY", &image_repository)
-        .args(["clean", "--force", "--images"])
+        .args(["remove", "--no-confirm", "--images"])
         .arg(&workspace_root)
         .assert()
         .success()
@@ -2457,7 +2457,7 @@ exit 91
         .stderr(predicate::str::contains(format!(
             "Removed Docker image: {image_repository}:final-hash"
         )))
-        .stderr(predicate::str::contains("Cleaned dev container resources"));
+        .stderr(predicate::str::contains("Removed dev container resources"));
 
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(commands.contains("compose"));

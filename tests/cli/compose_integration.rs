@@ -597,7 +597,7 @@ fn compose_integration_cleanup_safety_keeps_unrelated_project_and_user_image() {
     run_decune_up_detach(workspace.path(), &[]);
 
     decune()
-        .args(["clean", "--force"])
+        .args(["remove", "--no-confirm"])
         .arg(workspace.path())
         .assert()
         .success()
@@ -606,11 +606,11 @@ fn compose_integration_cleanup_safety_keeps_unrelated_project_and_user_image() {
 
     assert!(
         docker_status(["image", "inspect", &unrelated.image]).is_ok(),
-        "decune clean must not remove user images"
+        "decune remove must not remove user images"
     );
     assert!(
         docker_status(["container", "inspect", &unrelated.container_name]).is_ok(),
-        "decune clean must not remove unrelated Compose project containers"
+        "decune remove must not remove unrelated Compose project containers"
     );
 }
 
@@ -995,7 +995,10 @@ fn compose_project_name(workspace: &Path) -> String {
 }
 
 fn cleanup_compose_workspace(workspace: &Path) {
-    let _ = decune().args(["clean", "--force"]).arg(workspace).assert();
+    let _ = decune()
+        .args(["remove", "--no-confirm"])
+        .arg(workspace)
+        .assert();
     let project = compose_project_name(workspace);
     if let Ok(containers) = compose_project_containers(workspace) {
         for container in containers {

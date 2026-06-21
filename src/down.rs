@@ -38,10 +38,10 @@ pub(crate) struct DownOptions {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CleanOptions {
+pub(crate) struct RemoveOptions {
     pub(crate) workspace: PathBuf,
     pub(crate) images: bool,
-    pub(crate) force: bool,
+    pub(crate) no_confirm: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,9 +105,9 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
     Ok(())
 }
 
-pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
+pub(crate) async fn run_remove(options: RemoveOptions) -> Result<()> {
     let stdin_is_terminal = io::stdin().is_terminal();
-    ensure_clean_confirmed(options.force, stdin_is_terminal, confirm_clean)?;
+    ensure_remove_confirmed(options.no_confirm, stdin_is_terminal, confirm_remove)?;
 
     let workspace = Workspace::resolve(&options.workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
@@ -118,7 +118,7 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     let mut compose_projects_removed_by_compose = Vec::new();
     match compose_lifecycle_plan(
         &workspace,
-        ComposeLifecycleCommand::Clean {
+        ComposeLifecycleCommand::Remove {
             images: options.images,
         },
         &client,
@@ -191,53 +191,53 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
         workspace.paths().runtime_dir(),
     )?;
     remove_forward_status_dir(status_dir)?;
-    ui::done("Cleaned dev container resources");
+    ui::done("Removed dev container resources");
     Ok(())
 }
 
-pub(crate) fn clean_requires_confirmation(force: bool, stdin_is_terminal: bool) -> bool {
-    !force && stdin_is_terminal
+pub(crate) fn remove_requires_confirmation(no_confirm: bool, stdin_is_terminal: bool) -> bool {
+    !no_confirm && stdin_is_terminal
 }
 
-pub(crate) fn clean_rejects_non_interactive(force: bool, stdin_is_terminal: bool) -> bool {
-    !force && !stdin_is_terminal
+pub(crate) fn remove_rejects_non_interactive(no_confirm: bool, stdin_is_terminal: bool) -> bool {
+    !no_confirm && !stdin_is_terminal
 }
 
-fn ensure_clean_confirmed(
-    force: bool,
+fn ensure_remove_confirmed(
+    no_confirm: bool,
     stdin_is_terminal: bool,
     confirm: impl FnOnce() -> Result<bool>,
 ) -> Result<()> {
-    if clean_rejects_non_interactive(force, stdin_is_terminal) {
+    if remove_rejects_non_interactive(no_confirm, stdin_is_terminal) {
         bail!(
-            "Cannot confirm clean in a non-interactive terminal; rerun with --force to remove resources"
+            "Cannot confirm remove in a non-interactive terminal; rerun with --no-confirm to remove resources"
         );
     }
-    if clean_requires_confirmation(force, stdin_is_terminal) && !confirm()? {
-        bail!("Clean cancelled");
+    if remove_requires_confirmation(no_confirm, stdin_is_terminal) && !confirm()? {
+        bail!("Remove cancelled");
     }
 
     Ok(())
 }
 
-fn confirm_clean() -> Result<bool> {
+fn confirm_remove() -> Result<bool> {
     let mut stderr = io::stderr();
     stderr
-        .write_all(b"Remove decune resources for this workspace? [y/N] ")
-        .context("Failed to write clean confirmation prompt")?;
+        .write_all(b"Remove decune-managed resources for this workspace? [y/N] ")
+        .context("Failed to write remove confirmation prompt")?;
     stderr
         .flush()
-        .context("Failed to flush clean confirmation prompt")?;
+        .context("Failed to flush remove confirmation prompt")?;
 
     let mut input = String::new();
     io::stdin()
         .read_line(&mut input)
-        .context("Failed to read clean confirmation response")?;
+        .context("Failed to read remove confirmation response")?;
 
-    Ok(clean_confirmation_response_is_yes(&input))
+    Ok(remove_confirmation_response_is_yes(&input))
 }
 
-fn clean_confirmation_response_is_yes(input: &str) -> bool {
+fn remove_confirmation_response_is_yes(input: &str) -> bool {
     matches!(input.trim(), "y" | "Y" | "yes" | "YES" | "Yes")
 }
 
@@ -399,7 +399,7 @@ fn retain_compose_label_cleanup_projects(
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComposeLifecycleCommand {
     Down,
-    Clean { images: bool },
+    Remove { images: bool },
 }
 
 async fn compose_lifecycle_plan(
@@ -435,8 +435,8 @@ async fn compose_lifecycle_plan(
     let command_plan = compose_project.command_plan_without_generated_override();
     let lifecycle = match command {
         ComposeLifecycleCommand::Down => ComposeLifecyclePlan::down(command_plan),
-        ComposeLifecycleCommand::Clean { images } => {
-            ComposeLifecyclePlan::clean(command_plan, images)
+        ComposeLifecycleCommand::Remove { images } => {
+            ComposeLifecyclePlan::remove(command_plan, images)
         }
     };
 
@@ -508,48 +508,48 @@ mod tests {
     use std::{fs, path::Path};
 
     #[test]
-    fn clean_confirmation_is_required_only_for_interactive_non_force_runs() {
-        assert!(super::clean_requires_confirmation(false, true));
-        assert!(!super::clean_requires_confirmation(true, true));
-        assert!(!super::clean_requires_confirmation(false, false));
+    fn remove_confirmation_is_required_only_for_interactive_runs_without_no_confirm() {
+        assert!(super::remove_requires_confirmation(false, true));
+        assert!(!super::remove_requires_confirmation(true, true));
+        assert!(!super::remove_requires_confirmation(false, false));
     }
 
     #[test]
-    fn clean_non_interactive_without_force_is_rejected_before_cleanup() {
-        assert!(super::clean_rejects_non_interactive(false, false));
-        assert!(!super::clean_rejects_non_interactive(true, false));
-        assert!(!super::clean_rejects_non_interactive(false, true));
+    fn remove_non_interactive_without_no_confirm_is_rejected_before_cleanup() {
+        assert!(super::remove_rejects_non_interactive(false, false));
+        assert!(!super::remove_rejects_non_interactive(true, false));
+        assert!(!super::remove_rejects_non_interactive(false, true));
     }
 
     #[test]
-    fn clean_prompt_accepts_only_explicit_yes() {
-        assert!(super::clean_confirmation_response_is_yes("y\n"));
-        assert!(super::clean_confirmation_response_is_yes("yes\n"));
-        assert!(super::clean_confirmation_response_is_yes("YES\n"));
-        assert!(!super::clean_confirmation_response_is_yes("\n"));
-        assert!(!super::clean_confirmation_response_is_yes("no\n"));
+    fn remove_prompt_accepts_only_explicit_yes() {
+        assert!(super::remove_confirmation_response_is_yes("y\n"));
+        assert!(super::remove_confirmation_response_is_yes("yes\n"));
+        assert!(super::remove_confirmation_response_is_yes("YES\n"));
+        assert!(!super::remove_confirmation_response_is_yes("\n"));
+        assert!(!super::remove_confirmation_response_is_yes("no\n"));
     }
 
     #[test]
-    fn clean_confirmation_gate_handles_interactive_accept_and_reject() {
-        assert!(super::ensure_clean_confirmed(false, true, || Ok(true)).is_ok());
+    fn remove_confirmation_gate_handles_interactive_accept_and_reject() {
+        assert!(super::ensure_remove_confirmed(false, true, || Ok(true)).is_ok());
 
-        let error = super::ensure_clean_confirmed(false, true, || Ok(false)).unwrap_err();
-        assert!(error.to_string().contains("Clean cancelled"));
+        let error = super::ensure_remove_confirmed(false, true, || Ok(false)).unwrap_err();
+        assert!(error.to_string().contains("Remove cancelled"));
     }
 
     #[test]
-    fn clean_confirmation_gate_rejects_non_interactive_and_skips_prompt_for_force() {
-        let error = super::ensure_clean_confirmed(false, false, || Ok(true)).unwrap_err();
+    fn remove_confirmation_gate_rejects_non_interactive_and_skips_prompt_for_no_confirm() {
+        let error = super::ensure_remove_confirmed(false, false, || Ok(true)).unwrap_err();
         assert!(
             error
                 .to_string()
-                .contains("Cannot confirm clean in a non-interactive terminal")
+                .contains("Cannot confirm remove in a non-interactive terminal")
         );
 
         let mut prompted = false;
         assert!(
-            super::ensure_clean_confirmed(true, false, || -> Result<bool> {
+            super::ensure_remove_confirmed(true, false, || -> Result<bool> {
                 prompted = true;
                 Ok(false)
             })

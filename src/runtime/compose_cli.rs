@@ -1165,7 +1165,7 @@ impl ComposeLifecyclePlan {
         }
     }
 
-    pub(crate) fn clean(project: ComposeCommandPlan, images: bool) -> Self {
+    pub(crate) fn remove(project: ComposeCommandPlan, images: bool) -> Self {
         Self {
             project,
             services: Vec::new(),
@@ -2243,8 +2243,8 @@ mod tests {
     }
 
     #[test]
-    fn compose_clean_down_removes_project_volumes_orphans_without_rmi() {
-        let plan = ComposeLifecyclePlan::clean(lifecycle_command_plan(), false);
+    fn compose_remove_down_removes_project_volumes_orphans_without_rmi() {
+        let plan = ComposeLifecyclePlan::remove(lifecycle_command_plan(), false);
         let command = super::compose_down_command(
             &plan.project,
             ComposeDownOptions {
@@ -2262,8 +2262,8 @@ mod tests {
     }
 
     #[test]
-    fn compose_clean_images_targets_only_decune_generated_image_policy() {
-        let plan = ComposeLifecyclePlan::clean(lifecycle_command_plan(), true);
+    fn compose_remove_images_targets_only_decune_generated_image_policy() {
+        let plan = ComposeLifecyclePlan::remove(lifecycle_command_plan(), true);
 
         assert!(plan.cleanup.remove_generated_images);
         assert!(plan.services.is_empty());

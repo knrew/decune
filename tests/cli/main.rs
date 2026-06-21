@@ -2,7 +2,6 @@
 pub(crate) mod support;
 
 mod build;
-mod clean;
 mod compose;
 mod compose_ci;
 mod compose_integration;
@@ -19,4 +18,5 @@ mod lifecycle;
 mod mounts;
 mod ports;
 mod rebuild;
+mod remove;
 mod ssh_agent;
