@@ -784,6 +784,40 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
+    fn read_only_decune_bind_directory_preserves_symlink_ancestor_when_requested() {
+        let workspace = tempfile::tempdir().unwrap();
+        let real_source = workspace.path().join("real-cache");
+        let link_source = workspace.path().join("cache-link");
+        let source = link_source.join("generated/cache");
+        fs::create_dir_all(&real_source).unwrap();
+        unix_fs::symlink(&real_source, &link_source).unwrap();
+        let config = ResolvedConfig {
+            mounts: vec![ResolvedMount {
+                source: Some("cache-link/generated/cache".to_owned()),
+                target: "/cache".to_owned(),
+                mount_type: MountType::Bind,
+                read_only: false,
+                resolve_symlink: false,
+                create: Some(MountCreate::Directory),
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts = config_mount_specs_with_host_path_create(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            HostPathCreateMode::ReadOnly,
+        )
+        .unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(mounts[0].source.as_deref(), Some(source.to_str().unwrap()));
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn preserves_decune_bind_symlink_when_requested() {
         let workspace = tempfile::tempdir().unwrap();
         let real_source = workspace.path().join("real-cache");

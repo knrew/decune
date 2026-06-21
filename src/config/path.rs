@@ -141,6 +141,9 @@ fn resolve_read_only_directory_path(
                 if missing_components.is_empty() {
                     return resolve_existing_host_path(absolute_path, symlink_resolution);
                 }
+                if symlink_resolution == SymlinkResolution::Preserve {
+                    return Ok(absolute_path.to_path_buf());
+                }
                 let mut resolved = current
                     .canonicalize()
                     .with_path_context("canonicalize host path ancestor", current)?;
@@ -369,6 +372,26 @@ mod tests {
 
         assert!(!source.exists());
         assert_eq!(path, root.canonicalize().unwrap().join("generated/cache"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn read_only_create_directory_preserves_symlink_ancestor_when_requested() {
+        let root = fixture_root("read-only-create-directory-preserve-symlink");
+        let real = root.join("real");
+        let link = root.join("linked");
+        let source = link.join("generated/cache");
+        fs::create_dir_all(&real).unwrap();
+        unix_fs::symlink(&real, &link).unwrap();
+        let variables = variables(&root);
+        let options = project_options(&root, &variables)
+            .with_create(PathCreate::DirectoryReadOnly)
+            .with_symlink_resolution(SymlinkResolution::Preserve);
+
+        let path = resolve_host_path("linked/generated/cache", &options).unwrap();
+
+        assert!(!source.exists());
+        assert_eq!(path, source);
     }
 
     #[test]

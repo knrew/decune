@@ -836,7 +836,7 @@ shell = true
 5. `resolve_symlink = true` なら canonicalize。
 6. 存在しない path は `create` が指定されていない限り error。
 
-`status <WORKSPACE>` の current config hash 計算では read-only のため、`create = "directory"` / `bind-create-src` で指定された missing path は作成しない。代わりに既存 ancestor を canonicalize し、missing tail を合成した path を resolved mount として扱う。`create` がない missing source は通常通り error とする。
+`status <WORKSPACE>` の current config hash 計算では read-only のため、`create = "directory"` / `bind-create-src` で指定された missing path は作成しない。`resolve_symlink = true` の場合は既存 ancestor を canonicalize し、missing tail を合成した path を resolved mount として扱う。`resolve_symlink = false` の場合は既存 ancestor の存在を確認した上で、元の absolute path を resolved mount として扱う。`create` がない missing source は通常通り error とする。
 
 Compose file 内の environment interpolation は Docker Compose CLI に委譲する。decune は `devcontainer.json` と decune TOML の値だけを自前で展開する。
 
