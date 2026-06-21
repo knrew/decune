@@ -13,7 +13,7 @@ fn root_help_is_displayed() {
         .stdout(predicate::str::contains("down"))
         .stdout(predicate::str::contains("ports"))
         .stdout(predicate::str::contains("remove"))
-        .stdout(predicate::str::contains("clean").not())
+        .stdout(predicate::str::contains("clean"))
         .stdout(predicate::str::contains("rebuild"))
         .stderr(predicate::str::is_empty());
 }
@@ -58,6 +58,21 @@ fn command_help_is_displayed() {
             .stdout(predicate::str::contains("WORKSPACE"))
             .stderr(predicate::str::is_empty());
     }
+}
+
+#[test]
+fn clean_help_lists_cleanup_options_and_not_force_or_all() {
+    decune()
+        .args(["clean", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--dry-run"))
+        .stdout(predicate::str::contains("--no-confirm"))
+        .stdout(predicate::str::contains("--json"))
+        .stdout(predicate::str::contains("--include-feature-cache"))
+        .stdout(predicate::str::contains("--force").not())
+        .stdout(predicate::str::contains("--all").not())
+        .stderr(predicate::str::is_empty());
 }
 
 #[test]

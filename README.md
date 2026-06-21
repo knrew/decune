@@ -110,6 +110,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `decune down`: decune が管理するリソースを停止し、volume、状態、image を保持
 - `decune ports`: `--detach` なしで実行中の `decune up` が維持している port forwarding の対応関係を表示
 - `decune remove` / `decune rm`: decune が管理する Dev Container 環境を削除。`--all-workspaces` ですべての workspace を対象にし、`--images` で decune が生成した image も削除
+- `decune clean`: stale な decune の生成データを確認・削除。既定では workspace cache/state/runtime だけを対象にし、`--include-feature-cache` で共有 Feature archive cache も対象に追加
 
 実際にインストールされた CLI のリファレンスは `decune --help` または `decune <COMMAND> --help` で確認してください。詳しい利用手順は [docs/usage.md](docs/usage.md#コマンド) を参照してください。
 

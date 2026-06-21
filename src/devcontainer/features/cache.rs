@@ -9,6 +9,7 @@ use sha2::{Digest, Sha256};
 
 use super::{
     archive::{extract_feature_archive, find_required_feature_file},
+    cache_lock::FeatureCacheLock,
     hex_lower,
     reference::{OciFeatureRef, validate_oci_digest},
     registry::{OciLayerDescriptor, OciManifestResponse, OciRegistryClient},
@@ -38,6 +39,7 @@ pub(crate) fn pull_oci_feature_with_client(
     extract_root: &Path,
     registry: &dyn OciRegistryClient,
 ) -> Result<OciFeatureArtifact> {
+    let _lock = FeatureCacheLock::acquire_shared(cache_root)?;
     fs::create_dir_all(cache_root).with_context(|| {
         format!(
             "Failed to create feature cache directory: {}",

@@ -3,6 +3,7 @@ use std::{ffi::OsStr, path::PathBuf, str::FromStr};
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 
+use crate::clean::CleanOptions;
 use crate::config::{
     layer::{ConfigLayer, LayerAutoPorts, LayerPort},
     ports::{PortSpecSegments, split_port_spec},
@@ -36,6 +37,8 @@ enum Commands {
     /// Remove a managed dev environment.
     #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
+    /// Remove stale decune generated data.
+    Clean(CleanArgs),
 }
 
 #[derive(Debug, Args)]
@@ -136,6 +139,22 @@ struct RemoveArgs {
     workspace: Option<PathBuf>,
 }
 
+#[derive(Debug, Args)]
+struct CleanArgs {
+    /// Show cleanup candidates without removing generated data.
+    #[arg(long)]
+    dry_run: bool,
+    /// Remove generated data without confirmation.
+    #[arg(long)]
+    no_confirm: bool,
+    /// Output cleanup candidates as JSON.
+    #[arg(long)]
+    json: bool,
+    /// Also remove the shared Feature archive cache.
+    #[arg(long)]
+    include_feature_cache: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ManualPort {
     container: u16,
@@ -170,6 +189,7 @@ async fn run_cli(cli: Cli) -> Result<i32> {
         Commands::Down(args) => run_down(args).await,
         Commands::Ports(args) => run_ports(args).await,
         Commands::Remove(args) => run_remove(args).await,
+        Commands::Clean(args) => run_clean(args).await,
     }
 }
 
@@ -281,6 +301,17 @@ async fn run_remove(args: RemoveArgs) -> Result<i32> {
         target,
         images,
         no_confirm,
+    })
+    .await?;
+    Ok(0)
+}
+
+async fn run_clean(args: CleanArgs) -> Result<i32> {
+    crate::clean::run_clean(CleanOptions {
+        dry_run: args.dry_run,
+        no_confirm: args.no_confirm,
+        json: args.json,
+        include_feature_cache: args.include_feature_cache,
     })
     .await?;
     Ok(0)
@@ -719,6 +750,35 @@ mod tests {
             assert_eq!(args.workspace, None);
             assert!(args.no_confirm);
         }
+    }
+
+    #[test]
+    fn parses_clean_options() {
+        let cli = Cli::parse_from([
+            "decune",
+            "clean",
+            "--dry-run",
+            "--no-confirm",
+            "--json",
+            "--include-feature-cache",
+        ]);
+        let Commands::Clean(args) = cli.command else {
+            panic!("expected clean command");
+        };
+
+        assert!(args.dry_run);
+        assert!(args.no_confirm);
+        assert!(args.json);
+        assert!(args.include_feature_cache);
+    }
+
+    #[test]
+    fn clean_rejects_force_and_all_options() {
+        let force = Cli::try_parse_from(["decune", "clean", "--force"]).unwrap_err();
+        assert!(force.to_string().contains("unexpected argument '--force'"));
+
+        let all = Cli::try_parse_from(["decune", "clean", "--all"]).unwrap_err();
+        assert!(all.to_string().contains("unexpected argument '--all'"));
     }
 
     #[test]
