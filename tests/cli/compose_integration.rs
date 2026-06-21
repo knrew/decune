@@ -1,6 +1,7 @@
-use std::{fs, io, path::Path, process::Command, thread, time::Duration};
+use std::{fs, io, net::TcpListener, path::Path, process::Command, thread, time::Duration};
 
 use serde::Deserialize;
+use serde_json::Value;
 
 use crate::harness::*;
 
@@ -158,6 +159,52 @@ fn compose_integration_minimal_single_service_up_detach() {
 
     let containers = compose_project_containers(workspace.path()).unwrap();
     assert_eq!(running_services(&containers), vec!["app"]);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_ports_reports_published_port_from_non_primary_service() {
+    let host_port = available_localhost_port();
+    let workspace = compose_published_sidecar_workspace(host_port);
+
+    run_decune_up_detach(workspace.path(), &[]);
+
+    let containers = compose_project_containers(workspace.path()).unwrap();
+    assert_eq!(running_services(&containers), vec!["app", "db"]);
+    let db = containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("db")
+        })
+        .expect("db service container should exist");
+    assert_ne!(
+        compose_label(&db.labels, "decune.managed"),
+        Some("true"),
+        "db sidecar should not rely on decune-managed labels"
+    );
+
+    let output = decune()
+        .args(["ports", "--json"])
+        .arg(workspace.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let ports: Value = serde_json::from_slice(&output).unwrap();
+    let ports = ports.as_array().unwrap();
+
+    assert!(
+        ports.iter().any(|port| {
+            port["type"] == "published"
+                && port["source"] == "compose"
+                && port["service"] == "db"
+                && port["container_port"].as_u64() == Some(5432)
+                && port["host_port"].as_u64() == Some(u64::from(host_port))
+        }),
+        "ports output did not include db published port: {ports:#?}"
+    );
 }
 
 #[test]
@@ -695,6 +742,58 @@ fn compose_fixture_workspace(name: &str) -> ComposeFixtureWorkspace {
     let workspace = support::TempWorkspace::new().unwrap();
     copy_dir_contents(&compose_fixture_path(name), workspace.path()).unwrap();
     ComposeFixtureWorkspace { workspace }
+}
+
+fn compose_published_sidecar_workspace(host_port: u16) -> ComposeFixtureWorkspace {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "name": "compose-sidecar-published-port",
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "runServices": ["app", "db"],
+              "workspaceFolder": "/workspace",
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            format!(
+                r#"
+            services:
+              app:
+                image: alpine:3.20
+                command: sleep infinity
+                volumes:
+                  - ..:/workspace
+              db:
+                image: alpine:3.20
+                command: sleep infinity
+                ports:
+                  - "127.0.0.1:{host_port}:5432"
+            "#
+            ),
+        )
+        .unwrap();
+
+    ComposeFixtureWorkspace { workspace }
+}
+
+fn available_localhost_port() -> u16 {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    listener.local_addr().unwrap().port()
 }
 
 fn copy_dir_contents(source: &Path, destination: &Path) -> io::Result<()> {

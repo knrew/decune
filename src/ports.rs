@@ -109,6 +109,12 @@ struct StatePortEntry {
     state: Result<WorkspaceState, String>,
 }
 
+#[derive(Debug, Clone)]
+struct PublishedContainerInspect {
+    container: ContainerInspect,
+    context: Option<WorkspacePortContext>,
+}
+
 async fn collect_workspace_ports(
     workspace: &Workspace,
     include_workspace: bool,
@@ -119,19 +125,66 @@ async fn collect_workspace_ports(
         runtime_dir: workspace.paths().runtime_dir().to_path_buf(),
     };
     let mut inventory = collect_forwarded_ports(&context, include_workspace).await?;
+    let mut containers = Vec::new();
+    let mut compose_projects = BTreeMap::<String, WorkspacePortContext>::new();
 
     let state_exists = workspace.paths().state_dir().exists();
+    match load_state_file(workspace.paths().state_dir()) {
+        Ok(Some(state)) => {
+            add_compose_project_context(
+                &mut compose_projects,
+                state.compose_project_name.as_deref(),
+                &context,
+            );
+        }
+        Ok(None) => {}
+        Err(error) if state_exists => inventory.warnings.push(format!(
+            "Failed to read decune state file while listing ports for workspace {}: {error:#}",
+            workspace.id()
+        )),
+        Err(_) => {}
+    }
+
     match DockerClient::connect_from_env() {
         Ok(client) => match client
             .cli()
             .list_workspace_container_inspects(workspace.id())
             .await
         {
-            Ok(containers) => inventory.ports.extend(published_ports_from_containers(
-                containers,
-                Some(&context),
-                include_workspace,
-            )),
+            Ok(discovered) => {
+                for container in discovered {
+                    add_compose_project_context(
+                        &mut compose_projects,
+                        compose_project_name_from_container(&container).as_deref(),
+                        &context,
+                    );
+                    containers.push(PublishedContainerInspect {
+                        container,
+                        context: Some(context.clone()),
+                    });
+                }
+
+                for (project_name, project_context) in compose_projects {
+                    match client
+                        .cli()
+                        .list_compose_project_container_inspects_by_project(&project_name)
+                        .await
+                    {
+                        Ok(project_containers) => {
+                            containers.extend(project_containers.into_iter().map(|container| {
+                                PublishedContainerInspect {
+                                    container,
+                                    context: Some(project_context.clone()),
+                                }
+                            }));
+                        }
+                        Err(error) => inventory.warnings.push(format!(
+                            "Failed to read Docker Compose project containers for workspace {} project {}: {error:#}",
+                            project_context.workspace_id, project_name
+                        )),
+                    }
+                }
+            }
             Err(error) if state_exists => inventory.warnings.push(format!(
                 "Failed to read Docker published ports for workspace {}: {error:#}",
                 workspace.id()
@@ -144,6 +197,12 @@ async fn collect_workspace_ports(
         )),
         Err(_) => {}
     }
+    inventory
+        .ports
+        .extend(published_ports_from_container_entries(
+            dedupe_published_containers(containers),
+            include_workspace,
+        ));
 
     Ok(inventory)
 }
@@ -151,6 +210,7 @@ async fn collect_workspace_ports(
 async fn collect_all_ports() -> Result<PortInventory> {
     let states = load_port_states(&decune_state_root()?)?;
     let mut contexts = BTreeMap::<String, WorkspacePortContext>::new();
+    let mut compose_projects = BTreeMap::<String, WorkspacePortContext>::new();
     let mut containers = Vec::new();
     let mut warnings = Vec::new();
 
@@ -161,6 +221,11 @@ async fn collect_all_ports() -> Result<PortInventory> {
         match entry.state {
             Ok(state) => {
                 context.workspace_path.get_or_insert(state.workspace);
+                add_compose_project_context(
+                    &mut compose_projects,
+                    state.compose_project_name.as_deref(),
+                    context,
+                );
             }
             Err(error) => warnings.push(format!(
                 "Ignoring invalid decune state file for workspace id {} while listing ports: {error}",
@@ -172,9 +237,9 @@ async fn collect_all_ports() -> Result<PortInventory> {
     match DockerClient::connect_from_env() {
         Ok(client) => match client.cli().list_all_managed_container_inspects().await {
             Ok(discovered) => {
-                for container in &discovered {
+                for container in discovered {
                     let Some((workspace_id, labels)) =
-                        managed_workspace_id_from_container(container)
+                        managed_workspace_id_from_container(&container)
                     else {
                         continue;
                     };
@@ -184,8 +249,37 @@ async fn collect_all_ports() -> Result<PortInventory> {
                     if let Some(workspace_path) = workspace_path_from_labels(labels) {
                         context.workspace_path.get_or_insert(workspace_path);
                     }
+                    add_compose_project_context(
+                        &mut compose_projects,
+                        compose_project_name_from_container(&container).as_deref(),
+                        context,
+                    );
+                    containers.push(PublishedContainerInspect {
+                        container,
+                        context: Some(context.clone()),
+                    });
                 }
-                containers = discovered;
+
+                for (project_name, project_context) in compose_projects.clone() {
+                    match client
+                        .cli()
+                        .list_compose_project_container_inspects_by_project(&project_name)
+                        .await
+                    {
+                        Ok(project_containers) => {
+                            containers.extend(project_containers.into_iter().map(|container| {
+                                PublishedContainerInspect {
+                                    container,
+                                    context: Some(project_context.clone()),
+                                }
+                            }));
+                        }
+                        Err(error) => warnings.push(format!(
+                            "Failed to read Docker Compose project containers for workspace {} project {} while listing ports: {error:#}",
+                            project_context.workspace_id, project_name
+                        )),
+                    }
+                }
             }
             Err(error) => warnings.push(format!(
                 "Failed to read decune-managed Docker containers while listing ports: {error:#}"
@@ -207,7 +301,10 @@ async fn collect_all_ports() -> Result<PortInventory> {
     }
     inventory
         .ports
-        .extend(published_ports_from_containers(containers, None, true));
+        .extend(published_ports_from_container_entries(
+            dedupe_published_containers(containers),
+            true,
+        ));
 
     Ok(inventory)
 }
@@ -228,16 +325,65 @@ async fn collect_forwarded_ports(
     })
 }
 
+#[cfg(test)]
 fn published_ports_from_containers(
     containers: Vec<ContainerInspect>,
     context: Option<&WorkspacePortContext>,
     include_workspace: bool,
 ) -> Vec<PortInventoryEntry> {
+    let entries = containers
+        .into_iter()
+        .map(|container| PublishedContainerInspect {
+            container,
+            context: context.cloned(),
+        })
+        .collect();
+    published_ports_from_container_entries(entries, include_workspace)
+}
+
+fn published_ports_from_container_entries(
+    containers: Vec<PublishedContainerInspect>,
+    include_workspace: bool,
+) -> Vec<PortInventoryEntry> {
     containers
         .into_iter()
-        .filter(container_is_running)
-        .flat_map(|container| published_ports_from_container(container, context, include_workspace))
+        .filter(|entry| container_is_running(&entry.container))
+        .flat_map(|entry| {
+            let PublishedContainerInspect { container, context } = entry;
+            published_ports_from_container(container, context.as_ref(), include_workspace)
+        })
         .collect()
+}
+
+fn dedupe_published_containers(
+    containers: Vec<PublishedContainerInspect>,
+) -> Vec<PublishedContainerInspect> {
+    let mut positions = BTreeMap::<String, usize>::new();
+    let mut deduped = Vec::<PublishedContainerInspect>::new();
+
+    for entry in containers {
+        let id = entry
+            .container
+            .id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_owned);
+        let Some(id) = id else {
+            deduped.push(entry);
+            continue;
+        };
+
+        if let Some(index) = positions.get(&id).copied() {
+            if deduped[index].context.is_none() || entry.context.is_some() {
+                deduped[index] = entry;
+            }
+        } else {
+            positions.insert(id, deduped.len());
+            deduped.push(entry);
+        }
+    }
+
+    deduped
 }
 
 fn published_ports_from_container(
@@ -568,6 +714,32 @@ fn container_workspace_id(container: &ContainerInspect) -> Option<String> {
     managed_workspace_id_from_container(container).map(|(workspace_id, _)| workspace_id)
 }
 
+fn add_compose_project_context(
+    projects: &mut BTreeMap<String, WorkspacePortContext>,
+    project_name: Option<&str>,
+    context: &WorkspacePortContext,
+) {
+    let Some(project_name) = project_name
+        .map(str::trim)
+        .filter(|project_name| !project_name.is_empty())
+    else {
+        return;
+    };
+    projects
+        .entry(project_name.to_owned())
+        .or_insert_with(|| context.clone());
+}
+
+fn compose_project_name_from_container(container: &ContainerInspect) -> Option<String> {
+    container
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .and_then(|labels| labels.get("com.docker.compose.project"))
+        .filter(|project_name| !project_name.trim().is_empty())
+        .cloned()
+}
+
 fn compose_service_from_labels(labels: &BTreeMap<String, String>) -> Option<&String> {
     labels
         .get("com.docker.compose.project")
@@ -731,6 +903,79 @@ mod tests {
         assert_eq!(ports[0].service.as_deref(), Some("app"));
         assert_eq!(ports[0].source, "compose");
         assert_eq!(format_target(&ports[0]), "app:3000/tcp");
+    }
+
+    #[test]
+    fn extracts_published_ports_from_non_managed_compose_container_with_context() {
+        let containers = serde_json::from_slice::<Vec<ContainerInspect>>(
+            br#"[{
+                "Id": "db-id",
+                "Config": {
+                    "Labels": {
+                        "com.docker.compose.project": "decune-project-123456abcdef",
+                        "com.docker.compose.service": "db"
+                    }
+                },
+                "State": { "Running": true },
+                "NetworkSettings": {
+                    "Ports": {
+                        "5432/tcp": [{"HostIp": "127.0.0.1", "HostPort": "15432"}]
+                    }
+                }
+            }]"#,
+        )
+        .unwrap();
+        let entries = containers
+            .into_iter()
+            .map(|container| PublishedContainerInspect {
+                container,
+                context: Some(context()),
+            })
+            .collect();
+
+        let ports = published_ports_from_container_entries(entries, true);
+
+        assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].workspace.as_deref(), Some("/workspace"));
+        assert_eq!(ports[0].workspace_id.as_deref(), Some("123456abcdef"));
+        assert_eq!(ports[0].service.as_deref(), Some("db"));
+        assert_eq!(ports[0].source, "compose");
+        assert_eq!(ports[0].container_port, 5432);
+        assert_eq!(ports[0].host_port, 15432);
+        assert_eq!(format_target(&ports[0]), "db:5432/tcp");
+    }
+
+    #[test]
+    fn dedupe_published_containers_prefers_later_context_entry() {
+        let container = serde_json::from_slice::<Vec<ContainerInspect>>(
+            br#"[{
+                "Id": "container-id",
+                "Config": { "Labels": {} },
+                "State": { "Running": true }
+            }]"#,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
+        let deduped = dedupe_published_containers(vec![
+            PublishedContainerInspect {
+                container: container.clone(),
+                context: None,
+            },
+            PublishedContainerInspect {
+                container,
+                context: Some(context()),
+            },
+        ]);
+
+        assert_eq!(deduped.len(), 1);
+        assert_eq!(
+            deduped[0]
+                .context
+                .as_ref()
+                .map(|context| context.workspace_id.as_str()),
+            Some("123456abcdef")
+        );
     }
 
     #[test]
