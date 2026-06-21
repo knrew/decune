@@ -8,7 +8,7 @@ use crate::config::{
     ports::{PortSpecSegments, split_port_spec},
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
-use crate::down::{DownOptions, RemoveOptions};
+use crate::down::{DownOptions, RemoveOptions, RemoveTarget};
 use crate::ports::PortsOptions;
 use crate::up::{UpOptions, run_attached_up, run_detached_up};
 
@@ -128,9 +128,12 @@ struct RemoveArgs {
     /// Remove resources without confirmation.
     #[arg(long)]
     no_confirm: bool,
-    /// Workspace directory.
-    #[arg(default_value = ".", value_name = "WORKSPACE")]
-    workspace: PathBuf,
+    /// Remove all decune-managed workspace environments.
+    #[arg(long, conflicts_with = "workspace")]
+    all_workspaces: bool,
+    /// Workspace directory. Defaults to the current directory unless --all-workspaces is used.
+    #[arg(value_name = "WORKSPACE")]
+    workspace: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -265,11 +268,17 @@ async fn run_remove(args: RemoveArgs) -> Result<i32> {
     let RemoveArgs {
         images,
         no_confirm,
+        all_workspaces,
         workspace,
     } = args;
+    let target = if all_workspaces {
+        RemoveTarget::AllWorkspaces
+    } else {
+        RemoveTarget::Workspace(workspace.unwrap_or_else(|| PathBuf::from(".")))
+    };
 
     crate::down::run_remove(RemoveOptions {
-        workspace,
+        target,
         images,
         no_confirm,
     })
@@ -681,9 +690,10 @@ mod tests {
             panic!("expected remove command");
         };
 
-        assert_eq!(remove_args.workspace, PathBuf::from("workspace"));
+        assert_eq!(remove_args.workspace, Some(PathBuf::from("workspace")));
         assert!(remove_args.images);
         assert!(remove_args.no_confirm);
+        assert!(!remove_args.all_workspaces);
     }
 
     #[test]
@@ -693,8 +703,30 @@ mod tests {
             panic!("expected remove command");
         };
 
-        assert_eq!(args.workspace, PathBuf::from("workspace"));
+        assert_eq!(args.workspace, Some(PathBuf::from("workspace")));
         assert!(args.no_confirm);
+    }
+
+    #[test]
+    fn parses_remove_all_workspaces_for_remove_and_rm() {
+        for command in ["remove", "rm"] {
+            let cli = Cli::parse_from(["decune", command, "--all-workspaces", "--no-confirm"]);
+            let Commands::Remove(args) = cli.command else {
+                panic!("expected remove command");
+            };
+
+            assert!(args.all_workspaces);
+            assert_eq!(args.workspace, None);
+            assert!(args.no_confirm);
+        }
+    }
+
+    #[test]
+    fn remove_all_workspaces_conflicts_with_workspace_argument() {
+        let error =
+            Cli::try_parse_from(["decune", "remove", "--all-workspaces", "workspace"]).unwrap_err();
+
+        assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]

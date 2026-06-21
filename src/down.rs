@@ -1,5 +1,6 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
+    fs,
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
 };
@@ -23,10 +24,13 @@ use crate::{
     runtime::compose_cli::{
         ComposeDownOptions, ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli,
     },
-    state::{load_state_file, remove_state_runtime_dirs},
+    state::{WorkspaceState, load_state_file, remove_state_runtime_dirs},
     ui,
     up::{ForwardingResolution, build_up_plan_with_forwarding_resolution},
-    workspace::Workspace,
+    workspace::{
+        Workspace, decune_state_root, runtime_dir_for_workspace_id, safe_workspace_slug_for_name,
+        state_dir_for_workspace_id,
+    },
 };
 
 const DEFAULT_STOP_TIMEOUT_SECONDS: i32 = 10;
@@ -39,15 +43,36 @@ pub(crate) struct DownOptions {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RemoveOptions {
-    pub(crate) workspace: PathBuf,
+    pub(crate) target: RemoveTarget,
     pub(crate) images: bool,
     pub(crate) no_confirm: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RemoveTarget {
+    Workspace(PathBuf),
+    AllWorkspaces,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ManagedContainer {
     id: String,
     name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct WorkspaceRemovalPlan {
+    workspace_id: String,
+    workspace_path: Option<String>,
+    state_dir: PathBuf,
+    runtime_dir: PathBuf,
+    containers: Vec<ManagedContainer>,
+    compose_projects: Vec<String>,
+    volumes: Vec<String>,
+    images: Vec<String>,
+    has_state: bool,
+    has_runtime: bool,
+    has_forward_status: bool,
 }
 
 pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
@@ -106,21 +131,30 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
 }
 
 pub(crate) async fn run_remove(options: RemoveOptions) -> Result<()> {
-    let stdin_is_terminal = io::stdin().is_terminal();
-    ensure_remove_confirmed(options.no_confirm, stdin_is_terminal, confirm_remove)?;
+    match options.target {
+        RemoveTarget::Workspace(workspace) => {
+            run_remove_workspace(workspace, options.images, options.no_confirm).await
+        }
+        RemoveTarget::AllWorkspaces => {
+            run_remove_all_workspaces(options.images, options.no_confirm).await
+        }
+    }
+}
 
-    let workspace = Workspace::resolve(&options.workspace)?;
+async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool) -> Result<()> {
+    let stdin_is_terminal = io::stdin().is_terminal();
+    ensure_remove_confirmed(no_confirm, stdin_is_terminal, true, confirm_remove)?;
+
+    let workspace = Workspace::resolve(&workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
     let client = DockerClient::connect_from_env()?;
     let mut compose_project_names = compose_fallback_project_names(&workspace, &client).await?;
-    let mut remove_generated_images = options.images;
+    let mut remove_generated_images = images;
     let mut compose_projects_removed_by_compose = Vec::new();
     match compose_lifecycle_plan(
         &workspace,
-        ComposeLifecycleCommand::Remove {
-            images: options.images,
-        },
+        ComposeLifecycleCommand::Remove { images },
         &client,
     )
     .await
@@ -195,6 +229,156 @@ pub(crate) async fn run_remove(options: RemoveOptions) -> Result<()> {
     Ok(())
 }
 
+async fn run_remove_all_workspaces(images: bool, no_confirm: bool) -> Result<()> {
+    let client = DockerClient::connect_from_env()?;
+    let plans = discover_all_workspace_removal_plans(&client, images).await?;
+    if plans.is_empty() {
+        ui::done("No decune-managed workspace environments found");
+        return Ok(());
+    }
+
+    print_remove_all_summary(&plans, images);
+    let stdin_is_terminal = io::stdin().is_terminal();
+    ensure_remove_confirmed(no_confirm, stdin_is_terminal, true, confirm_remove_all)?;
+
+    for plan in plans {
+        remove_workspace_plan(&client, plan).await?;
+    }
+    ui::done("Removed all decune-managed workspace environments");
+    Ok(())
+}
+
+async fn discover_all_workspace_removal_plans(
+    client: &DockerClient,
+    include_images: bool,
+) -> Result<Vec<WorkspaceRemovalPlan>> {
+    let containers = client
+        .cli()
+        .list_all_managed_container_inspects()
+        .await
+        .context("Failed to list decune-managed Docker containers")?;
+    let volumes = client
+        .cli()
+        .list_all_managed_volume_inspects()
+        .await
+        .context("Failed to list decune-managed Docker volumes")?;
+    let states = load_all_workspace_states()?;
+    let mut entries: BTreeMap<String, WorkspaceRemovalPlan> = BTreeMap::new();
+
+    for state_entry in states {
+        let plan = entries
+            .entry(state_entry.workspace_id.clone())
+            .or_insert_with(|| empty_removal_plan(&state_entry.workspace_id));
+        plan.workspace_path
+            .get_or_insert_with(|| state_entry.state.workspace.clone());
+        if let Some(project_name) = state_entry
+            .state
+            .compose_project_name
+            .as_ref()
+            .filter(|project_name| !project_name.trim().is_empty())
+            .cloned()
+        {
+            push_unique(&mut plan.compose_projects, project_name);
+        }
+        plan.has_state = true;
+        if include_images {
+            push_state_image_if_decune_generated(plan, &state_entry.state);
+        }
+    }
+
+    for container in containers {
+        let Some((workspace_id, labels)) = managed_workspace_id_from_container(&container) else {
+            continue;
+        };
+        let plan = entries
+            .entry(workspace_id.clone())
+            .or_insert_with(|| empty_removal_plan(&workspace_id));
+        if let Some(workspace_path) = workspace_path_from_labels(labels) {
+            plan.workspace_path.get_or_insert(workspace_path);
+        }
+        if let Some(project_name) = labels
+            .get("com.docker.compose.project")
+            .filter(|project_name| !project_name.trim().is_empty())
+            .cloned()
+        {
+            push_unique(&mut plan.compose_projects, project_name);
+        } else if let (Some(id), Some(name)) = (container.id.clone(), container_name(&container)) {
+            plan.containers.push(ManagedContainer { id, name });
+        }
+    }
+
+    for volume in volumes {
+        let Some(labels) = volume.labels.as_ref() else {
+            continue;
+        };
+        let Some(workspace_id) = managed_workspace_id_from_labels(labels) else {
+            continue;
+        };
+        let Some(name) = volume.name.clone().filter(|name| !name.trim().is_empty()) else {
+            continue;
+        };
+        let plan = entries
+            .entry(workspace_id.clone())
+            .or_insert_with(|| empty_removal_plan(&workspace_id));
+        push_unique(&mut plan.volumes, name);
+    }
+
+    for plan in entries.values_mut() {
+        plan.state_dir = state_dir_for_workspace_id(&plan.workspace_id)?;
+        plan.runtime_dir = runtime_dir_for_workspace_id(&plan.workspace_id)?;
+        plan.has_state |= plan.state_dir.exists();
+        plan.has_runtime = plan.runtime_dir.exists();
+        plan.has_forward_status = forward_status_dir(&plan.runtime_dir).exists();
+        if include_images {
+            append_workspace_images(client, plan).await?;
+        }
+        plan.containers.sort_by(|a, b| a.name.cmp(&b.name));
+        plan.containers.dedup_by(|a, b| a.id == b.id);
+        plan.volumes.sort();
+        plan.volumes.dedup();
+        plan.compose_projects.sort();
+        plan.compose_projects.dedup();
+        plan.images.sort();
+        plan.images.dedup();
+    }
+
+    Ok(entries
+        .into_values()
+        .filter(WorkspaceRemovalPlan::has_targets)
+        .collect())
+}
+
+async fn remove_workspace_plan(client: &DockerClient, plan: WorkspaceRemovalPlan) -> Result<()> {
+    cleanup_github_cli_token_file(&plan.runtime_dir);
+    cleanup_host_daemon_socket(&plan.runtime_dir).await;
+    remove_compose_project_resources(client, &plan.compose_projects).await?;
+
+    for container in plan.containers {
+        stop_container(client, &container.id, DEFAULT_STOP_TIMEOUT_SECONDS).await?;
+        remove_container(client, &container.id, true, true).await?;
+        ui::done(&format!("Removed dev container: {}", container.name));
+    }
+
+    for volume in plan.volumes {
+        remove_volume(client, &volume, true).await?;
+        ui::done(&format!("Removed Docker volume: {volume}"));
+    }
+
+    for image in plan.images {
+        remove_image(client, &image, true).await?;
+        ui::done(&format!("Removed Docker image: {image}"));
+    }
+
+    let status_dir = forward_status_dir(&plan.runtime_dir);
+    remove_state_runtime_dirs(&plan.state_dir, &plan.runtime_dir)?;
+    remove_forward_status_dir(status_dir)?;
+    ui::done(&format!(
+        "Removed dev container resources for workspace id: {}",
+        plan.workspace_id
+    ));
+    Ok(())
+}
+
 pub(crate) fn remove_requires_confirmation(no_confirm: bool, stdin_is_terminal: bool) -> bool {
     !no_confirm && stdin_is_terminal
 }
@@ -206,8 +390,12 @@ pub(crate) fn remove_rejects_non_interactive(no_confirm: bool, stdin_is_terminal
 fn ensure_remove_confirmed(
     no_confirm: bool,
     stdin_is_terminal: bool,
+    has_targets: bool,
     confirm: impl FnOnce() -> Result<bool>,
 ) -> Result<()> {
+    if !has_targets {
+        return Ok(());
+    }
     if remove_rejects_non_interactive(no_confirm, stdin_is_terminal) {
         bail!(
             "Cannot confirm remove in a non-interactive terminal; rerun with --no-confirm to remove resources"
@@ -237,8 +425,192 @@ fn confirm_remove() -> Result<bool> {
     Ok(remove_confirmation_response_is_yes(&input))
 }
 
+fn confirm_remove_all() -> Result<bool> {
+    let mut stderr = io::stderr();
+    stderr
+        .write_all(b"Remove all decune-managed workspace environments? [y/N] ")
+        .context("Failed to write remove confirmation prompt")?;
+    stderr
+        .flush()
+        .context("Failed to flush remove confirmation prompt")?;
+
+    let mut input = String::new();
+    io::stdin()
+        .read_line(&mut input)
+        .context("Failed to read remove confirmation response")?;
+
+    Ok(remove_confirmation_response_is_yes(&input))
+}
+
 fn remove_confirmation_response_is_yes(input: &str) -> bool {
     matches!(input.trim(), "y" | "Y" | "yes" | "YES" | "Yes")
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StateRemovalEntry {
+    workspace_id: String,
+    state: WorkspaceState,
+}
+
+impl WorkspaceRemovalPlan {
+    fn has_targets(&self) -> bool {
+        self.has_state
+            || self.has_runtime
+            || self.has_forward_status
+            || !self.containers.is_empty()
+            || !self.compose_projects.is_empty()
+            || !self.volumes.is_empty()
+            || !self.images.is_empty()
+    }
+}
+
+fn empty_removal_plan(workspace_id: &str) -> WorkspaceRemovalPlan {
+    WorkspaceRemovalPlan {
+        workspace_id: workspace_id.to_owned(),
+        ..WorkspaceRemovalPlan::default()
+    }
+}
+
+fn load_all_workspace_states() -> Result<Vec<StateRemovalEntry>> {
+    let root = decune_state_root()?;
+    let entries = match fs::read_dir(&root) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("Failed to read decune state root: {}", root.display()));
+        }
+    };
+    let mut states = Vec::new();
+
+    for entry in entries {
+        let entry = entry.with_context(|| {
+            format!("Failed to read decune state root entry: {}", root.display())
+        })?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let Some(workspace_id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
+            .map(str::to_owned)
+        else {
+            continue;
+        };
+        match load_state_file(&path) {
+            Ok(Some(state)) => states.push(StateRemovalEntry {
+                workspace_id,
+                state,
+            }),
+            Ok(None) => {}
+            Err(error) => ui::warn(&format!(
+                "Ignoring invalid decune state file for workspace id {workspace_id}: {error:#}"
+            )),
+        }
+    }
+
+    Ok(states)
+}
+
+fn managed_workspace_id_from_container(
+    container: &crate::docker::container::ContainerInspect,
+) -> Option<(String, &BTreeMap<String, String>)> {
+    let labels = container.config.as_ref()?.labels.as_ref()?;
+    let workspace_id = managed_workspace_id_from_labels(labels)?;
+    Some((workspace_id, labels))
+}
+
+fn managed_workspace_id_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
+    let managed = labels.get("decune.managed")?;
+    if managed != "true" {
+        return None;
+    }
+    labels
+        .get("decune.workspace_id")
+        .filter(|workspace_id| !workspace_id.trim().is_empty())
+        .cloned()
+}
+
+fn workspace_path_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
+    labels
+        .get("decune.workspace")
+        .or_else(|| labels.get("devcontainer.local_folder"))
+        .filter(|workspace_path| !workspace_path.trim().is_empty())
+        .cloned()
+}
+
+fn container_name(container: &crate::docker::container::ContainerInspect) -> Option<String> {
+    container
+        .name
+        .as_ref()
+        .map(|name| name.trim_start_matches('/').to_owned())
+        .filter(|name| !name.is_empty())
+        .or_else(|| container.id.clone())
+}
+
+fn push_state_image_if_decune_generated(plan: &mut WorkspaceRemovalPlan, state: &WorkspaceState) {
+    let Some(repository) =
+        image_repository_for_workspace_path(&state.workspace, &plan.workspace_id)
+    else {
+        return;
+    };
+    if state.image.starts_with(&format!("{repository}:")) {
+        push_unique(&mut plan.images, state.image.clone());
+    }
+}
+
+async fn append_workspace_images(
+    client: &DockerClient,
+    plan: &mut WorkspaceRemovalPlan,
+) -> Result<()> {
+    let Some(workspace_path) = plan.workspace_path.as_deref() else {
+        return Ok(());
+    };
+    let Some(repository) = image_repository_for_workspace_path(workspace_path, &plan.workspace_id)
+    else {
+        return Ok(());
+    };
+    for image in workspace_image_tags(client, &repository).await? {
+        push_unique(&mut plan.images, image);
+    }
+    Ok(())
+}
+
+fn image_repository_for_workspace_path(workspace_path: &str, workspace_id: &str) -> Option<String> {
+    let basename = Path::new(workspace_path)
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.is_empty())?;
+    let safe_slug = safe_workspace_slug_for_name(basename);
+    Some(DockerResources::image_repository_for_slug_and_id(
+        &safe_slug,
+        workspace_id,
+    ))
+}
+
+fn print_remove_all_summary(plans: &[WorkspaceRemovalPlan], include_images: bool) {
+    ui::notice(&format!(
+        "Removing {} decune-managed workspace environment(s)",
+        plans.len()
+    ));
+    for plan in plans {
+        let workspace = plan.workspace_path.as_deref().unwrap_or("<unknown>");
+        ui::info(&format!(
+            "Workspace {} ({}) containers={} compose_projects={} volumes={}{}",
+            plan.workspace_id,
+            workspace,
+            plan.containers.len(),
+            plan.compose_projects.len(),
+            plan.volumes.len(),
+            if include_images {
+                format!(" images={}", plan.images.len())
+            } else {
+                String::new()
+            }
+        ));
+    }
 }
 
 fn stop_timeout_seconds(timeout_seconds: u64) -> Result<i32> {
@@ -532,15 +904,15 @@ mod tests {
 
     #[test]
     fn remove_confirmation_gate_handles_interactive_accept_and_reject() {
-        assert!(super::ensure_remove_confirmed(false, true, || Ok(true)).is_ok());
+        assert!(super::ensure_remove_confirmed(false, true, true, || Ok(true)).is_ok());
 
-        let error = super::ensure_remove_confirmed(false, true, || Ok(false)).unwrap_err();
+        let error = super::ensure_remove_confirmed(false, true, true, || Ok(false)).unwrap_err();
         assert!(error.to_string().contains("Remove cancelled"));
     }
 
     #[test]
     fn remove_confirmation_gate_rejects_non_interactive_and_skips_prompt_for_no_confirm() {
-        let error = super::ensure_remove_confirmed(false, false, || Ok(true)).unwrap_err();
+        let error = super::ensure_remove_confirmed(false, false, true, || Ok(true)).unwrap_err();
         assert!(
             error
                 .to_string()
@@ -549,7 +921,21 @@ mod tests {
 
         let mut prompted = false;
         assert!(
-            super::ensure_remove_confirmed(true, false, || -> Result<bool> {
+            super::ensure_remove_confirmed(true, false, true, || -> Result<bool> {
+                prompted = true;
+                Ok(false)
+            })
+            .is_ok()
+        );
+        assert!(!prompted);
+    }
+
+    #[test]
+    fn remove_confirmation_gate_skips_empty_all_workspace_target_without_prompt() {
+        let mut prompted = false;
+
+        assert!(
+            super::ensure_remove_confirmed(false, false, false, || -> Result<bool> {
                 prompted = true;
                 Ok(false)
             })
