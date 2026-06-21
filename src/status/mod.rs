@@ -230,6 +230,12 @@ struct DockerEvidence {
 }
 
 #[derive(Debug, Clone)]
+struct ComposeProjectContext {
+    workspace_id: String,
+    workspace_path: Option<String>,
+}
+
+#[derive(Debug, Clone)]
 struct ContainerEvidence {
     workspace_id: String,
     id: Option<String>,
@@ -283,7 +289,7 @@ struct WorkspaceIssueInput<'a> {
 pub(crate) async fn discover_status_inventory() -> Result<StatusInventory> {
     let state_entries = load_status_states(&decune_state_root()?)?;
     let docker_evidence = match DockerClient::connect_from_env() {
-        Ok(client) => collect_docker_evidence(client.cli())
+        Ok(client) => collect_docker_evidence(client.cli(), &state_entries)
             .await
             .map_err(|error| format!("Failed to read decune-managed Docker resources: {error:#}")),
         Err(error) => Err(format!("Failed to connect to Docker: {error:#}")),
@@ -369,9 +375,14 @@ async fn discover_workspace_status(
         Err(error) => Some(Err(format!("{error:#}"))),
     };
     let docker_evidence = match DockerClient::connect_from_env() {
-        Ok(client) => collect_workspace_docker_evidence(client.cli(), workspace.id())
-            .await
-            .map_err(|error| format!("Failed to read decune-managed Docker resources: {error:#}")),
+        Ok(client) => {
+            let state_ref = state.as_ref().and_then(|state| state.as_ref().ok());
+            collect_workspace_docker_evidence(client.cli(), workspace.id(), state_ref)
+                .await
+                .map_err(|error| {
+                    format!("Failed to read decune-managed Docker resources: {error:#}")
+                })
+        }
         Err(error) => Err(format!("Failed to connect to Docker: {error:#}")),
     };
     let docker_unavailable = docker_evidence.is_err();
@@ -396,13 +407,43 @@ async fn discover_workspace_status(
 async fn collect_workspace_docker_evidence(
     cli: &DockerCli,
     workspace_id: &str,
+    state: Option<&WorkspaceState>,
 ) -> Result<DockerEvidence> {
-    let containers = cli
-        .list_workspace_container_inspects(workspace_id)
-        .await?
-        .into_iter()
-        .filter_map(container_evidence)
-        .collect();
+    let context = ComposeProjectContext {
+        workspace_id: workspace_id.to_owned(),
+        workspace_path: state.map(|state| state.workspace.clone()),
+    };
+    let mut compose_projects = BTreeMap::<String, ComposeProjectContext>::new();
+    add_compose_project_context(
+        &mut compose_projects,
+        state.and_then(|state| state.compose_project_name.as_deref()),
+        &context,
+    );
+
+    let mut containers = Vec::new();
+    for container in cli.list_workspace_container_inspects(workspace_id).await? {
+        add_compose_project_context(
+            &mut compose_projects,
+            compose_project_name_from_container(&container).as_deref(),
+            &context,
+        );
+        if let Some(evidence) = container_evidence(container) {
+            containers.push(evidence);
+        }
+    }
+
+    for (project_name, project_context) in compose_projects {
+        let project_containers = cli
+            .list_compose_project_container_inspects_by_project(&project_name)
+            .await?;
+        containers.extend(
+            project_containers.into_iter().filter_map(|container| {
+                container_evidence_with_context(container, &project_context)
+            }),
+        );
+    }
+    containers = dedupe_container_evidence(containers);
+
     let volumes = cli
         .list_volumes(workspace_id)
         .await?
@@ -465,13 +506,49 @@ fn load_status_states(root: &Path) -> Result<Vec<StateEvidence>> {
     Ok(states)
 }
 
-async fn collect_docker_evidence(cli: &DockerCli) -> Result<DockerEvidence> {
-    let containers = cli
-        .list_all_managed_container_inspects()
-        .await?
-        .into_iter()
-        .filter_map(container_evidence)
-        .collect();
+async fn collect_docker_evidence(
+    cli: &DockerCli,
+    states: &[StateEvidence],
+) -> Result<DockerEvidence> {
+    let mut compose_projects = BTreeMap::<String, ComposeProjectContext>::new();
+    for state in states {
+        if let Ok(state_value) = &state.state {
+            let context = ComposeProjectContext {
+                workspace_id: state.workspace_id.clone(),
+                workspace_path: Some(state_value.workspace.clone()),
+            };
+            add_compose_project_context(
+                &mut compose_projects,
+                state_value.compose_project_name.as_deref(),
+                &context,
+            );
+        }
+    }
+
+    let mut containers = Vec::new();
+    for container in cli.list_all_managed_container_inspects().await? {
+        let project_name = compose_project_name_from_container(&container);
+        if let Some(evidence) = container_evidence(container) {
+            let context = ComposeProjectContext {
+                workspace_id: evidence.workspace_id.clone(),
+                workspace_path: evidence.workspace_path.clone(),
+            };
+            add_compose_project_context(&mut compose_projects, project_name.as_deref(), &context);
+            containers.push(evidence);
+        }
+    }
+
+    for (project_name, project_context) in compose_projects {
+        let project_containers = cli
+            .list_compose_project_container_inspects_by_project(&project_name)
+            .await?;
+        containers.extend(
+            project_containers.into_iter().filter_map(|container| {
+                container_evidence_with_context(container, &project_context)
+            }),
+        );
+    }
+    let containers = dedupe_container_evidence(containers);
     let volumes = cli
         .list_all_managed_volume_inspects()
         .await?
@@ -846,21 +923,104 @@ fn workspace_issues(input: WorkspaceIssueInput<'_>) -> Vec<StatusIssue> {
 
 fn container_evidence(container: ContainerInspect) -> Option<ContainerEvidence> {
     let (workspace_id, labels) = managed_workspace_id_from_container(&container)?;
+    Some(container_evidence_from_labels(
+        &container,
+        workspace_id,
+        labels,
+        None,
+    ))
+}
+
+fn container_evidence_with_context(
+    container: ContainerInspect,
+    context: &ComposeProjectContext,
+) -> Option<ContainerEvidence> {
+    let labels = container.config.as_ref()?.labels.as_ref()?;
+    let workspace_id =
+        managed_workspace_id_from_labels(labels).unwrap_or_else(|| context.workspace_id.clone());
+    Some(container_evidence_from_labels(
+        &container,
+        workspace_id,
+        labels,
+        context.workspace_path.as_deref(),
+    ))
+}
+
+fn container_evidence_from_labels(
+    container: &ContainerInspect,
+    workspace_id: String,
+    labels: &BTreeMap<String, String>,
+    fallback_workspace_path: Option<&str>,
+) -> ContainerEvidence {
     let workspace_path = workspace_path_from_labels(labels);
     let config_hash = config_hash_from_labels(labels);
     let service = compose_service_from_labels(labels);
     let run_state = container_run_state(&container.state);
     let health_status = container_health_status(&container.state);
-    Some(ContainerEvidence {
+    ContainerEvidence {
         workspace_id,
-        id: container.id,
-        name: container.name,
+        id: container.id.clone(),
+        name: container.name.clone(),
         service,
-        workspace_path,
+        workspace_path: workspace_path.or_else(|| fallback_workspace_path.map(str::to_owned)),
         config_hash,
         run_state,
         health_status,
-    })
+    }
+}
+
+fn add_compose_project_context(
+    projects: &mut BTreeMap<String, ComposeProjectContext>,
+    project_name: Option<&str>,
+    context: &ComposeProjectContext,
+) {
+    let Some(project_name) = project_name
+        .map(str::trim)
+        .filter(|project_name| !project_name.is_empty())
+    else {
+        return;
+    };
+    projects
+        .entry(project_name.to_owned())
+        .or_insert_with(|| context.clone());
+}
+
+fn compose_project_name_from_container(container: &ContainerInspect) -> Option<String> {
+    container
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .and_then(|labels| labels.get("com.docker.compose.project"))
+        .filter(|project_name| !project_name.trim().is_empty())
+        .cloned()
+}
+
+fn dedupe_container_evidence(containers: Vec<ContainerEvidence>) -> Vec<ContainerEvidence> {
+    let mut positions = BTreeMap::<String, usize>::new();
+    let mut deduped = Vec::<ContainerEvidence>::new();
+
+    for container in containers {
+        let id = container
+            .id
+            .as_deref()
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_owned);
+        let Some(id) = id else {
+            deduped.push(container);
+            continue;
+        };
+
+        if let Some(index) = positions.get(&id).copied() {
+            if deduped[index].config_hash.is_none() && container.config_hash.is_some() {
+                deduped[index] = container;
+            }
+        } else {
+            positions.insert(id, deduped.len());
+            deduped.push(container);
+        }
+    }
+
+    deduped
 }
 
 fn volume_evidence(volume: DockerVolumeInspect) -> Option<VolumeEvidence> {
@@ -1694,6 +1854,208 @@ mod tests {
     }
 
     #[test]
+    fn workspace_docker_evidence_includes_compose_sidecar_from_state_project() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(b"")),
+            Ok(output(
+                br#"[{
+                    "Id": "primary-id",
+                    "Name": "/project-app-1",
+                    "Config": {
+                        "Labels": {
+                            "decune.managed": "true",
+                            "decune.workspace_id": "123456abcdef",
+                            "decune.workspace": "/workspace",
+                            "decune.config_hash": "hash",
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "app"
+                        }
+                    },
+                    "State": {
+                        "Running": true,
+                        "Health": { "Status": "healthy" }
+                    }
+                },{
+                    "Id": "sidecar-id",
+                    "Name": "/project-db-1",
+                    "Config": {
+                        "Labels": {
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "db"
+                        }
+                    },
+                    "State": {
+                        "Running": false,
+                        "Health": { "Status": "unhealthy" }
+                    }
+                }]"#,
+            )),
+            Ok(output(
+                br#"{"ID":"primary-id"}
+{"ID":"sidecar-id"}
+"#,
+            )),
+            Ok(output(
+                br#"[{
+                    "Id": "primary-id",
+                    "Name": "/project-app-1",
+                    "Config": {
+                        "Labels": {
+                            "decune.managed": "true",
+                            "decune.workspace_id": "123456abcdef",
+                            "decune.workspace": "/workspace",
+                            "decune.config_hash": "hash",
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "app"
+                        }
+                    },
+                    "State": {
+                        "Running": true,
+                        "Health": { "Status": "healthy" }
+                    }
+                }]"#,
+            )),
+            Ok(output(br#"{"ID":"primary-id"}"#)),
+        ]);
+        let cli = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let state = WorkspaceState {
+            compose_project_name: Some("project".to_owned()),
+            ..state("primary-id", "hash")
+        };
+
+        let evidence = runtime
+            .block_on(collect_workspace_docker_evidence(
+                &cli,
+                WORKSPACE_ID,
+                Some(&state),
+            ))
+            .unwrap();
+
+        assert_eq!(evidence.containers.len(), 2);
+        let sidecar = evidence
+            .containers
+            .iter()
+            .find(|container| container.id.as_deref() == Some("sidecar-id"))
+            .unwrap();
+        assert_eq!(sidecar.workspace_id, WORKSPACE_ID);
+        assert_eq!(sidecar.workspace_path.as_deref(), Some("/workspace"));
+        assert_eq!(sidecar.service.as_deref(), Some("db"));
+        assert_eq!(sidecar.run_state, ContainerRunState::Stopped);
+        assert_eq!(sidecar.health_status, HealthStatus::Unhealthy);
+
+        let status = workspace_status_with_config(
+            WORKSPACE_ID.to_owned(),
+            WorkspaceEvidence {
+                state: Some(Ok(state)),
+                containers: evidence.containers,
+                volumes: evidence.volumes,
+            },
+            false,
+            Some(CurrentWorkspaceConfig {
+                mode: WorkspaceMode::Compose,
+                config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+                config_hash: Some("hash".to_owned()),
+                error: None,
+            }),
+        );
+        assert_eq!(status.environment_status, EnvironmentStatus::Partial);
+        assert_eq!(status.health_status, HealthStatus::Mixed);
+        assert_issue(&status, "partial-environment");
+        assert_issue(&status, "unhealthy-container");
+
+        let services = compose_services(&status);
+        assert_eq!(services, vec!["app".to_owned(), "db".to_owned()]);
+        let commands = runner.commands();
+        assert!(commands.iter().any(|command| {
+            command
+                .args_vec()
+                .contains(&"label=com.docker.compose.project=project".to_owned())
+        }));
+    }
+
+    #[test]
+    fn all_docker_evidence_includes_compose_sidecar_from_state_project() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(b"")),
+            Ok(output(
+                br#"[{
+                    "Id": "primary-id",
+                    "Name": "/project-app-1",
+                    "Config": {
+                        "Labels": {
+                            "decune.managed": "true",
+                            "decune.workspace_id": "123456abcdef",
+                            "decune.workspace": "/workspace",
+                            "decune.config_hash": "hash",
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "app"
+                        }
+                    },
+                    "State": { "Running": true }
+                },{
+                    "Id": "sidecar-id",
+                    "Name": "/project-db-1",
+                    "Config": {
+                        "Labels": {
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "db"
+                        }
+                    },
+                    "State": { "Running": false }
+                }]"#,
+            )),
+            Ok(output(
+                br#"{"ID":"primary-id"}
+{"ID":"sidecar-id"}
+"#,
+            )),
+            Ok(output(
+                br#"[{
+                    "Id": "primary-id",
+                    "Name": "/project-app-1",
+                    "Config": {
+                        "Labels": {
+                            "decune.managed": "true",
+                            "decune.workspace_id": "123456abcdef",
+                            "decune.workspace": "/workspace",
+                            "decune.config_hash": "hash",
+                            "com.docker.compose.project": "project",
+                            "com.docker.compose.service": "app"
+                        }
+                    },
+                    "State": { "Running": true }
+                }]"#,
+            )),
+            Ok(output(br#"{"ID":"primary-id"}"#)),
+        ]);
+        let cli = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let state = WorkspaceState {
+            compose_project_name: Some("project".to_owned()),
+            ..state("primary-id", "hash")
+        };
+        let states = vec![state_evidence(WORKSPACE_ID, state)];
+
+        let evidence = runtime
+            .block_on(collect_docker_evidence(&cli, &states))
+            .unwrap();
+
+        assert_eq!(evidence.containers.len(), 2);
+        assert!(evidence.containers.iter().any(|container| {
+            container.id.as_deref() == Some("sidecar-id")
+                && container.service.as_deref() == Some("db")
+                && container.workspace_id == WORKSPACE_ID
+        }));
+    }
+
+    #[test]
     fn docker_evidence_collection_uses_read_only_commands() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(output(
@@ -1726,7 +2088,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let evidence = runtime.block_on(collect_docker_evidence(&cli)).unwrap();
+        let evidence = runtime
+            .block_on(collect_docker_evidence(&cli, &[]))
+            .unwrap();
 
         assert_eq!(evidence.containers.len(), 1);
         assert_eq!(evidence.volumes.len(), 1);
