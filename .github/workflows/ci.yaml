@@ -128,11 +128,18 @@ jobs:
         run: cargo run --locked -p xtask -- workspace-test ${{ matrix.release_flag }}
 
   compose-integration:
-    name: compose-integration
+    name: compose-integration (${{ matrix.profile }})
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - profile: debug
+          - profile: release
+            release_flag: --release
     steps:
       - uses: actions/checkout@v6
         with:
@@ -145,7 +152,7 @@ jobs:
       - name: Check Docker Compose v2 plugin
         run: docker compose version
       - name: Cargo Compose integration test
-        run: cargo run --locked -p xtask -- compose-integration
+        run: cargo run --locked -p xtask -- compose-integration ${{ matrix.release_flag }}
 
   package-dist:
     name: package-dist
