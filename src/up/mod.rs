@@ -52,7 +52,9 @@ pub(in crate::up) use mounts::{
 };
 #[cfg(test)]
 use plan::build_preliminary_up_plan_with_forwarding_resolution;
-pub(crate) use plan::build_up_plan_with_forwarding_resolution;
+pub(crate) use plan::{
+    build_read_only_up_plan_with_forwarding_resolution, build_up_plan_with_forwarding_resolution,
+};
 #[cfg(test)]
 use plan::{build_up_plan, build_up_plan_with_image_metadata, build_up_plan_with_update_features};
 #[cfg(test)]

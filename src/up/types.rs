@@ -22,7 +22,14 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum MountResolution {
     Resolve,
+    ReadOnly,
     DeferConfigMounts,
+}
+
+impl MountResolution {
+    pub(crate) fn resolves_config_mounts(self) -> bool {
+        matches!(self, Self::Resolve | Self::ReadOnly)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

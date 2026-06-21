@@ -14,8 +14,9 @@ use crate::{
     docker::{
         dotfiles::{DotfileSkeletonPlan, dotfile_mount_plan},
         mounts::{
-            DockerMountSpec, MountBindOptions, MountVolumeOptions, config_mount_specs,
-            devcontainer_mount_spec, normalize_container_path,
+            DockerMountSpec, HostPathCreateMode, MountBindOptions, MountVolumeOptions,
+            config_mount_specs_with_host_path_create,
+            devcontainer_mount_spec_with_host_path_create, normalize_container_path,
         },
     },
     workspace::Workspace,
@@ -66,10 +67,15 @@ pub(in crate::up) fn workspace_mount_plan_from_resolved(
         config.devcontainer.source,
         Some(ResolvedDevcontainerSource::Compose(_))
     ) {
-        if mount_resolution != MountResolution::Resolve {
+        if !mount_resolution.resolves_config_mounts() {
             return Ok(WorkspaceMountPlan::default());
         }
-        let mut mounts = config_mount_specs(config, workspace_root, variables)?;
+        let mut mounts = config_mount_specs_with_host_path_create(
+            config,
+            workspace_root,
+            variables,
+            host_path_create_mode(mount_resolution),
+        )?;
         let dotfiles = dotfile_mount_plan(config, workspace_root, variables, state_root)?;
         mounts.extend(dotfiles.mounts);
         return Ok(WorkspaceMountPlan {
@@ -81,8 +87,13 @@ pub(in crate::up) fn workspace_mount_plan_from_resolved(
     let workspace_target = workspace_mount.target.clone();
     let mut mounts = vec![workspace_mount];
     let mut dotfile_skeletons = Vec::new();
-    if mount_resolution == MountResolution::Resolve {
-        let config_mounts = config_mount_specs(config, workspace_root, variables)?;
+    if mount_resolution.resolves_config_mounts() {
+        let config_mounts = config_mount_specs_with_host_path_create(
+            config,
+            workspace_root,
+            variables,
+            host_path_create_mode(mount_resolution),
+        )?;
         reject_workspace_mount_target_conflicts(&workspace_target, &config_mounts)?;
         mounts.extend(config_mounts);
 
@@ -117,6 +128,7 @@ pub(super) fn resolve_workspace_location<F>(
     workspace: &Workspace,
     config: &ResolvedConfig,
     validation: WorkspaceLocationValidation,
+    mount_resolution: MountResolution,
     variables_for_workspace_folder: F,
 ) -> Result<WorkspaceLocation>
 where
@@ -141,7 +153,7 @@ where
         None => validate_workspace_folder(&default_folder)?,
     };
     let variables = variables_for_workspace_folder(&workspace_folder);
-    let workspace_mount = workspace_mount_spec(workspace, config, &variables)?;
+    let workspace_mount = workspace_mount_spec(workspace, config, &variables, mount_resolution)?;
     let workspace_folder = if explicit_workspace_folder.is_some() {
         workspace_folder
     } else {
@@ -191,12 +203,14 @@ fn workspace_mount_spec(
     workspace: &Workspace,
     config: &ResolvedConfig,
     variables: &crate::config::variables::VariableContext,
+    mount_resolution: MountResolution,
 ) -> Result<DockerMountSpec> {
     if let Some(workspace_mount) = &config.devcontainer.workspace_mount {
-        return devcontainer_mount_spec(
+        return devcontainer_mount_spec_with_host_path_create(
             &LayerDevcontainerMount::String(workspace_mount.clone()),
             workspace.root(),
             variables,
+            host_path_create_mode(mount_resolution),
         )
         .context("Failed to resolve workspaceMount");
     }
@@ -210,6 +224,15 @@ fn workspace_mount_spec(
         bind_options: None,
         volume_options: None,
     })
+}
+
+fn host_path_create_mode(mount_resolution: MountResolution) -> HostPathCreateMode {
+    match mount_resolution {
+        MountResolution::ReadOnly => HostPathCreateMode::ReadOnly,
+        MountResolution::Resolve | MountResolution::DeferConfigMounts => {
+            HostPathCreateMode::Materialize
+        }
+    }
 }
 
 pub(crate) fn mount_hash_inputs(mounts: &[DockerMountSpec]) -> Vec<MountHashInput> {

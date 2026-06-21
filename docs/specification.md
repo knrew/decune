@@ -234,10 +234,10 @@ detail:
 
 - `WORKSPACE` 指定時は devcontainer metadata を必須とする。metadata が見つからない、または複数候補がある場合は error にする。
 - metadata があり state/Docker evidence がない場合は `not-created` として success し、`Run decune up to create the environment.` を action として表示する。
-- detail は header (`Workspace`, `ID`, `Mode`) と、`Summary`、`Config`、issue がある場合の `Issues`、Compose mode の `Services`、`Runtime`、`Ports`、`Resources`、未完了 lifecycle がある場合の `Lifecycle`、必要な場合の `Action` を表示する。
+- detail は header (`Workspace`, `ID`, `Mode`) と、`Summary`、`Config`、issue がある場合の `Issues`、Compose mode の `Services`、`Runtime`、`Ports`、`Resources`、未完了 lifecycle がある場合の `Lifecycle`、必要な場合の `Action` を表示する。`Issues` は `code [severity]: message`、`Action` は action を持つ全 issue を `code: action` 形式で表示する。
 - lifecycle が正常完了している場合は lifecycle step detail を表示しない。
 - `Ports` section は `decune ports` の単一 workspace table と同じ形式を使う。active port がない場合は `No active ports for this workspace` を表示する。
-- current config hash は、workspace path と config が読める場合に read-only で計算し、state または Docker label 由来の config hash と比較して `current` / `needs-rebuild` を判定する。計算できない場合は `unreadable` または `unknown` issue として表示し、state は変更しない。
+- current config hash は、workspace path と config が読める場合に read-only で計算し、state または Docker label 由来の config hash と比較して `current` / `needs-rebuild` を判定する。`[[mounts]].create = "directory"` および Dev Container bind mount の `bind-create-src` は、missing host path を作成せず、既存 ancestor を canonicalize して missing tail を合成した path で hash を計算する。計算できない場合は `unreadable` または `unknown` issue として表示し、state、host path、Docker resource は変更しない。
 - output には secret value、raw label、raw Compose model、container env、build arg、mount source の過剰な列挙、config hash 値を出してはならない。
 - JSON 出力、`--ports`、`--resources` などの status option は提供しない。
 
@@ -827,7 +827,7 @@ shell = true
 
 `containerEnv` は container 作成時の環境変数であり、container 内プロセスや Docker inspect から見える。`build.args` は Docker build に渡り image layer や build output に残る可能性がある。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser`、`build.target`、`build.cacheFrom` は command、state、label、container identity に出る可能性がある。decune はこれらを secret storage として保証しない。literal に書かれた secret 文字列や、decune が `${localEnv:...}` 由来と追跡できない値は自動では secret-sensitive と判定しない。build secret には Docker BuildKit secret を使う。
 
-host bind source の処理順:
+通常の `up` / `rebuild` における host bind source の処理順:
 
 1. `~` を展開。
 2. `${...}` を展開。
@@ -835,6 +835,8 @@ host bind source の処理順:
 4. `create = "directory"` なら directory を作成。
 5. `resolve_symlink = true` なら canonicalize。
 6. 存在しない path は `create` が指定されていない限り error。
+
+`status <WORKSPACE>` の current config hash 計算では read-only のため、`create = "directory"` / `bind-create-src` で指定された missing path は作成しない。`resolve_symlink = true` の場合は既存 ancestor を canonicalize し、missing tail を合成した path を resolved mount として扱う。`resolve_symlink = false` の場合は既存 ancestor の存在を確認した上で、元の absolute path を resolved mount として扱う。`create` がない missing source は通常通り error とする。
 
 Compose file 内の environment interpolation は Docker Compose CLI に委譲する。decune は `devcontainer.json` と decune TOML の値だけを自前で展開する。
 

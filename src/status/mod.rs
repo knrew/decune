@@ -27,7 +27,7 @@ use crate::{
     runtime::docker_cli::{DockerCli, DockerVolumeInspect},
     state::{WorkspaceState, container_ids_match, load_state_file},
     ui,
-    up::{ForwardingResolution, build_up_plan_with_forwarding_resolution},
+    up::{ForwardingResolution, build_read_only_up_plan_with_forwarding_resolution},
     workspace::{Workspace, decune_state_root, is_valid_workspace_id},
 };
 
@@ -342,7 +342,7 @@ fn current_workspace_config(workspace: &Workspace) -> Result<CurrentWorkspaceCon
         }
     };
 
-    match build_up_plan_with_forwarding_resolution(
+    match build_read_only_up_plan_with_forwarding_resolution(
         workspace,
         None,
         ConfigLayer::default(),
@@ -1244,7 +1244,13 @@ fn render_workspace_detail(status: &WorkspaceStatus, ports: &[PortInventoryEntry
     if !status.issues.is_empty() {
         output.push_str("Issues\n");
         for issue in &status.issues {
-            let _ = writeln!(output, "  {}: {}", issue.severity.as_str(), issue.message);
+            let _ = writeln!(
+                output,
+                "  {} [{}]: {}",
+                issue.code,
+                issue.severity.as_str(),
+                issue.message
+            );
         }
         output.push('\n');
     }
@@ -1329,13 +1335,16 @@ fn render_workspace_detail(status: &WorkspaceStatus, ports: &[PortInventoryEntry
         output.push('\n');
     }
 
-    if let Some(action) = status
+    let actions = status
         .issues
         .iter()
-        .find_map(|issue| issue.action.as_deref())
-    {
+        .filter_map(|issue| issue.action.as_deref().map(|action| (issue.code, action)))
+        .collect::<Vec<_>>();
+    if !actions.is_empty() {
         output.push_str("Action\n");
-        let _ = writeln!(output, "  {action}");
+        for (code, action) in actions {
+            let _ = writeln!(output, "  {code}: {action}");
+        }
     }
 
     output
@@ -2196,6 +2205,34 @@ mod tests {
         assert!(output.contains("No active ports for this workspace"));
         assert!(output.contains("Run decune up to create the environment."));
         assert!(!output.contains("Lifecycle\n"));
+    }
+
+    #[test]
+    fn detail_renderer_reports_issue_codes_severities_and_all_actions() {
+        let mut status = rendered_status(WORKSPACE_ID, Some("/workspace"));
+        status.issues.push(issue(
+            "config-unreadable",
+            StatusIssueSeverity::Warning,
+            "The current devcontainer configuration could not be read.",
+            Some("Fix the configuration error, then retry."),
+        ));
+        status.issues.push(issue(
+            "not-created",
+            StatusIssueSeverity::Info,
+            "No decune-managed environment exists for this workspace yet.",
+            Some("Run decune up to create the environment."),
+        ));
+
+        let output = render_workspace_detail(&status, &[]);
+
+        assert!(output.contains(
+            "config-unreadable [warning]: The current devcontainer configuration could not be read."
+        ));
+        assert!(output.contains(
+            "not-created [info]: No decune-managed environment exists for this workspace yet."
+        ));
+        assert!(output.contains("config-unreadable: Fix the configuration error, then retry."));
+        assert!(output.contains("not-created: Run decune up to create the environment."));
     }
 
     #[test]

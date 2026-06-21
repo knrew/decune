@@ -61,6 +61,105 @@ fn status_workspace_reports_not_created() {
 }
 
 #[test]
+fn status_workspace_with_creatable_bind_mount_does_not_create_source() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{ "image": "alpine:3.20" }"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+version = 1
+
+[[mounts]]
+source = "generated/cache"
+target = "/cache"
+type = "bind"
+create = "directory"
+"#,
+        )
+        .unwrap();
+    let source = workspace.path().join("generated/cache");
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = status_roots(&temp);
+
+    let output = decune()
+        .args(["status"])
+        .arg(workspace.path())
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(!source.exists());
+    assert!(output.contains("Runtime: not-created"));
+    assert!(output.contains("Config: current"));
+    assert!(output.contains(
+        "not-created [info]: No decune-managed environment exists for this workspace yet."
+    ));
+    assert!(output.contains("not-created: Run decune up to create the environment."));
+}
+
+#[test]
+fn status_workspace_detail_reports_issue_codes_severities_and_all_actions() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "mounts": [
+                "source=${localWorkspaceFolder}/missing,target=/cache,type=bind"
+              ]
+            }
+            "#,
+        )
+        .unwrap();
+    let temp = support::TempWorkspace::new().unwrap();
+    let fake_path = fake_empty_docker_path(&temp);
+    let roots = status_roots(&temp);
+
+    let output = decune()
+        .args(["status"])
+        .arg(workspace.path())
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    let output = String::from_utf8(output).unwrap();
+
+    assert!(output.contains(
+        "config-unreadable [warning]: The current devcontainer configuration could not be read."
+    ));
+    assert!(output.contains(
+        "not-created [info]: No decune-managed environment exists for this workspace yet."
+    ));
+    assert!(output.contains("config-unreadable: Fix the configuration error, then retry."));
+    assert!(output.contains("not-created: Run decune up to create the environment."));
+}
+
+#[test]
 fn status_summary_reports_state_workspaces_sorted_by_path() {
     let temp = support::TempWorkspace::new().unwrap();
     let fake_path = fake_empty_docker_path(&temp);

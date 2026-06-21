@@ -136,6 +136,25 @@ pub(crate) fn build_up_plan_with_forwarding_resolution(
     )
 }
 
+pub(crate) fn build_read_only_up_plan_with_forwarding_resolution(
+    workspace: &Workspace,
+    explicit_config_path: Option<&Path>,
+    cli_layer: ConfigLayer,
+    forwarding_resolution: ForwardingResolution,
+    update_features: bool,
+    skip_global_config: bool,
+) -> Result<UpPlan> {
+    build_up_plan_inner(
+        workspace,
+        explicit_config_path,
+        cli_layer,
+        Vec::new(),
+        false,
+        MountResolution::ReadOnly,
+        UpPlanResolution::new(forwarding_resolution, update_features, skip_global_config),
+    )
+}
+
 pub(super) fn build_up_plan_with_image_metadata_and_forwarding_resolution(
     workspace: &Workspace,
     explicit_config_path: Option<&Path>,
@@ -173,7 +192,9 @@ pub(super) fn rebuild_up_plan_with_image_metadata_layers(
     plan.config_layers.feature_metadata.clear();
     let config_layers = plan.config_layers.clone();
     let workspace_validation = match mount_resolution {
-        MountResolution::Resolve => WorkspaceLocationValidation::ConfigResolved,
+        MountResolution::Resolve | MountResolution::ReadOnly => {
+            WorkspaceLocationValidation::ConfigResolved
+        }
         MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
     };
     let mut config = resolve_config(config_layers.clone());
@@ -182,6 +203,7 @@ pub(super) fn rebuild_up_plan_with_image_metadata_layers(
         &devcontainer_file,
         &mut config,
         workspace_validation,
+        mount_resolution,
     )?;
     let mount_variables = static_mount_variable_context(
         workspace,
@@ -216,7 +238,7 @@ pub(super) fn rebuild_up_plan_with_image_metadata_layers(
         &config,
         resolution.update_features,
     )?;
-    if mount_resolution == MountResolution::Resolve {
+    if mount_resolution.resolves_config_mounts() {
         hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     }
     add_internal_hash_versions(&mut hash_input, &config);
@@ -305,7 +327,9 @@ fn build_up_plan_inner(
         ..ConfigMergeInput::default()
     };
     let workspace_validation = match mount_resolution {
-        MountResolution::Resolve => WorkspaceLocationValidation::ConfigResolved,
+        MountResolution::Resolve | MountResolution::ReadOnly => {
+            WorkspaceLocationValidation::ConfigResolved
+        }
         MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
     };
     let mut config = resolve_config(config_layers.clone());
@@ -314,6 +338,7 @@ fn build_up_plan_inner(
         devcontainer_json.path(),
         &mut config,
         workspace_validation,
+        mount_resolution,
     )?;
     let mount_variables = static_mount_variable_context(
         workspace,
@@ -348,7 +373,7 @@ fn build_up_plan_inner(
         &config,
         resolution.update_features,
     )?;
-    if mount_resolution == MountResolution::Resolve {
+    if mount_resolution.resolves_config_mounts() {
         hash_input.resolved_mounts = mount_hash_inputs(&mounts);
     }
     add_internal_hash_versions(&mut hash_input, &config);
@@ -413,6 +438,7 @@ pub(super) fn expand_static_plan_fields(
     devcontainer_file: &Path,
     config: &mut ResolvedConfig,
     workspace_validation: WorkspaceLocationValidation,
+    mount_resolution: MountResolution,
 ) -> Result<StaticPlanExpansion> {
     let preliminary_variables =
         static_mount_variable_context(workspace, &default_workspace_folder(workspace), config);
@@ -421,6 +447,7 @@ pub(super) fn expand_static_plan_fields(
         workspace,
         config,
         workspace_validation,
+        mount_resolution,
         |workspace_folder| static_mount_variable_context(workspace, workspace_folder, config),
     )?;
     if should_store_static_workspace_folder(config)? {
