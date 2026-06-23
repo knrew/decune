@@ -36,6 +36,12 @@ pub(crate) struct ResolvedAutoForwardPort {
     pub(crate) on_auto_forward: OnAutoForward,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct HostPortReservation {
+    pub(crate) host_ip: String,
+    pub(crate) host: u16,
+}
+
 pub(crate) fn resolve_forward_ports(ports: &[ResolvedPort]) -> Result<Vec<ResolvedForwardPort>> {
     resolve_forward_ports_with(ports, host_port_available)
 }
@@ -179,9 +185,10 @@ where
     F: FnMut(&str, u16) -> Result<bool>,
 {
     let mut candidate = start_host;
+    let reservations = resolved_forward_port_reservations(resolved).collect::<Vec<_>>();
 
     loop {
-        let available = !reserved_host_port_conflicts(resolved, &port.host_ip, candidate)
+        let available = !host_port_reservations_conflict(&reservations, &port.host_ip, candidate)
             && host_port_available(&port.host_ip, candidate)?;
 
         if available {
@@ -196,14 +203,23 @@ where
     }
 }
 
-fn reserved_host_port_conflicts(
-    resolved: &[ResolvedForwardPort],
+pub(crate) fn resolved_forward_port_reservations<'a>(
+    resolved: &'a [ResolvedForwardPort],
+) -> impl Iterator<Item = HostPortReservation> + 'a {
+    resolved.iter().map(|port| HostPortReservation {
+        host_ip: port.host_ip.clone(),
+        host: port.host,
+    })
+}
+
+pub(crate) fn host_port_reservations_conflict<'a>(
+    reservations: impl IntoIterator<Item = &'a HostPortReservation>,
     candidate_host_ip: &str,
     candidate_host: u16,
 ) -> bool {
-    resolved.iter().any(|existing| {
+    reservations.into_iter().any(|existing| {
         existing.host == candidate_host
-            && host_ip_bindings_conflict(&existing.host_ip, candidate_host_ip)
+            && host_ip_bindings_conflict(existing.host_ip.as_str(), candidate_host_ip)
     })
 }
 
@@ -233,7 +249,7 @@ fn same_ip_family(left: IpAddr, right: IpAddr) -> bool {
     )
 }
 
-fn host_port_available(host_ip: &str, host_port: u16) -> Result<bool> {
+pub(crate) fn host_port_available(host_ip: &str, host_port: u16) -> Result<bool> {
     match TcpListener::bind((host_ip, host_port)) {
         Ok(listener) => {
             drop(listener);
