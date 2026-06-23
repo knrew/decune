@@ -123,6 +123,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `decune ports` は decune が現在維持している port forwarding と Docker published port の両方を表示し、`TYPE` で `forwarded` / `published` を区別します。workspace 横断では `decune ports --all`、JSON 出力では `decune ports --json` を使います。
 - `appPort` は image/Dockerfile モードの Docker published port です。
 - Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。`appPort`、`workspaceMount`、`runArgs` は Compose モードでは unsupported error です。
+- Compose published port relocation policy は既定で無効です。`[compose.published_ports].relocation = true` または `decune up --published-port-relocation` / `decune rebuild --published-port-relocation` で、この実行の policy を有効化できます。
 - `decune up` は Dockerfile instruction、Compose build、Feature `install.sh`、ライフサイクルコマンド、hook、シェル起動ファイルを実行し得ます。信頼していないリポジトリでは起動前に内容を確認してください。
 - 認証情報転送は、ホストの Git 認証情報、SSH agent、GitHub token file への到達性をコンテナ内プロセスに与え得ます。信頼していないリポジトリでは無効化または read-only に制限してください。
 

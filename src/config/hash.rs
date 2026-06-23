@@ -1743,6 +1743,22 @@ shell = false
     }
 
     #[test]
+    fn compose_published_ports_policy_does_not_change_hash_yet() {
+        let disabled = resolved_config("version = 1\n");
+        let enabled = resolved_config(
+            r#"
+version = 1
+
+[compose.published_ports]
+relocation = true
+warn_on_relocation = true
+"#,
+        );
+
+        assert_eq!(hash_for(&disabled), hash_for(&enabled));
+    }
+
+    #[test]
     fn cli_flag_key_order_does_not_change_hash() {
         let config = resolved_config("version = 1\n");
         let first = config_hash(&ConfigHashInput {

@@ -177,6 +177,10 @@ max = 32768
 ignore = [22, 2375, 2376]
 on_auto_forward = "notify"
 
+[compose.published_ports]
+relocation = true
+warn_on_relocation = true
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -252,6 +256,9 @@ shell = false
         assert_eq!(auto.max, Some(32768));
         assert_eq!(auto.ignore, Some(vec![22, 2375, 2376]));
         assert_eq!(auto.on_auto_forward, Some(RawOnAutoForward::Notify));
+        let published_ports = config.compose.published_ports.unwrap();
+        assert_eq!(published_ports.relocation, Some(true));
+        assert_eq!(published_ports.warn_on_relocation, Some(true));
         let git = config.credentials.git.unwrap();
         assert_eq!(git.enabled, Some(true));
         assert_eq!(git.copy_user, Some(true));

@@ -21,6 +21,8 @@ pub(crate) struct RawDecuneConfig {
     #[serde(default)]
     pub(crate) ports: RawPortsConfig,
     #[serde(default)]
+    pub(crate) compose: RawComposeConfig,
+    #[serde(default)]
     pub(crate) credentials: RawCredentialsConfig,
     #[serde(default)]
     pub(crate) hooks: RawHooksConfig,
@@ -36,6 +38,7 @@ impl RawDecuneConfig {
             dotfiles: Vec::new(),
             mounts: Vec::new(),
             ports: RawPortsConfig::default(),
+            compose: RawComposeConfig::default(),
             credentials: RawCredentialsConfig::default(),
             hooks: RawHooksConfig::default(),
         }
@@ -260,6 +263,19 @@ pub(crate) enum RawOnAutoForward {
     Ignore,
     #[serde(rename = "openBrowser")]
     OpenBrowser,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawComposeConfig {
+    pub(crate) published_ports: Option<RawComposePublishedPortsConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawComposePublishedPortsConfig {
+    pub(crate) relocation: Option<bool>,
+    pub(crate) warn_on_relocation: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -578,6 +594,24 @@ on_auto_forward = "{input}"
         .expect("test config should parse");
 
         assert_eq!(config.ports.auto.unwrap().on_auto_forward, Some(expected));
+    }
+
+    #[test]
+    fn compose_published_ports_config_is_supported() {
+        let config: RawDecuneConfig = toml::from_str(
+            r#"
+version = 1
+
+[compose.published_ports]
+relocation = true
+warn_on_relocation = true
+"#,
+        )
+        .expect("test config should parse");
+
+        let published_ports = config.compose.published_ports.unwrap();
+        assert_eq!(published_ports.relocation, Some(true));
+        assert_eq!(published_ports.warn_on_relocation, Some(true));
     }
 
     #[derive(Debug, Deserialize)]

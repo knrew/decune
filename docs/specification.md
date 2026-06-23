@@ -171,7 +171,11 @@ decune up [OPTIONS] [WORKSPACE]
 - `--pull`: base image または Compose service image を pull してから build/create する。Compose モードでは config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
+- `--published-port-relocation`: Compose published port relocation policy をこの実行で有効化する。
+- `--no-published-port-relocation`: Compose published port relocation policy をこの実行で無効化する。
 - `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000/tcp`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。複数指定可。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードで service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
+
+published port relocation policy は後続の Compose published port relocation 処理が参照する設定である。既定は無効である。`--no-auto-forward` は automatic port forwarding だけを無効化し、published port relocation policy は変更しない。
 
 `--detach` では `up` process 終了時に host daemon も停止するため、manual/automatic forwarding と Git HTTPS host-helper は維持されない。detached container で外部公開が必要な port は、image/Dockerfile モードでは `appPort`、Compose モードでは Compose file の `ports` を使う。`--detach` と CLI `-p` / `--port` の併用は error とする。設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視する。
 
@@ -191,6 +195,8 @@ decune rebuild [OPTIONS] [WORKSPACE]
 - `--update-features`: feature lock より registry/tag の再解決を優先する。
 - `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
+- `--published-port-relocation`
+- `--no-published-port-relocation`
 - `-p, --port <SPEC>`
 
 Compose モードでは、`docker compose build` と `docker compose up -d --force-recreate` を使う。`--no-cache` は Compose service build と Feature layer build の両方に適用する。`--pull` は Compose service build/pull に適用するが、decune generated local image を親にする Feature / UID/GID / entrypoint shim layer build には適用しない。
@@ -641,6 +647,10 @@ max = 32768
 ignore = [22, 2375, 2376]
 on_auto_forward = "notify"
 
+[compose.published_ports]
+relocation = false
+warn_on_relocation = false
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -730,6 +740,21 @@ manual port forwarding 設定。Docker published port ではない。
 - `on_auto_forward`: `notify`, `silent`, `ignore`。browser/preview 系は CLI では `notify` 相当。
 
 Compose モードの automatic forwarding は primary service の container を対象にする。sidecar service は明示 `forwardPorts` または `[[ports]].service` で指定する。
+
+### `[compose.published_ports]`
+
+Docker Compose-based 構成の Compose service `ports` に対する published port relocation policy。
+
+```toml
+[compose.published_ports]
+relocation = false
+warn_on_relocation = false
+```
+
+- `relocation`: 既定 false。true の場合、後続の relocation 処理は対象となる fixed TCP published host port の host 側 port number を変更してよい。
+- `warn_on_relocation`: 既定 false。true の場合、後続の relocation 処理は requested endpoint と planned endpoint が異なる relocation について warning を出してよい。
+
+CLI `--published-port-relocation` / `--no-published-port-relocation` は、この実行で `relocation` を override する。`--no-auto-forward` はこの policy を変更しない。
 
 ### `[credentials.git]`
 

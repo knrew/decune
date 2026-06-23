@@ -10,9 +10,9 @@ use crate::config::{
         feature_merge_identity,
     },
     resolved::{
-        ResolvedAutoPorts, ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile,
-        ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature, ResolvedHooks,
-        ResolvedMount, ResolvedPort, ResolvedPorts,
+        ResolvedAutoPorts, ResolvedCompose, ResolvedCredentials, ResolvedDevcontainer,
+        ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature,
+        ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
     },
 };
 
@@ -125,6 +125,7 @@ struct MergeAccumulator {
     mounts: Vec<ResolvedMount>,
     ports: Vec<MergedPort>,
     auto_ports: ResolvedAutoPorts,
+    compose: ResolvedCompose,
     devcontainer: ResolvedDevcontainer,
     devcontainer_init: Option<bool>,
     devcontainer_privileged: Option<bool>,
@@ -196,6 +197,8 @@ impl MergeAccumulator {
             self.merge_auto_ports(auto_ports);
         }
 
+        self.merge_compose(layer.compose);
+
         if let Some(devcontainer) = layer.devcontainer {
             self.merge_devcontainer(devcontainer);
         }
@@ -262,6 +265,15 @@ impl MergeAccumulator {
                 &mut self.dotfile_entries,
                 ResolvedDotfileEntry::Enabled(resolved),
             );
+        }
+    }
+
+    fn merge_compose(&mut self, compose: crate::config::layer::LayerCompose) {
+        if let Some(relocation) = compose.published_ports.relocation {
+            self.compose.published_ports.relocation = relocation;
+        }
+        if let Some(warn_on_relocation) = compose.published_ports.warn_on_relocation {
+            self.compose.published_ports.warn_on_relocation = warn_on_relocation;
         }
     }
 
@@ -455,6 +467,7 @@ impl MergeAccumulator {
                 entries: self.ports.into_iter().map(|entry| entry.port).collect(),
                 auto: self.auto_ports,
             },
+            compose: self.compose,
             devcontainer: self.devcontainer,
             credentials: self.credentials,
             hooks: self.hooks,
@@ -632,6 +645,8 @@ mod tests {
         assert_eq!(config.ports.auto.max, 32768);
         assert!(config.ports.auto.ignore.is_empty());
         assert_eq!(config.ports.auto.on_auto_forward, OnAutoForward::Notify);
+        assert!(!config.compose.published_ports.relocation);
+        assert!(!config.compose.published_ports.warn_on_relocation);
         assert!(config.devcontainer.update_remote_user_uid);
         assert!(config.credentials.git.enabled);
         assert!(config.credentials.git.copy_user);
@@ -1886,5 +1901,108 @@ on_auto_forward = "openBrowser"
         });
 
         assert_eq!(config.ports.auto.on_auto_forward, OnAutoForward::Notify);
+    }
+
+    #[test]
+    fn compose_published_ports_config_resolves() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+relocation = true
+warn_on_relocation = true
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.compose.published_ports.relocation);
+        assert!(config.compose.published_ports.warn_on_relocation);
+    }
+
+    #[test]
+    fn compose_published_ports_policy_uses_layer_precedence() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+relocation = true
+warn_on_relocation = true
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+relocation = false
+"#,
+            )),
+            cli: Some(ConfigLayer {
+                compose: crate::config::layer::LayerCompose {
+                    published_ports: crate::config::layer::LayerComposePublishedPorts {
+                        relocation: Some(true),
+                        warn_on_relocation: Some(false),
+                    },
+                },
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.compose.published_ports.relocation);
+        assert!(!config.compose.published_ports.warn_on_relocation);
+    }
+
+    #[test]
+    fn no_auto_forward_layer_does_not_disable_compose_published_port_relocation() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+relocation = true
+"#,
+            )),
+            cli: Some(ConfigLayer {
+                auto_ports: Some(LayerAutoPorts {
+                    enabled: Some(false),
+                    ..LayerAutoPorts::default()
+                }),
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(!config.ports.auto.enabled);
+        assert!(config.compose.published_ports.relocation);
+
+        let disabled_by_cli = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+relocation = true
+"#,
+            )),
+            cli: Some(ConfigLayer {
+                compose: crate::config::layer::LayerCompose {
+                    published_ports: crate::config::layer::LayerComposePublishedPorts {
+                        relocation: Some(false),
+                        ..Default::default()
+                    },
+                },
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(!disabled_by_cli.compose.published_ports.relocation);
     }
 }
