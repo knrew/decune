@@ -15,7 +15,10 @@ use crate::{
     error::ResultExt,
     runtime::{
         command::{RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand, ensure_success},
-        compose_ports::{ComposePortEntry, classify_compose_published_ports},
+        compose_ports::{
+            ComposePortEntry, ComposePublishedPortPlanningInput, classify_compose_published_ports,
+            compose_published_port_planning_input,
+        },
     },
     workspace::Workspace,
 };
@@ -100,7 +103,15 @@ impl DockerComposeCli {
         &self,
         project: &ComposeCommandPlan,
     ) -> Result<ComposeConfigOutput> {
-        let command = project.command(["config", "--format", "json"]);
+        self.config_output_for_services(project, &[]).await
+    }
+
+    pub(crate) async fn config_output_for_services(
+        &self,
+        project: &ComposeCommandPlan,
+        services: &[String],
+    ) -> Result<ComposeConfigOutput> {
+        let command = compose_config_command(project, services);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
             "read Docker Compose config",
@@ -352,6 +363,40 @@ impl ComposeIntrospector {
             .await?;
         output.model.validate_services(validation)?;
         Ok(output)
+    }
+
+    pub(crate) async fn user_config_for_services(
+        &self,
+        project: &ComposeProjectPlan,
+        validation: &ComposeServiceValidation<'_>,
+        services: &[String],
+    ) -> Result<ComposeConfigOutput> {
+        let output = self
+            .cli
+            .config_output_for_services(
+                &project.command_plan_without_generated_override(),
+                services,
+            )
+            .await?;
+        output.model.validate_services(validation)?;
+        Ok(output)
+    }
+
+    pub(crate) async fn user_published_port_planning_input(
+        &self,
+        project: &ComposeProjectPlan,
+        validation: &ComposeServiceValidation<'_>,
+        services: &[String],
+    ) -> Result<ComposePublishedPortPlanningInput> {
+        let output = self
+            .user_config_for_services(project, validation, services)
+            .await?;
+        Ok(compose_published_port_planning_input(
+            &output.model,
+            &output.published_port_entries,
+            validation.primary_service,
+            services,
+        ))
     }
 
     #[cfg(test)]
@@ -1233,6 +1278,12 @@ fn compose_cmd<const N: usize>(args: [&str; N]) -> RuntimeCommand {
     RuntimeCommand::new("docker").arg("compose").args(args)
 }
 
+fn compose_config_command(project: &ComposeCommandPlan, services: &[String]) -> RuntimeCommand {
+    project
+        .command(["config", "--format", "json"])
+        .args(services)
+}
+
 fn compose_build_command(
     project: &ComposeCommandPlan,
     options: ComposeBuildOptions,
@@ -1869,6 +1920,104 @@ mod tests {
         assert_eq!(
             output.published_port_entries[0].eligibility,
             ComposePortEligibility::EligibleFixedTcp
+        );
+    }
+
+    #[test]
+    fn compose_config_output_for_services_passes_service_args() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            br#"{
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20"
+                    },
+                    "db": {
+                        "image": "alpine:3.20"
+                    }
+                }
+            }"#,
+        ))]);
+        let cli = DockerComposeCli::new(std::sync::Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let services = vec!["app".to_owned(), "db".to_owned()];
+
+        runtime
+            .block_on(cli.config_output_for_services(&lifecycle_command_plan(), &services))
+            .unwrap();
+
+        assert_eq!(
+            runner.commands()[0]
+                .args_vec()
+                .iter()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>(),
+            vec!["db", "app", "json", "--format"]
+        );
+    }
+
+    #[test]
+    fn compose_introspector_builds_active_published_port_planning_input() {
+        let (_temp, workspace) = fixture_workspace("active-port-planning");
+        let devcontainer_dir = workspace.root().join(".devcontainer");
+        fs::create_dir(&devcontainer_dir).unwrap();
+        write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
+        let project =
+            ComposeProjectPlan::resolve(&workspace, &devcontainer_dir, &["compose.yaml".into()])
+                .unwrap();
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            br#"{
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    },
+                    "db": {
+                        "image": "alpine:3.20",
+                        "ports": [{"target": 5432, "published": "5432"}]
+                    }
+                }
+            }"#,
+        ))]);
+        let introspector =
+            ComposeIntrospector::new(DockerComposeCli::new(std::sync::Arc::new(runner.clone())));
+        let run_services = vec!["db".to_owned()];
+        let validation = ComposeServiceValidation {
+            primary_service: "app",
+            run_services: Some(&run_services),
+            workspace_folder: "/workspace",
+            project_name: project.project_name(),
+        };
+        let selected_services = vec!["app".to_owned(), "db".to_owned()];
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let input = runtime
+            .block_on(introspector.user_published_port_planning_input(
+                &project,
+                &validation,
+                &selected_services,
+            ))
+            .unwrap();
+
+        assert_eq!(input.port_entries.len(), 2);
+        assert_eq!(
+            input.services.ordered_services_for_planning(),
+            ["app", "db"]
+        );
+        assert_eq!(
+            runner.commands()[0]
+                .args_vec()
+                .iter()
+                .rev()
+                .take(4)
+                .collect::<Vec<_>>(),
+            vec!["db", "app", "json", "--format"]
         );
     }
 
