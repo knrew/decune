@@ -13,6 +13,7 @@ use futures_util::{
     FutureExt,
     future::{Either, select},
 };
+use serde_json::Value as JsonValue;
 
 use crate::{
     config::resolved::ResolvedDevcontainerSource,
@@ -47,12 +48,14 @@ use crate::{
     runtime::{
         compose_cli::{
             ComposeBuildOptions, ComposeConfigOutput, ComposeConfigService, ComposeIntrospector,
-            ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverrideServicePatch,
-            ComposePrimaryImageResolver, ComposeProjectPlan, ComposePullOptions,
-            ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, write_compose_override,
+            ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverridePortEntry,
+            ComposeOverrideServicePatch, ComposePrimaryImageResolver, ComposeProjectPlan,
+            ComposePullOptions, ComposeServiceValidation, ComposeUpOptions, DockerComposeCli,
+            write_compose_override,
         },
         compose_ports::{
-            ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
+            ComposePortEntry, ComposePortProtocol, ComposePublishedPortEndpoint,
+            ComposePublishedPortHostIpKind, ComposePublishedPortPlan,
             ComposePublishedPortReservation, plan_compose_published_ports_with_existing_project,
         },
     },
@@ -698,7 +701,7 @@ async fn start_compose_project(
         compose.run_services.as_deref(),
     );
     let cli = DockerComposeCli::default();
-    cli.ensure_required_capabilities().await?;
+    let compose_capabilities = cli.ensure_required_capabilities().await?;
 
     let compose_service_validation = ComposeServiceValidation {
         primary_service: &compose.service,
@@ -755,6 +758,7 @@ async fn start_compose_project(
         return Ok(started);
     }
 
+    let mut published_port_plan = ComposePublishedPortPlan::default();
     if plan.config.compose.published_ports.relocation {
         let input = compose_introspector
             .user_published_port_planning_input(
@@ -769,13 +773,19 @@ async fn start_compose_project(
             list_existing_compose_project_published_ports(&client, compose_project.project_name())
                 .await?
         };
-        let _published_port_plan = plan_compose_published_ports_with_existing_project(
+        published_port_plan = plan_compose_published_ports_with_existing_project(
             &input,
             true,
             &plan.forward_ports,
             &existing_project_published_ports,
         )?;
+        if compose_published_port_plan_has_relocations(&published_port_plan) {
+            compose_capabilities.ensure_compose_override_tag()?;
+            warn_on_compose_published_port_relocations(&plan, &published_port_plan);
+        }
     }
+    let published_port_override =
+        compose_published_port_override(&user_config.published_port_entries, &published_port_plan)?;
 
     if options.pull {
         cli.pull(
@@ -879,6 +889,7 @@ async fn start_compose_project(
         &plan,
         compose_primary_service.as_ref(),
         credentials.service_forward(),
+        &published_port_override,
     )
     .await?;
     let runtime_lifecycle = ComposeLifecyclePlan::up(
@@ -1030,10 +1041,17 @@ async fn write_generated_compose_override(
     plan: &UpPlan,
     compose_primary_service: Option<&ComposeConfigService>,
     service_forward: &[ServiceForwardRuntime],
+    published_port_override: &ComposePublishedPortOverride,
 ) -> Result<()> {
     let path = project.generated_override_path();
     let startup = compose_override_startup(client, plan, compose_primary_service).await?;
-    let patch = generated_compose_override_patch(primary_service, plan, startup, service_forward)?;
+    let patch = generated_compose_override_patch(
+        primary_service,
+        plan,
+        startup,
+        service_forward,
+        published_port_override,
+    )?;
     write_compose_override(&path, &patch)
 }
 
@@ -1051,7 +1069,13 @@ pub(in crate::up) fn generated_compose_override_content(
     } else {
         None
     };
-    generated_compose_override_content_with_startup(primary_service, plan, startup, &[])
+    generated_compose_override_content_with_startup(
+        primary_service,
+        plan,
+        startup,
+        &[],
+        &ComposePublishedPortOverride::default(),
+    )
 }
 
 async fn compose_override_startup(
@@ -1098,14 +1122,137 @@ struct ComposeOverrideStartup {
     command: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ComposePublishedPortOverride {
+    service_ports: BTreeMap<String, Vec<ComposeOverridePortEntry>>,
+}
+
+impl ComposePublishedPortOverride {
+    fn ports_for(&self, service: &str) -> Option<&[ComposeOverridePortEntry]> {
+        self.service_ports.get(service).map(Vec::as_slice)
+    }
+
+    fn services(&self) -> impl Iterator<Item = (&String, &Vec<ComposeOverridePortEntry>)> {
+        self.service_ports.iter()
+    }
+}
+
+fn compose_published_port_plan_has_relocations(plan: &ComposePublishedPortPlan) -> bool {
+    plan.entries.iter().any(|entry| entry.relocated)
+}
+
+fn compose_published_port_override(
+    port_entries: &[ComposePortEntry],
+    plan: &ComposePublishedPortPlan,
+) -> Result<ComposePublishedPortOverride> {
+    if !compose_published_port_plan_has_relocations(plan) {
+        return Ok(ComposePublishedPortOverride::default());
+    }
+
+    let relocated_services = plan
+        .entries
+        .iter()
+        .filter(|entry| entry.relocated)
+        .map(|entry| entry.service.clone())
+        .collect::<BTreeSet<_>>();
+    let planned_entries = plan
+        .entries
+        .iter()
+        .map(|entry| ((entry.service.as_str(), entry.port_entry_index), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut service_ports = BTreeMap::new();
+
+    for service in relocated_services {
+        let mut service_entries = port_entries
+            .iter()
+            .filter(|entry| entry.service == service)
+            .collect::<Vec<_>>();
+        service_entries.sort_by_key(|entry| entry.entry_index);
+        let mut ports = Vec::with_capacity(service_entries.len());
+
+        for entry in service_entries {
+            ensure_compose_port_entry_can_be_overridden(entry)?;
+            let mut fields = entry.original_fields.clone();
+            if let Some(planned) = planned_entries.get(&(entry.service.as_str(), entry.entry_index))
+            {
+                fields.insert(
+                    "published".to_owned(),
+                    JsonValue::String(planned.planned.host_port.to_string()),
+                );
+            }
+            ports.push(fields);
+        }
+
+        service_ports.insert(service, ports);
+    }
+
+    Ok(ComposePublishedPortOverride { service_ports })
+}
+
+fn ensure_compose_port_entry_can_be_overridden(entry: &ComposePortEntry) -> Result<()> {
+    if entry.original_fields.is_empty() {
+        bail!(
+            "Cannot apply Compose published port relocation for service `{}` port entry {} because Docker Compose config did not return a long-syntax port object",
+            entry.service,
+            entry.entry_index
+        );
+    }
+
+    Ok(())
+}
+
+fn warn_on_compose_published_port_relocations(plan: &UpPlan, port_plan: &ComposePublishedPortPlan) {
+    if !plan.config.compose.published_ports.warn_on_relocation {
+        return;
+    }
+
+    for entry in port_plan.entries.iter().filter(|entry| entry.relocated) {
+        ui::warn(&format!(
+            "Compose published port relocation changed service `{}` target {}/{} from {} to {}",
+            entry.service,
+            entry.target_port,
+            compose_port_protocol_name(&entry.protocol),
+            compose_published_port_endpoint_display(&entry.requested),
+            compose_published_port_endpoint_display(&entry.planned)
+        ));
+    }
+}
+
+fn compose_published_port_endpoint_display(endpoint: &ComposePublishedPortEndpoint) -> String {
+    match endpoint.host_ip_kind {
+        ComposePublishedPortHostIpKind::Omitted => endpoint.host_port.to_string(),
+        ComposePublishedPortHostIpKind::Explicit => format!(
+            "{}:{}",
+            endpoint.host_ip_value.as_deref().unwrap_or(""),
+            endpoint.host_port
+        ),
+    }
+}
+
+fn compose_port_protocol_name(protocol: &ComposePortProtocol) -> &str {
+    match protocol {
+        ComposePortProtocol::Tcp => "tcp",
+        ComposePortProtocol::Udp => "udp",
+        ComposePortProtocol::Other(value) | ComposePortProtocol::Invalid(value) => value,
+    }
+}
+
 #[cfg(test)]
 fn generated_compose_override_content_with_startup(
     primary_service: &str,
     plan: &UpPlan,
     startup: Option<ComposeOverrideStartup>,
     service_forward: &[ServiceForwardRuntime],
+    published_port_override: &ComposePublishedPortOverride,
 ) -> Result<String> {
-    generated_compose_override_patch(primary_service, plan, startup, service_forward)?.to_yaml()
+    generated_compose_override_patch(
+        primary_service,
+        plan,
+        startup,
+        service_forward,
+        published_port_override,
+    )?
+    .to_yaml()
 }
 
 fn generated_compose_override_patch(
@@ -1113,6 +1260,7 @@ fn generated_compose_override_patch(
     plan: &UpPlan,
     startup: Option<ComposeOverrideStartup>,
     service_forward: &[ServiceForwardRuntime],
+    published_port_override: &ComposePublishedPortOverride,
 ) -> Result<ComposeOverridePatch> {
     let mut service = ComposeOverrideServicePatch::new(primary_service)
         .image(&plan.image)
@@ -1120,6 +1268,9 @@ fn generated_compose_override_patch(
         .cap_add(&plan.config.devcontainer.cap_add)
         .security_opt(&plan.config.devcontainer.security_opt)
         .mounts(&plan.mounts);
+    if let Some(ports) = published_port_override.ports_for(primary_service) {
+        service = service.ports_override(ports.to_vec());
+    }
     let mut used_placeholders = BTreeSet::new();
     for (key, value) in &plan.config.devcontainer.container_env {
         if let Some(sensitive) = plan.sensitive_container_env.get(key) {
@@ -1149,11 +1300,24 @@ fn generated_compose_override_patch(
     }
     let mut patch = ComposeOverridePatch::new(service);
     for runtime in service_forward {
-        patch = patch.service(
-            ComposeOverrideServicePatch::new(runtime.service())
-                .labels(&compose_service_forward_labels(&plan.resources.labels))
-                .mount(runtime.mount().clone().into()),
-        );
+        let mut service = ComposeOverrideServicePatch::new(runtime.service())
+            .labels(&compose_service_forward_labels(&plan.resources.labels))
+            .mount(runtime.mount().clone().into());
+        if let Some(ports) = published_port_override.ports_for(runtime.service()) {
+            service = service.ports_override(ports.to_vec());
+        }
+        patch = patch.service(service);
+    }
+    for (service_name, ports) in published_port_override.services() {
+        if service_name == primary_service
+            || service_forward
+                .iter()
+                .any(|runtime| runtime.service() == service_name)
+        {
+            continue;
+        }
+        patch = patch
+            .service(ComposeOverrideServicePatch::new(service_name).ports_override(ports.to_vec()));
     }
     Ok(patch)
 }
@@ -2245,8 +2409,9 @@ fn parse_container_port_key(value: &str) -> Option<(u16, ComposePortProtocol)> {
 #[cfg(test)]
 mod tests {
     use super::{
-        ComposeOverrideStartup, ExistingContainerReusePolicy,
-        attach_compose_interpolation_env_to_plan, compose_running_reuse_fast_path_enabled,
+        ComposeOverrideStartup, ComposePublishedPortOverride, ExistingContainerReusePolicy,
+        attach_compose_interpolation_env_to_plan, compose_published_port_override,
+        compose_running_reuse_fast_path_enabled,
         compose_service_forward_container_requires_recreate,
         feature_entrypoint_sentinel_check_script_for, feature_entrypoint_sentinel_runtime_path,
         feature_entrypoint_token_runtime_path, generated_compose_override_content,
@@ -2267,6 +2432,13 @@ mod tests {
             },
         },
         host::forward::ServiceForwardRuntime,
+        runtime::compose_ports::{
+            ComposePortEligibility, ComposePortEntry, ComposePortHostIp, ComposePortProtocol,
+            ComposePortSyntax, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
+            ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind, ComposePublishedPortPlan,
+            ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
+            ComposePublishedPortPlanSource,
+        },
         up::{
             CredentialRuntimeMountPolicy, ExistingContainerDecision, UpContainerSummary,
             UpMountSummary, UpOptions, UpPlan, decide_existing_container,
@@ -2362,9 +2534,14 @@ mod tests {
             },
         )];
 
-        let content =
-            generated_compose_override_content_with_startup("app", &plan, None, &service_forward)
-                .unwrap();
+        let content = generated_compose_override_content_with_startup(
+            "app",
+            &plan,
+            None,
+            &service_forward,
+            &ComposePublishedPortOverride::default(),
+        )
+        .unwrap();
 
         assert!(content.contains("  'db':\n"));
         assert!(content.contains("'decune.managed': 'true'"));
@@ -2744,6 +2921,109 @@ mod tests {
     }
 
     #[test]
+    fn generated_compose_override_applies_published_port_relocation() {
+        let plan = generated_override_test_plan(Vec::new());
+        let port_entries = vec![
+            compose_port_entry(
+                "app",
+                0,
+                3000,
+                ComposePublishedHostPort::Single(3000),
+                ComposePortHostIp::Explicit("127.0.0.1".to_owned()),
+                ComposePortProtocol::Tcp,
+                BTreeMap::from([
+                    ("app_protocol".to_owned(), serde_json::json!("http")),
+                    ("host_ip".to_owned(), serde_json::json!("127.0.0.1")),
+                    ("name".to_owned(), serde_json::json!("web")),
+                    ("protocol".to_owned(), serde_json::json!("tcp")),
+                    ("published".to_owned(), serde_json::json!("3000")),
+                    ("target".to_owned(), serde_json::json!(3000)),
+                ]),
+            ),
+            compose_port_entry(
+                "app",
+                1,
+                8125,
+                ComposePublishedHostPort::Single(8125),
+                ComposePortHostIp::Omitted,
+                ComposePortProtocol::Udp,
+                BTreeMap::from([
+                    ("protocol".to_owned(), serde_json::json!("udp")),
+                    ("published".to_owned(), serde_json::json!("8125")),
+                    ("target".to_owned(), serde_json::json!(8125)),
+                ]),
+            ),
+            compose_port_entry(
+                "app",
+                2,
+                9000,
+                ComposePublishedHostPort::None,
+                ComposePortHostIp::Omitted,
+                ComposePortProtocol::Tcp,
+                BTreeMap::from([
+                    ("protocol".to_owned(), serde_json::json!("tcp")),
+                    ("target".to_owned(), serde_json::json!(9000)),
+                ]),
+            ),
+            compose_port_entry(
+                "worker",
+                0,
+                4000,
+                ComposePublishedHostPort::Single(4000),
+                ComposePortHostIp::Omitted,
+                ComposePortProtocol::Tcp,
+                BTreeMap::from([
+                    ("published".to_owned(), serde_json::json!("4000")),
+                    ("target".to_owned(), serde_json::json!(4000)),
+                ]),
+            ),
+        ];
+        let port_plan = ComposePublishedPortPlan {
+            entries: vec![ComposePublishedPortPlanEntry {
+                service: "app".to_owned(),
+                port_entry_index: 0,
+                source: ComposePublishedPortPlanSource::Compose,
+                kind: ComposePublishedPortPlanEntryType::Published,
+                target_port: 3000,
+                protocol: ComposePortProtocol::Tcp,
+                requested: ComposePublishedPortEndpoint {
+                    host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    host_port: 3000,
+                },
+                planned: ComposePublishedPortEndpoint {
+                    host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    host_port: 3001,
+                },
+                relocated: true,
+                allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
+            }],
+        };
+        let port_override = compose_published_port_override(&port_entries, &port_plan).unwrap();
+
+        let content = generated_compose_override_content_with_startup(
+            "app",
+            &plan,
+            None,
+            &[],
+            &port_override,
+        )
+        .unwrap();
+
+        assert!(content.contains("    ports: !override\n"));
+        assert!(content.contains("        published: '3001'\n"));
+        assert!(content.contains("        target: 3000\n"));
+        assert!(content.contains("      - app_protocol: 'http'\n"));
+        assert!(content.contains("        name: 'web'\n"));
+        assert!(content.contains("        published: '8125'\n"));
+        assert!(content.contains("        target: 8125\n"));
+        assert!(content.contains("        target: 9000\n"));
+        assert!(!content.contains("'worker':"));
+        assert!(!content.contains("published: '3000'"));
+    }
+
+    #[test]
     fn compose_interpolation_env_is_attached_to_generated_override_command_plan() {
         let mut plan = generated_override_test_plan(Vec::new());
         let temp = tempfile::tempdir().unwrap();
@@ -2784,6 +3064,34 @@ mod tests {
             Some("secret-token")
         );
         assert!(!command.sanitized_display().contains("secret-token"));
+    }
+
+    fn compose_port_entry(
+        service: &str,
+        entry_index: usize,
+        target_port: u16,
+        published_host_port: ComposePublishedHostPort,
+        host_ip: ComposePortHostIp,
+        protocol: ComposePortProtocol,
+        original_fields: BTreeMap<String, serde_json::Value>,
+    ) -> ComposePortEntry {
+        let eligibility = match (&published_host_port, &protocol) {
+            (ComposePublishedHostPort::None, _) => ComposePortEligibility::UnsupportedContainerOnly,
+            (_, ComposePortProtocol::Udp) => ComposePortEligibility::UnsupportedUdp,
+            _ => ComposePortEligibility::EligibleFixedTcp,
+        };
+        ComposePortEntry {
+            service: service.to_owned(),
+            entry_index,
+            syntax: ComposePortSyntax::EffectiveObject,
+            target_port: Some(target_port),
+            published_host_port,
+            host_ip,
+            protocol,
+            original_fields,
+            eligibility,
+            unsupported_reason: None,
+        }
     }
 
     fn generated_override_test_plan(mounts: Vec<DockerMountSpec>) -> UpPlan {
@@ -3003,6 +3311,7 @@ mod tests {
                 command: vec!["/docker-entrypoint.sh".to_owned(), "server".to_owned()],
             }),
             &[],
+            &ComposePublishedPortOverride::default(),
         )
         .unwrap();
 
@@ -3064,6 +3373,7 @@ mod tests {
                 ],
             }),
             &[],
+            &ComposePublishedPortOverride::default(),
         )
         .unwrap();
 
