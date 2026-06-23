@@ -712,7 +712,11 @@ async fn start_compose_project(
                 &user_lifecycle.services,
             )
             .await?;
-        let _ = input.services.ordered_services_for_planning();
+        let _published_port_plan = crate::runtime::compose_ports::plan_compose_published_ports(
+            &input,
+            true,
+            &plan.forward_ports,
+        )?;
     }
     let user_model = &user_config.model;
     let compose_primary_image = ComposePrimaryImageResolver {
