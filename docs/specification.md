@@ -87,6 +87,7 @@ README と usage はこの仕様を要約できるが、この仕様と矛盾す
   - `docker compose pull --include-deps`
   - `docker compose up --force-recreate`
   - `docker compose up --remove-orphans`
+- Compose published port relocation で実際に host port を変更する場合は、generated override で Compose `!override` tag を使うため Docker Compose v2.24.4+ 相当が必要。
 - Docker デーモンへ接続できる権限。
 - Git 認証連携を使う場合: host 側の `git`、必要に応じて `SSH_AUTH_SOCK`。
 - GitHub CLI 連携を使う場合: host 側の `gh` と `gh auth token` が成功する状態。
@@ -755,6 +756,8 @@ warn_on_relocation = false
 - `warn_on_relocation`: 既定 false。true の場合、後続の relocation 処理は requested endpoint と planned endpoint が異なる relocation について warning を出してよい。
 
 CLI `--published-port-relocation` / `--no-published-port-relocation` は、この実行で `relocation` を override する。`--no-auto-forward` はこの policy を変更しない。
+
+relocation により実際に host port を変更する場合、generated Compose override は Compose `!override` tag で service `ports` を置換する。このため Docker Compose v2.24.4+ 相当が必要で、version 判定不能または古い Compose では error にする。
 
 ### `[credentials.git]`
 

@@ -251,6 +251,8 @@ pub(crate) struct ComposeCliCapabilities {
 }
 
 impl ComposeCliCapabilities {
+    const COMPOSE_OVERRIDE_TAG_MIN_VERSION: (u64, u64, u64) = (2, 24, 4);
+
     pub(crate) fn from_help_outputs(
         version_short: Option<String>,
         config_help: &str,
@@ -319,6 +321,29 @@ impl ComposeCliCapabilities {
             missing.join("; ")
         )
     }
+
+    pub(crate) fn ensure_compose_override_tag(&self) -> Result<()> {
+        let Some(version) = self
+            .version_short
+            .as_deref()
+            .and_then(parse_compose_version)
+        else {
+            bail!(
+                "Compose published port relocation requires Docker Compose v2.24.4 or newer; failed to determine Docker Compose version"
+            );
+        };
+
+        if version < Self::COMPOSE_OVERRIDE_TAG_MIN_VERSION {
+            bail!(
+                "Compose published port relocation requires Docker Compose v2.24.4 or newer; detected Docker Compose v{}.{}.{}",
+                version.0,
+                version.1,
+                version.2
+            );
+        }
+
+        Ok(())
+    }
 }
 
 fn help_contains_option(help: &str, option: &str) -> bool {
@@ -326,6 +351,15 @@ fn help_contains_option(help: &str, option: &str) -> bool {
         ch.is_ascii_whitespace() || matches!(ch, ',' | ';' | '[' | ']' | '(' | ')' | '{' | '}')
     })
     .any(|token| token == option || token.starts_with(&format!("{option}=")))
+}
+
+fn parse_compose_version(version: &str) -> Option<(u64, u64, u64)> {
+    let trimmed = version.trim().trim_start_matches('v');
+    let mut parts = trimmed.split(['.', '-']);
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next()?.parse().ok()?;
+    let patch = parts.next()?.parse().ok()?;
+    Some((major, minor, patch))
 }
 
 #[derive(Clone)]
@@ -861,10 +895,13 @@ pub(crate) struct ComposeOverrideServicePatch {
     cap_add: Vec<String>,
     security_opt: Vec<String>,
     mounts: Vec<ComposeOverrideMount>,
+    ports_override: Vec<ComposeOverridePortEntry>,
     entrypoint: Vec<String>,
     command: Vec<String>,
     forbidden_secret_values: Vec<String>,
 }
+
+pub(crate) type ComposeOverridePortEntry = BTreeMap<String, JsonValue>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ComposeOverrideEnvironmentValue {
@@ -943,6 +980,7 @@ impl ComposeOverrideServicePatch {
             cap_add: Vec::new(),
             security_opt: Vec::new(),
             mounts: Vec::new(),
+            ports_override: Vec::new(),
             entrypoint: Vec::new(),
             command: Vec::new(),
             forbidden_secret_values: Vec::new(),
@@ -1037,6 +1075,11 @@ impl ComposeOverrideServicePatch {
         self
     }
 
+    pub(crate) fn ports_override(mut self, ports: Vec<ComposeOverridePortEntry>) -> Self {
+        self.ports_override = ports;
+        self
+    }
+
     pub(crate) fn entrypoint(mut self, entrypoint: Vec<String>) -> Self {
         self.entrypoint = entrypoint;
         self
@@ -1092,6 +1135,7 @@ impl ComposeOverrideServicePatch {
         append_yaml_string_list(content, 4, "cap_add", &self.cap_add);
         append_yaml_string_list(content, 4, "security_opt", &self.security_opt);
         append_yaml_mounts(content, 4, &self.mounts);
+        append_yaml_ports_override(content, 4, &self.ports_override);
         append_yaml_string_list(content, 4, "entrypoint", &self.entrypoint);
         append_yaml_string_list(content, 4, "command", &self.command);
     }
@@ -1519,6 +1563,87 @@ fn append_yaml_mounts(content: &mut String, indent: usize, mounts: &[ComposeOver
             MountType::Bind => append_yaml_bind_mount_options(content, indent + 4, mount),
             MountType::Volume => append_yaml_volume_mount_options(content, indent + 4, mount),
             MountType::Tmpfs => {}
+        }
+    }
+}
+
+fn append_yaml_ports_override(
+    content: &mut String,
+    indent: usize,
+    ports: &[ComposeOverridePortEntry],
+) {
+    if ports.is_empty() {
+        return;
+    }
+    append_indent(content, indent);
+    content.push_str("ports: !override\n");
+    for port in ports {
+        append_indent(content, indent + 2);
+        content.push_str("- ");
+        append_yaml_object_fields_after_prefix(content, indent + 2, port);
+    }
+}
+
+fn append_yaml_object_fields_after_prefix(
+    content: &mut String,
+    indent: usize,
+    values: &BTreeMap<String, JsonValue>,
+) {
+    if values.is_empty() {
+        content.push_str("{}\n");
+        return;
+    }
+
+    let mut fields = values.iter();
+    let Some((first_key, first_value)) = fields.next() else {
+        unreachable!("empty object handled above");
+    };
+    content.push_str(first_key);
+    content.push_str(": ");
+    append_yaml_json_value(content, indent + 2, first_value);
+    content.push('\n');
+
+    for (key, value) in fields {
+        append_indent(content, indent + 2);
+        content.push_str(key);
+        content.push_str(": ");
+        append_yaml_json_value(content, indent + 2, value);
+        content.push('\n');
+    }
+}
+
+fn append_yaml_json_value(content: &mut String, indent: usize, value: &JsonValue) {
+    match value {
+        JsonValue::Null => content.push_str("null"),
+        JsonValue::Bool(value) => content.push_str(if *value { "true" } else { "false" }),
+        JsonValue::Number(value) => content.push_str(&value.to_string()),
+        JsonValue::String(value) => content.push_str(&yaml_quote(value)),
+        JsonValue::Array(values) => {
+            if values.is_empty() {
+                content.push_str("[]");
+                return;
+            }
+            content.push('\n');
+            for value in values {
+                append_indent(content, indent);
+                content.push_str("- ");
+                append_yaml_json_value(content, indent + 2, value);
+                content.push('\n');
+            }
+        }
+        JsonValue::Object(values) => {
+            if values.is_empty() {
+                content.push_str("{}");
+                return;
+            }
+            content.push('\n');
+            for (key, value) in values {
+                append_indent(content, indent);
+                content.push_str(key);
+                content.push_str(": ");
+                append_yaml_json_value(content, indent + 2, value);
+                content.push('\n');
+            }
         }
     }
 }
@@ -2247,6 +2372,53 @@ mod tests {
         assert!(capabilities.up_force_recreate);
         assert!(capabilities.up_remove_orphans);
         capabilities.ensure_required().unwrap();
+        capabilities.ensure_compose_override_tag().unwrap();
+    }
+
+    #[test]
+    fn compose_capability_accepts_override_tag_minimum_version() {
+        let capabilities = ComposeCliCapabilities {
+            version_short: Some("v2.24.4".to_owned()),
+            ..valid_compose_capabilities()
+        };
+
+        capabilities.ensure_compose_override_tag().unwrap();
+    }
+
+    #[test]
+    fn compose_capability_rejects_old_override_tag_version() {
+        let capabilities = ComposeCliCapabilities {
+            version_short: Some("2.24.3".to_owned()),
+            ..valid_compose_capabilities()
+        };
+
+        let error = capabilities
+            .ensure_compose_override_tag()
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(
+            "Compose published port relocation requires Docker Compose v2.24.4 or newer"
+        ));
+        assert!(error.contains("detected Docker Compose v2.24.3"));
+    }
+
+    #[test]
+    fn compose_capability_rejects_unknown_override_tag_version() {
+        let capabilities = ComposeCliCapabilities {
+            version_short: None,
+            ..valid_compose_capabilities()
+        };
+
+        let error = capabilities
+            .ensure_compose_override_tag()
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(
+            "Compose published port relocation requires Docker Compose v2.24.4 or newer"
+        ));
+        assert!(error.contains("failed to determine Docker Compose version"));
     }
 
     #[test]
@@ -2670,6 +2842,55 @@ mod tests {
 
         assert!(yaml.contains("    image: 'decune/workspace:hash123'\n"));
         assert!(yaml.contains("    pull_policy: 'never'\n"));
+    }
+
+    #[test]
+    fn compose_override_yaml_replaces_ports_with_override_tag() {
+        let patch = ComposeOverridePatch::new(
+            ComposeOverrideServicePatch::new("app").ports_override(vec![
+                BTreeMap::from([
+                    ("app_protocol".to_owned(), serde_json::json!("http")),
+                    ("host_ip".to_owned(), serde_json::json!("127.0.0.1")),
+                    ("mode".to_owned(), serde_json::json!("host")),
+                    ("name".to_owned(), serde_json::json!("web")),
+                    ("protocol".to_owned(), serde_json::json!("tcp")),
+                    ("published".to_owned(), serde_json::json!("3001")),
+                    ("target".to_owned(), serde_json::json!(3000)),
+                ]),
+                BTreeMap::from([
+                    ("protocol".to_owned(), serde_json::json!("udp")),
+                    ("published".to_owned(), serde_json::json!("8125")),
+                    ("target".to_owned(), serde_json::json!(8125)),
+                ]),
+                BTreeMap::from([
+                    ("protocol".to_owned(), serde_json::json!("tcp")),
+                    ("target".to_owned(), serde_json::json!(9000)),
+                ]),
+            ]),
+        );
+
+        let yaml = patch.to_yaml().unwrap();
+
+        assert_eq!(
+            yaml,
+            concat!(
+                "services:\n",
+                "  'app':\n",
+                "    ports: !override\n",
+                "      - app_protocol: 'http'\n",
+                "        host_ip: '127.0.0.1'\n",
+                "        mode: 'host'\n",
+                "        name: 'web'\n",
+                "        protocol: 'tcp'\n",
+                "        published: '3001'\n",
+                "        target: 3000\n",
+                "      - protocol: 'udp'\n",
+                "        published: '8125'\n",
+                "        target: 8125\n",
+                "      - protocol: 'tcp'\n",
+                "        target: 9000\n",
+            )
+        );
     }
 
     #[test]
