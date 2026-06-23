@@ -5,7 +5,7 @@ use clap::{Args, Parser, Subcommand};
 
 use crate::clean::CleanOptions;
 use crate::config::{
-    layer::{ConfigLayer, LayerAutoPorts, LayerPort},
+    layer::{ConfigLayer, LayerAutoPorts, LayerCompose, LayerPort, LayerPublishedPorts},
     ports::{PortSpecSegments, split_port_spec},
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
@@ -67,6 +67,12 @@ struct UpArgs {
     /// Disable automatic port forwarding.
     #[arg(long)]
     no_auto_forward: bool,
+    /// Enable Compose published port fallback for this invocation.
+    #[arg(long, conflicts_with = "no_published_port_fallback")]
+    published_port_fallback: bool,
+    /// Disable Compose published port fallback for this invocation.
+    #[arg(long, conflicts_with = "published_port_fallback")]
+    no_published_port_fallback: bool,
     /// Add a manual port forwarding rule.
     #[arg(short = 'p', long = "port", value_name = "SPEC")]
     ports: Vec<ManualPort>,
@@ -216,17 +222,21 @@ async fn run_up(args: UpArgs) -> Result<i32> {
         no_cache,
         pull,
         no_auto_forward,
+        published_port_fallback,
+        no_published_port_fallback,
         ports,
         workspace,
     } = args;
 
     reject_detached_cli_ports(detach, &ports)?;
+    let published_port_fallback =
+        cli_published_port_fallback(published_port_fallback, no_published_port_fallback);
 
     let options = UpOptions {
         workspace,
         config_path: config,
         skip_global_config: no_global_config,
-        cli_layer: cli_config_layer(ports, no_auto_forward),
+        cli_layer: cli_config_layer(ports, no_auto_forward, published_port_fallback),
         pull,
         rebuild,
         no_cache,
@@ -272,7 +282,7 @@ fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
         workspace,
         config_path: config,
         skip_global_config: no_global_config,
-        cli_layer: cli_config_layer(ports, no_auto_forward),
+        cli_layer: cli_config_layer(ports, no_auto_forward, None),
         pull,
         rebuild: true,
         no_cache,
@@ -358,15 +368,35 @@ fn reject_detached_cli_ports(detach: bool, ports: &[ManualPort]) -> Result<()> {
     Ok(())
 }
 
-fn cli_config_layer(ports: Vec<ManualPort>, no_auto_forward: bool) -> ConfigLayer {
+fn cli_config_layer(
+    ports: Vec<ManualPort>,
+    no_auto_forward: bool,
+    published_port_fallback: Option<bool>,
+) -> ConfigLayer {
     ConfigLayer {
         ports: ports.into_iter().map(ManualPort::into_layer_port).collect(),
         auto_ports: no_auto_forward.then(|| LayerAutoPorts {
             enabled: Some(false),
             ..LayerAutoPorts::default()
         }),
+        compose: LayerCompose {
+            published_ports: published_port_fallback.map(|fallback| LayerPublishedPorts {
+                fallback: Some(fallback),
+                warn_on_relocation: None,
+            }),
+        },
         ..ConfigLayer::default()
     }
+}
+
+fn cli_published_port_fallback(enabled: bool, disabled: bool) -> Option<bool> {
+    if enabled {
+        return Some(true);
+    }
+    if disabled {
+        return Some(false);
+    }
+    None
 }
 
 fn parse_manual_port(value: &str) -> std::result::Result<ManualPort, String> {
@@ -485,8 +515,8 @@ mod tests {
 
     use super::Cli;
     use super::{
-        Commands, PortProtocol, cli_config_layer, is_standalone_version_request,
-        rebuild_up_options_from_args, reject_detached_cli_ports,
+        Commands, PortProtocol, cli_config_layer, cli_published_port_fallback,
+        is_standalone_version_request, rebuild_up_options_from_args, reject_detached_cli_ports,
     };
 
     #[test]
@@ -524,6 +554,7 @@ mod tests {
             "--no-cache",
             "--pull",
             "--no-auto-forward",
+            "--published-port-fallback",
             "-p",
             "3000",
             "--port",
@@ -546,6 +577,8 @@ mod tests {
         assert!(args.no_cache);
         assert!(args.pull);
         assert!(args.no_auto_forward);
+        assert!(args.published_port_fallback);
+        assert!(!args.no_published_port_fallback);
         assert_eq!(args.ports.len(), 2);
         assert_eq!(args.ports[0].container, 3000);
         assert_eq!(args.ports[0].host, None);
@@ -555,9 +588,71 @@ mod tests {
         assert_eq!(args.ports[1].host, Some(8080));
         assert_eq!(args.ports[1].host_ip, "127.0.0.1");
 
-        let cli_layer = cli_config_layer(args.ports.clone(), args.no_auto_forward);
+        let cli_layer = cli_config_layer(
+            args.ports.clone(),
+            args.no_auto_forward,
+            Some(args.published_port_fallback),
+        );
 
         assert_eq!(cli_layer.auto_ports.unwrap().enabled, Some(false));
+        assert_eq!(
+            cli_layer.compose.published_ports.unwrap().fallback,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn up_published_port_fallback_options_are_exclusive() {
+        let error = Cli::try_parse_from([
+            "decune",
+            "up",
+            "--published-port-fallback",
+            "--no-published-port-fallback",
+        ])
+        .expect_err("expected published port fallback options to conflict");
+
+        assert!(error.to_string().contains("cannot be used with"));
+    }
+
+    #[test]
+    fn up_no_auto_forward_does_not_disable_published_port_fallback() {
+        let cli = Cli::parse_from([
+            "decune",
+            "up",
+            "--no-auto-forward",
+            "--published-port-fallback",
+        ]);
+        let Commands::Up(args) = cli.command else {
+            panic!("expected up command");
+        };
+        let cli_layer = cli_config_layer(args.ports, args.no_auto_forward, Some(true));
+
+        assert_eq!(cli_layer.auto_ports.unwrap().enabled, Some(false));
+        assert_eq!(
+            cli_layer.compose.published_ports.unwrap().fallback,
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn up_no_published_port_fallback_sets_cli_override_false() {
+        let cli = Cli::parse_from(["decune", "up", "--no-published-port-fallback"]);
+        let Commands::Up(args) = cli.command else {
+            panic!("expected up command");
+        };
+        let cli_layer = cli_config_layer(
+            args.ports,
+            args.no_auto_forward,
+            cli_published_port_fallback(
+                args.published_port_fallback,
+                args.no_published_port_fallback,
+            ),
+        );
+
+        assert_eq!(
+            cli_layer.compose.published_ports.unwrap().fallback,
+            Some(false)
+        );
     }
 
     #[test]

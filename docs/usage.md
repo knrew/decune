@@ -173,6 +173,8 @@ development container を作成または起動し、remote user のシェルに�
 - `--pull`: build/create 前に base image または Compose サービス image を pull する。
 - `--no-global-config`: global decune TOML 設定を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
+- `--published-port-fallback`: Compose published port fallback をこの実行だけ有効化する。
+- `--no-published-port-fallback`: config で有効化された Compose published port fallback をこの実行だけ無効化する。
 - `-p, --port <SPEC>`: 手動の port forwarding 設定を追加する。
 
 `--detach` では `up` 終了時に host daemon も停止するため、manual/automatic port forwarding と Git HTTPS host-helper forwarding は維持されません。detached container で Docker published port が必要な場合は、image/Dockerfile モードでは `appPort`、Compose モードでは Compose サービスの `ports` を使ってください。
@@ -307,6 +309,10 @@ max = 32768
 ignore = [22, 2375, 2376]
 on_auto_forward = "notify"
 
+[compose.published_ports]
+fallback = false
+warn_on_relocation = false
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -329,6 +335,8 @@ install_feature_if_missing = true
 `appPort` は image-based / Dockerfile-based 構成の Docker published port です。コンテナ作成時に決まるため、既存コンテナへ後付けできません。
 
 Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。Dev Container `appPort` は Compose モードでは unsupported error です。
+
+Compose published port fallback は、Compose サービスの固定 TCP published host port が衝突した場合に、明示 opt-in の後続処理が host 側 port 番号だけを変更できるようにする policy です。既定は無効です。この version では CLI/TOML surface と effective policy だけを提供し、実際の relocation は行いません。`--no-auto-forward` は automatic port forwarding だけを無効化し、published port fallback の policy は変更しません。
 
 decune port forwarding と、Dev Container `appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error です。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧に表示されます。
 

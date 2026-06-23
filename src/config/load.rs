@@ -177,6 +177,10 @@ max = 32768
 ignore = [22, 2375, 2376]
 on_auto_forward = "notify"
 
+[compose.published_ports]
+fallback = true
+warn_on_relocation = true
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -252,6 +256,9 @@ shell = false
         assert_eq!(auto.max, Some(32768));
         assert_eq!(auto.ignore, Some(vec![22, 2375, 2376]));
         assert_eq!(auto.on_auto_forward, Some(RawOnAutoForward::Notify));
+        let published_ports = config.compose.published_ports.unwrap();
+        assert_eq!(published_ports.fallback, Some(true));
+        assert_eq!(published_ports.warn_on_relocation, Some(true));
         let git = config.credentials.git.unwrap();
         assert_eq!(git.enabled, Some(true));
         assert_eq!(git.copy_user, Some(true));
@@ -281,6 +288,30 @@ shell = false
             config.hooks.after_post_start[0].command,
             RawCommand::Args(vec!["bash".to_owned(), "scripts/after-start.sh".to_owned()])
         );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn unknown_compose_published_ports_key_is_rejected() {
+        let path = config_path("published-ports-typo");
+        fs::write(
+            &path,
+            r#"
+version = 1
+
+[compose.published_ports]
+fallbak = true
+"#,
+        )
+        .unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains(&path.display().to_string()));
+        assert!(message.contains("fallbak"));
 
         let _ = fs::remove_file(path);
     }

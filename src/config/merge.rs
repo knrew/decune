@@ -7,12 +7,12 @@ use crate::config::{
     layer::{
         LayerAutoPorts, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile, LayerFeature,
         LayerForwardPort, LayerMount, LayerPort, LayerPortAttributes, LayerPublishPort,
-        feature_merge_identity,
+        LayerPublishedPorts, feature_merge_identity,
     },
     resolved::{
-        ResolvedAutoPorts, ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile,
-        ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature, ResolvedHooks,
-        ResolvedMount, ResolvedPort, ResolvedPorts,
+        ResolvedAutoPorts, ResolvedCompose, ResolvedCredentials, ResolvedDevcontainer,
+        ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature,
+        ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
     },
 };
 
@@ -125,6 +125,7 @@ struct MergeAccumulator {
     mounts: Vec<ResolvedMount>,
     ports: Vec<MergedPort>,
     auto_ports: ResolvedAutoPorts,
+    compose: ResolvedCompose,
     devcontainer: ResolvedDevcontainer,
     devcontainer_init: Option<bool>,
     devcontainer_privileged: Option<bool>,
@@ -194,6 +195,10 @@ impl MergeAccumulator {
 
         if let Some(auto_ports) = layer.auto_ports {
             self.merge_auto_ports(auto_ports);
+        }
+
+        if let Some(published_ports) = layer.compose.published_ports {
+            self.merge_published_ports(published_ports);
         }
 
         if let Some(devcontainer) = layer.devcontainer {
@@ -332,6 +337,15 @@ impl MergeAccumulator {
         }
     }
 
+    fn merge_published_ports(&mut self, published_ports: LayerPublishedPorts) {
+        if let Some(fallback) = published_ports.fallback {
+            self.compose.published_ports.fallback = fallback;
+        }
+        if let Some(warn_on_relocation) = published_ports.warn_on_relocation {
+            self.compose.published_ports.warn_on_relocation = warn_on_relocation;
+        }
+    }
+
     fn merge_credentials(&mut self, credentials: LayerCredentials) {
         if let Some(enabled) = credentials.git.enabled {
             self.credentials.git.enabled = enabled;
@@ -455,6 +469,7 @@ impl MergeAccumulator {
                 entries: self.ports.into_iter().map(|entry| entry.port).collect(),
                 auto: self.auto_ports,
             },
+            compose: self.compose,
             devcontainer: self.devcontainer,
             credentials: self.credentials,
             hooks: self.hooks,
@@ -632,6 +647,8 @@ mod tests {
         assert_eq!(config.ports.auto.max, 32768);
         assert!(config.ports.auto.ignore.is_empty());
         assert_eq!(config.ports.auto.on_auto_forward, OnAutoForward::Notify);
+        assert!(!config.compose.published_ports.fallback);
+        assert!(!config.compose.published_ports.warn_on_relocation);
         assert!(config.devcontainer.update_remote_user_uid);
         assert!(config.credentials.git.enabled);
         assert!(config.credentials.git.copy_user);
@@ -1869,6 +1886,53 @@ enabled = false
 
         assert!(!config.ports.auto.enabled);
         assert_eq!(config.ports.auto.ignore, vec![22]);
+    }
+
+    #[test]
+    fn compose_published_ports_follow_layer_precedence() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+fallback = true
+warn_on_relocation = true
+"#,
+            )),
+            cli: Some(ConfigLayer {
+                compose: crate::config::layer::LayerCompose {
+                    published_ports: Some(crate::config::layer::LayerPublishedPorts {
+                        fallback: Some(false),
+                        warn_on_relocation: None,
+                    }),
+                },
+                ..ConfigLayer::default()
+            }),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(!config.compose.published_ports.fallback);
+        assert!(config.compose.published_ports.warn_on_relocation);
+    }
+
+    #[test]
+    fn compose_published_ports_can_be_enabled_from_project_config() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+fallback = true
+warn_on_relocation = true
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert!(config.compose.published_ports.fallback);
+        assert!(config.compose.published_ports.warn_on_relocation);
     }
 
     #[test]

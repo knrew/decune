@@ -127,3 +127,14 @@ fn up_and_rebuild_help_list_no_global_config() {
             .stderr(predicate::str::is_empty());
     }
 }
+
+#[test]
+fn up_help_lists_published_port_fallback_options() {
+    decune()
+        .args(["up", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--published-port-fallback"))
+        .stdout(predicate::str::contains("--no-published-port-fallback"))
+        .stderr(predicate::str::is_empty());
+}

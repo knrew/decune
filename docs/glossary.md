@@ -48,6 +48,7 @@
 
 - port forwarding: container-side forward agent を経由して host listen address から container port へ転送する decune の機能。`forwardPorts`、decune `[[ports]]`、CLI `-p` は port forwarding。
 - published port: Docker が host port と container port を publish する設定。image/Dockerfile モードでは Dev Container `appPort`、Compose モードでは Compose service `ports` で指定する。
+- published port fallback: Compose service `ports` の固定 TCP published host port が衝突した場合に、明示 opt-in の後続処理が host 側 port 番号だけを変更できるようにする policy。decune port forwarding ではない。
 - automatic port forwarding: primary container 内の TCP listening port を検出して decune が転送する機能。
 - manual port forwarding: `forwardPorts`、decune `[[ports]]`、CLI `-p` による利用者指定の forwarding。
 

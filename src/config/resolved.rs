@@ -22,6 +22,7 @@ pub(crate) struct ResolvedConfig {
     pub(crate) dotfiles: Vec<ResolvedDotfile>,
     pub(crate) mounts: Vec<ResolvedMount>,
     pub(crate) ports: ResolvedPorts,
+    pub(crate) compose: ResolvedCompose,
     pub(crate) devcontainer: ResolvedDevcontainer,
     pub(crate) credentials: ResolvedCredentials,
     pub(crate) hooks: ResolvedHooks,
@@ -94,6 +95,17 @@ impl Default for ResolvedAutoPorts {
             on_auto_forward: OnAutoForward::Notify,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ResolvedCompose {
+    pub(crate) published_ports: ResolvedPublishedPorts,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ResolvedPublishedPorts {
+    pub(crate) fallback: bool,
+    pub(crate) warn_on_relocation: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]

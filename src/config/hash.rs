@@ -488,8 +488,10 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
                 });
             });
         });
-        // forwarding は up 実行時の runtime 設定であり，container/image の再作成条件ではない．
+        // forwarding と published port fallback は up 実行時の runtime 設定であり，
+        // container/image の再作成条件ではない．
         let _ = &config.ports;
+        let _ = &config.compose;
         writer.field("devcontainer", |writer| {
             write_devcontainer(
                 writer,
@@ -1313,6 +1315,22 @@ on_auto_forward = "silent"
         );
 
         assert_eq!(hash_for(&default_auto), hash_for(&custom_auto));
+    }
+
+    #[test]
+    fn compose_published_port_fallback_settings_do_not_change_hash() {
+        let default_policy = resolved_config("version = 1\n");
+        let custom_policy = resolved_config(
+            r#"
+version = 1
+
+[compose.published_ports]
+fallback = true
+warn_on_relocation = true
+"#,
+        );
+
+        assert_eq!(hash_for(&default_policy), hash_for(&custom_policy));
     }
 
     #[test]

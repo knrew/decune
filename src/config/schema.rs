@@ -21,6 +21,8 @@ pub(crate) struct RawDecuneConfig {
     #[serde(default)]
     pub(crate) ports: RawPortsConfig,
     #[serde(default)]
+    pub(crate) compose: RawComposeConfig,
+    #[serde(default)]
     pub(crate) credentials: RawCredentialsConfig,
     #[serde(default)]
     pub(crate) hooks: RawHooksConfig,
@@ -36,6 +38,7 @@ impl RawDecuneConfig {
             dotfiles: Vec::new(),
             mounts: Vec::new(),
             ports: RawPortsConfig::default(),
+            compose: RawComposeConfig::default(),
             credentials: RawCredentialsConfig::default(),
             hooks: RawHooksConfig::default(),
         }
@@ -260,6 +263,19 @@ pub(crate) enum RawOnAutoForward {
     Ignore,
     #[serde(rename = "openBrowser")]
     OpenBrowser,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawComposeConfig {
+    pub(crate) published_ports: Option<RawPublishedPortsConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawPublishedPortsConfig {
+    pub(crate) fallback: Option<bool>,
+    pub(crate) warn_on_relocation: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]

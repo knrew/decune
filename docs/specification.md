@@ -171,7 +171,11 @@ decune up [OPTIONS] [WORKSPACE]
 - `--pull`: base image または Compose service image を pull してから build/create する。Compose モードでは config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
+- `--published-port-fallback`: Compose published port fallback を current invocation で有効化する。
+- `--no-published-port-fallback`: config で有効な Compose published port fallback を current invocation で無効化する。
 - `-p, --port <SPEC>`: manual forwarding。例: `3000`, `3000/tcp`, `3000:3000`, `127.0.0.1:8080:3000`, `[::1]:8080:3000`。複数指定可。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードで service を指定したい場合は devcontainer `forwardPorts` の `"service:port"` を使う。
+
+`--published-port-fallback` と `--no-published-port-fallback` は排他である。`--no-auto-forward` は automatic port forwarding だけを無効化し、Compose published port fallback policy は変更しない。
 
 `--detach` では `up` process 終了時に host daemon も停止するため、manual/automatic forwarding と Git HTTPS host-helper は維持されない。detached container で外部公開が必要な port は、image/Dockerfile モードでは `appPort`、Compose モードでは Compose file の `ports` を使う。`--detach` と CLI `-p` / `--port` の併用は error とする。設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視する。
 
@@ -641,6 +645,10 @@ max = 32768
 ignore = [22, 2375, 2376]
 on_auto_forward = "notify"
 
+[compose.published_ports]
+fallback = false
+warn_on_relocation = false
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -730,6 +738,19 @@ manual port forwarding 設定。Docker published port ではない。
 - `on_auto_forward`: `notify`, `silent`, `ignore`。browser/preview 系は CLI では `notify` 相当。
 
 Compose モードの automatic forwarding は primary service の container を対象にする。sidecar service は明示 `forwardPorts` または `[[ports]].service` で指定する。
+
+### `[compose.published_ports]`
+
+Compose service `ports` による Docker published port の fallback policy。
+
+- `fallback`: 既定 false。true の場合、eligible な固定 Compose TCP published host port について、後続処理が host 側 published port 番号だけを relocation してよい。
+- `warn_on_relocation`: 既定 false。true の場合、requested endpoint と planned endpoint が異なる relocation について warning する。
+
+CLI `decune up --published-port-fallback` は current invocation で `fallback = true` を override し、`decune up --no-published-port-fallback` は current invocation で `fallback = false` を override する。CLI override は `warn_on_relocation` を変更しない。
+
+この policy は decune port forwarding ではない。relocation 後の endpoint は Docker/Compose published port のままである。`--no-auto-forward` は automatic port forwarding だけを無効化し、この policy を変更しない。
+
+この version では CLI/TOML surface と resolved policy representation だけを提供する。Compose model から `ports` を抽出せず、allocation、relocation、diagnostics、status output の変更は行わない。
 
 ### `[credentials.git]`
 
@@ -904,7 +925,7 @@ Compose モードでは上記 label を primary service に追加する。明示
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
-config hash には、resolved metadata/config、Feature lock、relevant CLI options、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose モードの user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose モードでは user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
+config hash には、resolved metadata/config、Feature lock、relevant CLI options、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose モードの user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、published port fallback policy、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose モードでは user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
 
 state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 marker と `devcontainer.json` path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。`last_used_at` は `decune up` / `decune rebuild` が workspace を利用可能にした成功時だけ `unix:<seconds>` 形式で更新し、`created_at` / `last_started_at` から推測しない。`last_used_at` がない state の last-used 表示は unknown / `-` とする。`status`、`ports`、`down`、`remove` / `rm`、`clean` は state の last-used 情報を更新しない。
 
@@ -1024,6 +1045,8 @@ port forwarding と decune が生成する published port metadata は TCP-only 
 CLI `-p` と Dev Container `appPort` の host IP は IPv4 / hostname / bracketed IPv6 を受け付ける。IPv6 host IP は `[::1]:8080:3000` のように bracketed form で指定し、内部 model では bracket なしで保持する。unbracketed IPv6 は colon 区切りと曖昧なため error とする。`forwardPorts` string の `[::1]:3000` は host IP `::1` への forwarding として扱い、`[::1]:8080:3000` のような host-port mapping は `forwardPorts` では unsupported error とする。
 
 Compose モードでは Docker published port 設定は Compose file の `ports` に委譲する。`appPort` は unsupported error とする。
+
+Compose published port fallback は、明示 opt-in された場合だけ固定 TCP published host port の host 側 port 番号を変更してよい policy である。既定では無効で、Compose `ports` は preserve される。この version では policy surface のみを提供し、実際の relocation は行わない。
 
 `decune ports` は Docker container inspect の実 binding を表示するため、Docker published port に UDP binding が含まれる場合は、その binding も現在有効な host 側 port として表示する。
 

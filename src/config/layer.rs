@@ -8,9 +8,10 @@ use crate::devcontainer::lifecycle::LayerLifecycleDefinition;
 use crate::config::{
     path::ConfigPathOrigin,
     schema::{
-        RawAutoPortsConfig, RawCredentialsConfig, RawDecuneConfig, RawDotfileConfig,
-        RawFeatureConfig, RawGitCredentialsConfig, RawGithubCredentialsConfig, RawHookConfig,
-        RawHooksConfig, RawMountConfig, RawPortConfig, RawPortProtocol,
+        RawAutoPortsConfig, RawComposeConfig, RawCredentialsConfig, RawDecuneConfig,
+        RawDotfileConfig, RawFeatureConfig, RawGitCredentialsConfig, RawGithubCredentialsConfig,
+        RawHookConfig, RawHooksConfig, RawMountConfig, RawPortConfig, RawPortProtocol,
+        RawPublishedPortsConfig,
     },
     types::{
         Command, DEFAULT_PORT_HOST_IP, DotfileConflict, GitHttpsMode, GithubCredentialsMode,
@@ -37,6 +38,7 @@ pub(crate) struct ConfigLayer {
     pub(crate) ports: Vec<LayerPort>,
     pub(crate) forward_ports: Vec<LayerForwardPort>,
     pub(crate) auto_ports: Option<LayerAutoPorts>,
+    pub(crate) compose: LayerCompose,
     pub(crate) devcontainer: Option<LayerDevcontainerMetadata>,
     pub(crate) credentials: LayerCredentials,
     pub(crate) hooks: LayerHooks,
@@ -77,6 +79,7 @@ impl ConfigLayer {
                 .collect(),
             forward_ports: Vec::new(),
             auto_ports: raw.ports.auto.map(LayerAutoPorts::from_raw),
+            compose: LayerCompose::from_raw(raw.compose),
             devcontainer: None,
             credentials: LayerCredentials::from_raw(raw.credentials),
             hooks: LayerHooks::from_raw(raw.hooks),
@@ -217,6 +220,34 @@ impl LayerAutoPorts {
             max: raw.max,
             ignore: raw.ignore,
             on_auto_forward: raw.on_auto_forward.map(Into::into),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LayerCompose {
+    pub(crate) published_ports: Option<LayerPublishedPorts>,
+}
+
+impl LayerCompose {
+    fn from_raw(raw: RawComposeConfig) -> Self {
+        Self {
+            published_ports: raw.published_ports.map(LayerPublishedPorts::from_raw),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LayerPublishedPorts {
+    pub(crate) fallback: Option<bool>,
+    pub(crate) warn_on_relocation: Option<bool>,
+}
+
+impl LayerPublishedPorts {
+    fn from_raw(raw: RawPublishedPortsConfig) -> Self {
+        Self {
+            fallback: raw.fallback,
+            warn_on_relocation: raw.warn_on_relocation,
         }
     }
 }
