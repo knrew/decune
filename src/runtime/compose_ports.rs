@@ -159,18 +159,28 @@ fn parse_port_value(value: &JsonValue, field: &str) -> Result<u16, String> {
             let Some(port) = number.as_u64() else {
                 return Err(format!("{field} must be an unsigned integer: {number}"));
             };
-            u16::try_from(port).map_err(|_| format!("{field} is out of range: {port}"))
+            let port =
+                u16::try_from(port).map_err(|_| format!("{field} is out of range: {port}"))?;
+            validate_nonzero_port(port, field)
         }
         JsonValue::String(value) => {
             if value.contains('-') {
                 return Err(format!("{field} is a range: {value}"));
             }
-            value
+            let port = value
                 .parse::<u16>()
-                .map_err(|_| format!("{field} is not a valid port: {value}"))
+                .map_err(|_| format!("{field} is not a valid port: {value}"))?;
+            validate_nonzero_port(port, field)
         }
         other => Err(format!("{field} must be a number or string: {other}")),
     }
+}
+
+fn validate_nonzero_port(port: u16, field: &str) -> Result<u16, String> {
+    if port == 0 {
+        return Err(format!("{field} must be greater than 0: {port}"));
+    }
+    Ok(port)
 }
 
 fn classify_eligibility(
@@ -394,6 +404,36 @@ mod tests {
             ports[0].eligibility,
             ComposePortEligibility::UnsupportedContainerOnly
         );
+    }
+
+    #[test]
+    fn classifies_ephemeral_published_zero_as_unsupported_invalid() {
+        let ports = entries(json!({
+            "services": {
+                "app": {
+                    "ports": [
+                        {"target": 3000, "published": "0"},
+                        {"target": 3001, "published": 0}
+                    ]
+                }
+            }
+        }));
+
+        assert_eq!(ports.len(), 2);
+        for port in ports {
+            assert!(matches!(
+                port.published_host_port,
+                ComposePublishedHostPort::Invalid(_)
+            ));
+            assert_eq!(port.eligibility, ComposePortEligibility::UnsupportedInvalid);
+            let reason = port
+                .unsupported_reason
+                .as_deref()
+                .expect("expected unsupported reason");
+            assert!(reason.contains("published host port"));
+            assert!(reason.contains("greater than 0"));
+            assert!(reason.contains('0'));
+        }
     }
 
     #[test]
