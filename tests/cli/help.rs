@@ -124,6 +124,8 @@ fn up_and_rebuild_help_list_no_global_config() {
             .assert()
             .success()
             .stdout(predicate::str::contains("--no-global-config"))
+            .stdout(predicate::str::contains("--published-port-relocation"))
+            .stdout(predicate::str::contains("--no-published-port-relocation"))
             .stderr(predicate::str::is_empty());
     }
 }
