@@ -13,7 +13,10 @@ use crate::{
     config::{canonical::sha256_hex, hash::ComposeFileHashInput, types::MountType},
     docker::mounts::{DockerMountSpec, MountBindOptions, MountVolumeOptions},
     error::ResultExt,
-    runtime::command::{RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand, ensure_success},
+    runtime::{
+        command::{RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand, ensure_success},
+        compose_ports::{ComposePortEntry, classify_compose_published_ports},
+    },
     workspace::Workspace,
 };
 
@@ -119,9 +122,11 @@ impl DockerComposeCli {
                 project.file_list()
             )
         })?;
+        let published_port_entries = classify_compose_published_ports(&model);
         Ok(ComposeConfigOutput {
             model,
             canonical_model,
+            published_port_entries,
         })
     }
 
@@ -377,6 +382,7 @@ impl ComposeIntrospector {
 pub(crate) struct ComposeConfigOutput {
     pub(crate) model: ComposeConfigModel,
     pub(crate) canonical_model: JsonValue,
+    pub(crate) published_port_entries: Vec<ComposePortEntry>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -392,6 +398,10 @@ impl ComposeConfigModel {
 
     pub(crate) fn service(&self, service: &str) -> Option<&ComposeConfigService> {
         self.services.get(service)
+    }
+
+    pub(crate) fn services(&self) -> impl Iterator<Item = (&String, &ComposeConfigService)> {
+        self.services.iter()
     }
 
     pub(crate) fn validate_services(
@@ -484,6 +494,8 @@ pub(crate) struct ComposeConfigService {
     pub(crate) entrypoint: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_compose_startup_value")]
     pub(crate) command: Option<Vec<String>>,
+    #[serde(default)]
+    pub(crate) ports: Vec<JsonValue>,
 }
 
 fn deserialize_compose_startup_value<'de, D>(
@@ -1562,6 +1574,7 @@ mod tests {
         parse_compose_ps_json, resolve_compose_container, write_compose_override,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
+    use crate::runtime::compose_ports::ComposePortEligibility;
 
     fn fixture_workspace(name: &str) -> (tempfile::TempDir, Workspace) {
         let temp = tempfile::tempdir().unwrap();
@@ -1820,6 +1833,42 @@ mod tests {
                 .service("app")
                 .and_then(|service| service.user.as_deref()),
             Some("1001:1002")
+        );
+    }
+
+    #[test]
+    fn compose_config_output_includes_published_port_classification() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            br#"{
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "ports": [
+                            {
+                                "target": 3000,
+                                "published": "3000",
+                                "protocol": "tcp"
+                            }
+                        ]
+                    }
+                }
+            }"#,
+        ))]);
+        let cli = DockerComposeCli::new(std::sync::Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let output = runtime
+            .block_on(cli.config_output(&lifecycle_command_plan()))
+            .unwrap();
+
+        assert_eq!(output.published_port_entries.len(), 1);
+        assert_eq!(output.published_port_entries[0].service, "app");
+        assert_eq!(
+            output.published_port_entries[0].eligibility,
+            ComposePortEligibility::EligibleFixedTcp
         );
     }
 
