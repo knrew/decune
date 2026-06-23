@@ -694,17 +694,26 @@ async fn start_compose_project(
     let cli = DockerComposeCli::default();
     cli.ensure_required_capabilities().await?;
 
-    let user_config = ComposeIntrospector::new(cli.clone())
-        .user_config(
-            compose_project,
-            &ComposeServiceValidation {
-                primary_service: &compose.service,
-                run_services: compose.run_services.as_deref(),
-                workspace_folder: &plan.workspace_folder,
-                project_name: compose_project.project_name(),
-            },
-        )
+    let compose_service_validation = ComposeServiceValidation {
+        primary_service: &compose.service,
+        run_services: compose.run_services.as_deref(),
+        workspace_folder: &plan.workspace_folder,
+        project_name: compose_project.project_name(),
+    };
+    let compose_introspector = ComposeIntrospector::new(cli.clone());
+    let user_config = compose_introspector
+        .user_config(compose_project, &compose_service_validation)
         .await?;
+    if plan.config.compose.published_ports.relocation {
+        let input = compose_introspector
+            .user_published_port_planning_input(
+                compose_project,
+                &compose_service_validation,
+                &user_lifecycle.services,
+            )
+            .await?;
+        let _ = input.services.ordered_services_for_planning();
+    }
     let user_model = &user_config.model;
     let compose_primary_image = ComposePrimaryImageResolver {
         project_name: compose_project.project_name(),
