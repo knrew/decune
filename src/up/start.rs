@@ -24,7 +24,7 @@ use crate::{
         },
         client::DockerClient,
         container::{
-            ContainerCreateInput, ContainerCreateSpec, create_container,
+            ContainerCreateInput, ContainerCreateSpec, ContainerInspect, create_container,
             devcontainer_keepalive_command, remove_container, start_container, stop_container,
         },
         dotfiles::materialize_dotfile_skeletons,
@@ -44,11 +44,17 @@ use crate::{
             prepare_service_forward_runtimes,
         },
     },
-    runtime::compose_cli::{
-        ComposeBuildOptions, ComposeConfigOutput, ComposeConfigService, ComposeIntrospector,
-        ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverrideServicePatch,
-        ComposePrimaryImageResolver, ComposeProjectPlan, ComposePullOptions,
-        ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, write_compose_override,
+    runtime::{
+        compose_cli::{
+            ComposeBuildOptions, ComposeConfigOutput, ComposeConfigService, ComposeIntrospector,
+            ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverrideServicePatch,
+            ComposePrimaryImageResolver, ComposeProjectPlan, ComposePullOptions,
+            ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, write_compose_override,
+        },
+        compose_ports::{
+            ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
+            ComposePublishedPortReservation, plan_compose_published_ports_with_existing_project,
+        },
     },
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
     ui,
@@ -704,20 +710,6 @@ async fn start_compose_project(
     let user_config = compose_introspector
         .user_config(compose_project, &compose_service_validation)
         .await?;
-    if plan.config.compose.published_ports.relocation {
-        let input = compose_introspector
-            .user_published_port_planning_input(
-                compose_project,
-                &compose_service_validation,
-                &user_lifecycle.services,
-            )
-            .await?;
-        let _published_port_plan = crate::runtime::compose_ports::plan_compose_published_ports(
-            &input,
-            true,
-            &plan.forward_ports,
-        )?;
-    }
     let user_model = &user_config.model;
     let compose_primary_image = ComposePrimaryImageResolver {
         project_name: compose_project.project_name(),
@@ -761,6 +753,28 @@ async fn start_compose_project(
     .await?
     {
         return Ok(started);
+    }
+
+    if plan.config.compose.published_ports.relocation {
+        let input = compose_introspector
+            .user_published_port_planning_input(
+                compose_project,
+                &compose_service_validation,
+                &user_lifecycle.services,
+            )
+            .await?;
+        let existing_project_published_ports = if existing_compose_project_containers.is_empty() {
+            Vec::new()
+        } else {
+            list_existing_compose_project_published_ports(&client, compose_project.project_name())
+                .await?
+        };
+        let _published_port_plan = plan_compose_published_ports_with_existing_project(
+            &input,
+            true,
+            &plan.forward_ports,
+            &existing_project_published_ports,
+        )?;
     }
 
     if options.pull {
@@ -2135,6 +2149,97 @@ async fn list_compose_project_containers(
         .with_context(|| {
             format!("Failed to list Docker Compose containers for workspace {workspace_id} project `{project_name}`")
         })
+}
+
+async fn list_existing_compose_project_published_ports(
+    client: &DockerClient,
+    project_name: &str,
+) -> Result<Vec<ComposePublishedPortReservation>> {
+    let containers = client
+        .cli()
+        .list_compose_project_container_inspects_by_project(project_name)
+        .await
+        .with_context(|| {
+            format!("Failed to list Docker Compose containers for project `{project_name}`")
+        })?;
+    Ok(containers
+        .into_iter()
+        .flat_map(existing_compose_project_published_ports_from_container)
+        .collect())
+}
+
+fn existing_compose_project_published_ports_from_container(
+    container: ContainerInspect,
+) -> Vec<ComposePublishedPortReservation> {
+    let running = container
+        .state
+        .as_ref()
+        .and_then(|state| state.running)
+        .unwrap_or(false);
+    if !running {
+        return Vec::new();
+    }
+
+    let Some(service) = container
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .and_then(|labels| labels.get("com.docker.compose.service"))
+        .cloned()
+    else {
+        return Vec::new();
+    };
+    let Some(ports) = container
+        .network_settings
+        .and_then(|settings| settings.ports)
+    else {
+        return Vec::new();
+    };
+
+    let mut reservations = Vec::new();
+    for (container_port, bindings) in ports {
+        let Some((target_port, protocol)) = parse_container_port_key(&container_port) else {
+            continue;
+        };
+        let Some(bindings) = bindings else {
+            continue;
+        };
+        for binding in bindings {
+            let Some(host_port) = binding
+                .host_port
+                .as_deref()
+                .and_then(|host_port| host_port.parse::<u16>().ok())
+            else {
+                continue;
+            };
+            let host_ip = binding
+                .host_ip
+                .filter(|host_ip| !host_ip.is_empty())
+                .unwrap_or_else(|| "0.0.0.0".to_owned());
+            reservations.push(ComposePublishedPortReservation {
+                service: service.clone(),
+                target_port,
+                protocol: protocol.clone(),
+                endpoint: ComposePublishedPortEndpoint {
+                    host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some(host_ip),
+                    host_port,
+                },
+            });
+        }
+    }
+    reservations
+}
+
+fn parse_container_port_key(value: &str) -> Option<(u16, ComposePortProtocol)> {
+    let (target_port, protocol) = value.split_once('/')?;
+    let target_port = target_port.parse::<u16>().ok()?;
+    let protocol = match protocol {
+        "tcp" => ComposePortProtocol::Tcp,
+        "udp" => ComposePortProtocol::Udp,
+        other => ComposePortProtocol::Other(other.to_owned()),
+    };
+    Some((target_port, protocol))
 }
 
 #[cfg(test)]
