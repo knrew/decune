@@ -1465,6 +1465,113 @@ mod tests {
     }
 
     #[test]
+    fn override_replaces_relocated_service_ports_and_preserves_field_semantics() {
+        let port_entries = entries(json!({
+            "services": {
+                "app": {
+                    "ports": [
+                        {"target": 3000, "published": "3000", "protocol": "tcp"},
+                        {
+                            "host_ip": "127.0.0.1",
+                            "target": 3001,
+                            "published": "3001",
+                            "protocol": "tcp",
+                            "app_protocol": "http",
+                            "name": "loopback",
+                            "mode": "host"
+                        },
+                        {"host_ip": "0.0.0.0", "target": 3002, "published": "3002"},
+                        {"target": 8125, "published": "8125", "protocol": "udp"}
+                    ]
+                },
+                "worker": {
+                    "ports": [{"target": 4000, "published": "4000"}]
+                }
+            }
+        }));
+        let plan = ComposePublishedPortPlan {
+            entries: vec![
+                ComposePublishedPortPlanEntry {
+                    service: "app".to_owned(),
+                    port_entry_index: 0,
+                    source: ComposePublishedPortPlanSource::Compose,
+                    kind: ComposePublishedPortPlanEntryType::Published,
+                    target_port: 3000,
+                    protocol: ComposePortProtocol::Tcp,
+                    requested: ComposePublishedPortEndpoint {
+                        host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                        host_ip_value: None,
+                        host_port: 3000,
+                    },
+                    planned: ComposePublishedPortEndpoint {
+                        host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                        host_ip_value: None,
+                        host_port: 3005,
+                    },
+                    relocated: true,
+                    allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
+                },
+                ComposePublishedPortPlanEntry {
+                    service: "app".to_owned(),
+                    port_entry_index: 1,
+                    source: ComposePublishedPortPlanSource::Compose,
+                    kind: ComposePublishedPortPlanEntryType::Published,
+                    target_port: 3001,
+                    protocol: ComposePortProtocol::Tcp,
+                    requested: ComposePublishedPortEndpoint {
+                        host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                        host_ip_value: Some("127.0.0.1".to_owned()),
+                        host_port: 3001,
+                    },
+                    planned: ComposePublishedPortEndpoint {
+                        host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                        host_ip_value: Some("127.0.0.1".to_owned()),
+                        host_port: 3006,
+                    },
+                    relocated: true,
+                    allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
+                },
+                ComposePublishedPortPlanEntry {
+                    service: "app".to_owned(),
+                    port_entry_index: 2,
+                    source: ComposePublishedPortPlanSource::Compose,
+                    kind: ComposePublishedPortPlanEntryType::Published,
+                    target_port: 3002,
+                    protocol: ComposePortProtocol::Tcp,
+                    requested: ComposePublishedPortEndpoint {
+                        host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                        host_ip_value: Some("0.0.0.0".to_owned()),
+                        host_port: 3002,
+                    },
+                    planned: ComposePublishedPortEndpoint {
+                        host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                        host_ip_value: Some("0.0.0.0".to_owned()),
+                        host_port: 3007,
+                    },
+                    relocated: true,
+                    allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
+                },
+            ],
+        };
+
+        let port_override = compose_published_port_override(&port_entries, &plan).unwrap();
+        let app_ports = port_override.ports_for("app").unwrap();
+
+        assert_eq!(app_ports.len(), 4);
+        assert_eq!(app_ports[0].get("published"), Some(&json!("3005")));
+        assert_eq!(app_ports[0].get("host_ip"), None);
+        assert_eq!(app_ports[1].get("published"), Some(&json!("3006")));
+        assert_eq!(app_ports[1].get("host_ip"), Some(&json!("127.0.0.1")));
+        assert_eq!(app_ports[1].get("app_protocol"), Some(&json!("http")));
+        assert_eq!(app_ports[1].get("name"), Some(&json!("loopback")));
+        assert_eq!(app_ports[1].get("mode"), Some(&json!("host")));
+        assert_eq!(app_ports[2].get("published"), Some(&json!("3007")));
+        assert_eq!(app_ports[2].get("host_ip"), Some(&json!("0.0.0.0")));
+        assert_eq!(app_ports[3].get("published"), Some(&json!("8125")));
+        assert_eq!(port_override.ports_for("worker"), None);
+    }
+
+    #[test]
     fn treats_omitted_protocol_as_tcp() {
         let ports = entries(json!({
             "services": {

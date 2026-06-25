@@ -210,6 +210,47 @@ fn compose_integration_reuses_running_compose_project_with_published_port_reloca
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_published_port_relocation_replaces_original_binding() {
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    let workspace = compose_published_primary_workspace(requested_port);
+    let compose_file = workspace.path().join(".devcontainer/compose.yaml");
+    let devcontainer_file = workspace.path().join(".devcontainer/devcontainer.json");
+    let original_compose = fs::read_to_string(&compose_file).unwrap();
+    let original_devcontainer = fs::read_to_string(&devcontainer_file).unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let published_ports = compose_service_published_host_ports(workspace.path(), "app", "3000/tcp");
+
+    assert!(
+        !published_ports.contains(&requested_port),
+        "relocation must replace the original requested port instead of leaving it active"
+    );
+    assert!(
+        published_ports.iter().any(|port| *port > requested_port),
+        "expected a relocated published port greater than {requested_port}, got {published_ports:?}"
+    );
+    assert_eq!(fs::read_to_string(compose_file).unwrap(), original_compose);
+    assert_eq!(
+        fs::read_to_string(devcontainer_file).unwrap(),
+        original_devcontainer
+    );
+    drop(requested_listener);
+}
+
+#[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_ports_reports_published_port_from_non_primary_service() {
     let host_port = available_localhost_port();
@@ -887,6 +928,13 @@ fn available_localhost_port() -> u16 {
     listener.local_addr().unwrap().port()
 }
 
+fn reserved_localhost_port_with_room_for_relocation() -> Option<TcpListener> {
+    (0..16).find_map(|_| {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+        (listener.local_addr().ok()?.port() < u16::MAX - 16).then_some(listener)
+    })
+}
+
 fn copy_dir_contents(source: &Path, destination: &Path) -> io::Result<()> {
     for entry in fs::read_dir(source)? {
         let entry = entry?;
@@ -1136,6 +1184,40 @@ fn compose_service_container_output<const N: usize>(
     let mut args = vec!["exec", container_id];
     args.extend(command);
     docker_output(args).unwrap()
+}
+
+fn compose_service_published_host_ports(
+    workspace: &Path,
+    service: &str,
+    container_port_key: &str,
+) -> Vec<u16> {
+    let containers = compose_project_containers(workspace).unwrap();
+    let container_id = containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some(service)
+        })
+        .map(|container| container.id.as_str())
+        .unwrap_or_else(|| panic!("Compose service container was not found: {service}"));
+    let output = docker_output(["container", "inspect", container_id]).unwrap();
+    let inspect = serde_json::from_str::<Vec<Value>>(&output).unwrap();
+    let ports = inspect
+        .first()
+        .and_then(|container| container.pointer("/NetworkSettings/Ports"))
+        .and_then(Value::as_object)
+        .and_then(|ports| ports.get(container_port_key))
+        .and_then(Value::as_array)
+        .unwrap_or_else(|| panic!("published port binding was not found: {container_port_key}"));
+
+    let mut host_ports = ports
+        .iter()
+        .filter_map(|binding| binding.get("HostPort"))
+        .filter_map(Value::as_str)
+        .map(|port| port.parse::<u16>().unwrap())
+        .collect::<Vec<_>>();
+    host_ports.sort();
+    host_ports.dedup();
+    host_ports
 }
 
 fn compose_project_containers(workspace: &Path) -> anyhow::Result<Vec<ComposeContainer>> {

@@ -2957,6 +2957,76 @@ mod tests {
     }
 
     #[test]
+    fn generated_compose_override_applies_sidecar_published_port_relocation() {
+        let plan = generated_override_test_plan(Vec::new());
+        let port_entries = vec![
+            compose_port_entry(
+                "app",
+                0,
+                3000,
+                ComposePublishedHostPort::Single(3000),
+                ComposePortHostIp::Omitted,
+                ComposePortProtocol::Tcp,
+                BTreeMap::from([
+                    ("published".to_owned(), serde_json::json!("3000")),
+                    ("target".to_owned(), serde_json::json!(3000)),
+                ]),
+            ),
+            compose_port_entry(
+                "db",
+                0,
+                5432,
+                ComposePublishedHostPort::Single(5432),
+                ComposePortHostIp::Omitted,
+                ComposePortProtocol::Tcp,
+                BTreeMap::from([
+                    ("published".to_owned(), serde_json::json!("5432")),
+                    ("target".to_owned(), serde_json::json!(5432)),
+                ]),
+            ),
+        ];
+        let port_plan = ComposePublishedPortPlan {
+            entries: vec![ComposePublishedPortPlanEntry {
+                service: "db".to_owned(),
+                port_entry_index: 0,
+                source: ComposePublishedPortPlanSource::Compose,
+                kind: ComposePublishedPortPlanEntryType::Published,
+                target_port: 5432,
+                protocol: ComposePortProtocol::Tcp,
+                requested: ComposePublishedPortEndpoint {
+                    host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 5432,
+                },
+                planned: ComposePublishedPortEndpoint {
+                    host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 5433,
+                },
+                relocated: true,
+                allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
+            }],
+        };
+        let port_override = compose_published_port_override(&port_entries, &port_plan).unwrap();
+
+        let content = generated_compose_override_content_with_startup(
+            "app",
+            &plan,
+            None,
+            &[],
+            &port_override,
+        )
+        .unwrap();
+
+        assert!(content.contains("  'db':\n"));
+        assert!(content.contains("    ports: !override\n"));
+        assert!(content.contains("      - published: '5433'\n"));
+        assert!(content.contains("        target: 5432\n"));
+        assert!(!content.contains("published: '5432'"));
+        assert!(!content.contains("host_ip: '0.0.0.0'"));
+    }
+
+    #[test]
     fn compose_interpolation_env_is_attached_to_generated_override_command_plan() {
         let mut plan = generated_override_test_plan(Vec::new());
         let temp = tempfile::tempdir().unwrap();
