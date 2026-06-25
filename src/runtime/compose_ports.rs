@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use anyhow::{Result, bail};
 use serde_json::{Map as JsonMap, Value as JsonValue};
 
 use crate::{
@@ -7,7 +8,7 @@ use crate::{
         HostPortReservation, ResolvedForwardPort, host_port_available,
         host_port_reservations_conflict, resolved_forward_port_reservations,
     },
-    runtime::compose_cli::ComposeConfigModel,
+    runtime::compose_cli::{ComposeConfigModel, ComposeOverridePortEntry},
 };
 
 const OMITTED_HOST_IP_RESERVATION: &str = "0.0.0.0";
@@ -120,6 +121,30 @@ pub(crate) struct ComposePublishedPortPlanningInput {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ComposePublishedPortPlan {
     pub(crate) entries: Vec<ComposePublishedPortPlanEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ComposePublishedPortOverride {
+    service_ports: BTreeMap<String, Vec<ComposeOverridePortEntry>>,
+}
+
+impl ComposePublishedPortOverride {
+    #[cfg(test)]
+    pub(crate) fn from_service_ports(
+        service_ports: BTreeMap<String, Vec<ComposeOverridePortEntry>>,
+    ) -> Self {
+        Self { service_ports }
+    }
+
+    pub(crate) fn ports_for(&self, service: &str) -> Option<&[ComposeOverridePortEntry]> {
+        self.service_ports.get(service).map(Vec::as_slice)
+    }
+
+    pub(crate) fn services(
+        &self,
+    ) -> impl Iterator<Item = (&String, &Vec<ComposeOverridePortEntry>)> {
+        self.service_ports.iter()
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -304,6 +329,7 @@ where
                 &requested,
                 requested_host_ip,
                 &reservations,
+                existing_project_published_ports,
                 &mut host_port_available,
             )?;
             (planned_host_port, allocation_reason)
@@ -356,6 +382,70 @@ pub(crate) fn classify_compose_published_ports(
         .collect()
 }
 
+pub(crate) fn compose_published_port_plan_has_relocations(plan: &ComposePublishedPortPlan) -> bool {
+    plan.entries.iter().any(|entry| entry.relocated)
+}
+
+pub(crate) fn compose_published_port_override(
+    port_entries: &[ComposePortEntry],
+    plan: &ComposePublishedPortPlan,
+) -> Result<ComposePublishedPortOverride> {
+    if !compose_published_port_plan_has_relocations(plan) {
+        return Ok(ComposePublishedPortOverride::default());
+    }
+
+    let relocated_services = plan
+        .entries
+        .iter()
+        .filter(|entry| entry.relocated)
+        .map(|entry| entry.service.clone())
+        .collect::<BTreeSet<_>>();
+    let planned_entries = plan
+        .entries
+        .iter()
+        .map(|entry| ((entry.service.as_str(), entry.port_entry_index), entry))
+        .collect::<BTreeMap<_, _>>();
+    let mut service_ports = BTreeMap::new();
+
+    for service in relocated_services {
+        let mut service_entries = port_entries
+            .iter()
+            .filter(|entry| entry.service == service)
+            .collect::<Vec<_>>();
+        service_entries.sort_by_key(|entry| entry.entry_index);
+        let mut ports = Vec::with_capacity(service_entries.len());
+
+        for entry in service_entries {
+            ensure_compose_port_entry_can_be_overridden(entry)?;
+            let mut fields = entry.original_fields.clone();
+            if let Some(planned) = planned_entries.get(&(entry.service.as_str(), entry.entry_index))
+            {
+                fields.insert(
+                    "published".to_owned(),
+                    JsonValue::String(planned.planned.host_port.to_string()),
+                );
+            }
+            ports.push(fields);
+        }
+
+        service_ports.insert(service, ports);
+    }
+
+    Ok(ComposePublishedPortOverride { service_ports })
+}
+
+fn ensure_compose_port_entry_can_be_overridden(entry: &ComposePortEntry) -> Result<()> {
+    if entry.original_fields.is_empty() {
+        bail!(
+            "Cannot apply Compose published port relocation for service `{}` port entry {} because Docker Compose config did not return a long-syntax port object",
+            entry.service,
+            entry.entry_index
+        );
+    }
+
+    Ok(())
+}
+
 fn ordered_eligible_port_entries(
     input: &ComposePublishedPortPlanningInput,
 ) -> Vec<&ComposePortEntry> {
@@ -394,7 +484,6 @@ fn existing_project_published_port_matches(
 ) -> bool {
     existing_project_published_ports.iter().any(|existing| {
         existing.service == entry.service
-            && entry.target_port == Some(existing.target_port)
             && existing.protocol == entry.protocol
             && existing.endpoint.host_port == requested.host_port
             && host_port_reservations_conflict(
@@ -468,6 +557,7 @@ fn allocate_relocated_host_port<F>(
     requested: &ComposePublishedPortEndpoint,
     reservation_host_ip: &str,
     reservations: &[HostPortReservation],
+    existing_project_published_ports: &[ComposePublishedPortReservation],
     host_port_available: &mut F,
 ) -> std::result::Result<u16, ComposePublishedPortPlanError>
 where
@@ -480,8 +570,19 @@ where
     loop {
         let reserved =
             host_port_reservations_conflict(reservations, reservation_host_ip, candidate);
+        let endpoint = ComposePublishedPortEndpoint {
+            host_ip_kind: requested.host_ip_kind,
+            host_ip_value: requested.host_ip_value.clone(),
+            host_port: candidate,
+        };
         let available = if reserved {
             false
+        } else if existing_project_published_port_matches(
+            existing_project_published_ports,
+            entry,
+            &endpoint,
+        ) {
+            true
         } else {
             host_port_available(reservation_host_ip, candidate).map_err(|source| {
                 ComposePublishedPortPlanError::HostPortAvailability {
@@ -999,6 +1100,88 @@ mod tests {
         assert_eq!(
             plan.entries[0].allocation_reason,
             ComposePublishedPortAllocationReason::Available
+        );
+    }
+
+    #[test]
+    fn planner_treats_existing_same_service_binding_as_available_when_target_changes() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 4000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let existing_project_published_ports = vec![ComposePublishedPortReservation {
+            service: "app".to_owned(),
+            target_port: 3000,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                host_ip_value: Some("127.0.0.1".to_owned()),
+                host_port: 3000,
+            },
+        }];
+
+        let plan = plan_compose_published_ports_with(
+            &input,
+            true,
+            &[],
+            &existing_project_published_ports,
+            |_, _| Ok(false),
+        )
+        .unwrap();
+
+        assert_eq!(plan.entries[0].planned.host_port, 3000);
+        assert!(!plan.entries[0].relocated);
+        assert_eq!(
+            plan.entries[0].allocation_reason,
+            ComposePublishedPortAllocationReason::Available
+        );
+    }
+
+    #[test]
+    fn planner_reuses_existing_same_service_relocated_candidate_binding() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let existing_project_published_ports = vec![ComposePublishedPortReservation {
+            service: "app".to_owned(),
+            target_port: 3000,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                host_ip_value: Some("127.0.0.1".to_owned()),
+                host_port: 3001,
+            },
+        }];
+
+        let plan = plan_compose_published_ports_with(
+            &input,
+            true,
+            &[],
+            &existing_project_published_ports,
+            |_, _| Ok(false),
+        )
+        .unwrap();
+
+        assert_eq!(plan.entries[0].planned.host_port, 3001);
+        assert!(plan.entries[0].relocated);
+        assert_eq!(
+            plan.entries[0].allocation_reason,
+            ComposePublishedPortAllocationReason::Unavailable
         );
     }
 
