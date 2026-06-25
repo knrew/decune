@@ -59,7 +59,13 @@ impl From<RawMountCreate> for MountCreate {
 pub(crate) enum PortProtocol {
     Tcp,
     // Kept for future UDP support; input parsers reject UDP explicitly.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "UDP is represented for defensive handling and future support, but input parsers reject it today."
+        )
+    )]
     Udp,
 }
 
