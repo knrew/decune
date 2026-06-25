@@ -38,14 +38,7 @@ use crate::{
         },
     },
     host::credentials::host_github_auth_token_available,
-    runtime::{
-        compose_cli::ComposeConfigService,
-        compose_ports::{
-            ComposePublishedPortOverride, ComposePublishedPortPlan,
-            ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
-            compose_published_port_override, plan_compose_published_ports_with_existing_project,
-        },
-    },
+    runtime::compose_cli::ComposeConfigService,
     ui,
     up::{
         build::{
@@ -282,7 +275,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     existing_container_config_hash: Option<&str>,
     build_for_lookup: Option<(bool, bool)>,
     options: FinalizeUpPlanMountsOptions<'_>,
-) -> Result<FinalizeUpPlanResult> {
+) -> Result<(UpPlan, bool)> {
     let update_features = options.update_features;
     let using_existing_remote_user_image = remote_user_image.is_some();
     let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
@@ -294,7 +287,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     if lookup_image.is_none() {
         if plan.build_context.is_some() {
             let Some((pull, no_cache)) = build_for_lookup else {
-                return Ok(FinalizeUpPlanResult::new(plan, false));
+                return Ok((plan, false));
             };
             prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
             lookup_base_image = Some(plan.base_image.clone());
@@ -303,7 +296,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
             deferred_workspace_layer = plan_requires_workspace_layer(&plan);
         } else if plan_requires_workspace_layer(&plan) {
             let Some((pull, no_cache)) = build_for_lookup else {
-                return Ok(FinalizeUpPlanResult::new(plan, false));
+                return Ok((plan, false));
             };
             prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
             lookup_base_image = Some(plan.base_image.clone());
@@ -332,7 +325,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
         if plan_requires_workspace_layer(&plan) && !using_existing_remote_user_image {
             let Some((pull, no_cache)) = build_for_lookup else {
-                return Ok(FinalizeUpPlanResult::new(plan, false));
+                return Ok((plan, false));
             };
             if lookup_image != plan.base_image {
                 stale_lookup_images.push(lookup_image.clone());
@@ -350,7 +343,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         && !using_existing_remote_user_image
     {
         let Some((_, no_cache)) = build_for_lookup else {
-            return Ok(FinalizeUpPlanResult::new(plan, false));
+            return Ok((plan, false));
         };
         build_feature_layer_image(client, &plan, no_cache).await?;
         lookup_image = plan.image.clone();
@@ -380,7 +373,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     if plan.config.features.is_empty() {
         remove_feature_lock_file(&workspace.root().join(".decune").join("features.lock.toml"))?;
     }
-    let finalized = Box::pin(finalize_mounts_and_resources_for_plan(
+    plan = Box::pin(finalize_mounts_and_resources_for_plan(
         client,
         workspace,
         plan,
@@ -388,7 +381,6 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         options,
     ))
     .await?;
-    plan = finalized.plan;
 
     if image_prepared && plan_requires_final_image_layer(&plan) {
         if let Some((pull, no_cache)) = build_for_lookup {
@@ -416,36 +408,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         }
     }
 
-    Ok(FinalizeUpPlanResult {
-        plan,
-        image_prepared,
-        compose_published_port_plan: finalized.compose_published_port_plan,
-        compose_published_port_override: finalized.compose_published_port_override,
-    })
-}
-
-pub(in crate::up) struct FinalizeUpPlanResult {
-    pub(in crate::up) plan: UpPlan,
-    pub(in crate::up) image_prepared: bool,
-    pub(in crate::up) compose_published_port_plan: ComposePublishedPortPlan,
-    pub(in crate::up) compose_published_port_override: ComposePublishedPortOverride,
-}
-
-impl FinalizeUpPlanResult {
-    fn new(plan: UpPlan, image_prepared: bool) -> Self {
-        Self {
-            plan,
-            image_prepared,
-            compose_published_port_plan: ComposePublishedPortPlan::default(),
-            compose_published_port_override: ComposePublishedPortOverride::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub(in crate::up) struct ComposePublishedPortFinalization<'a> {
-    pub(in crate::up) input: &'a ComposePublishedPortPlanningInput,
-    pub(in crate::up) existing_project_published_ports: &'a [ComposePublishedPortReservation],
+    Ok((plan, image_prepared))
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -455,7 +418,6 @@ pub(in crate::up) struct FinalizeUpPlanMountsOptions<'a> {
     pub(in crate::up) compose_canonical_model: Option<&'a JsonValue>,
     pub(in crate::up) compose_primary_service_user: Option<&'a str>,
     pub(in crate::up) compose_primary_service: Option<&'a ComposeConfigService>,
-    pub(in crate::up) compose_published_ports: Option<ComposePublishedPortFinalization<'a>>,
 }
 
 impl Default for FinalizeUpPlanMountsOptions<'_> {
@@ -466,7 +428,6 @@ impl Default for FinalizeUpPlanMountsOptions<'_> {
             compose_canonical_model: None,
             compose_primary_service_user: None,
             compose_primary_service: None,
-            compose_published_ports: None,
         }
     }
 }
@@ -498,7 +459,7 @@ async fn finalize_mounts_and_resources_for_plan(
     mut plan: UpPlan,
     lookup_image: &str,
     options: FinalizeUpPlanMountsOptions<'_>,
-) -> Result<FinalizeMountsAndResourcesResult> {
+) -> Result<UpPlan> {
     let compose_base_image = matches!(
         plan.config.devcontainer.source,
         Some(ResolvedDevcontainerSource::Compose(_))
@@ -567,14 +528,6 @@ async fn finalize_mounts_and_resources_for_plan(
         workspace.paths().state_dir(),
     )?;
     let mounts = mount_plan.mounts;
-    plan.forward_ports = match options.forwarding {
-        ForwardingResolution::Resolve => {
-            crate::docker::ports::resolve_forward_ports(&plan.config.ports.entries)?
-        }
-        ForwardingResolution::IgnoreDetached => Vec::new(),
-    };
-    let (compose_published_port_plan, compose_published_port_override) =
-        finalized_compose_published_ports(&plan, options.compose_published_ports)?;
     let mut hash_input = ConfigHashInput::new(&plan.config);
     if let Some(context) = &plan.build_context {
         hash_input.build = Some(build_hash_input(context)?);
@@ -613,7 +566,6 @@ async fn finalize_mounts_and_resources_for_plan(
             &plan,
             &mounts,
             hash_input.startup_command.as_ref(),
-            &compose_published_port_override,
         );
     }
     add_internal_hash_versions(&mut hash_input, &plan.config);
@@ -664,44 +616,7 @@ async fn finalize_mounts_and_resources_for_plan(
     plan.mounts = mounts;
     plan.dotfile_skeletons = mount_plan.dotfile_skeletons;
 
-    Ok(FinalizeMountsAndResourcesResult {
-        plan,
-        compose_published_port_plan,
-        compose_published_port_override,
-    })
-}
-
-struct FinalizeMountsAndResourcesResult {
-    plan: UpPlan,
-    compose_published_port_plan: ComposePublishedPortPlan,
-    compose_published_port_override: ComposePublishedPortOverride,
-}
-
-fn finalized_compose_published_ports(
-    plan: &UpPlan,
-    context: Option<ComposePublishedPortFinalization<'_>>,
-) -> Result<(ComposePublishedPortPlan, ComposePublishedPortOverride)> {
-    if !plan.config.compose.published_ports.relocation {
-        return Ok((
-            ComposePublishedPortPlan::default(),
-            ComposePublishedPortOverride::default(),
-        ));
-    }
-    let Some(context) = context else {
-        return Ok((
-            ComposePublishedPortPlan::default(),
-            ComposePublishedPortOverride::default(),
-        ));
-    };
-
-    let port_plan = plan_compose_published_ports_with_existing_project(
-        context.input,
-        true,
-        &plan.forward_ports,
-        context.existing_project_published_ports,
-    )?;
-    let port_override = compose_published_port_override(&context.input.port_entries, &port_plan)?;
-    Ok((port_plan, port_override))
+    Ok(plan)
 }
 
 fn compose_generated_override_hash_input(
@@ -709,7 +624,6 @@ fn compose_generated_override_hash_input(
     plan: &UpPlan,
     mounts: &[DockerMountSpec],
     startup_command: Option<&StartupCommandHashInput>,
-    published_port_override: &ComposePublishedPortOverride,
 ) -> Option<ComposeGeneratedOverrideHashInput> {
     let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
     else {
@@ -812,15 +726,6 @@ fn compose_generated_override_hash_input(
                 });
             }
             None => writer.none(),
-        });
-        writer.field("published_port_override", |writer| {
-            writer.map(published_port_override.services(), |writer, ports| {
-                writer.seq(ports.iter(), |writer, port| {
-                    writer.map(port.iter(), |writer, value| {
-                        writer.json_value(value);
-                    });
-                });
-            });
         });
     });
 
@@ -1111,7 +1016,7 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
         options,
     ))
     .await?;
-    if finalized_plan.plan.resources.config_hash == existing_container_config_hash {
+    if finalized_plan.resources.config_hash == existing_container_config_hash {
         return Ok(plan);
     }
 
@@ -1130,7 +1035,7 @@ async fn choose_github_cli_feature_plan_for_existing_image_probe(
         options,
     ))
     .await?;
-    if finalized_candidate.plan.resources.config_hash == existing_container_config_hash {
+    if finalized_candidate.resources.config_hash == existing_container_config_hash {
         return Ok(candidate);
     }
 
@@ -1491,16 +1396,11 @@ mod tests {
         config::{
             ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash,
             layer::{LayerDevcontainerCompose, LayerRunArg},
-            types::PortProtocol,
         },
         docker::{
             build::DockerBuildOptions,
-            ports::ResolvedForwardPort,
             resource::DockerResources,
             user::{EffectiveUsers, UidGidSyncPlan},
-        },
-        runtime::compose_ports::{
-            classify_compose_published_ports, compose_published_port_planning_input,
         },
         up::{plan::build_up_plan, types::UpPlan},
     };
@@ -1687,7 +1587,6 @@ mod tests {
             &compose_hash_plan("stable-hash", "decune/test:first", "1.0.0"),
             &[],
             None,
-            &ComposePublishedPortOverride::default(),
         )
         .unwrap();
         let second = compose_generated_override_hash_input(
@@ -1695,84 +1594,10 @@ mod tests {
             &compose_hash_plan("stable-hash", "decune/test:first", "1.0.1"),
             &[],
             None,
-            &ComposePublishedPortOverride::default(),
         )
         .unwrap();
 
         assert_ne!(first.content_hash, second.content_hash);
-    }
-
-    #[test]
-    fn generated_override_semantic_hash_changes_for_published_port_override() {
-        let plan = compose_hash_plan("stable-hash", "decune/test:first", "1.0.0");
-        let baseline = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
-            &plan,
-            &[],
-            None,
-            &ComposePublishedPortOverride::default(),
-        )
-        .unwrap();
-        let relocated = ComposePublishedPortOverride::from_service_ports(BTreeMap::from([(
-            "app".to_owned(),
-            vec![BTreeMap::from([
-                ("published".to_owned(), serde_json::json!("3001")),
-                ("target".to_owned(), serde_json::json!(3000)),
-            ])],
-        )]));
-
-        let changed = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
-            &plan,
-            &[],
-            None,
-            &relocated,
-        )
-        .unwrap();
-
-        assert_ne!(baseline.content_hash, changed.content_hash);
-    }
-
-    #[test]
-    fn finalized_compose_published_ports_reserves_final_forward_ports() {
-        let mut plan = compose_hash_plan("stable-hash", "decune/test:first", "1.0.0");
-        plan.config.compose.published_ports.relocation = true;
-        plan.forward_ports = vec![ResolvedForwardPort {
-            service: None,
-            container: 3000,
-            requested_host: 3000,
-            host: 3000,
-            host_ip: "127.0.0.1".to_owned(),
-            protocol: PortProtocol::Tcp,
-            require_local: false,
-            label: None,
-        }];
-        let model = serde_json::from_value(serde_json::json!({
-            "services": {
-                "app": {
-                    "ports": [{"host_ip": "127.0.0.1", "target": 3000, "published": "3000"}]
-                }
-            }
-        }))
-        .unwrap();
-        let port_entries = classify_compose_published_ports(&model);
-        let input = compose_published_port_planning_input(&model, &port_entries, "app", &[]);
-
-        let (port_plan, port_override) = finalized_compose_published_ports(
-            &plan,
-            Some(ComposePublishedPortFinalization {
-                input: &input,
-                existing_project_published_ports: &[],
-            }),
-        )
-        .unwrap();
-
-        assert_eq!(port_plan.entries[0].planned.host_port, 3001);
-        assert!(port_plan.entries[0].relocated);
-        assert_eq!(
-            port_override.ports_for("app").unwrap()[0].get("published"),
-            Some(&serde_json::json!("3001"))
-        );
     }
 
     #[test]
@@ -1782,7 +1607,6 @@ mod tests {
             &compose_hash_plan("first-hash", "decune/test:first-hash", "1.0.0"),
             &[],
             None,
-            &ComposePublishedPortOverride::default(),
         )
         .unwrap();
         let second = compose_generated_override_hash_input(
@@ -1790,7 +1614,6 @@ mod tests {
             &compose_hash_plan("second-hash", "decune/test:second-hash", "1.0.0"),
             &[],
             None,
-            &ComposePublishedPortOverride::default(),
         )
         .unwrap();
 
@@ -1809,7 +1632,6 @@ mod tests {
             &unspecified,
             &[],
             None,
-            &ComposePublishedPortOverride::default(),
         )
         .unwrap();
         let second = compose_generated_override_hash_input(
@@ -1817,7 +1639,6 @@ mod tests {
             &explicit_false,
             &[],
             None,
-            &ComposePublishedPortOverride::default(),
         )
         .unwrap();
 
