@@ -760,9 +760,9 @@ CLI `--published-port-relocation` / `--no-published-port-relocation` は、こ�
 relocation の対象は fixed TCP published host port に限る。relocation 処理は以下の契約に従う。
 
 - image metadata や Feature metadata を merge した後の final `forwardPorts` / `[[ports]]` / CLI `-p` forwarding reservation を考慮し、同じ host endpoint を Compose published port と decune port forwarding の両方へ割り当ててはならない。
-- 同一 Compose project の既存 running container が same service / same protocol / same host endpoint の published port を持つ場合、その binding は `docker compose up --force-recreate` または service recreate で解放可能なものとして扱い、requested port および relocation candidate として再利用してよい。
-- target port だけが変わる Compose `ports` 変更でも、same service の既存 host endpoint は外部競合とは扱わない。
-- requested host port を使えない場合、relocation candidate は同じ host IP semantics のまま requested host port + 1 から昇順に探索する。OS assigned port fallback は行わず、65535 まで candidate がない場合は error にする。
+- 同一 Compose project の既存 running container が同一 service / 同一 protocol / 同一 host endpoint の published port を持つ場合、その binding は `docker compose up --force-recreate` または service recreate で解放可能なものとして扱い、requested port および relocation candidate として再利用してよい。
+- target port だけが変わる Compose `ports` 変更でも、同一 service の既存 host endpoint は外部競合とは扱わない。
+- requested host port を使えない場合、relocation candidate は host IP の指定方法を維持したまま requested host port + 1 から昇順に探索する。OS assigned port fallback は行わず、65535 まで candidate がない場合は error にする。
 - relocation により実際に host port を変更する場合、generated Compose override は Compose `!override` tag で service `ports` を置換する。このため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose では error にする。
 
 ### `[credentials.git]`
