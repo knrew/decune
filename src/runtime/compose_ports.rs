@@ -18,11 +18,6 @@ const OMITTED_HOST_IP_RESERVATION: &str = "0.0.0.0";
 
 pub(crate) const COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED: &str =
     "compose_published_port_multi_replica_unsupported";
-#[expect(
-    dead_code,
-    reason = "reserved for follow-up startup-failure classification; remove this expect when the diagnostic code is wired"
-)]
-pub(crate) const COMPOSE_PUBLISHED_PORT_UNSUPPORTED: &str = "compose_published_port_unsupported";
 pub(crate) const COMPOSE_PUBLISHED_PORT_INVALID: &str = "compose_published_port_invalid";
 pub(crate) const COMPOSE_PUBLISHED_PORT_COLLISION: &str = "compose_published_port_collision";
 pub(crate) const COMPOSE_PUBLISHED_PORT_RELOCATION_FAILED: &str =
@@ -456,7 +451,7 @@ fn compose_startup_error_mentions_endpoint(
 ) -> bool {
     let lower = stderr.to_ascii_lowercase();
     let port_token = format!(":{}", endpoint.host_port);
-    if !lower.contains(&port_token) {
+    if !contains_endpoint_token_with_port_boundary(&lower, &port_token) {
         return false;
     }
 
@@ -467,11 +462,25 @@ fn compose_startup_error_mentions_endpoint(
             .as_deref()
             .map(|host_ip| {
                 let host_ip = host_ip.to_ascii_lowercase();
-                lower.contains(&format!("{host_ip}:{}", endpoint.host_port))
-                    || lower.contains(&format!("[{host_ip}]:{}", endpoint.host_port))
+                contains_endpoint_token_with_port_boundary(
+                    &lower,
+                    &format!("{host_ip}:{}", endpoint.host_port),
+                ) || contains_endpoint_token_with_port_boundary(
+                    &lower,
+                    &format!("[{host_ip}]:{}", endpoint.host_port),
+                )
             })
             .unwrap_or(false),
     }
+}
+
+fn contains_endpoint_token_with_port_boundary(haystack: &str, needle: &str) -> bool {
+    haystack.match_indices(needle).any(|(index, _)| {
+        haystack[index + needle.len()..]
+            .chars()
+            .next()
+            .is_none_or(|next| !next.is_ascii_digit())
+    })
 }
 
 pub(crate) fn compose_published_port_invalid_config_error(
@@ -1422,6 +1431,42 @@ mod tests {
     }
 
     #[test]
+    fn startup_failure_classifier_matches_collision_port_with_digit_boundary() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 80, "published": "80"}]
+                    },
+                    "web": {
+                        "ports": [{"target": 8080, "published": "8080"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let plan = ComposePublishedPortPlan::default();
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Error response from daemon: Bind for 0.0.0.0:8080 failed: port is already allocated",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: false,
+            },
+        )
+        .expect("bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
+        assert!(diagnostic.contains("service: `web`"));
+        assert!(diagnostic.contains("<host_ip omitted>:8080"));
+        assert!(!diagnostic.contains("service: `app`"));
+        assert!(!diagnostic.contains("<host_ip omitted>:80;"));
+    }
+
+    #[test]
     fn startup_failure_classifier_reports_bind_race_when_planned_endpoint_fails() {
         let input = planning_input(
             json!({
@@ -1451,6 +1496,43 @@ mod tests {
         assert!(diagnostic.contains("requested: 127.0.0.1:3000"));
         assert!(diagnostic.contains("planned: 127.0.0.1:3001"));
         assert!(diagnostic.contains("app:3000/tcp"));
+    }
+
+    #[test]
+    fn startup_failure_classifier_matches_bind_race_port_with_digit_boundary() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 80, "published": "80"}]
+                    },
+                    "web": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 8080, "published": "8080"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let plan = plan_with_availability(&input, &[]);
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen tcp 127.0.0.1:8080: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: true,
+            },
+        )
+        .expect("planned bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
+        assert!(diagnostic.contains("service: `web`"));
+        assert!(diagnostic.contains("requested: 127.0.0.1:8080"));
+        assert!(diagnostic.contains("planned: 127.0.0.1:8080"));
+        assert!(!diagnostic.contains("service: `app`"));
+        assert!(!diagnostic.contains("planned: 127.0.0.1:80;"));
     }
 
     #[test]
