@@ -26,12 +26,72 @@ pub(crate) struct WorkspaceState {
     pub(crate) config_file: Option<String>,
     #[serde(default)]
     pub(crate) compose_project_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) published_ports: Vec<PublishedPortRuntimeState>,
     pub(crate) created_at: String,
     pub(crate) last_started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) last_used_at: Option<String>,
     #[serde(default)]
     pub(crate) lifecycle: LifecycleState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PublishedPortRuntimeState {
+    pub(crate) source: PublishedPortSource,
+    #[serde(rename = "type")]
+    pub(crate) kind: PublishedPortRuntimeType,
+    pub(crate) service: String,
+    pub(crate) port_entry_index: usize,
+    pub(crate) target: PublishedPortTarget,
+    pub(crate) requested: PublishedPortEndpointState,
+    pub(crate) planned: PublishedPortEndpointState,
+    #[serde(default)]
+    pub(crate) actual_bindings: Vec<PublishedPortActualBinding>,
+    pub(crate) relocated: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PublishedPortSource {
+    Compose,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PublishedPortRuntimeType {
+    Published,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PublishedPortTarget {
+    pub(crate) port: u16,
+    pub(crate) protocol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PublishedPortEndpointState {
+    pub(crate) host_ip_kind: PublishedPortHostIpKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) host_ip_value: Option<String>,
+    pub(crate) host_port: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum PublishedPortHostIpKind {
+    Omitted,
+    Explicit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PublishedPortActualBinding {
+    pub(crate) host_ip: String,
+    pub(crate) host_port: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -170,6 +230,24 @@ pub(crate) fn sync_state_with_container_and_compose_project(
     compose_project_name: Option<String>,
     default_lifecycle: LifecycleState,
 ) -> Result<WorkspaceState> {
+    sync_state_with_container_and_compose_project_and_published_ports(
+        state_dir,
+        workspace_root,
+        container,
+        compose_project_name,
+        Vec::new(),
+        default_lifecycle,
+    )
+}
+
+pub(crate) fn sync_state_with_container_and_compose_project_and_published_ports(
+    state_dir: impl AsRef<Path>,
+    workspace_root: &Path,
+    container: StateContainerSnapshot,
+    compose_project_name: Option<String>,
+    published_ports: Vec<PublishedPortRuntimeState>,
+    default_lifecycle: LifecycleState,
+) -> Result<WorkspaceState> {
     let state_dir = state_dir.as_ref();
     let existing = load_state_file(state_dir).ok().flatten();
     let matching_existing = existing
@@ -194,6 +272,7 @@ pub(crate) fn sync_state_with_container_and_compose_project(
         workspace_root,
         container,
         compose_project_name,
+        published_ports,
         StateMetadata {
             lifecycle,
             created_at,
@@ -211,6 +290,26 @@ pub(crate) fn write_reused_state_for_container(
     existing: &WorkspaceState,
     refresh_last_started_at: bool,
 ) -> Result<WorkspaceState> {
+    write_reused_state_for_container_with_published_ports(
+        state_dir,
+        workspace_root,
+        container,
+        compose_project_name,
+        Vec::new(),
+        existing,
+        refresh_last_started_at,
+    )
+}
+
+pub(crate) fn write_reused_state_for_container_with_published_ports(
+    state_dir: impl AsRef<Path>,
+    workspace_root: &Path,
+    container: StateContainerSnapshot,
+    compose_project_name: Option<String>,
+    published_ports: Vec<PublishedPortRuntimeState>,
+    existing: &WorkspaceState,
+    refresh_last_started_at: bool,
+) -> Result<WorkspaceState> {
     let last_started_at = if refresh_last_started_at {
         current_timestamp()
     } else {
@@ -222,6 +321,7 @@ pub(crate) fn write_reused_state_for_container(
         workspace_root,
         container,
         compose_project_name,
+        published_ports,
         StateMetadata {
             lifecycle: existing.lifecycle,
             created_at: existing.created_at.clone(),
@@ -236,6 +336,7 @@ fn write_state_for_container_with_metadata(
     workspace_root: &Path,
     container: StateContainerSnapshot,
     compose_project_name: Option<String>,
+    published_ports: Vec<PublishedPortRuntimeState>,
     metadata: StateMetadata,
 ) -> Result<WorkspaceState> {
     let state_dir = state_dir.as_ref();
@@ -247,6 +348,7 @@ fn write_state_for_container_with_metadata(
         config_hash: container.config_hash,
         config_file: container.config_file,
         compose_project_name,
+        published_ports,
         created_at: metadata.created_at,
         last_started_at: metadata.last_started_at,
         last_used_at: metadata.last_used_at,
@@ -396,9 +498,12 @@ mod tests {
     use std::{fs, path::Path};
 
     use super::{
-        LifecycleState, StateContainerSnapshot, load_state_file, mark_state_used,
-        reconcile_state_without_container, remove_state_runtime_dirs, state_file_path,
-        sync_state_with_container, sync_state_with_container_and_compose_project,
+        LifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
+        PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
+        PublishedPortSource, PublishedPortTarget, StateContainerSnapshot, load_state_file,
+        mark_state_used, reconcile_state_without_container, remove_state_runtime_dirs,
+        state_file_path, sync_state_with_container, sync_state_with_container_and_compose_project,
+        sync_state_with_container_and_compose_project_and_published_ports,
         write_reused_state_for_container, write_state_file,
     };
 
@@ -499,6 +604,93 @@ mod tests {
         let legacy_state = load_state_file(&state_dir).unwrap().unwrap();
         assert_eq!(legacy_state.compose_project_name, None);
         assert_eq!(legacy_state.container_id, state.container_id);
+    }
+
+    #[test]
+    fn state_can_persist_published_port_runtime_state_without_requiring_it_in_legacy_files() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let published_ports = vec![
+            published_port_state(
+                "app",
+                0,
+                PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3000,
+                },
+                PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3001,
+                },
+                vec![
+                    PublishedPortActualBinding {
+                        host_ip: "0.0.0.0".to_owned(),
+                        host_port: 3001,
+                    },
+                    PublishedPortActualBinding {
+                        host_ip: "::".to_owned(),
+                        host_port: 3001,
+                    },
+                ],
+                true,
+            ),
+            published_port_state(
+                "db",
+                1,
+                PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("0.0.0.0".to_owned()),
+                    host_port: 5432,
+                },
+                PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("0.0.0.0".to_owned()),
+                    host_port: 5432,
+                },
+                Vec::new(),
+                false,
+            ),
+        ];
+        let state = sync_state_with_container_and_compose_project_and_published_ports(
+            &state_dir,
+            Path::new("/workspace/project"),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "decune/project:hash-a".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+            },
+            Some("decune-project-abc123".to_owned()),
+            published_ports.clone(),
+            LifecycleState::default(),
+        )
+        .unwrap();
+
+        let content = fs::read_to_string(state_file_path(&state_dir)).unwrap();
+        assert!(content.contains("[[published_ports]]"));
+        assert!(content.contains("host_ip_kind = \"omitted\""));
+        assert!(content.contains("host_ip_kind = \"explicit\""));
+        assert!(content.contains("host_ip_value = \"0.0.0.0\""));
+        assert_eq!(state.published_ports, published_ports);
+        assert_eq!(
+            load_state_file(&state_dir)
+                .unwrap()
+                .unwrap()
+                .published_ports,
+            published_ports
+        );
+
+        let legacy = content
+            .lines()
+            .take_while(|line| *line != "[[published_ports]]")
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(state_file_path(&state_dir), legacy).unwrap();
+
+        let legacy_state = load_state_file(&state_dir).unwrap().unwrap();
+        assert!(legacy_state.published_ports.is_empty());
     }
 
     #[test]
@@ -740,6 +932,30 @@ last_started_at = "unix:2"
 
         assert_eq!(repaired.container_id, "container-a");
         assert_eq!(load_state_file(&state_dir).unwrap(), Some(repaired));
+    }
+
+    fn published_port_state(
+        service: &str,
+        port_entry_index: usize,
+        requested: PublishedPortEndpointState,
+        planned: PublishedPortEndpointState,
+        actual_bindings: Vec<PublishedPortActualBinding>,
+        relocated: bool,
+    ) -> PublishedPortRuntimeState {
+        PublishedPortRuntimeState {
+            source: PublishedPortSource::Compose,
+            kind: PublishedPortRuntimeType::Published,
+            service: service.to_owned(),
+            port_entry_index,
+            target: PublishedPortTarget {
+                port: 3000,
+                protocol: "tcp".to_owned(),
+            },
+            requested,
+            planned,
+            actual_bindings,
+            relocated,
+        }
     }
 
     #[test]

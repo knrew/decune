@@ -273,10 +273,18 @@ decune ports [--json] --all
 - `TYPE`: `forwarded` または `published`。
 - `TARGET`: 転送先、または Docker published port の container 側 endpoint。primary container は `container:<port>/<protocol>`、Compose service は `<service>:<port>/<protocol>`。
 - `SOURCE`: forwarding は `configured` または `auto`、published port は `appPort` または `compose`。
-- `REQUESTED`: 要求 host port と実 host port が異なる場合だけ要求 endpoint。異ならない場合は `-`。
+- `REQUESTED`: port forwarding が要求 endpoint から別 endpoint へ fallback した場合、または Compose published port relocation により要求した published port と Docker が実際に publish している binding が異なる場合に、要求 endpoint を表示する。それ以外は `-`。
 - `LABEL`: port label。未指定なら `-`。
 
-`--json` は通常出力の table を再構成できる JSON array を stdout に出力する。各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持つ。`--all` では `workspace` と `workspace_id` も含める。要求 endpoint が実 endpoint と異なる forwarding entry では `requested_host_ip` と `requested_host_port` を含める。published port の requested endpoint は Docker の実 binding からは復元せず、省略する。
+`--json` は通常出力の table を再構成できる JSON array を stdout に出力する。
+
+- 各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持つ。
+- `--all` では `workspace` と `workspace_id` も含める。
+- 要求 endpoint と実 endpoint が異なる forwarding entry では、`requested_host_ip` と `requested_host_port` を含める。
+- decune が Compose published port relocation の metadata を保存している published entry では、`requested_host_ip_kind`、`requested_host_port`、`planned_host_ip_kind`、`planned_host_port`、`relocated` を含める。
+- 同 metadata の endpoint で host IP が明示されている場合は、`requested_host_ip` または `planned_host_ip` も含める。
+
+`*_host_ip_kind` は `omitted` または `explicit` である。`omitted` は Compose file 上で host IP が省略されたことを表し、この場合、対応する `*_host_ip` は省略する。published port の requested endpoint は Docker が実際に publish している binding だけからは復元しない。
 
 ### `remove` / `rm`
 
@@ -955,7 +963,11 @@ Compose モードでは上記 label を primary service に追加する。明示
 
 config hash には、resolved metadata/config、Feature lock、relevant CLI options、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose モードの user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose モードでは user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、Compose published port relocation により生成される service `ports` override、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
 
-state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 marker と `devcontainer.json` path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。`last_used_at` は `decune up` / `decune rebuild` が workspace を利用可能にした成功時だけ `unix:<seconds>` 形式で更新し、`created_at` / `last_started_at` から推測しない。`last_used_at` がない state の last-used 表示は unknown / `-` とする。`status`、`ports`、`down`、`remove` / `rm`、`clean` は state の last-used 情報を更新しない。
+state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 marker と `devcontainer.json` path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
+
+Compose published port relocation では、requested endpoint、planned endpoint、`relocated`、起動時に Docker inspect で観測した actual binding を表示補助 metadata として state に記録する。この metadata は現在有効な Docker binding の正本ではない。
+
+`last_used_at` は `decune up` / `decune rebuild` が workspace を利用可能にした成功時だけ `unix:<seconds>` 形式で更新し、`created_at` / `last_started_at` から推測しない。`last_used_at` がない state の last-used 表示は unknown / `-` とする。`status`、`ports`、`down`、`remove` / `rm`、`clean` は state の last-used 情報を更新しない。
 
 ## Build と Features
 
@@ -1074,7 +1086,7 @@ CLI `-p` と Dev Container `appPort` の host IP は IPv4 / hostname / bracketed
 
 Compose モードでは Docker published port 設定は Compose file の `ports` に委譲する。`appPort` は unsupported error とする。
 
-`decune ports` は Docker container inspect の実 binding を表示するため、Docker published port に UDP binding が含まれる場合は、その binding も現在有効な host 側 port として表示する。
+`decune ports` は Docker container inspect から読み取った binding を表示するため、Docker published port に UDP binding が含まれる場合は、その binding も現在有効な host 側 port として表示する。
 
 manual forwarding source priority:
 
@@ -1101,7 +1113,7 @@ sidecar service forwarding は、その service の container ID を解決し、
 
 automatic forwarding は TCP listening socket のみを対象にする。container agent が `/proc/net/tcp` と `/proc/net/tcp6` を読み、TCP LISTEN port を検出する。UDP socket は検出・転送しない。既定 scan interval は 2 秒、initial delay は 3 秒。manual forwarding 済みの port、Docker published port として扱われる port、ignore list、`portsAttributes.onAutoForward = "ignore"` は除外する。Compose モードの automatic forwarding は primary service のみを対象にする。
 
-現在有効な host 側 port の利用状況は `decune ports` で確認できる。forwarding の実効対応は、`decune up` process が runtime directory に公開する host-local status socket に問い合わせる。Docker published port は Docker container inspect の実 binding から読み取る。実効対応は `state.toml` には保存しない。stale metadata または接続不能な status socket は現在有効な forwarding ではないものとして無視する。
+現在有効な host 側 port の利用状況は `decune ports` で確認できる。forwarding の実効対応は、`decune up` process が runtime directory に公開する host-local status socket に問い合わせる。Docker published port は Docker container inspect から binding を読み取る。forwarding の実効対応は `state.toml` には保存しない。Compose published port relocation の state metadata がある場合も、現在有効な published port は Docker container inspect から読み取った binding を正とする。stale metadata または接続不能な status socket は現在有効な forwarding ではないものとして無視する。
 
 ## Host daemon とセキュリティ境界
 
