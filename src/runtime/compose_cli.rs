@@ -16,7 +16,9 @@ use crate::{
     runtime::{
         command::{RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand, ensure_success},
         compose_ports::{
-            ComposePortEntry, ComposePublishedPortPlanningInput, classify_compose_published_ports,
+            ComposePortEntry, ComposePublishedPortPlanningInput,
+            ComposePublishedPortStartupDiagnostics,
+            classify_compose_published_port_startup_failure, classify_compose_published_ports,
             compose_published_port_invalid_config_error, compose_published_port_planning_input,
         },
     },
@@ -52,6 +54,32 @@ fn compose_config_error_mentions_port_syntax(stderr: &str) -> bool {
         || lower.contains("invalid ip address")
         || lower.contains("invalid port")
         || lower.contains("ports must be")
+}
+
+fn ensure_compose_up_success(
+    project_name: &str,
+    command: &RuntimeCommand,
+    output: &crate::runtime::command::RuntimeOutput,
+    diagnostics: Option<ComposePublishedPortStartupDiagnostics<'_>>,
+) -> Result<()> {
+    if output.exit_code == 0 {
+        return Ok(());
+    }
+
+    let stderr = command.redact_output(&output.stderr_string_lossy());
+    if let Some(diagnostics) = diagnostics
+        && let Some(diagnostic) =
+            classify_compose_published_port_startup_failure(&stderr, diagnostics)
+    {
+        return Err(diagnostic.into());
+    }
+
+    ensure_success(
+        "start Docker Compose project",
+        project_name,
+        command,
+        output,
+    )
 }
 
 impl Default for DockerComposeCli {
@@ -199,15 +227,11 @@ impl DockerComposeCli {
         project: &ComposeCommandPlan,
         options: ComposeUpOptions,
         services: &[String],
+        diagnostics: Option<ComposePublishedPortStartupDiagnostics<'_>>,
     ) -> Result<()> {
         let command = compose_up_command(project, options, services);
         let output = self.runner.run_capture(command.clone()).await?;
-        ensure_success(
-            "start Docker Compose project",
-            &project.project_name,
-            &command,
-            &output,
-        )
+        ensure_compose_up_success(&project.project_name, &command, &output, diagnostics)
     }
 
     pub(crate) async fn stop(
@@ -1793,7 +1817,11 @@ mod tests {
         parse_compose_ps_json, resolve_compose_container, write_compose_override,
     };
     use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
-    use crate::runtime::compose_ports::ComposePortEligibility;
+    use crate::runtime::compose_ports::{
+        COMPOSE_PUBLISHED_PORT_COLLISION, ComposePortEligibility, ComposePublishedPortPlan,
+        ComposePublishedPortStartupDiagnostics, classify_compose_published_ports,
+        compose_published_port_planning_input,
+    };
 
     fn fixture_workspace(name: &str) -> (tempfile::TempDir, Workspace) {
         let temp = tempfile::tempdir().unwrap();
@@ -2142,6 +2170,48 @@ mod tests {
 
         assert!(error.contains("compose_published_port_invalid"));
         assert!(error.contains("invalid IP address"));
+    }
+
+    #[test]
+    fn compose_up_classifies_published_port_startup_failures() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_error_output(
+            "Error response from daemon: Bind for 0.0.0.0:3000 failed: port is already allocated",
+        ))]);
+        let cli = DockerComposeCli::new(std::sync::Arc::new(runner));
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "ports": [{"target": 3000, "published": "3000"}]
+                }
+            }
+        }))
+        .unwrap();
+        let entries = classify_compose_published_ports(&model);
+        let input = compose_published_port_planning_input(&model, &entries, "app", &[]);
+        let plan = ComposePublishedPortPlan::default();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let error = runtime
+            .block_on(cli.up(
+                &lifecycle_command_plan(),
+                ComposeUpOptions::default(),
+                &[],
+                Some(ComposePublishedPortStartupDiagnostics {
+                    input: &input,
+                    plan: &plan,
+                    relocation_enabled: false,
+                }),
+            ))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
+        assert!(error.contains("service: `app`"));
+        assert!(!error.contains("Failed to start Docker Compose project"));
     }
 
     #[test]
