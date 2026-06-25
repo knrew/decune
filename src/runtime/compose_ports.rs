@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 use anyhow::{Result, bail};
 use serde_json::{Map as JsonMap, Value as JsonValue};
@@ -8,15 +11,38 @@ use crate::{
         HostPortReservation, ResolvedForwardPort, host_port_available,
         host_port_reservations_conflict, resolved_forward_port_reservations,
     },
-    runtime::compose_cli::{ComposeConfigModel, ComposeOverridePortEntry},
+    runtime::compose_cli::{ComposeConfigModel, ComposeConfigService, ComposeOverridePortEntry},
 };
 
 const OMITTED_HOST_IP_RESERVATION: &str = "0.0.0.0";
+
+pub(crate) const COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED: &str =
+    "compose_published_port_multi_replica_unsupported";
+#[expect(
+    dead_code,
+    reason = "reserved for follow-up startup-failure classification; remove this expect when the diagnostic code is wired"
+)]
+pub(crate) const COMPOSE_PUBLISHED_PORT_UNSUPPORTED: &str = "compose_published_port_unsupported";
+pub(crate) const COMPOSE_PUBLISHED_PORT_INVALID: &str = "compose_published_port_invalid";
+#[expect(
+    dead_code,
+    reason = "reserved for follow-up startup-failure classification; remove this expect when the diagnostic code is wired"
+)]
+pub(crate) const COMPOSE_PUBLISHED_PORT_COLLISION: &str = "compose_published_port_collision";
+pub(crate) const COMPOSE_PUBLISHED_PORT_RELOCATION_FAILED: &str =
+    "compose_published_port_relocation_failed";
+#[expect(
+    dead_code,
+    reason = "reserved for follow-up startup-failure classification; remove this expect when the diagnostic code is wired"
+)]
+pub(crate) const COMPOSE_PUBLISHED_PORT_BIND_RACE: &str = "compose_published_port_bind_race";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposePortEntry {
     pub(crate) service: String,
     pub(crate) entry_index: usize,
+    pub(crate) service_replica_count: u64,
+    pub(crate) service_uses_host_network: bool,
     pub(crate) syntax: ComposePortSyntax,
     pub(crate) target_port: Option<u16>,
     pub(crate) published_host_port: ComposePublishedHostPort,
@@ -239,6 +265,115 @@ impl std::fmt::Display for ComposePublishedPortPlanError {
 
 impl std::error::Error for ComposePublishedPortPlanError {}
 
+#[derive(Debug)]
+pub(crate) enum ComposePublishedPortDiagnostic {
+    MultiReplicaUnsupported {
+        service: String,
+        replica_count: u64,
+        requested: ComposePublishedPortEndpoint,
+        target_port: u16,
+        protocol: ComposePortProtocol,
+    },
+    Invalid {
+        detail: String,
+    },
+    RelocationFailed {
+        detail: String,
+    },
+}
+
+impl ComposePublishedPortDiagnostic {
+    pub(crate) fn from_plan_error(error: ComposePublishedPortPlanError) -> Self {
+        match error {
+            ComposePublishedPortPlanError::NoRelocationCandidate {
+                service,
+                port_entry_index,
+                requested,
+            } => Self::RelocationFailed {
+                detail: format!(
+                    "No relocation candidate is available for service `{service}` port entry {port_entry_index} requested endpoint {}",
+                    compose_published_port_endpoint_display(&requested)
+                ),
+            },
+            ComposePublishedPortPlanError::HostPortAvailability {
+                host_ip,
+                host_port,
+                source,
+            } => Self::Invalid {
+                detail: format!(
+                    "Failed to check Compose published port availability for {host_ip}:{host_port}: {source:#}"
+                ),
+            },
+        }
+    }
+}
+
+impl std::fmt::Display for ComposePublishedPortDiagnostic {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MultiReplicaUnsupported {
+                service,
+                replica_count,
+                requested,
+                target_port,
+                protocol,
+            } => write!(
+                formatter,
+                "{COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED}: Docker Compose service `{service}` has {replica_count} replicas and a fixed Compose published port. requested: {}; target: {service}:{target_port}/{}; source: compose. v1 does not allocate separate published host ports per replica. Suggested actions: use a container-only Compose port, split replicas into explicit services with separate ports, use a Compose port range, or set the replica count to 1.",
+                compose_published_port_endpoint_display(requested),
+                compose_port_protocol_name(protocol)
+            ),
+            Self::Invalid { detail } => {
+                write!(formatter, "{COMPOSE_PUBLISHED_PORT_INVALID}: {detail}")
+            }
+            Self::RelocationFailed { detail } => write!(
+                formatter,
+                "{COMPOSE_PUBLISHED_PORT_RELOCATION_FAILED}: {detail}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ComposePublishedPortDiagnostic {}
+
+pub(crate) fn validate_compose_published_port_diagnostics(
+    input: &ComposePublishedPortPlanningInput,
+) -> std::result::Result<(), ComposePublishedPortDiagnostic> {
+    for entry in &input.port_entries {
+        if entry.service_uses_host_network
+            || entry.service_replica_count <= 1
+            || entry.eligibility != ComposePortEligibility::EligibleFixedTcp
+        {
+            continue;
+        }
+
+        let target_port = entry
+            .target_port
+            .expect("eligible Compose published port entry has target port");
+        return Err(ComposePublishedPortDiagnostic::MultiReplicaUnsupported {
+            service: entry.service.clone(),
+            replica_count: entry.service_replica_count,
+            requested: endpoint_for_entry(entry),
+            target_port,
+            protocol: entry.protocol.clone(),
+        });
+    }
+
+    Ok(())
+}
+
+pub(crate) fn compose_published_port_invalid_config_error(
+    project_name: &str,
+    stderr: &str,
+) -> ComposePublishedPortDiagnostic {
+    ComposePublishedPortDiagnostic::Invalid {
+        detail: format!(
+            "Docker Compose project {project_name} contains an invalid Compose published port configuration: {}",
+            stderr.trim()
+        ),
+    }
+}
+
 pub(crate) fn compose_published_port_planning_input(
     model: &ComposeConfigModel,
     published_port_entries: &[ComposePortEntry],
@@ -376,7 +511,7 @@ pub(crate) fn classify_compose_published_ports(
                 .iter()
                 .enumerate()
                 .map(|(entry_index, value)| {
-                    classify_port_entry(service_name.clone(), entry_index, value)
+                    classify_port_entry(service_name.clone(), service, entry_index, value)
                 })
         })
         .collect()
@@ -507,6 +642,29 @@ fn protocol_order(protocol: &ComposePortProtocol) -> u8 {
     }
 }
 
+pub(crate) fn compose_port_protocol_name(protocol: &ComposePortProtocol) -> &str {
+    match protocol {
+        ComposePortProtocol::Tcp => "tcp",
+        ComposePortProtocol::Udp => "udp",
+        ComposePortProtocol::Other(value) | ComposePortProtocol::Invalid(value) => value,
+    }
+}
+
+pub(crate) fn compose_published_port_endpoint_display(
+    endpoint: &ComposePublishedPortEndpoint,
+) -> String {
+    match endpoint.host_ip_kind {
+        ComposePublishedPortHostIpKind::Omitted => {
+            format!("<host_ip omitted>:{}", endpoint.host_port)
+        }
+        ComposePublishedPortHostIpKind::Explicit => format!(
+            "{}:{}",
+            endpoint.host_ip_value.as_deref().unwrap_or(""),
+            endpoint.host_port
+        ),
+    }
+}
+
 fn requested_host_port(entry: &ComposePortEntry) -> Option<u16> {
     match entry.published_host_port {
         ComposePublishedHostPort::Single(port) => Some(port),
@@ -633,11 +791,18 @@ fn push_active_service(
     }
 }
 
-fn classify_port_entry(service: String, entry_index: usize, value: &JsonValue) -> ComposePortEntry {
+fn classify_port_entry(
+    service: String,
+    service_model: &ComposeConfigService,
+    entry_index: usize,
+    value: &JsonValue,
+) -> ComposePortEntry {
     let Some(fields) = value.as_object() else {
         return ComposePortEntry {
             service,
             entry_index,
+            service_replica_count: service_model.effective_replica_count(),
+            service_uses_host_network: service_model.uses_host_network(),
             syntax: ComposePortSyntax::EffectiveObject,
             target_port: None,
             published_host_port: ComposePublishedHostPort::Invalid("non-object".to_owned()),
@@ -654,12 +819,19 @@ fn classify_port_entry(service: String, entry_index: usize, value: &JsonValue) -
     let host_ip = parse_host_ip(fields.get("host_ip"));
     let protocol = parse_protocol(fields.get("protocol"));
     let original_fields = clone_fields(fields);
-    let (eligibility, unsupported_reason) =
-        classify_eligibility(&target_port, &published_host_port, &host_ip, &protocol);
+    let (eligibility, unsupported_reason) = classify_eligibility(
+        &target_port,
+        &published_host_port,
+        &host_ip,
+        &protocol,
+        service_model.uses_host_network(),
+    );
 
     ComposePortEntry {
         service,
         entry_index,
+        service_replica_count: service_model.effective_replica_count(),
+        service_uses_host_network: service_model.uses_host_network(),
         syntax: ComposePortSyntax::EffectiveObject,
         target_port: target_port.ok(),
         published_host_port,
@@ -696,7 +868,13 @@ fn parse_published_host_port(value: Option<&JsonValue>) -> ComposePublishedHostP
 fn parse_host_ip(value: Option<&JsonValue>) -> ComposePortHostIp {
     match value {
         None | Some(JsonValue::Null) => ComposePortHostIp::Omitted,
-        Some(JsonValue::String(value)) => ComposePortHostIp::Explicit(value.clone()),
+        Some(JsonValue::String(value)) => {
+            if value.parse::<IpAddr>().is_ok() {
+                ComposePortHostIp::Explicit(value.clone())
+            } else {
+                ComposePortHostIp::Invalid(format!("host_ip is not a valid IP address: {value}"))
+            }
+        }
         Some(value) => ComposePortHostIp::Invalid(format!("host_ip must be a string: {value}")),
     }
 }
@@ -748,6 +926,7 @@ fn classify_eligibility(
     published_host_port: &ComposePublishedHostPort,
     host_ip: &ComposePortHostIp,
     protocol: &ComposePortProtocol,
+    service_uses_host_network: bool,
 ) -> (ComposePortEligibility, Option<String>) {
     if let Err(reason) = target_port {
         return invalid(reason);
@@ -773,6 +952,12 @@ fn classify_eligibility(
             );
         }
         ComposePublishedHostPort::Single(_) => {}
+    }
+    if service_uses_host_network {
+        return (
+            ComposePortEligibility::UnsupportedOther,
+            Some("Compose ports are ignored with network_mode: host".to_owned()),
+        );
     }
     match protocol {
         ComposePortProtocol::Tcp => (ComposePortEligibility::EligibleFixedTcp, None),
@@ -916,6 +1101,8 @@ mod tests {
             ComposePortEntry {
                 service: "app".to_owned(),
                 entry_index: 0,
+                service_replica_count: 1,
+                service_uses_host_network: false,
                 syntax: ComposePortSyntax::EffectiveObject,
                 target_port: Some(3000),
                 published_host_port: ComposePublishedHostPort::Single(3000),
@@ -928,6 +1115,8 @@ mod tests {
             ComposePortEntry {
                 service: "idle".to_owned(),
                 entry_index: 0,
+                service_replica_count: 1,
+                service_uses_host_network: false,
                 syntax: ComposePortSyntax::EffectiveObject,
                 target_port: Some(9000),
                 published_host_port: ComposePublishedHostPort::Single(9000),
@@ -1060,6 +1249,31 @@ mod tests {
                 panic!("expected no-candidate error")
             }
         }
+    }
+
+    #[test]
+    fn planner_availability_error_maps_to_invalid_diagnostic() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+
+        let error = plan_compose_published_ports_with(&input, true, &[], &[], |_, _| {
+            Err(anyhow::anyhow!("permission denied"))
+        })
+        .expect_err("availability error should be returned");
+        let diagnostic = ComposePublishedPortDiagnostic::from_plan_error(error).to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_INVALID));
+        assert!(diagnostic.contains("permission denied"));
+        assert!(!diagnostic.contains("compose_published_port_collision"));
     }
 
     #[test]
@@ -1373,6 +1587,88 @@ mod tests {
         assert_eq!(plan.entries[0].planned.host_port, 3000);
         assert_eq!(plan.entries[1].planned.host_port, 3001);
         assert_eq!(plan.entries[2].planned.host_port, 3000);
+    }
+
+    #[test]
+    fn classifies_host_network_ports_as_unsupported_other() {
+        let ports = entries(json!({
+            "services": {
+                "app": {
+                    "network_mode": "host",
+                    "ports": [{"target": 3000, "published": "3000"}]
+                }
+            }
+        }));
+
+        assert_eq!(ports.len(), 1);
+        assert!(ports[0].service_uses_host_network);
+        assert_eq!(ports[0].service_replica_count, 1);
+        assert_eq!(
+            ports[0].eligibility,
+            ComposePortEligibility::UnsupportedOther
+        );
+        assert!(
+            ports[0]
+                .unsupported_reason
+                .as_deref()
+                .unwrap()
+                .contains("network_mode: host")
+        );
+    }
+
+    #[test]
+    fn validates_multi_replica_fixed_tcp_published_port_as_unsupported() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "scale": 2,
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+
+        let error = validate_compose_published_port_diagnostics(&input)
+            .expect_err("multi-replica fixed published port must fail");
+        let message = error.to_string();
+
+        assert!(message.contains(COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED));
+        assert!(message.contains("service `app`"));
+        assert!(message.contains("2 replicas"));
+        assert!(message.contains("<host_ip omitted>:3000"));
+        assert!(message.contains("app:3000/tcp"));
+        assert!(message.contains("container-only Compose port"));
+    }
+
+    #[test]
+    fn multi_replica_policy_ignores_unsupported_and_host_network_entries() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "deploy": {"replicas": 3},
+                        "ports": [
+                            {"target": 3000},
+                            {"target": 8125, "published": "8125", "protocol": "udp"},
+                            {"target": 3001, "published": "3001-3003"}
+                        ]
+                    },
+                    "debug": {
+                        "scale": 2,
+                        "network_mode": "host",
+                        "ports": [{"target": 4000, "published": "4000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+
+        validate_compose_published_port_diagnostics(&input).unwrap();
+        assert!(plan_with_availability(&input, &[]).entries.is_empty());
     }
 
     #[test]
@@ -1696,6 +1992,7 @@ mod tests {
                         "3000:3000",
                         {"target": "not-a-port", "published": "3000"},
                         {"target": 3000, "published": "invalid"},
+                        {"target": 3000, "published": "3000", "host_ip": "not-an-ip"},
                         {"target": 3000, "published": "3000", "host_ip": 127001},
                         {"target": 3000, "published": "3000", "protocol": 123}
                     ]

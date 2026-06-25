@@ -17,7 +17,7 @@ use crate::{
         command::{RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand, ensure_success},
         compose_ports::{
             ComposePortEntry, ComposePublishedPortPlanningInput, classify_compose_published_ports,
-            compose_published_port_planning_input,
+            compose_published_port_invalid_config_error, compose_published_port_planning_input,
         },
     },
     workspace::Workspace,
@@ -26,6 +26,32 @@ use crate::{
 #[derive(Clone)]
 pub(crate) struct DockerComposeCli {
     runner: Arc<dyn RuntimeCommandRunner>,
+}
+
+fn ensure_compose_config_success(
+    project_name: &str,
+    command: &RuntimeCommand,
+    output: &crate::runtime::command::RuntimeOutput,
+) -> Result<()> {
+    if output.exit_code == 0 {
+        return Ok(());
+    }
+
+    let stderr = command.redact_output(&output.stderr_string_lossy());
+    if compose_config_error_mentions_port_syntax(&stderr) {
+        return Err(compose_published_port_invalid_config_error(project_name, &stderr).into());
+    }
+
+    ensure_success("read Docker Compose config", project_name, command, output)
+}
+
+fn compose_config_error_mentions_port_syntax(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("invalid hostport")
+        || lower.contains("invalid host port")
+        || lower.contains("invalid ip address")
+        || lower.contains("invalid port")
+        || lower.contains("ports must be")
 }
 
 impl Default for DockerComposeCli {
@@ -113,12 +139,7 @@ impl DockerComposeCli {
     ) -> Result<ComposeConfigOutput> {
         let command = compose_config_command(project, services);
         let output = self.runner.run_capture(command.clone()).await?;
-        ensure_success(
-            "read Docker Compose config",
-            &project.project_name,
-            &command,
-            &output,
-        )?;
+        ensure_compose_config_success(&project.project_name, &command, &output)?;
         let canonical_model: JsonValue = serde_json::from_slice(&output.stdout).map_err(|error| {
             anyhow!(
                 "Failed to parse Docker Compose config JSON for project {} from files {}: {error}",
@@ -569,12 +590,34 @@ pub(crate) struct ComposeConfigService {
     pub(crate) user: Option<String>,
     #[serde(default)]
     pub(crate) working_dir: Option<String>,
+    #[serde(default)]
+    pub(crate) network_mode: Option<String>,
+    #[serde(default)]
+    pub(crate) scale: Option<u64>,
+    #[serde(default)]
+    pub(crate) deploy: ComposeConfigDeploy,
     #[serde(default, deserialize_with = "deserialize_compose_startup_value")]
     pub(crate) entrypoint: Option<Vec<String>>,
     #[serde(default, deserialize_with = "deserialize_compose_startup_value")]
     pub(crate) command: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) ports: Vec<JsonValue>,
+}
+
+impl ComposeConfigService {
+    pub(crate) fn effective_replica_count(&self) -> u64 {
+        self.scale.or(self.deploy.replicas).unwrap_or(1)
+    }
+
+    pub(crate) fn uses_host_network(&self) -> bool {
+        self.network_mode.as_deref() == Some("host")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub(crate) struct ComposeConfigDeploy {
+    #[serde(default)]
+    pub(crate) replicas: Option<u64>,
 }
 
 fn deserialize_compose_startup_value<'de, D>(
@@ -2013,6 +2056,37 @@ mod tests {
     }
 
     #[test]
+    fn compose_config_model_preserves_port_policy_service_context() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "scaled": {
+                    "image": "alpine:3.20",
+                    "scale": 2
+                },
+                "deployed": {
+                    "image": "alpine:3.20",
+                    "deploy": {"replicas": 3}
+                },
+                "hostnet": {
+                    "image": "alpine:3.20",
+                    "network_mode": "host"
+                }
+            }
+        }))
+        .unwrap();
+
+        assert_eq!(
+            model.service("scaled").unwrap().effective_replica_count(),
+            2
+        );
+        assert_eq!(
+            model.service("deployed").unwrap().effective_replica_count(),
+            3
+        );
+        assert!(model.service("hostnet").unwrap().uses_host_network());
+    }
+
+    #[test]
     fn compose_config_output_includes_published_port_classification() {
         let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
             br#"{
@@ -2046,6 +2120,28 @@ mod tests {
             output.published_port_entries[0].eligibility,
             ComposePortEligibility::EligibleFixedTcp
         );
+    }
+
+    #[test]
+    fn compose_config_output_classifies_invalid_port_syntax_errors() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(crate::runtime::command::RuntimeOutput {
+            stdout: Vec::new(),
+            stderr: b"invalid IP address: 999.999.999.999\n".to_vec(),
+            exit_code: 1,
+        })]);
+        let cli = DockerComposeCli::new(std::sync::Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let error = runtime
+            .block_on(cli.config_output(&lifecycle_command_plan()))
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains("compose_published_port_invalid"));
+        assert!(error.contains("invalid IP address"));
     }
 
     #[test]

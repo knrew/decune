@@ -55,6 +55,7 @@ use crate::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
             ComposePublishedPortOverride, ComposePublishedPortPlan,
             ComposePublishedPortReservation, compose_published_port_plan_has_relocations,
+            validate_compose_published_port_diagnostics,
         },
     },
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
@@ -732,6 +733,14 @@ async fn start_compose_project(
         .and_then(|service| service.user.as_deref());
     let compose_primary_service = user_model.service(&compose.service).cloned();
     plan.base_image = compose_primary_image.clone();
+    let published_port_policy_input = compose_introspector
+        .user_published_port_planning_input(
+            compose_project,
+            &compose_service_validation,
+            &user_lifecycle.services,
+        )
+        .await?;
+    validate_compose_published_port_diagnostics(&published_port_policy_input)?;
 
     let client = DockerClient::connect_from_env()?;
     let existing_compose_project_containers =
@@ -744,33 +753,20 @@ async fn start_compose_project(
         &compose.service,
     )
     .await?;
-    let mut published_port_input = None;
     let mut existing_project_published_ports = Vec::new();
-    if plan.config.compose.published_ports.relocation {
-        published_port_input = Some(
-            compose_introspector
-                .user_published_port_planning_input(
-                    compose_project,
-                    &compose_service_validation,
-                    &user_lifecycle.services,
-                )
-                .await?,
-        );
-        if !existing_compose_project_containers.is_empty() {
-            existing_project_published_ports = list_existing_compose_project_published_ports(
-                &client,
-                compose_project.project_name(),
-            )
-            .await?;
-        }
+    if plan.config.compose.published_ports.relocation
+        && !existing_compose_project_containers.is_empty()
+    {
+        existing_project_published_ports =
+            list_existing_compose_project_published_ports(&client, compose_project.project_name())
+                .await?;
     }
-    let compose_published_ports =
-        published_port_input
-            .as_ref()
-            .map(|input| ComposePublishedPortFinalization {
-                input,
-                existing_project_published_ports: &existing_project_published_ports,
-            });
+    let compose_published_ports = plan.config.compose.published_ports.relocation.then_some(
+        ComposePublishedPortFinalization {
+            input: &published_port_policy_input,
+            existing_project_published_ports: &existing_project_published_ports,
+        },
+    );
 
     if let Some(started) = try_reuse_running_compose_container_before_image_prepare(
         &client,
@@ -3086,6 +3082,8 @@ mod tests {
         ComposePortEntry {
             service: service.to_owned(),
             entry_index,
+            service_replica_count: 1,
+            service_uses_host_network: false,
             syntax: ComposePortSyntax::EffectiveObject,
             target_port: Some(target_port),
             published_host_port,

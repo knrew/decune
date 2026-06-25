@@ -1,5 +1,151 @@
 use crate::harness::*;
 
+#[test]
+fn compose_multi_replica_fixed_published_port_reports_diagnostic_code() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: alpine:3.20
+                scale: 2
+                ports:
+                  - "3000:3000"
+            "#,
+        )
+        .unwrap();
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" config --format json "*)
+      printf '{"services":{"app":{"image":"alpine:3.20","scale":2,"ports":[{"target":3000,"published":"3000","protocol":"tcp"}]}}}\n'
+      exit 0
+      ;;
+  esac
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_published_port_multi_replica_unsupported")
+                .and(predicate::str::contains("service `app`"))
+                .and(predicate::str::contains("2 replicas"))
+                .and(predicate::str::contains("<host_ip omitted>:3000"))
+                .and(predicate::str::contains("app:3000/tcp")),
+        );
+}
+
+#[test]
+fn compose_invalid_published_port_config_reports_diagnostic_code() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: alpine:3.20
+                ports:
+                  - "999.999.999.999:3000:3000"
+            "#,
+        )
+        .unwrap();
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" config --format json "*)
+      echo 'invalid IP address: 999.999.999.999' >&2
+      exit 1
+      ;;
+  esac
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_published_port_invalid")
+                .and(predicate::str::contains("invalid IP address")),
+        );
+}
+
 fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {
     workspace
         .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")

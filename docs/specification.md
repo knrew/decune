@@ -764,6 +764,21 @@ relocation の対象は fixed TCP published host port に限る。relocation 処
 - target port だけが変わる Compose `ports` 変更でも、同一 service の既存 host endpoint は外部競合とは扱わない。
 - requested host port を使えない場合、relocation candidate は host IP の指定方法を維持したまま requested host port + 1 から昇順に探索する。OS assigned port fallback は行わず、65535 まで candidate がない場合は error にする。
 - relocation により実際に host port を変更する場合、generated Compose override は Compose `!override` tag で service `ports` を置換する。このため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose では error にする。
+- UDP、range、container-only port entry、`expose`、`network_mode: host` の service にある port mapping は relocation 対象外であり、存在するだけでは warning しない。
+
+Compose published port diagnostics は relocation policy の有効/無効とは別に、Docker Compose config から判定できる published port condition に対して使う。
+
+- effective replica count が 2 以上の service が fixed TCP published host port を持つ場合、decune は replica ごとの published host port allocation を行わず `compose_published_port_multi_replica_unsupported` diagnostic で error にする。effective replica count は Docker Compose config の `scale`、なければ `deploy.replicas` から読む。
+- invalid host IP、malformed port syntax、host port availability check の permission error は simple collision として扱わず、decune が判定できる場合は `compose_published_port_invalid` diagnostic で error にする。
+
+Compose published port diagnostics の code は以下を使う。
+
+- `compose_published_port_multi_replica_unsupported`: replica 数が 2 以上の service が、decune が対応しない fixed TCP published host port を持つ。
+- `compose_published_port_unsupported`: startup failure が、decune が対応しない Compose published port entry に関係している。
+- `compose_published_port_invalid`: invalid host IP、malformed syntax、permission denied など、simple collision ではない invalid published port condition。
+- `compose_published_port_collision`: requested fixed TCP published host endpoint が unavailable。
+- `compose_published_port_relocation_failed`: relocation candidate を割り当てられない。
+- `compose_published_port_bind_race`: planning 後に別 process が planned endpoint を取得した可能性がある。
 
 ### `[credentials.git]`
 
