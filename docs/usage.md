@@ -342,6 +342,8 @@ Docker Compose-based 構成では Docker published port を Compose サービス
 
 `[compose.published_ports].relocation = true`、または `decune up --published-port-relocation` / `decune rebuild --published-port-relocation` は、後続の Compose published port relocation 処理の policy を有効化します。既定は無効です。`--no-published-port-relocation` はこの実行で config を上書きして無効化します。`--no-auto-forward` は automatic port forwarding だけを無効化し、この policy は変更しません。
 
+`[compose.published_ports].warn_on_relocation = true` にすると、relocation により requested endpoint とは別の planned endpoint を使う場合に、起動時に warning を表示します。既定では warning を出しません。warning を無効にしていても、relocated published port は `decune ports` の `STATE`、`REQUESTED`、JSON 出力で確認できます。
+
 relocation の対象は fixed TCP の Compose published port だけです。たとえば `3000:3000` や `127.0.0.1:3000:3000` は relocation 対象です。UDP、range、host port を省略した port entry は relocation 対象外です。たとえば `3000:3000/udp`、`3000-3005:3000-3005`、`3000` は relocation されません。
 
 relocation 対象外の entry は、存在するだけでは warning しません。`network_mode: host` の service にある port mapping も relocation 対象として扱いません。ただし、`network_mode: host` と `ports` の組み合わせは Docker Compose 自体が runtime error にする場合があります。
@@ -353,6 +355,18 @@ invalid host IP、malformed port syntax、permission denied などは simple col
 relocation により実際に host port を変更する場合は、generated Compose override で Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要です。version 判定不能または古い Compose では起動前に error になります。
 
 relocation は最終的な `forwardPorts` / decune `[[ports]]` / CLI `-p` の host port 予約も考慮します。同じ Compose project が前回 relocation で使っている同じ Compose service の published host port は、再作成時に再利用できるものとして扱います。
+
+relocation 後の endpoint は Docker/Compose published port のままであり、decune forwarding ではありません。そのため `--detach` で起動した後も Docker/Compose の published binding として維持されます。`--no-auto-forward` は automatic port forwarding だけを無効化し、relocation policy は無効化しません。
+
+relocated published port の確認には `decune ports` を使います。通常出力では `TYPE=published`、`SOURCE=compose`、`STATE=relocated` として表示され、`LOCAL` に planned endpoint、`REQUESTED` に元の requested endpoint が出ます。`decune ports --json` では `requested`、`planned`、`actual_bindings`、`relocated` を確認できます。host IP omitted は JSON では `null` になり、explicit `0.0.0.0` とは区別されます。
+
+Compose published port 関連の代表的な diagnostic code と対処は次の通りです。
+
+- `compose_published_port_collision`: requested host endpoint が使用中です。使用中の process、container、workspace を停止するか、Compose `ports` を変更するか、明示的に relocation を有効化してください。
+- `compose_published_port_relocation_failed`: requested host port 以降に利用可能な relocation candidate が見つかりません。使用中の host port を解放するか、Compose `ports` を変更してください。
+- `compose_published_port_bind_race`: planning 後に別 process が planned endpoint を取得した可能性があります。再実行するか、該当 endpoint を使っている process を停止してください。
+- `compose_published_port_invalid`: invalid host IP、malformed port syntax、permission denied など、simple collision ではない状態です。Compose `ports` の記述と host 権限を確認してください。
+- `compose_published_port_multi_replica_unsupported`: replica 数が 2 以上の service が fixed TCP published host port を持っています。container-only port、明示的に分けた複数 service、Compose port range、または replica 数 1 を使ってください。
 
 decune port forwarding と、Dev Container `appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error です。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧に表示されます。
 
