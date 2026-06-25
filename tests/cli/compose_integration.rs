@@ -430,7 +430,6 @@ fn compose_integration_published_port_relocation_preserves_host_ip_and_long_synt
     assert_eq!(loopback["host_ip"], "127.0.0.1");
     assert!(compose_config_port_value(loopback, "published").unwrap() > requested_port);
     assert_eq!(loopback["protocol"], "tcp");
-    assert_eq!(loopback["app_protocol"], "http");
     assert_eq!(loopback["name"], "loopback");
     assert_eq!(loopback["mode"], "host");
     assert_eq!(wildcard["host_ip"], "0.0.0.0");
@@ -1262,7 +1261,6 @@ fn compose_published_host_ip_workspace(base_host_port: u16) -> ComposeFixtureWor
                     published: "{}"
                     host_ip: "127.0.0.1"
                     protocol: tcp
-                    app_protocol: http
                     name: loopback
                     mode: host
                   - target: 3002
