@@ -163,6 +163,54 @@ fn compose_integration_minimal_single_service_up_detach() {
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_reuses_running_compose_project_with_published_port_relocation_at_max_port() {
+    let Ok(listener) = TcpListener::bind(("127.0.0.1", u16::MAX)) else {
+        return;
+    };
+    drop(listener);
+
+    let workspace = compose_published_primary_workspace(u16::MAX);
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let first_containers = compose_project_containers(workspace.path()).unwrap();
+    let first_primary = first_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    let first_id = first_primary.id.clone();
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Reusing running dev container"));
+
+    let second_containers = compose_project_containers(workspace.path()).unwrap();
+    let second_primary = second_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    assert_eq!(second_primary.id, first_id);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_ports_reports_published_port_from_non_primary_service() {
     let host_port = available_localhost_port();
     let workspace = compose_published_sidecar_workspace(host_port);
@@ -783,6 +831,49 @@ fn compose_published_sidecar_workspace(host_port: u16) -> ComposeFixtureWorkspac
                 command: sleep infinity
                 ports:
                   - "127.0.0.1:{host_port}:5432"
+            "#
+            ),
+        )
+        .unwrap();
+
+    ComposeFixtureWorkspace { workspace }
+}
+
+fn compose_published_primary_workspace(host_port: u16) -> ComposeFixtureWorkspace {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "name": "compose-primary-published-port",
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "workspaceFolder": "/workspace",
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            format!(
+                r#"
+            services:
+              app:
+                image: alpine:3.20
+                command: sleep infinity
+                volumes:
+                  - ..:/workspace
+                ports:
+                  - "127.0.0.1:{host_port}:3000"
             "#
             ),
         )
