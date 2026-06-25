@@ -120,7 +120,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 
 - `forwardPorts`、decune `[[ports]]`、`decune up -p` は decune のポートフォワーディングであり、Docker の published port ではありません。
 - `decune status` は JSON 出力や `--ports` / `--resources` option を持たず、`LAST_USED` は state の `last_used_at` だけから表示します。
-- `decune ports` は decune が現在維持している port forwarding と Docker published port の両方を表示し、`TYPE` で `forwarded` / `published` を区別します。workspace 横断では `decune ports --all`、JSON 出力では `decune ports --json` を使います。
+- `decune ports` は decune が現在維持している port forwarding と Docker published port の両方を表示し、`TYPE` で `forwarded` / `published`、`STATE` で relocated Compose published port を区別します。workspace 横断では `decune ports --all`、JSON 出力では `decune ports --json` を使います。
 - `appPort` は image/Dockerfile モードの Docker published port です。
 - Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。`appPort`、`workspaceMount`、`runArgs` は Compose モードでは unsupported error です。
 - Compose published port relocation policy は既定で無効です。`[compose.published_ports].relocation = true` または `decune up --published-port-relocation` / `decune rebuild --published-port-relocation` で、この実行の policy を有効化できます。relocation 対象は fixed TCP の Compose published port だけで、実際に host port を変更する場合は Docker Compose v2.24.4 以上が必要です。

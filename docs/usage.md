@@ -220,9 +220,11 @@ decune ports --all --json
 
 decune が管理している workspace について、現在有効な host 側 port の利用状況を表示します。`forwardPorts`、decune `[[ports]]`、CLI `-p`、automatic forwarding による port forwarding と、image/Dockerfile モードの `appPort`、Compose サービス `ports` による Docker published port を同じ一覧で確認できます。`TYPE` は `forwarded` または `published` です。
 
-通常出力では単一 workspace で `LOCAL`、`TYPE`、`TARGET`、`SOURCE`、`REQUESTED`、`LABEL` を表示します。`--all` では `WORKSPACE` と `ID` も表示します。host port が使用中で forwarding が別 port に fallback した場合や、Compose published port relocation によって要求した published port と Docker が実際に publish している binding が異なる場合は、`REQUESTED` に要求 endpoint を表示します。それ以外の Docker published port は Docker が実際に publish している binding を正として表示するため、`REQUESTED` は `-` です。
+通常出力では単一 workspace で `LOCAL`、`TYPE`、`TARGET`、`SOURCE`、`REQUESTED`、`STATE`、`LABEL` を表示します。`--all` では `WORKSPACE` と `ID` も表示します。host port が使用中で forwarding が別 port に fallback した場合や、Compose published port relocation によって requested endpoint の host port と planned endpoint の host port が異なる場合は、`REQUESTED` に要求 endpoint を表示します。
 
-`--json` を付けると、通常出力の table を再構成できる JSON array を出力します。各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持ち、必要に応じて `workspace`、`workspace_id`、`requested_host_ip`、`requested_host_port` を含みます。decune が Compose published port relocation の情報を保存している entry では、追加で `requested_host_ip_kind`、`planned_host_ip_kind`、`planned_host_port`、`relocated` を持ち、host IP が明示されている場合は `requested_host_ip` / `planned_host_ip` も持ちます。`requested_host_ip_kind` / `planned_host_ip_kind` は `omitted` または `explicit` です。
+Compose published port で host IP が省略されている場合、通常出力では `LOCAL` や `REQUESTED` を `*:<port>` と表示し、explicit `0.0.0.0` と区別します。relocated published port は `STATE` に `relocated` を表示します。
+
+`--json` を付けると、通常出力の table を再構成できる JSON array を出力します。各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持ち、必要に応じて `workspace`、`workspace_id`、`requested_host_ip`、`requested_host_port` を含みます。Compose published port relocation の情報がある published entry では、`target`、`requested`、`planned`、`actual_bindings`、`port_entry_index`、`relocated` と互換用の flat field も追加されます。`requested.host_ip` / `planned.host_ip` は host IP omitted の場合 `null`、explicit host IP の場合 string です。`actual_bindings` は Docker inspect から得た現在の actual binding の配列です。field の詳細な契約は [specification.md](specification.md#ports) を参照してください。
 
 現在有効な host 側 port がない場合、通常出力は単一 workspace で `No active ports for this workspace`、`--all` で `No active ports`、JSON 出力は `[]` です。
 
