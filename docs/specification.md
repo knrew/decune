@@ -87,7 +87,7 @@ README と usage はこの仕様を要約できるが、この仕様と矛盾す
   - `docker compose pull --include-deps`
   - `docker compose up --force-recreate`
   - `docker compose up --remove-orphans`
-- Compose published port relocation で実際に host port を変更する場合は、generated override で Compose `!override` tag を使うため Docker Compose v2.24.4+ 相当が必要。
+- Compose published port relocation で実際に host port を変更する場合は、generated override で Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要。
 - Docker デーモンへ接続できる権限。
 - Git 認証連携を使う場合: host 側の `git`、必要に応じて `SSH_AUTH_SOCK`。
 - GitHub CLI 連携を使う場合: host 側の `gh` と `gh auth token` が成功する状態。
@@ -757,9 +757,12 @@ warn_on_relocation = false
 
 CLI `--published-port-relocation` / `--no-published-port-relocation` は、この実行で `relocation` を override する。`--no-auto-forward` はこの policy を変更しない。
 
-relocation は image metadata や Feature metadata を merge した後の final `forwardPorts` / `[[ports]]` / CLI `-p` forwarding reservation を考慮し、同じ host endpoint を Compose published port と decune port forwarding の両方へ割り当ててはならない。同一 Compose project の既存 running container が same service / same protocol / same host endpoint の published port を持つ場合、その binding は `docker compose up --force-recreate` または service recreate で解放可能なものとして扱い、requested port および relocation candidate として再利用してよい。target port だけが変わる Compose `ports` 変更でも、same service の既存 host endpoint は外部競合とは扱わない。
+relocation の対象は fixed TCP published host port に限る。relocation 処理は以下の契約に従う。
 
-relocation により実際に host port を変更する場合、generated Compose override は Compose `!override` tag で service `ports` を置換する。このため Docker Compose v2.24.4+ 相当が必要で、version 判定不能または古い Compose では error にする。
+- image metadata や Feature metadata を merge した後の final `forwardPorts` / `[[ports]]` / CLI `-p` forwarding reservation を考慮し、同じ host endpoint を Compose published port と decune port forwarding の両方へ割り当ててはならない。
+- 同一 Compose project の既存 running container が same service / same protocol / same host endpoint の published port を持つ場合、その binding は `docker compose up --force-recreate` または service recreate で解放可能なものとして扱い、requested port および relocation candidate として再利用してよい。
+- target port だけが変わる Compose `ports` 変更でも、same service の既存 host endpoint は外部競合とは扱わない。
+- relocation により実際に host port を変更する場合、generated Compose override は Compose `!override` tag で service `ports` を置換する。このため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose では error にする。
 
 ### `[credentials.git]`
 
