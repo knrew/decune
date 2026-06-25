@@ -340,6 +340,12 @@ Docker Compose-based 構成では Docker published port を Compose サービス
 
 relocation の対象は fixed TCP の Compose published port だけです。たとえば `3000:3000` や `127.0.0.1:3000:3000` は relocation 対象です。UDP、range、host port を省略した port entry は relocation 対象外です。たとえば `3000:3000/udp`、`3000-3005:3000-3005`、`3000` は relocation されません。
 
+relocation 対象外の entry は、存在するだけでは warning しません。`network_mode: host` の service にある port mapping も relocation 対象として扱いません。ただし、`network_mode: host` と `ports` の組み合わせは Docker Compose 自体が runtime error にする場合があります。
+
+replica 数が 2 以上の service が fixed TCP published host port を持つ場合、decune は replica ごとの個別 host port 割り当てを行わず、`compose_published_port_multi_replica_unsupported` error にします。この場合は container-only port、明示的に分けた複数 service、Compose port range、または replica 数 1 を使ってください。
+
+invalid host IP、malformed port syntax、permission denied などは simple collision とは区別し、decune が判定できる場合は `compose_published_port_invalid` error として表示します。
+
 relocation により実際に host port を変更する場合は、generated Compose override で Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要です。version 判定不能または古い Compose では起動前に error になります。
 
 relocation は最終的な `forwardPorts` / decune `[[ports]]` / CLI `-p` の host port 予約も考慮します。同じ Compose project が前回 relocation で使っている同じ Compose service の published host port は、再作成時に再利用できるものとして扱います。

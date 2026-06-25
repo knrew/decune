@@ -41,7 +41,7 @@ use crate::{
     runtime::{
         compose_cli::ComposeConfigService,
         compose_ports::{
-            ComposePublishedPortOverride, ComposePublishedPortPlan,
+            ComposePublishedPortDiagnostic, ComposePublishedPortOverride, ComposePublishedPortPlan,
             ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
             compose_published_port_override, plan_compose_published_ports_with_existing_project,
         },
@@ -699,7 +699,8 @@ fn finalized_compose_published_ports(
         true,
         &plan.forward_ports,
         context.existing_project_published_ports,
-    )?;
+    )
+    .map_err(ComposePublishedPortDiagnostic::from_plan_error)?;
     let port_override = compose_published_port_override(&context.input.port_entries, &port_plan)?;
     Ok((port_plan, port_override))
 }
