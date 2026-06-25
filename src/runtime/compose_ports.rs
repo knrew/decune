@@ -24,17 +24,9 @@ pub(crate) const COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED: &str =
 )]
 pub(crate) const COMPOSE_PUBLISHED_PORT_UNSUPPORTED: &str = "compose_published_port_unsupported";
 pub(crate) const COMPOSE_PUBLISHED_PORT_INVALID: &str = "compose_published_port_invalid";
-#[expect(
-    dead_code,
-    reason = "reserved for follow-up startup-failure classification; remove this expect when the diagnostic code is wired"
-)]
 pub(crate) const COMPOSE_PUBLISHED_PORT_COLLISION: &str = "compose_published_port_collision";
 pub(crate) const COMPOSE_PUBLISHED_PORT_RELOCATION_FAILED: &str =
     "compose_published_port_relocation_failed";
-#[expect(
-    dead_code,
-    reason = "reserved for follow-up startup-failure classification; remove this expect when the diagnostic code is wired"
-)]
 pub(crate) const COMPOSE_PUBLISHED_PORT_BIND_RACE: &str = "compose_published_port_bind_race";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +134,13 @@ impl ComposeActiveServiceSet {
 pub(crate) struct ComposePublishedPortPlanningInput {
     pub(crate) services: ComposeActiveServiceSet,
     pub(crate) port_entries: Vec<ComposePortEntry>,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct ComposePublishedPortStartupDiagnostics<'a> {
+    pub(crate) input: &'a ComposePublishedPortPlanningInput,
+    pub(crate) plan: &'a ComposePublishedPortPlan,
+    pub(crate) relocation_enabled: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -274,6 +273,19 @@ pub(crate) enum ComposePublishedPortDiagnostic {
         target_port: u16,
         protocol: ComposePortProtocol,
     },
+    Collision {
+        service: String,
+        requested: ComposePublishedPortEndpoint,
+        target_port: u16,
+        protocol: ComposePortProtocol,
+    },
+    BindRace {
+        service: String,
+        requested: ComposePublishedPortEndpoint,
+        planned: ComposePublishedPortEndpoint,
+        target_port: u16,
+        protocol: ComposePortProtocol,
+    },
     Invalid {
         detail: String,
     },
@@ -323,6 +335,30 @@ impl std::fmt::Display for ComposePublishedPortDiagnostic {
                 compose_published_port_endpoint_display(requested),
                 compose_port_protocol_name(protocol)
             ),
+            Self::Collision {
+                service,
+                requested,
+                target_port,
+                protocol,
+            } => write!(
+                formatter,
+                "{COMPOSE_PUBLISHED_PORT_COLLISION}: Compose published port collision. service: `{service}`; requested: {}; target: {service}:{target_port}/{}; source: compose. The requested Docker/Compose published host port is unavailable. This is not a decune forwarding listener. decune automatic forwarding does not replace Compose published ports. Suggested actions: stop the process, Docker container, or workspace using the requested endpoint; change the Compose published port; use a container-only Compose port when appropriate; or enable published port relocation explicitly.",
+                compose_published_port_endpoint_display(requested),
+                compose_port_protocol_name(protocol)
+            ),
+            Self::BindRace {
+                service,
+                requested,
+                planned,
+                target_port,
+                protocol,
+            } => write!(
+                formatter,
+                "{COMPOSE_PUBLISHED_PORT_BIND_RACE}: Compose published port bind race. service: `{service}`; requested: {}; planned: {}; target: {service}:{target_port}/{}; source: compose. The planned Docker/Compose published host port was selected by decune before startup, but Docker Compose failed to bind it. Another process may have taken it concurrently. v1 does not retry Compose startup automatically.",
+                compose_published_port_endpoint_display(requested),
+                compose_published_port_endpoint_display(planned),
+                compose_port_protocol_name(protocol)
+            ),
             Self::Invalid { detail } => {
                 write!(formatter, "{COMPOSE_PUBLISHED_PORT_INVALID}: {detail}")
             }
@@ -360,6 +396,82 @@ pub(crate) fn validate_compose_published_port_diagnostics(
     }
 
     Ok(())
+}
+
+pub(crate) fn classify_compose_published_port_startup_failure(
+    stderr: &str,
+    diagnostics: ComposePublishedPortStartupDiagnostics<'_>,
+) -> Option<ComposePublishedPortDiagnostic> {
+    if !compose_startup_error_mentions_bind_conflict(stderr) {
+        return None;
+    }
+
+    if diagnostics.relocation_enabled {
+        for entry in &diagnostics.plan.entries {
+            if !compose_startup_error_mentions_endpoint(stderr, &entry.planned) {
+                continue;
+            }
+            return Some(ComposePublishedPortDiagnostic::BindRace {
+                service: entry.service.clone(),
+                requested: entry.requested.clone(),
+                planned: entry.planned.clone(),
+                target_port: entry.target_port,
+                protocol: entry.protocol.clone(),
+            });
+        }
+        return None;
+    }
+
+    for entry in ordered_eligible_port_entries(diagnostics.input) {
+        let requested = endpoint_for_entry(entry);
+        if !compose_startup_error_mentions_endpoint(stderr, &requested) {
+            continue;
+        }
+        return Some(ComposePublishedPortDiagnostic::Collision {
+            service: entry.service.clone(),
+            requested,
+            target_port: entry
+                .target_port
+                .expect("eligible Compose published port entry has target port"),
+            protocol: entry.protocol.clone(),
+        });
+    }
+
+    None
+}
+
+fn compose_startup_error_mentions_bind_conflict(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("bind")
+        && (lower.contains("address already in use")
+            || lower.contains("port is already allocated")
+            || lower.contains("port is already in use")
+            || lower.contains("ports are not available")
+            || lower.contains("port is unavailable"))
+}
+
+fn compose_startup_error_mentions_endpoint(
+    stderr: &str,
+    endpoint: &ComposePublishedPortEndpoint,
+) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    let port_token = format!(":{}", endpoint.host_port);
+    if !lower.contains(&port_token) {
+        return false;
+    }
+
+    match endpoint.host_ip_kind {
+        ComposePublishedPortHostIpKind::Omitted => true,
+        ComposePublishedPortHostIpKind::Explicit => endpoint
+            .host_ip_value
+            .as_deref()
+            .map(|host_ip| {
+                let host_ip = host_ip.to_ascii_lowercase();
+                lower.contains(&format!("{host_ip}:{}", endpoint.host_port))
+                    || lower.contains(&format!("[{host_ip}]:{}", endpoint.host_port))
+            })
+            .unwrap_or(false),
+    }
 }
 
 pub(crate) fn compose_published_port_invalid_config_error(
@@ -1274,6 +1386,117 @@ mod tests {
         assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_INVALID));
         assert!(diagnostic.contains("permission denied"));
         assert!(!diagnostic.contains("compose_published_port_collision"));
+    }
+
+    #[test]
+    fn startup_failure_classifier_reports_collision_when_relocation_is_disabled() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let plan = ComposePublishedPortPlan::default();
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Error response from daemon: Bind for 0.0.0.0:3000 failed: port is already allocated",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: false,
+            },
+        )
+        .expect("bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
+        assert!(diagnostic.contains("service: `app`"));
+        assert!(diagnostic.contains("<host_ip omitted>:3000"));
+        assert!(diagnostic.contains("app:3000/tcp"));
+        assert!(diagnostic.contains("not a decune forwarding listener"));
+    }
+
+    #[test]
+    fn startup_failure_classifier_reports_bind_race_when_planned_endpoint_fails() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let plan = plan_with_availability(&input, &[3000]);
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen tcp 127.0.0.1:3001: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: true,
+            },
+        )
+        .expect("planned bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
+        assert!(diagnostic.contains("requested: 127.0.0.1:3000"));
+        assert!(diagnostic.contains("planned: 127.0.0.1:3001"));
+        assert!(diagnostic.contains("app:3000/tcp"));
+    }
+
+    #[test]
+    fn startup_failure_classifier_ignores_unrelated_or_unsupported_errors() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [
+                            {"target": 3000, "published": "3000", "protocol": "udp"},
+                            {"host_ip": "127.0.0.1", "target": 3001, "published": "3001"}
+                        ]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let plan = ComposePublishedPortPlan::default();
+        let diagnostics = ComposePublishedPortStartupDiagnostics {
+            input: &input,
+            plan: &plan,
+            relocation_enabled: false,
+        };
+
+        assert!(
+            classify_compose_published_port_startup_failure(
+                "pull access denied for image using port 3001",
+                diagnostics,
+            )
+            .is_none()
+        );
+        assert!(
+            classify_compose_published_port_startup_failure(
+                "Bind for 0.0.0.0:3000 failed: port is already allocated",
+                diagnostics,
+            )
+            .is_none()
+        );
+        assert!(
+            classify_compose_published_port_startup_failure(
+                "Bind for 0.0.0.0:3001 failed: port is already allocated",
+                diagnostics,
+            )
+            .is_none()
+        );
     }
 
     #[test]

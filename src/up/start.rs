@@ -54,7 +54,8 @@ use crate::{
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
             ComposePublishedPortOverride, ComposePublishedPortPlan,
-            ComposePublishedPortReservation, compose_published_port_plan_has_relocations,
+            ComposePublishedPortReservation, ComposePublishedPortStartupDiagnostics,
+            compose_published_port_plan_has_relocations,
             validate_compose_published_port_diagnostics,
         },
     },
@@ -967,6 +968,11 @@ async fn start_compose_project(
                     remove_orphans: false,
                 },
                 &runtime_lifecycle.services,
+                Some(ComposePublishedPortStartupDiagnostics {
+                    input: &published_port_policy_input,
+                    plan: &published_port_plan,
+                    relocation_enabled: plan.config.compose.published_ports.relocation,
+                }),
             )
             .await?;
             ensure_container_running_after_start(
@@ -1013,6 +1019,11 @@ async fn start_compose_project(
             remove_orphans,
         },
         &runtime_lifecycle.services,
+        Some(ComposePublishedPortStartupDiagnostics {
+            input: &published_port_policy_input,
+            plan: &published_port_plan,
+            relocation_enabled: plan.config.compose.published_ports.relocation,
+        }),
     )
     .await?;
 
@@ -1132,20 +1143,34 @@ struct ComposeOverrideStartup {
 }
 
 fn warn_on_compose_published_port_relocations(plan: &UpPlan, port_plan: &ComposePublishedPortPlan) {
+    for message in compose_published_port_relocation_warning_messages(plan, port_plan) {
+        ui::warn(&message);
+    }
+}
+
+fn compose_published_port_relocation_warning_messages(
+    plan: &UpPlan,
+    port_plan: &ComposePublishedPortPlan,
+) -> Vec<String> {
     if !plan.config.compose.published_ports.warn_on_relocation {
-        return;
+        return Vec::new();
     }
 
-    for entry in port_plan.entries.iter().filter(|entry| entry.relocated) {
-        ui::warn(&format!(
-            "Compose published port relocation changed service `{}` target {}/{} from {} to {}",
-            entry.service,
-            entry.target_port,
-            compose_port_protocol_name(&entry.protocol),
-            compose_published_port_endpoint_display(&entry.requested),
-            compose_published_port_endpoint_display(&entry.planned)
-        ));
-    }
+    port_plan
+        .entries
+        .iter()
+        .filter(|entry| entry.relocated)
+        .map(|entry| {
+            format!(
+                "Compose published port relocation changed service `{}` target {}/{} from {} to {}",
+                entry.service,
+                entry.target_port,
+                compose_port_protocol_name(&entry.protocol),
+                compose_published_port_endpoint_display(&entry.requested),
+                compose_published_port_endpoint_display(&entry.planned)
+            )
+        })
+        .collect()
 }
 
 fn compose_published_port_endpoint_display(endpoint: &ComposePublishedPortEndpoint) -> String {
@@ -2340,7 +2365,9 @@ fn parse_container_port_key(value: &str) -> Option<(u16, ComposePortProtocol)> {
 mod tests {
     use super::{
         ComposeOverrideStartup, ComposePublishedPortOverride, ExistingContainerReusePolicy,
-        attach_compose_interpolation_env_to_plan, compose_running_reuse_fast_path_enabled,
+        attach_compose_interpolation_env_to_plan,
+        compose_published_port_relocation_warning_messages,
+        compose_running_reuse_fast_path_enabled,
         compose_service_forward_container_requires_recreate,
         feature_entrypoint_sentinel_check_script_for, feature_entrypoint_sentinel_runtime_path,
         feature_entrypoint_token_runtime_path, generated_compose_override_content,
@@ -3020,6 +3047,43 @@ mod tests {
         assert!(content.contains("        target: 5432\n"));
         assert!(!content.contains("published: '5432'"));
         assert!(!content.contains("host_ip: '0.0.0.0'"));
+    }
+
+    #[test]
+    fn compose_published_port_relocation_warning_messages_follow_config() {
+        let mut plan = generated_override_test_plan(Vec::new());
+        let port_plan = ComposePublishedPortPlan {
+            entries: vec![ComposePublishedPortPlanEntry {
+                service: "app".to_owned(),
+                port_entry_index: 0,
+                source: ComposePublishedPortPlanSource::Compose,
+                kind: ComposePublishedPortPlanEntryType::Published,
+                target_port: 3000,
+                protocol: ComposePortProtocol::Tcp,
+                requested: ComposePublishedPortEndpoint {
+                    host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3000,
+                },
+                planned: ComposePublishedPortEndpoint {
+                    host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3001,
+                },
+                relocated: true,
+                allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
+            }],
+        };
+
+        assert!(compose_published_port_relocation_warning_messages(&plan, &port_plan).is_empty());
+
+        plan.config.compose.published_ports.warn_on_relocation = true;
+        let messages = compose_published_port_relocation_warning_messages(&plan, &port_plan);
+
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].contains("Compose published port relocation changed"));
+        assert!(messages[0].contains("service `app`"));
+        assert!(messages[0].contains("from 3000 to 3001"));
     }
 
     #[test]
