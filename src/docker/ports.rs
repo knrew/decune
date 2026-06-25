@@ -57,7 +57,7 @@ where
 
     for port in ports {
         let start_host = port.host.unwrap_or(port.container);
-        let host = resolve_host_port(port, start_host, &resolved, &mut host_port_available)?;
+        let host = resolve_host_port(port, start_host, &resolved, &[], &mut host_port_available)?;
 
         resolved.push(ResolvedForwardPort {
             service: port.service.clone(),
@@ -74,25 +74,30 @@ where
     Ok(resolved)
 }
 
-pub(crate) fn resolve_auto_forward_ports(
+pub(crate) fn resolve_auto_forward_ports_with_host_reservations(
     detected_ports: impl IntoIterator<Item = u16>,
     existing_forward_ports: &[ResolvedForwardPort],
     publish_ports: &[ResolvedPublishPort],
     auto_ports: &ResolvedAutoPorts,
     port_attributes: &BTreeMap<String, ResolvedPortAttributes>,
     other_ports_attributes: Option<&ResolvedPortAttributes>,
+    additional_host_reservations: &[HostPortReservation],
 ) -> Result<Vec<ResolvedAutoForwardPort>> {
-    resolve_auto_forward_ports_with(
+    resolve_auto_forward_ports_inner(
         detected_ports,
-        existing_forward_ports,
-        publish_ports,
-        auto_ports,
-        port_attributes,
-        other_ports_attributes,
+        AutoForwardResolveInput {
+            existing_forward_ports,
+            publish_ports,
+            auto_ports,
+            port_attributes,
+            other_ports_attributes,
+            additional_host_reservations,
+        },
         host_port_available,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn resolve_auto_forward_ports_with<F>(
     detected_ports: impl IntoIterator<Item = u16>,
     existing_forward_ports: &[ResolvedForwardPort],
@@ -100,11 +105,51 @@ pub(crate) fn resolve_auto_forward_ports_with<F>(
     auto_ports: &ResolvedAutoPorts,
     port_attributes: &BTreeMap<String, ResolvedPortAttributes>,
     other_ports_attributes: Option<&ResolvedPortAttributes>,
+    host_port_available: F,
+) -> Result<Vec<ResolvedAutoForwardPort>>
+where
+    F: FnMut(&str, u16) -> Result<bool>,
+{
+    resolve_auto_forward_ports_inner(
+        detected_ports,
+        AutoForwardResolveInput {
+            existing_forward_ports,
+            publish_ports,
+            auto_ports,
+            port_attributes,
+            other_ports_attributes,
+            additional_host_reservations: &[],
+        },
+        host_port_available,
+    )
+}
+
+struct AutoForwardResolveInput<'a> {
+    existing_forward_ports: &'a [ResolvedForwardPort],
+    publish_ports: &'a [ResolvedPublishPort],
+    auto_ports: &'a ResolvedAutoPorts,
+    port_attributes: &'a BTreeMap<String, ResolvedPortAttributes>,
+    other_ports_attributes: Option<&'a ResolvedPortAttributes>,
+    additional_host_reservations: &'a [HostPortReservation],
+}
+
+fn resolve_auto_forward_ports_inner<F>(
+    detected_ports: impl IntoIterator<Item = u16>,
+    input: AutoForwardResolveInput<'_>,
     mut host_port_available: F,
 ) -> Result<Vec<ResolvedAutoForwardPort>>
 where
     F: FnMut(&str, u16) -> Result<bool>,
 {
+    let AutoForwardResolveInput {
+        existing_forward_ports,
+        publish_ports,
+        auto_ports,
+        port_attributes,
+        other_ports_attributes,
+        additional_host_reservations,
+    } = input;
+
     if !auto_ports.enabled {
         return Ok(Vec::new());
     }
@@ -154,7 +199,13 @@ where
                 .unwrap_or(false),
             label: attributes.and_then(|attributes| attributes.label.clone()),
         };
-        let host = resolve_host_port(&port, container, &resolved, &mut host_port_available)?;
+        let host = resolve_host_port(
+            &port,
+            container,
+            &resolved,
+            additional_host_reservations,
+            &mut host_port_available,
+        )?;
         let port = ResolvedForwardPort {
             service: None,
             container,
@@ -179,13 +230,15 @@ fn resolve_host_port<F>(
     port: &ResolvedPort,
     start_host: u16,
     resolved: &[ResolvedForwardPort],
+    additional_host_reservations: &[HostPortReservation],
     host_port_available: &mut F,
 ) -> Result<u16>
 where
     F: FnMut(&str, u16) -> Result<bool>,
 {
     let mut candidate = start_host;
-    let reservations = resolved_forward_port_reservations(resolved).collect::<Vec<_>>();
+    let mut reservations = resolved_forward_port_reservations(resolved).collect::<Vec<_>>();
+    reservations.extend(additional_host_reservations.iter().cloned());
 
     loop {
         let available = !host_port_reservations_conflict(&reservations, &port.host_ip, candidate)
@@ -559,6 +612,71 @@ mod tests {
         assert_eq!(resolved[0].port.host, 4322);
         assert_eq!(resolved[0].port.label.as_deref(), Some("web"));
         assert_eq!(resolved[0].on_auto_forward, OnAutoForward::Silent);
+    }
+
+    #[test]
+    fn auto_forward_avoids_additional_host_reservations() {
+        let auto = ResolvedAutoPorts {
+            enabled: true,
+            min: 1024,
+            max: 32768,
+            ignore: Vec::new(),
+            on_auto_forward: OnAutoForward::Notify,
+        };
+        let reservations = vec![HostPortReservation {
+            host_ip: DEFAULT_PORT_HOST_IP.to_owned(),
+            host: 4321,
+        }];
+
+        let resolved = resolve_auto_forward_ports_inner(
+            [4321],
+            AutoForwardResolveInput {
+                existing_forward_ports: &[],
+                publish_ports: &[],
+                auto_ports: &auto,
+                port_attributes: &BTreeMap::new(),
+                other_ports_attributes: None,
+                additional_host_reservations: &reservations,
+            },
+            |_, _| Ok(true),
+        )
+        .unwrap();
+
+        assert_eq!(resolved.len(), 1);
+        assert_eq!(resolved[0].port.requested_host, 4321);
+        assert_eq!(resolved[0].port.host, 4322);
+    }
+
+    #[test]
+    fn auto_forward_uses_wildcard_collision_for_additional_reservations() {
+        let auto = ResolvedAutoPorts {
+            enabled: true,
+            min: 1024,
+            max: 32768,
+            ignore: Vec::new(),
+            on_auto_forward: OnAutoForward::Notify,
+        };
+        let reservations = vec![HostPortReservation {
+            host_ip: "0.0.0.0".to_owned(),
+            host: 4321,
+        }];
+
+        let resolved = resolve_auto_forward_ports_inner(
+            [4321],
+            AutoForwardResolveInput {
+                existing_forward_ports: &[],
+                publish_ports: &[],
+                auto_ports: &auto,
+                port_attributes: &BTreeMap::new(),
+                other_ports_attributes: None,
+                additional_host_reservations: &reservations,
+            },
+            |_, _| Ok(true),
+        )
+        .unwrap();
+
+        assert_eq!(resolved[0].port.host_ip, DEFAULT_PORT_HOST_IP);
+        assert_eq!(resolved[0].port.host, 4322);
     }
 
     #[test]

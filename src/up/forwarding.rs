@@ -1,14 +1,17 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
 use anyhow::{Context, Result};
 
 use crate::{
-    config::resolved::ResolvedDevcontainerSource,
+    config::{
+        resolved::{ResolvedDevcontainerSource, ResolvedPublishPort},
+        types::PortProtocol,
+    },
     docker::exec::{ExecCommandSpec, exec_capture, exec_detached},
-    docker::ports::ResolvedForwardPort,
+    docker::ports::{HostPortReservation, ResolvedForwardPort},
     host::forward::{
         AutoForwardConfig, ForwardAgentStatus, ForwardSession, ForwardStatusRegistry,
         ForwardStatusServer, forward_agent_command_at, forward_agent_session_socket_name,
@@ -17,9 +20,12 @@ use crate::{
         start_forward_status_server, wait_for_forward_agent_with_status,
     },
     runtime::compose_cli::{ComposeIntrospector, ComposePsContainer},
+    state::{PublishedPortHostIpKind, PublishedPortRuntimeState},
     ui,
     up::{start::StartedUpContainer, types::UpPlan},
 };
+
+const OMITTED_PUBLISHED_HOST_IP_RESERVATION: &str = "0.0.0.0";
 
 pub(in crate::up) fn warn_about_detached_forwarding(plan: &UpPlan) {
     if plan.ignored_detached_forwarding {
@@ -147,7 +153,15 @@ async fn resolve_forwarding_agent_targets(
     started: &StartedUpContainer,
     primary_runtime_dir: &Path,
 ) -> Result<Vec<ForwardingAgentTarget>> {
-    let mut targets = plan_forwarding_agent_targets(&started.plan, primary_runtime_dir)?;
+    let published_host_reservations =
+        published_port_host_reservations(&started.state.borrow().published_ports);
+    let published_ports = published_port_publish_ports(&started.state.borrow().published_ports);
+    let mut targets = plan_forwarding_agent_targets_with_host_reservations(
+        &started.plan,
+        primary_runtime_dir,
+        published_host_reservations,
+        published_ports,
+    )?;
     if targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -197,11 +211,30 @@ async fn filter_unsupported_auto_only_targets(
     *targets = kept;
 }
 
+#[cfg(test)]
 pub(in crate::up) fn plan_forwarding_agent_targets(
     plan: &UpPlan,
     primary_runtime_dir: &Path,
 ) -> Result<Vec<ForwardingAgentTarget>> {
-    let auto_forward = AutoForwardConfig::from_config(&plan.config);
+    plan_forwarding_agent_targets_with_host_reservations(
+        plan,
+        primary_runtime_dir,
+        Vec::new(),
+        Vec::new(),
+    )
+}
+
+pub(in crate::up) fn plan_forwarding_agent_targets_with_host_reservations(
+    plan: &UpPlan,
+    primary_runtime_dir: &Path,
+    host_port_reservations: Vec<HostPortReservation>,
+    publish_ports: Vec<ResolvedPublishPort>,
+) -> Result<Vec<ForwardingAgentTarget>> {
+    let auto_forward = AutoForwardConfig::from_config_with_runtime_ports(
+        &plan.config,
+        host_port_reservations,
+        publish_ports,
+    );
     if plan.forward_ports.is_empty() && auto_forward.is_none() {
         return Ok(Vec::new());
     }
@@ -240,6 +273,60 @@ pub(in crate::up) fn plan_forwarding_agent_targets(
     }
 
     Ok(targets)
+}
+
+pub(in crate::up) fn published_port_host_reservations(
+    published_ports: &[PublishedPortRuntimeState],
+) -> Vec<HostPortReservation> {
+    let mut reservations = BTreeSet::<(String, u16)>::new();
+    for port in published_ports {
+        if port.target.protocol != "tcp" {
+            continue;
+        }
+        reservations.insert((
+            published_endpoint_reservation_host_ip(
+                port.planned.host_ip_kind,
+                port.planned.host_ip_value.as_deref(),
+            ),
+            port.planned.host_port,
+        ));
+        for binding in &port.actual_bindings {
+            reservations.insert((binding.host_ip.clone(), binding.host_port));
+        }
+    }
+
+    reservations
+        .into_iter()
+        .map(|(host_ip, host)| HostPortReservation { host_ip, host })
+        .collect()
+}
+
+pub(in crate::up) fn published_port_publish_ports(
+    published_ports: &[PublishedPortRuntimeState],
+) -> Vec<ResolvedPublishPort> {
+    published_ports
+        .iter()
+        .filter(|port| port.target.protocol == "tcp")
+        .map(|port| ResolvedPublishPort {
+            container: port.target.port,
+            host: Some(port.planned.host_port),
+            host_ip: match port.planned.host_ip_kind {
+                PublishedPortHostIpKind::Omitted => None,
+                PublishedPortHostIpKind::Explicit => port.planned.host_ip_value.clone(),
+            },
+            protocol: PortProtocol::Tcp,
+        })
+        .collect()
+}
+
+fn published_endpoint_reservation_host_ip(
+    kind: PublishedPortHostIpKind,
+    value: Option<&str>,
+) -> String {
+    match kind {
+        PublishedPortHostIpKind::Omitted => OMITTED_PUBLISHED_HOST_IP_RESERVATION.to_owned(),
+        PublishedPortHostIpKind::Explicit => value.unwrap_or_default().to_owned(),
+    }
 }
 
 async fn resolve_compose_forwarding_container(
