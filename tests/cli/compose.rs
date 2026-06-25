@@ -1,4 +1,5 @@
 use crate::harness::*;
+use std::net::TcpListener;
 
 #[test]
 fn compose_multi_replica_fixed_published_port_reports_diagnostic_code() {
@@ -251,6 +252,165 @@ exit 91
                 .and(predicate::str::contains("app:3000/tcp"))
                 .and(predicate::str::contains("Failed to start Docker Compose project").not()),
         );
+}
+
+#[test]
+fn compose_up_records_published_port_runtime_state() {
+    let requested_listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    if requested_port == u16::MAX {
+        return;
+    }
+    let planned_port = requested_port + 1;
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    let up_marker = host_tools.path().join("compose-up");
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            format!(
+                r#"
+            services:
+              app:
+                image: alpine:3.20
+                ports:
+                  - "{requested_port}:3000"
+            "#
+            ),
+        )
+        .unwrap();
+    let original_compose =
+        fs::read_to_string(workspace.path().join(".devcontainer/compose.yaml")).unwrap();
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
+project="decune-$DECUNE_FAKE_WORKSPACE_SLUG-$DECUNE_FAKE_WORKSPACE_ID"
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" config --format json "*)
+      printf '{"services":{"app":{"image":"alpine:3.20","ports":[{"target":3000,"published":"%s","protocol":"tcp"}]}}}\n' "$DECUNE_FAKE_REQUESTED_PORT"
+      exit 0
+      ;;
+    *" up -d "*)
+      : > "$DECUNE_FAKE_UP_MARKER"
+      exit 0
+      ;;
+    *" ps --format json app "*)
+      printf '[{"ID":"compose-app-id","Name":"compose-app-1","Service":"app","State":"running"}]\n'
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = ps ]; then
+  case " $* " in
+    *"com.docker.compose.project=$project"*)
+      if [ -f "$DECUNE_FAKE_UP_MARKER" ]; then
+        printf '{"ID":"compose-app-id"}\n'
+      fi
+      exit 0
+      ;;
+  esac
+  exit 0
+fi
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Image":"sha256:alpine","Config":{"Env":[],"Labels":{"decune.managed":"true","decune.workspace_id":"%s","com.docker.compose.project":"%s","com.docker.compose.service":"app"}},"State":{"Running":true},"NetworkSettings":{"Ports":{"3000/tcp":[{"HostIp":"0.0.0.0","HostPort":"%s"},{"HostIp":"::","HostPort":"%s"}]}}}]\n' "$DECUNE_FAKE_WORKSPACE_ID" "$project" "$DECUNE_FAKE_PLANNED_PORT" "$DECUNE_FAKE_PLANNED_PORT"
+  exit 0
+fi
+if [ "${1:-}" = exec ]; then
+  printf 'root:x:0:0:root:/root:/bin/sh\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"sha256:alpine","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = create ]; then
+  printf 'lookup-container-id\n'
+  exit 0
+fi
+if [ "${1:-}" = start ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", state_home.path())
+        .env("DECUNE_FAKE_REQUESTED_PORT", requested_port.to_string())
+        .env("DECUNE_FAKE_PLANNED_PORT", planned_port.to_string())
+        .env("DECUNE_FAKE_UP_MARKER", &up_marker)
+        .env("DECUNE_FAKE_WORKSPACE_ID", &workspace_id)
+        .env(
+            "DECUNE_FAKE_WORKSPACE_SLUG",
+            safe_workspace_slug(workspace_root.file_name().unwrap().to_str().unwrap()),
+        )
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let state_file = state_home
+        .path()
+        .join("decune")
+        .join(&workspace_id)
+        .join("state.toml");
+    let state = fs::read_to_string(state_file).unwrap();
+    assert!(state.contains("[[published_ports]]"));
+    assert!(state.contains("source = \"compose\""));
+    assert!(state.contains("type = \"published\""));
+    assert!(state.contains("service = \"app\""));
+    assert!(state.contains("port_entry_index = 0"));
+    assert!(state.contains("host_ip_kind = \"omitted\""));
+    assert!(state.contains(&format!("host_port = {requested_port}")));
+    assert!(state.contains(&format!("host_port = {planned_port}")));
+    assert!(state.contains("relocated = true"));
+    assert!(state.contains("[[published_ports.actual_bindings]]"));
+    assert!(state.contains("host_ip = \"0.0.0.0\""));
+    assert!(state.contains("host_ip = \"::\""));
+    assert_eq!(
+        fs::read_to_string(workspace.path().join(".devcontainer/compose.yaml")).unwrap(),
+        original_compose
+    );
 }
 
 fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {

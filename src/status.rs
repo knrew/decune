@@ -2342,6 +2342,7 @@ mod tests {
             config_hash: config_hash.to_owned(),
             config_file: None,
             compose_project_name: None,
+            published_ports: Vec::new(),
             created_at: "unix:1".to_owned(),
             last_started_at: "unix:2".to_owned(),
             last_used_at: None,

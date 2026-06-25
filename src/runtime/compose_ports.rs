@@ -642,6 +642,45 @@ pub(crate) fn compose_published_port_plan_has_relocations(plan: &ComposePublishe
     plan.entries.iter().any(|entry| entry.relocated)
 }
 
+pub(crate) fn compose_published_port_runtime_plan(
+    input: &ComposePublishedPortPlanningInput,
+    planned: &ComposePublishedPortPlan,
+) -> ComposePublishedPortPlan {
+    let planned_entries = planned
+        .entries
+        .iter()
+        .map(|entry| ((entry.service.as_str(), entry.port_entry_index), entry))
+        .collect::<BTreeMap<_, _>>();
+    let entries = input
+        .port_entries
+        .iter()
+        .filter(|entry| entry.eligibility == ComposePortEligibility::EligibleFixedTcp)
+        .map(|entry| {
+            if let Some(planned) = planned_entries.get(&(entry.service.as_str(), entry.entry_index))
+            {
+                return (*planned).clone();
+            }
+            let requested = endpoint_for_entry(entry);
+            ComposePublishedPortPlanEntry {
+                service: entry.service.clone(),
+                port_entry_index: entry.entry_index,
+                source: ComposePublishedPortPlanSource::Compose,
+                kind: ComposePublishedPortPlanEntryType::Published,
+                target_port: entry
+                    .target_port
+                    .expect("eligible Compose published port entry has target port"),
+                protocol: entry.protocol.clone(),
+                requested: requested.clone(),
+                planned: requested,
+                relocated: false,
+                allocation_reason: ComposePublishedPortAllocationReason::Available,
+            }
+        })
+        .collect();
+
+    ComposePublishedPortPlan { entries }
+}
+
 pub(crate) fn compose_published_port_override(
     port_entries: &[ComposePortEntry],
     plan: &ComposePublishedPortPlan,
