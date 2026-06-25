@@ -2313,6 +2313,68 @@ mod tests {
     }
 
     #[test]
+    fn compose_introspector_includes_dependency_published_ports_from_config_output() {
+        let (_temp, workspace) = fixture_workspace("dependency-port-planning");
+        let devcontainer_dir = workspace.root().join(".devcontainer");
+        fs::create_dir(&devcontainer_dir).unwrap();
+        write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
+        let project =
+            ComposeProjectPlan::resolve(&workspace, &devcontainer_dir, &["compose.yaml".into()])
+                .unwrap();
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            br#"{
+                "services": {
+                    "app": {
+                        "image": "alpine:3.20",
+                        "depends_on": {"db": {"condition": "service_started", "required": true}}
+                    },
+                    "db": {
+                        "image": "alpine:3.20",
+                        "ports": [{"target": 5432, "published": "5432"}]
+                    }
+                }
+            }"#,
+        ))]);
+        let introspector =
+            ComposeIntrospector::new(DockerComposeCli::new(std::sync::Arc::new(runner.clone())));
+        let validation = ComposeServiceValidation {
+            primary_service: "app",
+            run_services: None,
+            workspace_folder: "/workspace",
+            project_name: project.project_name(),
+        };
+        let selected_services = vec!["app".to_owned()];
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let input = runtime
+            .block_on(introspector.user_published_port_planning_input(
+                &project,
+                &validation,
+                &selected_services,
+            ))
+            .unwrap();
+
+        assert_eq!(input.port_entries.len(), 1);
+        assert_eq!(input.port_entries[0].service, "db");
+        assert_eq!(
+            input.services.ordered_services_for_planning(),
+            ["app", "db"]
+        );
+        assert_eq!(
+            runner.commands()[0]
+                .args_vec()
+                .iter()
+                .rev()
+                .take(3)
+                .collect::<Vec<_>>(),
+            vec!["app", "json", "--format"]
+        );
+    }
+
+    #[test]
     fn compose_primary_image_resolver_uses_service_image_without_build() {
         let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
             "services": {
