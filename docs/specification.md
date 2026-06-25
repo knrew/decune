@@ -784,7 +784,7 @@ Compose published port diagnostics は relocation policy の有効/無効とは�
 Compose published port diagnostics の code は以下を使う。
 
 - `compose_published_port_multi_replica_unsupported`: replica 数が 2 以上の service が、decune が対応しない fixed TCP published host port を持つ。
-- `compose_published_port_unsupported`: startup failure が、decune が対応しない Compose published port entry に関係している。
+- `compose_published_port_unsupported`: startup failure が、host endpoint を安全に照合できる範囲で decune が対応しない Compose published port entry に関係している。
 - `compose_published_port_invalid`: invalid host IP、malformed syntax、permission denied など、simple collision ではない invalid published port condition。
 - `compose_published_port_collision`: requested fixed TCP published host endpoint が unavailable。
 - `compose_published_port_relocation_failed`: relocation candidate を割り当てられない。
