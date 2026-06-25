@@ -338,6 +338,8 @@ Docker Compose-based 構成では Docker published port を Compose サービス
 
 relocation により実際に host port を変更する場合は、generated Compose override で Compose `!override` tag を使うため Docker Compose v2.24.4+ 相当が必要です。version 判定不能または古い Compose では起動前に error になります。
 
+relocation は最終的な `forwardPorts` / decune `[[ports]]` / CLI `-p` の host port 予約も考慮します。同じ Compose project が前回 relocation で使っている same service の published host port は、再作成時に再利用できるものとして扱います。
+
 decune port forwarding と、Dev Container `appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error です。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧に表示されます。
 
 ## 認証情報とセキュリティ

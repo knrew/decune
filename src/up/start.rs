@@ -13,7 +13,6 @@ use futures_util::{
     FutureExt,
     future::{Either, select},
 };
-use serde_json::Value as JsonValue;
 
 use crate::{
     config::resolved::ResolvedDevcontainerSource,
@@ -48,15 +47,14 @@ use crate::{
     runtime::{
         compose_cli::{
             ComposeBuildOptions, ComposeConfigOutput, ComposeConfigService, ComposeIntrospector,
-            ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverridePortEntry,
-            ComposeOverrideServicePatch, ComposePrimaryImageResolver, ComposeProjectPlan,
-            ComposePullOptions, ComposeServiceValidation, ComposeUpOptions, DockerComposeCli,
-            write_compose_override,
+            ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverrideServicePatch,
+            ComposePrimaryImageResolver, ComposeProjectPlan, ComposePullOptions,
+            ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, write_compose_override,
         },
         compose_ports::{
-            ComposePortEntry, ComposePortProtocol, ComposePublishedPortEndpoint,
-            ComposePublishedPortHostIpKind, ComposePublishedPortPlan,
-            ComposePublishedPortReservation, plan_compose_published_ports_with_existing_project,
+            ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
+            ComposePublishedPortOverride, ComposePublishedPortPlan,
+            ComposePublishedPortReservation, compose_published_port_plan_has_relocations,
         },
     },
     state::{self, LifecycleState, StateContainerSnapshot, WorkspaceState},
@@ -68,9 +66,9 @@ use crate::{
         },
         existing::{self, CredentialRuntimeMountPolicy, decide_existing_container},
         metadata::{
-            FinalizeUpPlanMountsOptions, build_existing_container_decision_plan,
-            existing_remote_user_image_for_decision, finalize_up_plan_mounts,
-            prepare_compose_image_metadata, prepare_image_based_metadata,
+            ComposePublishedPortFinalization, FinalizeUpPlanMountsOptions,
+            build_existing_container_decision_plan, existing_remote_user_image_for_decision,
+            finalize_up_plan_mounts, prepare_compose_image_metadata, prepare_image_based_metadata,
             report_deferred_config_messages,
         },
         plan::build_preliminary_up_plan_with_forwarding_resolution,
@@ -357,7 +355,7 @@ pub(in crate::up) async fn ensure_container_started(
             existing_container_image,
         )
         .await?;
-        let (existing_plan, _) = finalize_up_plan_mounts(
+        let finalized = finalize_up_plan_mounts(
             &client,
             &workspace,
             existing_plan,
@@ -372,9 +370,11 @@ pub(in crate::up) async fn ensure_container_started(
                 compose_canonical_model: None,
                 compose_primary_service_user: None,
                 compose_primary_service: None,
+                compose_published_ports: None,
             },
         )
         .await?;
+        let existing_plan = finalized.plan;
         let platform =
             container_tool_platform_for_plan(&client, &existing_plan, existing_container_image)
                 .await?;
@@ -435,7 +435,7 @@ pub(in crate::up) async fn ensure_container_started(
         plan_resolution,
     )
     .await?;
-    let (plan, mount_image_prepared) = finalize_up_plan_mounts(
+    let finalized = finalize_up_plan_mounts(
         &client,
         &workspace,
         plan,
@@ -448,9 +448,12 @@ pub(in crate::up) async fn ensure_container_started(
             compose_canonical_model: None,
             compose_primary_service_user: None,
             compose_primary_service: None,
+            compose_published_ports: None,
         },
     )
     .await?;
+    let plan = finalized.plan;
+    let mount_image_prepared = finalized.image_prepared;
     let image_prepared =
         mount_image_prepared || (image_prepared && !plan_requires_final_image_layer(&plan));
     if !image_prepared {
@@ -565,6 +568,7 @@ struct ComposeRunningReuseInput<'a> {
     user_config: &'a ComposeConfigOutput,
     compose_primary_service_user: Option<&'a str>,
     compose_primary_service: Option<&'a ComposeConfigService>,
+    compose_published_ports: Option<ComposePublishedPortFinalization<'a>>,
 }
 
 async fn try_reuse_running_compose_container_before_image_prepare(
@@ -581,6 +585,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
         user_config,
         compose_primary_service_user,
         compose_primary_service,
+        compose_published_ports,
     } = input;
     if !compose_running_reuse_fast_path_enabled(options, existing_compose_containers) {
         return Ok(None);
@@ -607,7 +612,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     )
     .await?;
     plan.base_image = compose_primary_image.to_owned();
-    let (plan, _) = finalize_up_plan_mounts(
+    let finalized = finalize_up_plan_mounts(
         client,
         workspace,
         plan,
@@ -622,10 +627,11 @@ async fn try_reuse_running_compose_container_before_image_prepare(
             compose_canonical_model: Some(&user_config.canonical_model),
             compose_primary_service_user,
             compose_primary_service,
+            compose_published_ports,
         },
     )
     .await?;
-    let mut plan = plan;
+    let mut plan = finalized.plan;
     if !plan_requires_final_image_layer(&plan) {
         plan.image = compose_primary_image.to_owned();
         plan.base_image = compose_primary_image.to_owned();
@@ -738,6 +744,33 @@ async fn start_compose_project(
         &compose.service,
     )
     .await?;
+    let mut published_port_input = None;
+    let mut existing_project_published_ports = Vec::new();
+    if plan.config.compose.published_ports.relocation {
+        published_port_input = Some(
+            compose_introspector
+                .user_published_port_planning_input(
+                    compose_project,
+                    &compose_service_validation,
+                    &user_lifecycle.services,
+                )
+                .await?,
+        );
+        if !existing_compose_project_containers.is_empty() {
+            existing_project_published_ports = list_existing_compose_project_published_ports(
+                &client,
+                compose_project.project_name(),
+            )
+            .await?;
+        }
+    }
+    let compose_published_ports =
+        published_port_input
+            .as_ref()
+            .map(|input| ComposePublishedPortFinalization {
+                input,
+                existing_project_published_ports: &existing_project_published_ports,
+            });
 
     if let Some(started) = try_reuse_running_compose_container_before_image_prepare(
         &client,
@@ -751,41 +784,13 @@ async fn start_compose_project(
             user_config: &user_config,
             compose_primary_service_user,
             compose_primary_service: compose_primary_service.as_ref(),
+            compose_published_ports,
         },
     )
     .await?
     {
         return Ok(started);
     }
-
-    let mut published_port_plan = ComposePublishedPortPlan::default();
-    if plan.config.compose.published_ports.relocation {
-        let input = compose_introspector
-            .user_published_port_planning_input(
-                compose_project,
-                &compose_service_validation,
-                &user_lifecycle.services,
-            )
-            .await?;
-        let existing_project_published_ports = if existing_compose_project_containers.is_empty() {
-            Vec::new()
-        } else {
-            list_existing_compose_project_published_ports(&client, compose_project.project_name())
-                .await?
-        };
-        published_port_plan = plan_compose_published_ports_with_existing_project(
-            &input,
-            true,
-            &plan.forward_ports,
-            &existing_project_published_ports,
-        )?;
-        if compose_published_port_plan_has_relocations(&published_port_plan) {
-            compose_capabilities.ensure_compose_override_tag()?;
-            warn_on_compose_published_port_relocations(&plan, &published_port_plan);
-        }
-    }
-    let published_port_override =
-        compose_published_port_override(&user_config.published_port_entries, &published_port_plan)?;
 
     if options.pull {
         cli.pull(
@@ -843,7 +848,7 @@ async fn start_compose_project(
     )
     .await?;
     plan.base_image = compose_primary_image.clone();
-    let (plan, image_prepared) = finalize_up_plan_mounts(
+    let finalized = finalize_up_plan_mounts(
         &client,
         &workspace,
         plan,
@@ -858,10 +863,18 @@ async fn start_compose_project(
             compose_canonical_model: Some(&user_config.canonical_model),
             compose_primary_service_user,
             compose_primary_service: compose_primary_service.as_ref(),
+            compose_published_ports,
         },
     )
     .await?;
-    let mut plan = plan;
+    let mut plan = finalized.plan;
+    let published_port_plan = finalized.compose_published_port_plan;
+    let published_port_override = finalized.compose_published_port_override;
+    let image_prepared = finalized.image_prepared;
+    if compose_published_port_plan_has_relocations(&published_port_plan) {
+        compose_capabilities.ensure_compose_override_tag()?;
+        warn_on_compose_published_port_relocations(&plan, &published_port_plan);
+    }
     if !plan_requires_final_image_layer(&plan) {
         plan.image = compose_primary_image.clone();
         plan.base_image = compose_primary_image;
@@ -1120,85 +1133,6 @@ async fn compose_override_startup(
 struct ComposeOverrideStartup {
     entrypoint: Vec<String>,
     command: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-struct ComposePublishedPortOverride {
-    service_ports: BTreeMap<String, Vec<ComposeOverridePortEntry>>,
-}
-
-impl ComposePublishedPortOverride {
-    fn ports_for(&self, service: &str) -> Option<&[ComposeOverridePortEntry]> {
-        self.service_ports.get(service).map(Vec::as_slice)
-    }
-
-    fn services(&self) -> impl Iterator<Item = (&String, &Vec<ComposeOverridePortEntry>)> {
-        self.service_ports.iter()
-    }
-}
-
-fn compose_published_port_plan_has_relocations(plan: &ComposePublishedPortPlan) -> bool {
-    plan.entries.iter().any(|entry| entry.relocated)
-}
-
-fn compose_published_port_override(
-    port_entries: &[ComposePortEntry],
-    plan: &ComposePublishedPortPlan,
-) -> Result<ComposePublishedPortOverride> {
-    if !compose_published_port_plan_has_relocations(plan) {
-        return Ok(ComposePublishedPortOverride::default());
-    }
-
-    let relocated_services = plan
-        .entries
-        .iter()
-        .filter(|entry| entry.relocated)
-        .map(|entry| entry.service.clone())
-        .collect::<BTreeSet<_>>();
-    let planned_entries = plan
-        .entries
-        .iter()
-        .map(|entry| ((entry.service.as_str(), entry.port_entry_index), entry))
-        .collect::<BTreeMap<_, _>>();
-    let mut service_ports = BTreeMap::new();
-
-    for service in relocated_services {
-        let mut service_entries = port_entries
-            .iter()
-            .filter(|entry| entry.service == service)
-            .collect::<Vec<_>>();
-        service_entries.sort_by_key(|entry| entry.entry_index);
-        let mut ports = Vec::with_capacity(service_entries.len());
-
-        for entry in service_entries {
-            ensure_compose_port_entry_can_be_overridden(entry)?;
-            let mut fields = entry.original_fields.clone();
-            if let Some(planned) = planned_entries.get(&(entry.service.as_str(), entry.entry_index))
-            {
-                fields.insert(
-                    "published".to_owned(),
-                    JsonValue::String(planned.planned.host_port.to_string()),
-                );
-            }
-            ports.push(fields);
-        }
-
-        service_ports.insert(service, ports);
-    }
-
-    Ok(ComposePublishedPortOverride { service_ports })
-}
-
-fn ensure_compose_port_entry_can_be_overridden(entry: &ComposePortEntry) -> Result<()> {
-    if entry.original_fields.is_empty() {
-        bail!(
-            "Cannot apply Compose published port relocation for service `{}` port entry {} because Docker Compose config did not return a long-syntax port object",
-            entry.service,
-            entry.entry_index
-        );
-    }
-
-    Ok(())
 }
 
 fn warn_on_compose_published_port_relocations(plan: &UpPlan, port_plan: &ComposePublishedPortPlan) {
@@ -2410,8 +2344,7 @@ fn parse_container_port_key(value: &str) -> Option<(u16, ComposePortProtocol)> {
 mod tests {
     use super::{
         ComposeOverrideStartup, ComposePublishedPortOverride, ExistingContainerReusePolicy,
-        attach_compose_interpolation_env_to_plan, compose_published_port_override,
-        compose_running_reuse_fast_path_enabled,
+        attach_compose_interpolation_env_to_plan, compose_running_reuse_fast_path_enabled,
         compose_service_forward_container_requires_recreate,
         feature_entrypoint_sentinel_check_script_for, feature_entrypoint_sentinel_runtime_path,
         feature_entrypoint_token_runtime_path, generated_compose_override_content,
@@ -2437,7 +2370,7 @@ mod tests {
             ComposePortSyntax, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
             ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind, ComposePublishedPortPlan,
             ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
-            ComposePublishedPortPlanSource,
+            ComposePublishedPortPlanSource, compose_published_port_override,
         },
         up::{
             CredentialRuntimeMountPolicy, ExistingContainerDecision, UpContainerSummary,

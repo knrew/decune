@@ -3140,7 +3140,7 @@ type = "bind"
             ensure_image(&client, "alpine:3.20", PullPolicy::Missing)
                 .await
                 .unwrap();
-            let (plan, image_prepared) = finalize_up_plan_mounts(
+            let finalized = finalize_up_plan_mounts(
                 &client,
                 &workspace,
                 plan,
@@ -3153,10 +3153,13 @@ type = "bind"
                     compose_canonical_model: None,
                     compose_primary_service_user: None,
                     compose_primary_service: None,
+                    compose_published_ports: None,
                 },
             )
             .await
             .unwrap();
+            let plan = finalized.plan;
+            let image_prepared = finalized.image_prepared;
 
             assert!(!image_prepared);
             assert_eq!(plan.image, "alpine:3.20");
@@ -3209,7 +3212,7 @@ type = "bind"
                 remove_image(&client, &image, true).await?;
                 build_uid_gid_user_image(&client, &image, "imageuser", 2001, 2001).await?;
 
-                let (plan, image_prepared) = finalize_up_plan_mounts(
+                let finalized = finalize_up_plan_mounts(
                     &client,
                     &workspace,
                     plan,
@@ -3222,9 +3225,12 @@ type = "bind"
                         compose_canonical_model: None,
                         compose_primary_service_user: None,
                         compose_primary_service: None,
+                        compose_published_ports: None,
                     },
                 )
                 .await?;
+                let plan = finalized.plan;
+                let image_prepared = finalized.image_prepared;
 
                 assert!(!image_prepared);
                 assert_eq!(plan.image, image);
@@ -3291,7 +3297,7 @@ type = "bind"
                 remove_image(&client, &image, true).await?;
                 build_uid_gid_user_image(&client, &image, "syncuser", 2001, 2001).await?;
 
-                let (plan, image_prepared) = finalize_up_plan_mounts(
+                let finalized = finalize_up_plan_mounts(
                     &client,
                     &workspace,
                     plan,
@@ -3304,9 +3310,12 @@ type = "bind"
                         compose_canonical_model: None,
                         compose_primary_service_user: None,
                         compose_primary_service: None,
+                        compose_published_ports: None,
                     },
                 )
                 .await?;
+                let plan = finalized.plan;
+                let image_prepared = finalized.image_prepared;
                 let pre_sync_resources = plan
                     .pre_uid_gid_sync_resources
                     .as_ref()
