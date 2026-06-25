@@ -374,55 +374,55 @@ workspace root から以下の順で検出する。
 
 ### 構成モードの判定
 
-| mode | 必須 property | 禁止 property | 備考 |
-| --- | --- | --- | --- |
-| image | `image` | `build`, `dockerComposeFile`, `service` | image を pull して container を作る |
-| Dockerfile | `build.dockerfile` | `image`, `dockerComposeFile`, `service` | Dockerfile を build して container を作る |
-| Docker Compose | `dockerComposeFile`, `service` | `image`, `build` | Compose が image/build を持つ |
+| mode           | 必須 property                  | 禁止 property                           | 備考                                      |
+| -------------- | ------------------------------ | --------------------------------------- | ----------------------------------------- |
+| image          | `image`                        | `build`, `dockerComposeFile`, `service` | image を pull して container を作る       |
+| Dockerfile     | `build.dockerfile`             | `image`, `dockerComposeFile`, `service` | Dockerfile を build して container を作る |
+| Docker Compose | `dockerComposeFile`, `service` | `image`, `build`                        | Compose が image/build を持つ             |
 
 `dockerComposeFile` と `service` は片方だけ指定してはならない。`runServices` は Compose モード専用であり、指定する場合は `dockerComposeFile` と `service` も必須である。
 
 ### 対応プロパティ
 
-| property | image | Dockerfile | Compose | 備考 |
-| --- | --- | --- | --- | --- |
-| `image` | yes | no | no | image-based mode |
-| `build.dockerfile` | no | yes | no | Dockerfile-based モード |
-| `build.context` | no | yes | no | `devcontainer.json` からの相対 path |
-| `build.args` | no | yes | no | string value のみ |
-| `build.options` | no | partial | no | Docker build argv に渡す。decune が管理する option と context path は不可 |
-| `build.target` | no | yes | no | multi-stage build target |
-| `build.cacheFrom` | no | partial | no | Docker CLI で扱える形式 |
-| `dockerComposeFile` | no | no | yes | string / string array。local path のみ |
-| `service` | no | no | yes | primary service |
-| `runServices` | no | no | yes | 未指定時は全 service。primary service は常に含める |
-| `features` | yes | yes | yes | Compose モードは primary service final image に適用 |
-| `overrideFeatureInstallOrder` | yes | yes | yes | Feature install order に反映 |
-| `overrideCommand` | yes | yes | yes | image/Dockerfile 既定 true、Compose 既定 false |
-| `mounts` | partial | partial | partial | bind/volume 対応。Compose モードは primary service に override として追加。tmpfs は error |
-| `workspaceMount` | yes | yes | no | Compose モードは unsupported error。Compose file の primary service `volumes` を使う |
-| `workspaceFolder` | yes | yes | yes | Compose モードの既定は `/` |
-| `containerEnv` | yes | yes | yes | Compose モードは primary service `environment` override。secret storage ではない |
-| `remoteEnv` | yes | yes | yes | exec/lifecycle/shell に適用。`${localEnv:...}` 由来 value は argv/log redaction 対象 |
-| `remoteUser` | yes | yes | yes | shell/lifecycle user |
-| `containerUser` | yes | yes | yes | Compose モードは primary service `user` override |
-| `updateRemoteUserUID` | yes | yes | yes | Linux host で既定 true |
-| `userEnvProbe` | yes | yes | yes | `none`, `loginShell`, `interactiveShell`, `loginInteractiveShell` |
-| `forwardPorts` | yes | yes | yes | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードは `"service:port"` を受け付ける |
-| `portsAttributes` | partial | partial | partial | `label`, `onAutoForward`, `requireLocalPort`。`protocol`, `elevateIfNeeded` は warning して無視 |
-| `otherPortsAttributes` | partial | partial | partial | automatic forwarding の既定。unsupported fields は warning |
-| `appPort` | yes | yes | no | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードは unsupported error。Compose file の service `ports` を使う |
-| `runArgs` | partial | partial | no | Compose モードは unsupported error。Compose file の service attributes を使う |
-| `init` | yes | yes | yes | Compose モードは primary service `init` override |
-| `privileged` | yes | yes | yes | Compose モードは primary service `privileged` override |
-| `capAdd` | yes | yes | yes | Compose モードは primary service `cap_add` override |
-| `securityOpt` | yes | yes | yes | Compose モードは primary service `security_opt` override |
-| lifecycle commands | yes | yes | yes | Feature metadata 由来 command は user command より前に実行 |
-| `waitFor` | partial | partial | partial | parse するが attached `up` は `postAttachCommand` まで同期実行 |
-| `name` | ignored | ignored | ignored | runtime behavior には使わない |
-| `shutdownAction` | partial | partial | partial | attached `up` 終了時に適用。明示 `down` / `remove` が正 |
-| `hostRequirements` | ignored | ignored | ignored | warning |
-| `customizations` | ignored | ignored | ignored | preserve するが実行しない |
+| property                      | image   | Dockerfile | Compose | 備考                                                                                                                                                         |
+| ----------------------------- | ------- | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `image`                       | yes     | no         | no      | image-based mode                                                                                                                                             |
+| `build.dockerfile`            | no      | yes        | no      | Dockerfile-based モード                                                                                                                                      |
+| `build.context`               | no      | yes        | no      | `devcontainer.json` からの相対 path                                                                                                                          |
+| `build.args`                  | no      | yes        | no      | string value のみ                                                                                                                                            |
+| `build.options`               | no      | partial    | no      | Docker build argv に渡す。decune が管理する option と context path は不可                                                                                    |
+| `build.target`                | no      | yes        | no      | multi-stage build target                                                                                                                                     |
+| `build.cacheFrom`             | no      | partial    | no      | Docker CLI で扱える形式                                                                                                                                      |
+| `dockerComposeFile`           | no      | no         | yes     | string / string array。local path のみ                                                                                                                       |
+| `service`                     | no      | no         | yes     | primary service                                                                                                                                              |
+| `runServices`                 | no      | no         | yes     | 未指定時は全 service。primary service は常に含める                                                                                                           |
+| `features`                    | yes     | yes        | yes     | Compose モードは primary service final image に適用                                                                                                          |
+| `overrideFeatureInstallOrder` | yes     | yes        | yes     | Feature install order に反映                                                                                                                                 |
+| `overrideCommand`             | yes     | yes        | yes     | image/Dockerfile 既定 true、Compose 既定 false                                                                                                               |
+| `mounts`                      | partial | partial    | partial | bind/volume 対応。Compose モードは primary service に override として追加。tmpfs は error                                                                    |
+| `workspaceMount`              | yes     | yes        | no      | Compose モードは unsupported error。Compose file の primary service `volumes` を使う                                                                         |
+| `workspaceFolder`             | yes     | yes        | yes     | Compose モードの既定は `/`                                                                                                                                   |
+| `containerEnv`                | yes     | yes        | yes     | Compose モードは primary service `environment` override。secret storage ではない                                                                             |
+| `remoteEnv`                   | yes     | yes        | yes     | exec/lifecycle/shell に適用。`${localEnv:...}` 由来 value は argv/log redaction 対象                                                                         |
+| `remoteUser`                  | yes     | yes        | yes     | shell/lifecycle user                                                                                                                                         |
+| `containerUser`               | yes     | yes        | yes     | Compose モードは primary service `user` override                                                                                                             |
+| `updateRemoteUserUID`         | yes     | yes        | yes     | Linux host で既定 true                                                                                                                                       |
+| `userEnvProbe`                | yes     | yes        | yes     | `none`, `loginShell`, `interactiveShell`, `loginInteractiveShell`                                                                                            |
+| `forwardPorts`                | yes     | yes        | yes     | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードは `"service:port"` を受け付ける                             |
+| `portsAttributes`             | partial | partial    | partial | `label`, `onAutoForward`, `requireLocalPort`。`protocol`, `elevateIfNeeded` は warning して無視                                                              |
+| `otherPortsAttributes`        | partial | partial    | partial | automatic forwarding の既定。unsupported fields は warning                                                                                                   |
+| `appPort`                     | yes     | yes        | no      | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードは unsupported error。Compose file の service `ports` を使う |
+| `runArgs`                     | partial | partial    | no      | Compose モードは unsupported error。Compose file の service attributes を使う                                                                                |
+| `init`                        | yes     | yes        | yes     | Compose モードは primary service `init` override                                                                                                             |
+| `privileged`                  | yes     | yes        | yes     | Compose モードは primary service `privileged` override                                                                                                       |
+| `capAdd`                      | yes     | yes        | yes     | Compose モードは primary service `cap_add` override                                                                                                          |
+| `securityOpt`                 | yes     | yes        | yes     | Compose モードは primary service `security_opt` override                                                                                                     |
+| lifecycle commands            | yes     | yes        | yes     | Feature metadata 由来 command は user command より前に実行                                                                                                   |
+| `waitFor`                     | partial | partial    | partial | parse するが attached `up` は `postAttachCommand` まで同期実行                                                                                               |
+| `name`                        | ignored | ignored    | ignored | runtime behavior には使わない                                                                                                                                |
+| `shutdownAction`              | partial | partial    | partial | attached `up` 終了時に適用。明示 `down` / `remove` が正                                                                                                      |
+| `hostRequirements`            | ignored | ignored    | ignored | warning                                                                                                                                                      |
+| `customizations`              | ignored | ignored    | ignored | preserve するが実行しない                                                                                                                                    |
 
 ### JSONC
 
@@ -469,11 +469,11 @@ Compose モードでは `workspaceMount` は unsupported error とする。works
 
 Compose モードでは Compose service の runtime 設定を Docker Compose に委譲する。decune は以下の Dev Container properties を generated Compose override へ自動変換せず、metadata validation で unsupported error とする。
 
-| Dev Container property | Compose モードの扱い | 代替 |
-| --- | --- | --- |
-| `workspaceMount` | unsupported error | workspace bind mount を primary service の `volumes` に書く |
-| `appPort` | unsupported error | Docker published port 設定を Compose service の `ports` に書く |
-| `runArgs` | unsupported error | `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose service の field に書く |
+| Dev Container property | Compose モードの扱い | 代替                                                                                                                                                |
+| ---------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `workspaceMount`       | unsupported error    | workspace bind mount を primary service の `volumes` に書く                                                                                         |
+| `appPort`              | unsupported error    | Docker published port 設定を Compose service の `ports` に書く                                                                                      |
+| `runArgs`              | unsupported error    | `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose service の field に書く |
 
 Docker published port 設定は Compose file に委譲する。Compose モードで外部公開が必要な port は Compose service の `ports` を使い、decune port forwarding は `forwardPorts`、decune `[[ports]]`、CLI `-p` を使う。
 
