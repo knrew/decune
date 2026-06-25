@@ -424,7 +424,11 @@ pub(crate) fn classify_compose_published_port_startup_failure(
 
     if diagnostics.relocation_enabled {
         for entry in &diagnostics.plan.entries {
-            if !compose_startup_error_mentions_endpoint(stderr, &entry.planned) {
+            if !compose_startup_error_mentions_endpoint_for_protocol(
+                stderr,
+                &entry.planned,
+                &entry.protocol,
+            ) {
                 continue;
             }
             return Some(ComposePublishedPortDiagnostic::BindRace {
@@ -443,7 +447,11 @@ pub(crate) fn classify_compose_published_port_startup_failure(
 
     for entry in ordered_eligible_port_entries(diagnostics.input) {
         let requested = endpoint_for_entry(entry);
-        if !compose_startup_error_mentions_endpoint(stderr, &requested) {
+        if !compose_startup_error_mentions_endpoint_for_protocol(
+            stderr,
+            &requested,
+            &entry.protocol,
+        ) {
             continue;
         }
         return Some(ComposePublishedPortDiagnostic::Collision {
@@ -522,7 +530,7 @@ fn unsupported_requested_endpoint_display_for_startup_failure(
                 host_ip_value,
                 host_port: *host_port,
             };
-            compose_startup_error_mentions_endpoint(stderr, &endpoint)
+            compose_startup_error_mentions_endpoint_for_protocol(stderr, &endpoint, &entry.protocol)
                 .then(|| compose_published_port_endpoint_display(&endpoint))
         }
         ComposePublishedHostPort::Range(range) => {
@@ -534,7 +542,11 @@ fn unsupported_requested_endpoint_display_for_startup_failure(
                         host_ip_value: host_ip_value.clone(),
                         host_port,
                     };
-                    compose_startup_error_mentions_endpoint(stderr, &endpoint)
+                    compose_startup_error_mentions_endpoint_for_protocol(
+                        stderr,
+                        &endpoint,
+                        &entry.protocol,
+                    )
                 })
                 .then(|| {
                     compose_published_port_range_endpoint_display(
@@ -594,6 +606,55 @@ fn compose_startup_error_mentions_bind_conflict(stderr: &str) -> bool {
             || lower.contains("port is already in use")
             || lower.contains("ports are not available")
             || lower.contains("port is unavailable"))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposeStartupErrorProtocolHint {
+    Tcp,
+    Udp,
+}
+
+fn compose_startup_error_mentions_endpoint_for_protocol(
+    stderr: &str,
+    endpoint: &ComposePublishedPortEndpoint,
+    protocol: &ComposePortProtocol,
+) -> bool {
+    if !compose_startup_error_mentions_endpoint(stderr, endpoint) {
+        return false;
+    }
+
+    match compose_startup_error_protocol_hint(stderr) {
+        Some(hint) => compose_port_protocol_matches_startup_error_hint(protocol, hint),
+        None => true,
+    }
+}
+
+fn compose_startup_error_protocol_hint(stderr: &str) -> Option<ComposeStartupErrorProtocolHint> {
+    let lower = stderr.to_ascii_lowercase();
+    let mentions_tcp = lower.contains("listen tcp");
+    let mentions_udp = lower.contains("listen udp");
+
+    match (mentions_tcp, mentions_udp) {
+        (true, false) => Some(ComposeStartupErrorProtocolHint::Tcp),
+        (false, true) => Some(ComposeStartupErrorProtocolHint::Udp),
+        _ => None,
+    }
+}
+
+fn compose_port_protocol_matches_startup_error_hint(
+    protocol: &ComposePortProtocol,
+    hint: ComposeStartupErrorProtocolHint,
+) -> bool {
+    matches!(
+        (protocol, hint),
+        (
+            ComposePortProtocol::Tcp,
+            ComposeStartupErrorProtocolHint::Tcp
+        ) | (
+            ComposePortProtocol::Udp,
+            ComposeStartupErrorProtocolHint::Udp
+        )
+    )
 }
 
 fn compose_startup_error_mentions_endpoint(
@@ -1764,6 +1825,42 @@ mod tests {
     }
 
     #[test]
+    fn startup_failure_classifier_does_not_report_udp_failure_as_tcp_collision() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [
+                            {"target": 8125, "published": "8125"},
+                            {"target": 8125, "published": "8125", "protocol": "udp"}
+                        ]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let plan = ComposePublishedPortPlan::default();
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen udp 0.0.0.0:8125: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: false,
+            },
+        )
+        .expect("unsupported UDP bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_UNSUPPORTED));
+        assert!(diagnostic.contains("port entry: 1"));
+        assert!(diagnostic.contains("app:8125/udp"));
+        assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
+        assert!(!diagnostic.contains("app:8125/tcp"));
+    }
+
+    #[test]
     fn startup_failure_classifier_reports_unsupported_range_published_port() {
         let input = planning_input(
             json!({
@@ -1832,6 +1929,42 @@ mod tests {
         assert!(diagnostic.contains("port entry: 2"));
         assert!(diagnostic.contains("app:8125/udp"));
         assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
+    }
+
+    #[test]
+    fn startup_failure_classifier_does_not_report_udp_failure_as_tcp_bind_race() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [
+                            {"target": 8125, "published": "8125"},
+                            {"target": 8125, "published": "8125", "protocol": "udp"}
+                        ]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let plan = plan_with_availability(&input, &[]);
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen udp 0.0.0.0:8125: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: true,
+            },
+        )
+        .expect("unsupported UDP bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_UNSUPPORTED));
+        assert!(diagnostic.contains("port entry: 1"));
+        assert!(diagnostic.contains("app:8125/udp"));
+        assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
+        assert!(!diagnostic.contains("app:8125/tcp"));
     }
 
     #[test]
