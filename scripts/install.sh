@@ -54,7 +54,10 @@ if [ -z "$version" ]; then
 fi
 
 case "$version" in
-  v*) tag="$version"; version="${version#v}" ;;
+  v*)
+    tag="$version"
+    version="${version#v}"
+    ;;
   *) tag="v$version" ;;
 esac
 
@@ -99,7 +102,7 @@ fi
 
 (
   cd "$tmpdir"
-  if ! grep "  $archive$" SHA256SUMS > SHA256SUMS.selected; then
+  if ! grep "  $archive$" SHA256SUMS >SHA256SUMS.selected; then
     echo "error: checksum entry not found for $archive" >&2
     exit 1
   fi

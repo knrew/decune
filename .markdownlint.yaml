@@ -1,0 +1,26 @@
+default: true
+MD003:
+  style: atx
+MD004:
+  style: dash
+MD007:
+  indent: 2
+MD009:
+  strict: true
+MD013: false
+MD022: true
+MD029:
+  style: one_or_ordered
+MD035:
+  style: ---
+MD034: true
+MD046:
+  style: fenced
+MD048:
+  style: backtick
+MD049:
+  style: asterisk
+MD050:
+  style: asterisk
+MD060:
+  style: aligned
