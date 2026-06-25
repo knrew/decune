@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     fs, io,
     path::{Path, PathBuf},
@@ -74,6 +74,16 @@ pub(crate) struct PortInventoryEntry {
     pub(crate) protocol: String,
     pub(crate) source: String,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) port_entry_index: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) target: Option<PortInventoryTarget>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) requested: Option<PortInventoryEndpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) planned: Option<PortInventoryEndpoint>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) actual_bindings: Option<Vec<PortInventoryActualBinding>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) requested_host_ip_kind: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) requested_host_ip: Option<String>,
@@ -88,6 +98,24 @@ pub(crate) struct PortInventoryEntry {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) relocated: Option<bool>,
     pub(crate) label: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct PortInventoryTarget {
+    pub(crate) port: u16,
+    pub(crate) protocol: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct PortInventoryEndpoint {
+    pub(crate) host_ip: Option<String>,
+    pub(crate) host_port: u16,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub(crate) struct PortInventoryActualBinding {
+    pub(crate) host_ip: String,
+    pub(crate) host_port: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -428,6 +456,7 @@ fn published_ports_from_container(
         .unwrap_or_default();
 
     let mut entries = Vec::new();
+    let mut emitted_runtime_states = BTreeSet::<(String, usize)>::new();
     for (target, bindings) in ports {
         let Some((container_port, protocol)) = parse_docker_port_key(&target) else {
             continue;
@@ -435,18 +464,35 @@ fn published_ports_from_container(
         let Some(bindings) = bindings else {
             continue;
         };
-        for binding in bindings {
+        for binding in &bindings {
             let runtime_state = context.and_then(|context| {
                 runtime_state_for_published_binding(
                     &context.published_ports,
                     service.as_deref(),
                     container_port,
                     &protocol,
-                    &binding,
+                    binding,
                 )
             });
+            if let Some(state) = runtime_state
+                && let Some(entry) = compose_published_port_runtime_entry(
+                    state,
+                    actual_bindings_for_runtime_state_from_bindings(state, binding, &bindings),
+                    PublishedPortRuntimeEntryInput {
+                        workspace: include_workspace.then(|| workspace_path.clone()).flatten(),
+                        workspace_id: include_workspace.then(|| workspace_id.clone()).flatten(),
+                        service: service.clone(),
+                        source,
+                    },
+                )
+            {
+                if emitted_runtime_states.insert((state.service.clone(), state.port_entry_index)) {
+                    entries.push(entry);
+                }
+                continue;
+            }
             if let Some(entry) = published_port_binding_entry(PublishedPortBindingEntryInput {
-                binding,
+                binding: binding.clone(),
                 workspace: include_workspace.then(|| workspace_path.clone()).flatten(),
                 workspace_id: include_workspace.then(|| workspace_id.clone()).flatten(),
                 service: service.clone(),
@@ -463,6 +509,77 @@ fn published_ports_from_container(
     entries
 }
 
+struct PublishedPortRuntimeEntryInput<'a> {
+    workspace: Option<String>,
+    workspace_id: Option<String>,
+    service: Option<String>,
+    source: &'a str,
+}
+
+fn compose_published_port_runtime_entry(
+    state: &PublishedPortRuntimeState,
+    actual_bindings: Vec<PortInventoryActualBinding>,
+    input: PublishedPortRuntimeEntryInput<'_>,
+) -> Option<PortInventoryEntry> {
+    if actual_bindings.is_empty() {
+        return None;
+    }
+    let service = input.service.or_else(|| Some(state.service.clone()));
+    Some(PortInventoryEntry {
+        workspace: input.workspace,
+        workspace_id: input.workspace_id,
+        host_ip: display_host_ip(&state.planned),
+        host_port: state.planned.host_port,
+        kind: PortUsageType::Published,
+        service,
+        container_port: state.target.port,
+        protocol: state.target.protocol.clone(),
+        source: input.source.to_owned(),
+        port_entry_index: Some(state.port_entry_index),
+        target: Some(PortInventoryTarget {
+            port: state.target.port,
+            protocol: state.target.protocol.clone(),
+        }),
+        requested: Some(inventory_endpoint(&state.requested)),
+        planned: Some(inventory_endpoint(&state.planned)),
+        actual_bindings: Some(actual_bindings),
+        requested_host_ip_kind: Some(endpoint_kind_name(&state.requested).to_owned()),
+        requested_host_ip: state.requested.host_ip_value.clone(),
+        requested_host_port: Some(state.requested.host_port),
+        planned_host_ip_kind: Some(endpoint_kind_name(&state.planned).to_owned()),
+        planned_host_ip: state.planned.host_ip_value.clone(),
+        planned_host_port: Some(state.planned.host_port),
+        relocated: Some(state.relocated),
+        label: None,
+    })
+}
+
+fn actual_bindings_for_runtime_state_from_bindings(
+    state: &PublishedPortRuntimeState,
+    matched_binding: &ContainerPortBinding,
+    bindings: &[ContainerPortBinding],
+) -> Vec<PortInventoryActualBinding> {
+    let Some(actual_host_port) = binding_host_port(matched_binding) else {
+        return Vec::new();
+    };
+    bindings
+        .iter()
+        .filter_map(|binding| {
+            let host_port = binding_host_port(binding)?;
+            (host_port == actual_host_port).then(|| PortInventoryActualBinding {
+                host_ip: binding_host_ip(binding),
+                host_port,
+            })
+        })
+        .filter(|binding| {
+            binding.host_port == state.planned.host_port
+                || state.actual_bindings.iter().any(|actual| {
+                    actual.host_ip == binding.host_ip && actual.host_port == binding.host_port
+                })
+        })
+        .collect()
+}
+
 struct PublishedPortBindingEntryInput<'a> {
     binding: ContainerPortBinding,
     workspace: Option<String>,
@@ -477,12 +594,8 @@ struct PublishedPortBindingEntryInput<'a> {
 fn published_port_binding_entry(
     input: PublishedPortBindingEntryInput<'_>,
 ) -> Option<PortInventoryEntry> {
-    let host_port = input.binding.host_port.as_deref()?.parse::<u16>().ok()?;
-    let host_ip = input
-        .binding
-        .host_ip
-        .filter(|host_ip| !host_ip.trim().is_empty())
-        .unwrap_or_else(|| "0.0.0.0".to_owned());
+    let host_port = binding_host_port(&input.binding)?;
+    let host_ip = binding_host_ip(&input.binding);
     Some(
         PortInventoryEntry {
             workspace: input.workspace,
@@ -494,6 +607,11 @@ fn published_port_binding_entry(
             container_port: input.container_port,
             protocol: input.protocol,
             source: input.source.to_owned(),
+            port_entry_index: None,
+            target: None,
+            requested: None,
+            planned: None,
+            actual_bindings: None,
             requested_host_ip_kind: requested_host_ip_kind(input.runtime_state),
             requested_host_ip: None,
             requested_host_port: None,
@@ -517,6 +635,20 @@ impl PortInventoryEntry {
         self.requested_host_ip_kind = Some(endpoint_kind_name(&state.requested).to_owned());
         self.requested_host_ip = state.requested.host_ip_value.clone();
         self.requested_host_port = Some(state.requested.host_port);
+        self.port_entry_index = Some(state.port_entry_index);
+        self.target = Some(PortInventoryTarget {
+            port: state.target.port,
+            protocol: state.target.protocol.clone(),
+        });
+        self.requested = Some(inventory_endpoint(&state.requested));
+        self.planned = Some(inventory_endpoint(&state.planned));
+        self.actual_bindings = Some(
+            state
+                .actual_bindings
+                .iter()
+                .map(inventory_actual_binding)
+                .collect(),
+        );
         self
     }
 }
@@ -529,12 +661,8 @@ fn runtime_state_for_published_binding<'a>(
     binding: &ContainerPortBinding,
 ) -> Option<&'a PublishedPortRuntimeState> {
     let service = service?;
-    let host_port = binding.host_port.as_deref()?.parse::<u16>().ok()?;
-    let host_ip = binding
-        .host_ip
-        .as_deref()
-        .filter(|host_ip| !host_ip.trim().is_empty())
-        .unwrap_or("0.0.0.0");
+    let host_port = binding_host_port(binding)?;
+    let host_ip = binding_host_ip(binding);
     states.iter().find(|state| {
         state.service == service
             && state.target.port == container_port
@@ -545,6 +673,19 @@ fn runtime_state_for_published_binding<'a>(
                 .any(|actual| actual.host_ip == host_ip && actual.host_port == host_port)
                 || state.planned.host_port == host_port)
     })
+}
+
+fn binding_host_port(binding: &ContainerPortBinding) -> Option<u16> {
+    binding.host_port.as_deref()?.parse::<u16>().ok()
+}
+
+fn binding_host_ip(binding: &ContainerPortBinding) -> String {
+    binding
+        .host_ip
+        .as_deref()
+        .filter(|host_ip| !host_ip.trim().is_empty())
+        .unwrap_or("0.0.0.0")
+        .to_owned()
 }
 
 fn requested_host_ip_kind(state: Option<&PublishedPortRuntimeState>) -> Option<String> {
@@ -559,6 +700,34 @@ fn endpoint_kind_name(endpoint: &crate::state::PublishedPortEndpointState) -> &'
     match endpoint.host_ip_kind {
         crate::state::PublishedPortHostIpKind::Omitted => "omitted",
         crate::state::PublishedPortHostIpKind::Explicit => "explicit",
+    }
+}
+
+fn display_host_ip(endpoint: &crate::state::PublishedPortEndpointState) -> String {
+    match endpoint.host_ip_kind {
+        crate::state::PublishedPortHostIpKind::Omitted => "*".to_owned(),
+        crate::state::PublishedPortHostIpKind::Explicit => endpoint
+            .host_ip_value
+            .clone()
+            .unwrap_or_else(|| "0.0.0.0".to_owned()),
+    }
+}
+
+fn inventory_endpoint(
+    endpoint: &crate::state::PublishedPortEndpointState,
+) -> PortInventoryEndpoint {
+    PortInventoryEndpoint {
+        host_ip: endpoint.host_ip_value.clone(),
+        host_port: endpoint.host_port,
+    }
+}
+
+fn inventory_actual_binding(
+    binding: &crate::state::PublishedPortActualBinding,
+) -> PortInventoryActualBinding {
+    PortInventoryActualBinding {
+        host_ip: binding.host_ip.clone(),
+        host_port: binding.host_port,
     }
 }
 
@@ -581,6 +750,11 @@ fn forwarded_inventory_entry(
         container_port: port.container_port,
         protocol: port.protocol,
         source: port.source.as_str().to_owned(),
+        port_entry_index: None,
+        target: None,
+        requested: None,
+        planned: None,
+        actual_bindings: None,
         requested_host_ip_kind: None,
         requested_host_ip: requested.as_ref().map(|(host_ip, _)| host_ip.clone()),
         requested_host_port: requested.map(|(_, host_port)| host_port),
@@ -639,10 +813,19 @@ pub(crate) fn render_ports_table(ports: &[PortInventoryEntry], include_workspace
             "TARGET",
             "SOURCE",
             "REQUESTED",
+            "STATE",
             "LABEL",
         ]
     } else {
-        vec!["LOCAL", "TYPE", "TARGET", "SOURCE", "REQUESTED", "LABEL"]
+        vec![
+            "LOCAL",
+            "TYPE",
+            "TARGET",
+            "SOURCE",
+            "REQUESTED",
+            "STATE",
+            "LABEL",
+        ]
     };
     let rows = ports.iter().map(port_row).collect::<Vec<_>>();
     let mut widths = headers
@@ -673,6 +856,7 @@ struct PortRow {
     target: String,
     source: String,
     requested: String,
+    state: String,
     label: String,
 }
 
@@ -687,6 +871,7 @@ impl PortRow {
                 self.target.as_str(),
                 self.source.as_str(),
                 self.requested.as_str(),
+                self.state.as_str(),
                 self.label.as_str(),
             ]
         } else {
@@ -696,6 +881,7 @@ impl PortRow {
                 self.target.as_str(),
                 self.source.as_str(),
                 self.requested.as_str(),
+                self.state.as_str(),
                 self.label.as_str(),
             ]
         }
@@ -711,6 +897,7 @@ fn port_row(port: &PortInventoryEntry) -> PortRow {
         target: format_target(port),
         source: port.source.clone(),
         requested: format_requested(port),
+        state: format_port_state(port),
         label: port
             .label
             .as_deref()
@@ -737,11 +924,19 @@ fn format_requested(port: &PortInventoryEntry) -> String {
     if port.requested_host_ip_kind.as_deref() == Some("omitted")
         && let Some(host_port) = port.requested_host_port
     {
-        return format!("<host_ip omitted>:{host_port}");
+        return format!("*:{host_port}");
     }
     match (&port.requested_host_ip, port.requested_host_port) {
         (Some(host_ip), Some(host_port)) => format_endpoint(host_ip, host_port),
         _ => "-".to_owned(),
+    }
+}
+
+fn format_port_state(port: &PortInventoryEntry) -> String {
+    if port.kind == PortUsageType::Published && port.relocated == Some(true) {
+        "relocated".to_owned()
+    } else {
+        "-".to_owned()
     }
 }
 
@@ -1088,13 +1283,45 @@ mod tests {
         let ports = published_ports_from_container_entries(entries, false);
 
         assert_eq!(ports.len(), 1);
+        assert_eq!(ports[0].host_ip, "*");
+        assert_eq!(ports[0].host_port, 3001);
+        assert_eq!(ports[0].port_entry_index, Some(0));
+        assert_eq!(
+            ports[0].target,
+            Some(PortInventoryTarget {
+                port: 3000,
+                protocol: "tcp".to_owned()
+            })
+        );
+        assert_eq!(
+            ports[0].requested,
+            Some(PortInventoryEndpoint {
+                host_ip: None,
+                host_port: 3000
+            })
+        );
+        assert_eq!(
+            ports[0].planned,
+            Some(PortInventoryEndpoint {
+                host_ip: None,
+                host_port: 3001
+            })
+        );
+        assert_eq!(
+            ports[0].actual_bindings,
+            Some(vec![PortInventoryActualBinding {
+                host_ip: "0.0.0.0".to_owned(),
+                host_port: 3001
+            }])
+        );
         assert_eq!(ports[0].requested_host_ip_kind.as_deref(), Some("omitted"));
         assert_eq!(ports[0].requested_host_ip, None);
         assert_eq!(ports[0].requested_host_port, Some(3000));
         assert_eq!(ports[0].planned_host_ip_kind.as_deref(), Some("omitted"));
         assert_eq!(ports[0].planned_host_port, Some(3001));
         assert_eq!(ports[0].relocated, Some(true));
-        assert_eq!(format_requested(&ports[0]), "<host_ip omitted>:3000");
+        assert_eq!(format_requested(&ports[0]), "*:3000");
+        assert_eq!(format_port_state(&ports[0]), "relocated");
     }
 
     #[test]

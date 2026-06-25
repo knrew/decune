@@ -74,6 +74,78 @@ fn ports_all_json_reports_no_active_host_ports() {
 }
 
 #[test]
+fn ports_reports_relocated_compose_published_port() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let workspace = temp.create_dir("workspace").unwrap();
+    let workspace_root = workspace.canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let roots = ports_roots(&temp);
+    write_relocated_compose_state(&roots, &workspace_id, &workspace_root, 3000, 3001);
+    let fake_path = fake_compose_published_port_docker_path(&temp, &workspace_id, 3001);
+
+    decune()
+        .args(["ports"])
+        .arg(&workspace_root)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("TYPE")
+                .and(predicate::str::contains("STATE"))
+                .and(predicate::str::contains("*:3001"))
+                .and(predicate::str::contains("published"))
+                .and(predicate::str::contains("web:3000/tcp"))
+                .and(predicate::str::contains("compose"))
+                .and(predicate::str::contains("*:3000"))
+                .and(predicate::str::contains("relocated")),
+        )
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
+fn ports_json_reports_relocated_compose_published_port_metadata() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let workspace = temp.create_dir("workspace").unwrap();
+    let workspace_root = workspace.canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let roots = ports_roots(&temp);
+    write_relocated_compose_state(&roots, &workspace_id, &workspace_root, 3000, 3001);
+    let fake_path = fake_compose_published_port_docker_path(&temp, &workspace_id, 3001);
+
+    decune()
+        .args(["ports", "--json"])
+        .arg(&workspace_root)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", &roots.state)
+        .env("XDG_CACHE_HOME", &roots.cache)
+        .env("XDG_CONFIG_HOME", &roots.config)
+        .env("XDG_RUNTIME_DIR", &roots.runtime)
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains(r#""type": "published""#)
+                .and(predicate::str::contains(r#""source": "compose""#))
+                .and(predicate::str::contains(r#""service": "web""#))
+                .and(predicate::str::contains(r#""port_entry_index": 0"#))
+                .and(predicate::str::contains(r#""target": {"#))
+                .and(predicate::str::contains(r#""port": 3000"#))
+                .and(predicate::str::contains(r#""requested": {"#))
+                .and(predicate::str::contains(r#""host_ip": null"#))
+                .and(predicate::str::contains(r#""planned": {"#))
+                .and(predicate::str::contains(r#""host_port": 3001"#))
+                .and(predicate::str::contains(r#""actual_bindings": ["#))
+                .and(predicate::str::contains(r#""host_ip": "0.0.0.0""#))
+                .and(predicate::str::contains(r#""host_ip": "::""#))
+                .and(predicate::str::contains(r#""relocated": true"#)),
+        )
+        .stderr(predicate::str::is_empty());
+}
+
+#[test]
 fn up_detach_rejects_cli_port_before_workspace_resolution() {
     decune()
         .args(["up", "--detach", "-p", "3000", "/decune/missing-workspace"])
@@ -113,6 +185,100 @@ esac
 echo "unexpected fake docker command: $*" >&2
 exit 64
 "#,
+    )
+    .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    format!(
+        "{}:{}",
+        bin_dir.display(),
+        std::env::var("PATH").unwrap_or_default()
+    )
+}
+
+fn write_relocated_compose_state(
+    roots: &PortsRoots,
+    workspace_id: &str,
+    workspace_root: &Path,
+    requested_port: u16,
+    planned_port: u16,
+) {
+    let state_dir = roots.state.join("decune").join(workspace_id);
+    fs::create_dir_all(&state_dir).unwrap();
+    fs::write(
+        state_dir.join("state.toml"),
+        format!(
+            r#"version = 1
+workspace = "{}"
+container_id = "compose-web-id"
+image = "decune:test"
+config_hash = "hash"
+compose_project_name = "decune-test-{workspace_id}"
+created_at = "unix:1"
+last_started_at = "unix:1"
+
+[[published_ports]]
+source = "compose"
+type = "published"
+service = "web"
+port_entry_index = 0
+relocated = true
+
+[published_ports.target]
+port = 3000
+protocol = "tcp"
+
+[published_ports.requested]
+host_ip_kind = "omitted"
+host_port = {requested_port}
+
+[published_ports.planned]
+host_ip_kind = "omitted"
+host_port = {planned_port}
+
+[[published_ports.actual_bindings]]
+host_ip = "0.0.0.0"
+host_port = {planned_port}
+
+[[published_ports.actual_bindings]]
+host_ip = "::"
+host_port = {planned_port}
+"#,
+            workspace_root.display()
+        ),
+    )
+    .unwrap();
+}
+
+fn fake_compose_published_port_docker_path(
+    temp: &support::TempWorkspace,
+    workspace_id: &str,
+    planned_port: u16,
+) -> String {
+    let bin_dir = temp.create_dir("bin").unwrap();
+    let docker_path = bin_dir.join("docker");
+    fs::write(
+        &docker_path,
+        format!(
+            r#"#!/bin/sh
+set -eu
+project="decune-test-{workspace_id}"
+case "$*" in
+  *"ps --all"*"label=decune.managed=true"*"label=decune.workspace_id={workspace_id}"*"--format json"*)
+    exit 0
+    ;;
+  *"ps --all"*"label=com.docker.compose.project=$project"*"--format json"*)
+    printf '{{"ID":"compose-web-id"}}\n'
+    exit 0
+    ;;
+  "container inspect compose-web-id")
+    printf '[{{"Id":"compose-web-id","Name":"/compose-web-1","Config":{{"Labels":{{"com.docker.compose.project":"%s","com.docker.compose.service":"web"}}}},"State":{{"Running":true}},"NetworkSettings":{{"Ports":{{"3000/tcp":[{{"HostIp":"0.0.0.0","HostPort":"%s"}},{{"HostIp":"::","HostPort":"%s"}}]}}}}}}]\n' "$project" "{planned_port}" "{planned_port}"
+    exit 0
+    ;;
+esac
+echo "unexpected fake docker command: $*" >&2
+exit 64
+"#
+        ),
     )
     .unwrap();
     fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();

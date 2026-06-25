@@ -269,11 +269,12 @@ decune ports [--json] --all
 
 - `WORKSPACE`: `--all` の場合だけ表示する workspace path。不明なら `<unknown>`。
 - `ID`: `--all` の場合だけ表示する workspace id。
-- `LOCAL`: 実際に listen している、または publish されている host 側 endpoint。
+- `LOCAL`: forwarding では実際に listen している host 側 endpoint。Docker published port では現在有効な host 側 endpoint を表示する。Compose published port relocation metadata がある published entry では、planned endpoint を通常出力向けの要約として表示する。host IP が省略された planned endpoint は `*:<port>` と表示し、Docker inspect で得た実際の binding は JSON の `actual_bindings` で確認できる。
 - `TYPE`: `forwarded` または `published`。
 - `TARGET`: 転送先、または Docker published port の container 側 endpoint。primary container は `container:<port>/<protocol>`、Compose service は `<service>:<port>/<protocol>`。
 - `SOURCE`: forwarding は `configured` または `auto`、published port は `appPort` または `compose`。
-- `REQUESTED`: port forwarding が要求 endpoint から別 endpoint へ fallback した場合、または Compose published port relocation により要求した published port と Docker が実際に publish している binding が異なる場合に、要求 endpoint を表示する。それ以外は `-`。
+- `REQUESTED`: port forwarding が要求 endpoint から別 endpoint へ fallback した場合、または Compose published port relocation により requested endpoint の host port と planned endpoint の host port が異なる場合に、要求 endpoint を表示する。それ以外は `-`。Compose published port で host IP が省略されている場合は `*:<port>` と表示し、explicit `0.0.0.0` と区別する。
+- `STATE`: Compose published port relocation により requested endpoint の host port と planned endpoint の host port が異なる場合は `relocated`。それ以外は `-`。
 - `LABEL`: port label。未指定なら `-`。
 
 `--json` は通常出力の table を再構成できる JSON array を stdout に出力する。
@@ -281,10 +282,11 @@ decune ports [--json] --all
 - 各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持つ。
 - `--all` では `workspace` と `workspace_id` も含める。
 - 要求 endpoint と実 endpoint が異なる forwarding entry では、`requested_host_ip` と `requested_host_port` を含める。
-- decune が Compose published port relocation の metadata を保存している published entry では、`requested_host_ip_kind`、`requested_host_port`、`planned_host_ip_kind`、`planned_host_port`、`relocated` を含める。
+- decune が Compose published port relocation の metadata を保存している published entry では、`target`、`requested`、`planned`、`actual_bindings`、`relocated`、`port_entry_index` を含める。`target` は `port` と `protocol`、`requested` / `planned` は `host_ip` と `host_port` を持つ。`actual_bindings` は Docker inspect から得た現在の actual binding の配列で、各要素は `host_ip` と `host_port` を持つ。
+- 同 published entry では既存 JSON consumer との互換のため、`requested_host_ip_kind`、`requested_host_port`、`planned_host_ip_kind`、`planned_host_port`、`relocated` も含める。
 - 同 metadata の endpoint で host IP が明示されている場合は、`requested_host_ip` または `planned_host_ip` も含める。
 
-`*_host_ip_kind` は `omitted` または `explicit` である。`omitted` は Compose file 上で host IP が省略されたことを表し、この場合、対応する `*_host_ip` は省略する。published port の requested endpoint は Docker が実際に publish している binding だけからは復元しない。
+`requested.host_ip` / `planned.host_ip` は host IP omitted の場合 `null`、explicit host IP の場合 string とする。`*_host_ip_kind` は `omitted` または `explicit` である。`omitted` は Compose file 上で host IP が省略されたことを表し、この場合、対応する flat `*_host_ip` は省略する。published port の requested endpoint は Docker が実際に publish している binding だけからは復元しない。
 
 ### `remove` / `rm`
 
