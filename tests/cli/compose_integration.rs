@@ -499,6 +499,50 @@ fn compose_integration_sidecar_published_port_relocation_uses_docker_binding() {
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_dependency_published_port_relocation_uses_compose_active_service_set() {
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    let workspace = compose_published_dependency_workspace(requested_port);
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let containers = compose_project_containers(workspace.path()).unwrap();
+    assert_eq!(running_services(&containers), vec!["app", "db"]);
+    let published_ports = compose_service_published_host_ports(workspace.path(), "db", "5432/tcp");
+    assert!(
+        !published_ports.contains(&requested_port),
+        "dependency relocation must replace the original requested port"
+    );
+    assert!(
+        published_ports.iter().any(|port| *port > requested_port),
+        "expected relocated dependency host port greater than {requested_port}: {published_ports:?}"
+    );
+    let ports = decune_ports_json(workspace.path());
+    assert!(
+        ports.iter().any(|port| {
+            port["type"] == "published"
+                && port["source"] == "compose"
+                && port["service"] == "db"
+                && port["container_port"].as_u64() == Some(5432)
+                && port["relocated"] == true
+        }),
+        "ports output did not report relocated dependency published port: {ports:#?}"
+    );
+    drop(requested_listener);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_profile_published_port_relocation_follows_active_service_set() {
     let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
         return;
@@ -1164,6 +1208,54 @@ fn compose_published_sidecar_workspace(host_port: u16) -> ComposeFixtureWorkspac
               app:
                 image: alpine:3.20
                 command: sleep infinity
+                volumes:
+                  - ..:/workspace
+              db:
+                image: alpine:3.20
+                command: sleep infinity
+                ports:
+                  - "127.0.0.1:{host_port}:5432"
+            "#
+            ),
+        )
+        .unwrap();
+
+    ComposeFixtureWorkspace { workspace }
+}
+
+fn compose_published_dependency_workspace(host_port: u16) -> ComposeFixtureWorkspace {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "name": "compose-dependency-published-port",
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "workspaceFolder": "/workspace",
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            format!(
+                r#"
+            services:
+              app:
+                image: alpine:3.20
+                command: sleep infinity
+                depends_on:
+                  - db
                 volumes:
                   - ..:/workspace
               db:
