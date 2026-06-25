@@ -210,6 +210,149 @@ fn compose_integration_reuses_running_compose_project_with_published_port_reloca
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_default_published_port_collision_fails_without_relocation() {
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    drop(requested_listener);
+    let first = compose_published_primary_workspace(requested_port);
+    let second = compose_published_primary_workspace(requested_port);
+    let first_container_tools_dir = fake_container_tools_bundle(&first);
+    let second_container_tools_dir = fake_container_tools_bundle(&second);
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(first.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &first_container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(second.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &second_container_tools_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_published_port_collision")
+                .and(predicate::str::contains("service: `app`"))
+                .and(predicate::str::contains(format!(
+                    "127.0.0.1:{requested_port}"
+                )))
+                .and(predicate::str::contains("app:3000/tcp"))
+                .and(predicate::str::contains(
+                    "decune automatic forwarding does not replace",
+                )),
+        );
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_published_port_relocation_starts_second_workspace_and_reports_ports() {
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    drop(requested_listener);
+    let first = compose_published_primary_workspace(requested_port);
+    let second = compose_published_primary_workspace(requested_port);
+    let first_container_tools_dir = fake_container_tools_bundle(&first);
+    let second_container_tools_dir = fake_container_tools_bundle(&second);
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(first.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &first_container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    decune()
+        .args([
+            "up",
+            "--detach",
+            "--no-auto-forward",
+            "--published-port-relocation",
+        ])
+        .arg(second.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &second_container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let published_ports = compose_service_published_host_ports(second.path(), "app", "3000/tcp");
+    assert!(
+        !published_ports.contains(&requested_port),
+        "relocation must not keep the original requested port active"
+    );
+    let planned_port = *published_ports
+        .iter()
+        .find(|port| **port > requested_port)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected relocated host port greater than {requested_port}: {published_ports:?}"
+            )
+        });
+
+    decune()
+        .args(["ports"])
+        .arg(second.path())
+        .assert()
+        .success()
+        .stdout(
+            predicate::str::contains("published")
+                .and(predicate::str::contains("compose"))
+                .and(predicate::str::contains("app:3000/tcp"))
+                .and(predicate::str::contains(format!(
+                    "127.0.0.1:{planned_port}"
+                )))
+                .and(predicate::str::contains(format!(
+                    "127.0.0.1:{requested_port}"
+                )))
+                .and(predicate::str::contains("relocated")),
+        )
+        .stderr(predicate::str::is_empty());
+
+    let ports = decune_ports_json(second.path());
+    let published = ports
+        .iter()
+        .find(|port| port["type"] == "published" && port["service"] == "app")
+        .unwrap_or_else(|| panic!("published app port was not reported: {ports:#?}"));
+    assert_eq!(published["source"], "compose");
+    assert_eq!(published["container_port"].as_u64(), Some(3000));
+    assert_eq!(published["requested"]["host_ip"], "127.0.0.1");
+    assert_eq!(
+        published["requested"]["host_port"].as_u64(),
+        Some(u64::from(requested_port))
+    );
+    assert_eq!(published["planned"]["host_ip"], "127.0.0.1");
+    assert_eq!(
+        published["planned"]["host_port"].as_u64(),
+        Some(u64::from(planned_port))
+    );
+    assert_eq!(published["relocated"], true);
+    assert!(
+        published["actual_bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|binding| binding["host_port"].as_u64() == Some(u64::from(planned_port))),
+        "actual Docker binding should include relocated port: {published:#?}"
+    );
+    assert!(
+        ports.iter().all(|port| port["type"] != "forwarded"),
+        "--no-auto-forward plus relocation must not create forwarding listeners: {ports:#?}"
+    );
+}
+
+#[test]
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_published_port_relocation_replaces_original_binding() {
     let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
@@ -246,6 +389,163 @@ fn compose_integration_published_port_relocation_replaces_original_binding() {
     assert_eq!(
         fs::read_to_string(devcontainer_file).unwrap(),
         original_devcontainer
+    );
+    drop(requested_listener);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_published_port_relocation_preserves_host_ip_and_long_syntax() {
+    let Some(requested_listeners) = reserved_localhost_port_block_with_room(3, 16) else {
+        return;
+    };
+    let requested_port = requested_listeners[0].local_addr().unwrap().port();
+    let workspace = compose_published_host_ip_workspace(requested_port);
+    let state_home = support::TempWorkspace::new().unwrap();
+    let state_home_value = state_home.path().to_string_lossy().into_owned();
+    let compose_file = workspace.path().join(".devcontainer/compose.yaml");
+    let devcontainer_file = workspace.path().join(".devcontainer/devcontainer.json");
+    let original_compose = fs::read_to_string(&compose_file).unwrap();
+    let original_devcontainer = fs::read_to_string(&devcontainer_file).unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("XDG_STATE_HOME", &state_home_value)
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let config = final_compose_config_json(workspace.path(), state_home.path());
+    let ports = compose_config_service_ports(&config, "app");
+    let omitted = compose_config_port_for_target(ports, 3000);
+    let loopback = compose_config_port_for_target(ports, 3001);
+    let wildcard = compose_config_port_for_target(ports, 3002);
+
+    assert_eq!(omitted.get("host_ip"), None);
+    assert!(compose_config_port_value(omitted, "published").unwrap() > requested_port);
+    assert_eq!(loopback["host_ip"], "127.0.0.1");
+    assert!(compose_config_port_value(loopback, "published").unwrap() > requested_port);
+    assert_eq!(loopback["protocol"], "tcp");
+    assert_eq!(loopback["app_protocol"], "http");
+    assert_eq!(loopback["name"], "loopback");
+    assert_eq!(loopback["mode"], "host");
+    assert_eq!(wildcard["host_ip"], "0.0.0.0");
+    assert!(compose_config_port_value(wildcard, "published").unwrap() > requested_port);
+
+    let ports = decune_ports_json_with_state_home(workspace.path(), state_home.path());
+    let omitted_json = ports
+        .iter()
+        .find(|port| port["type"] == "published" && port["container_port"].as_u64() == Some(3000))
+        .unwrap_or_else(|| panic!("omitted host IP published port was not reported: {ports:#?}"));
+    assert_eq!(omitted_json["requested"]["host_ip"], Value::Null);
+    assert_eq!(omitted_json["planned"]["host_ip"], Value::Null);
+    assert_eq!(omitted_json["requested_host_ip_kind"], "omitted");
+    assert_eq!(omitted_json["planned_host_ip_kind"], "omitted");
+
+    assert_eq!(fs::read_to_string(compose_file).unwrap(), original_compose);
+    assert_eq!(
+        fs::read_to_string(devcontainer_file).unwrap(),
+        original_devcontainer
+    );
+    drop(requested_listeners);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_sidecar_published_port_relocation_uses_docker_binding() {
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    let workspace = compose_published_sidecar_workspace(requested_port);
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let containers = compose_project_containers(workspace.path()).unwrap();
+    assert_eq!(running_services(&containers), vec!["app", "db"]);
+    let published_ports = compose_service_published_host_ports(workspace.path(), "db", "5432/tcp");
+    assert!(
+        !published_ports.contains(&requested_port),
+        "sidecar relocation must replace the original requested port"
+    );
+    assert!(
+        published_ports.iter().any(|port| *port > requested_port),
+        "expected relocated sidecar host port greater than {requested_port}: {published_ports:?}"
+    );
+    let ports = decune_ports_json(workspace.path());
+    assert!(
+        ports.iter().any(|port| {
+            port["type"] == "published"
+                && port["source"] == "compose"
+                && port["service"] == "db"
+                && port["container_port"].as_u64() == Some(5432)
+                && port["relocated"] == true
+        }),
+        "ports output did not report relocated sidecar published port: {ports:#?}"
+    );
+    drop(requested_listener);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_profile_published_port_relocation_follows_active_service_set() {
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    let inactive = compose_profile_published_workspace(requested_port, false);
+    let active = compose_profile_published_workspace(requested_port, true);
+    let inactive_container_tools_dir = fake_container_tools_bundle(&inactive);
+    let active_container_tools_dir = fake_container_tools_bundle(&active);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(inactive.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &inactive_container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let inactive_containers = compose_project_containers(inactive.path()).unwrap();
+    assert_eq!(running_services(&inactive_containers), vec!["app"]);
+    assert!(
+        decune_ports_json(inactive.path()).is_empty(),
+        "inactive profile service must not publish or relocate ports"
+    );
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(active.path())
+        .env("COMPOSE_PROFILES", "debug")
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &active_container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let active_containers = compose_project_containers(active.path()).unwrap();
+    assert_eq!(running_services(&active_containers), vec!["app", "debug"]);
+    let published_ports = compose_service_published_host_ports(active.path(), "debug", "9229/tcp");
+    assert!(
+        !published_ports.contains(&requested_port),
+        "active profile service should relocate away from requested port"
+    );
+    assert!(
+        published_ports.iter().any(|port| *port > requested_port),
+        "expected relocated profile host port greater than {requested_port}: {published_ports:?}"
     );
     drop(requested_listener);
 }
@@ -923,6 +1223,121 @@ fn compose_published_primary_workspace(host_port: u16) -> ComposeFixtureWorkspac
     ComposeFixtureWorkspace { workspace }
 }
 
+fn compose_published_host_ip_workspace(base_host_port: u16) -> ComposeFixtureWorkspace {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "name": "compose-published-host-ip",
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "workspaceFolder": "/workspace",
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            format!(
+                r#"
+            services:
+              app:
+                image: alpine:3.20
+                command: sleep infinity
+                volumes:
+                  - ..:/workspace
+                ports:
+                  - "{base_host_port}:3000"
+                  - target: 3001
+                    published: "{}"
+                    host_ip: "127.0.0.1"
+                    protocol: tcp
+                    app_protocol: http
+                    name: loopback
+                    mode: host
+                  - target: 3002
+                    published: "{}"
+                    host_ip: "0.0.0.0"
+                    protocol: tcp
+            "#,
+                base_host_port + 1,
+                base_host_port + 2,
+            ),
+        )
+        .unwrap();
+
+    ComposeFixtureWorkspace { workspace }
+}
+
+fn compose_profile_published_workspace(host_port: u16, run_debug: bool) -> ComposeFixtureWorkspace {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    let devcontainer_json = if run_debug {
+        r#"
+        {
+          "name": "compose-profile-published-port",
+          "dockerComposeFile": "compose.yaml",
+          "service": "app",
+          "runServices": ["debug"],
+          "workspaceFolder": "/workspace",
+          "updateRemoteUserUID": false
+        }
+        "#
+    } else {
+        r#"
+        {
+          "name": "compose-profile-published-port",
+          "dockerComposeFile": "compose.yaml",
+          "service": "app",
+          "workspaceFolder": "/workspace",
+          "updateRemoteUserUID": false
+        }
+        "#
+    };
+    workspace
+        .write_file(".devcontainer/devcontainer.json", devcontainer_json)
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            format!(
+                r#"
+            services:
+              app:
+                image: alpine:3.20
+                command: sleep infinity
+                volumes:
+                  - ..:/workspace
+              debug:
+                image: alpine:3.20
+                command: sleep infinity
+                profiles:
+                  - debug
+                ports:
+                  - "127.0.0.1:{host_port}:9229"
+            "#
+            ),
+        )
+        .unwrap();
+
+    ComposeFixtureWorkspace { workspace }
+}
+
 fn available_localhost_port() -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
     listener.local_addr().unwrap().port()
@@ -932,6 +1347,25 @@ fn reserved_localhost_port_with_room_for_relocation() -> Option<TcpListener> {
     (0..16).find_map(|_| {
         let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;
         (listener.local_addr().ok()?.port() < u16::MAX - 16).then_some(listener)
+    })
+}
+
+fn reserved_localhost_port_block_with_room(
+    count: u16,
+    relocation_room: u16,
+) -> Option<Vec<TcpListener>> {
+    (0..64).find_map(|_| {
+        let first = TcpListener::bind(("127.0.0.1", 0)).ok()?;
+        let base = first.local_addr().ok()?.port();
+        if base > u16::MAX - count - relocation_room {
+            return None;
+        }
+        let mut listeners = vec![first];
+        for offset in 1..count {
+            let listener = TcpListener::bind(("127.0.0.1", base + offset)).ok()?;
+            listeners.push(listener);
+        }
+        Some(listeners)
     })
 }
 
@@ -1218,6 +1652,87 @@ fn compose_service_published_host_ports(
     host_ports.sort();
     host_ports.dedup();
     host_ports
+}
+
+fn decune_ports_json(workspace: &Path) -> Vec<Value> {
+    let mut command = decune();
+    command.args(["ports", "--json"]).arg(workspace);
+    decune_ports_json_from_command(command)
+}
+
+fn decune_ports_json_with_state_home(workspace: &Path, state_home: &Path) -> Vec<Value> {
+    let mut command = decune();
+    command
+        .args(["ports", "--json"])
+        .arg(workspace)
+        .env("XDG_STATE_HOME", state_home);
+    decune_ports_json_from_command(command)
+}
+
+fn decune_ports_json_from_command(mut command: assert_cmd::Command) -> Vec<Value> {
+    let output = command
+        .assert()
+        .success()
+        .stderr(predicate::str::is_empty())
+        .get_output()
+        .stdout
+        .clone();
+    serde_json::from_slice::<Vec<Value>>(&output).unwrap()
+}
+
+fn final_compose_config_json(workspace: &Path, state_home: &Path) -> Value {
+    let devcontainer_dir = workspace.join(".devcontainer");
+    let generated_override = state_home
+        .join("decune")
+        .join(workspace_id(workspace))
+        .join("compose.override.yaml");
+    assert!(
+        generated_override.is_file(),
+        "generated Compose override was not written at {}",
+        generated_override.display()
+    );
+
+    let output = docker_output(vec![
+        "compose".to_owned(),
+        "--project-name".to_owned(),
+        compose_project_name(workspace),
+        "--project-directory".to_owned(),
+        devcontainer_dir.display().to_string(),
+        "-f".to_owned(),
+        devcontainer_dir.join("compose.yaml").display().to_string(),
+        "-f".to_owned(),
+        generated_override.display().to_string(),
+        "config".to_owned(),
+        "--format".to_owned(),
+        "json".to_owned(),
+    ])
+    .unwrap();
+    serde_json::from_str(&output).unwrap()
+}
+
+fn compose_config_service_ports<'a>(config: &'a Value, service: &str) -> &'a [Value] {
+    config
+        .pointer(&format!("/services/{service}/ports"))
+        .and_then(Value::as_array)
+        .map(Vec::as_slice)
+        .unwrap_or_else(|| panic!("Compose config did not contain service ports: {config:#?}"))
+}
+
+fn compose_config_port_for_target(ports: &[Value], target: u16) -> &Value {
+    ports
+        .iter()
+        .find(|port| compose_config_port_value(port, "target") == Some(target))
+        .unwrap_or_else(|| {
+            panic!("Compose config did not contain target port {target}: {ports:#?}")
+        })
+}
+
+fn compose_config_port_value(port: &Value, key: &str) -> Option<u16> {
+    match port.get(key)? {
+        Value::Number(number) => number.as_u64().and_then(|value| u16::try_from(value).ok()),
+        Value::String(value) => value.parse().ok(),
+        _ => None,
+    }
 }
 
 fn compose_project_containers(workspace: &Path) -> anyhow::Result<Vec<ComposeContainer>> {
