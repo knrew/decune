@@ -1909,6 +1909,36 @@ mod tests {
     }
 
     #[test]
+    fn planner_uses_forwarding_wildcard_reservations_for_omitted_host_ip() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [
+                            {"target": 3000, "published": "3000"},
+                            {"host_ip": "::1", "target": 3001, "published": "3000"}
+                        ]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let forwarding = vec![forward_port("0.0.0.0", 3000, 8080)];
+
+        let plan =
+            plan_compose_published_ports_with(&input, true, &forwarding, &[], |_, _| Ok(true))
+                .unwrap();
+
+        assert_eq!(plan.entries[0].planned.host_port, 3001);
+        assert_eq!(
+            plan.entries[0].allocation_reason,
+            ComposePublishedPortAllocationReason::Reserved
+        );
+        assert_eq!(plan.entries[1].planned.host_port, 3000);
+    }
+
+    #[test]
     fn planner_uses_wildcard_collision_reasoning_for_reservations() {
         let input = planning_input(
             json!({

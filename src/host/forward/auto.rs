@@ -17,7 +17,9 @@ use crate::{
         },
         types::OnAutoForward,
     },
-    docker::ports::{ResolvedForwardPort, resolve_auto_forward_ports},
+    docker::ports::{
+        HostPortReservation, ResolvedForwardPort, resolve_auto_forward_ports_with_host_reservations,
+    },
     ui,
 };
 
@@ -36,16 +38,34 @@ pub(crate) struct AutoForwardConfig {
     publish_ports: Vec<ResolvedPublishPort>,
     port_attributes: BTreeMap<String, ResolvedPortAttributes>,
     other_ports_attributes: Option<ResolvedPortAttributes>,
+    host_port_reservations: Vec<HostPortReservation>,
 }
 
 impl AutoForwardConfig {
-    pub(crate) fn from_config(config: &ResolvedConfig) -> Option<Self> {
+    pub(crate) fn from_config_with_runtime_ports(
+        config: &ResolvedConfig,
+        host_port_reservations: Vec<HostPortReservation>,
+        publish_ports: Vec<ResolvedPublishPort>,
+    ) -> Option<Self> {
+        let mut all_publish_ports = config.devcontainer.publish_ports.clone();
+        all_publish_ports.extend(publish_ports);
         config.ports.auto.enabled.then(|| Self {
             auto: config.ports.auto.clone(),
-            publish_ports: config.devcontainer.publish_ports.clone(),
+            publish_ports: all_publish_ports,
             port_attributes: config.devcontainer.port_attributes.clone(),
             other_ports_attributes: config.devcontainer.other_ports_attributes.clone(),
+            host_port_reservations,
         })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn host_port_reservations(&self) -> &[HostPortReservation] {
+        &self.host_port_reservations
+    }
+
+    #[cfg(test)]
+    pub(crate) fn publish_ports(&self) -> &[ResolvedPublishPort] {
+        &self.publish_ports
     }
 }
 
@@ -91,13 +111,14 @@ async fn scan_and_add_auto_forwards(
     status_registry: Option<&ForwardStatusRegistry>,
 ) -> Result<()> {
     let detected = request_auto_forward_ports(agent_socket_path, secret, &config.auto).await?;
-    let additions = resolve_auto_forward_ports(
+    let additions = resolve_auto_forward_ports_with_host_reservations(
         detected,
         forward_ports,
         &config.publish_ports,
         &config.auto,
         &config.port_attributes,
         config.other_ports_attributes.as_ref(),
+        &config.host_port_reservations,
     )?;
     if additions.is_empty() {
         return Ok(());
