@@ -189,14 +189,6 @@ impl Spinner {
             None => {}
         }
     }
-
-    #[cfg_attr(not(test), expect(dead_code))]
-    pub(crate) fn finish_quiet(mut self) {
-        match self.inner.take() {
-            Some(SpinnerInner::Tty(pb)) => pb.finish_and_clear(),
-            Some(SpinnerInner::Plain) | None => {}
-        }
-    }
 }
 
 impl Drop for Spinner {
@@ -239,19 +231,6 @@ mod tests {
         };
 
         spinner.finish("Done building");
-
-        assert!(weak.upgrade().is_none());
-    }
-
-    #[test]
-    fn tty_spinner_finish_quiet_drops_progress_bar() {
-        let pb = ProgressBar::hidden();
-        let weak = pb.downgrade();
-        let spinner = Spinner {
-            inner: Some(SpinnerInner::Tty(pb)),
-        };
-
-        spinner.finish_quiet();
 
         assert!(weak.upgrade().is_none());
     }
