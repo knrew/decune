@@ -38,7 +38,7 @@ use existing::{CredentialRuntimeMountPolicy, container_summary, decide_existing_
 use forwarding::{
     ForwardAgentStartDecision, decide_forward_agent_start, plan_forwarding_agent_targets,
     plan_forwarding_agent_targets_with_host_reservations, published_port_host_reservations,
-    published_port_publish_ports,
+    published_port_publish_ports, published_port_publish_ports_for_service,
 };
 #[cfg(test)]
 use metadata::{
@@ -238,9 +238,10 @@ mod tests {
         feature_layer_image, finalize_up_plan_mounts, first_successful_shell_candidate,
         generated_compose_override_content, list_workspace_containers, mount_hash_inputs,
         plan_forwarding_agent_targets, plan_forwarding_agent_targets_with_host_reservations,
-        published_port_host_reservations, published_port_publish_ports, run_attached_up,
-        run_detached_up, security_notices, shell_command_candidates,
-        should_auto_add_github_cli_feature, uid_gid_sync_base_image, uid_gid_sync_warning,
+        published_port_host_reservations, published_port_publish_ports,
+        published_port_publish_ports_for_service, run_attached_up, run_detached_up,
+        security_notices, shell_command_candidates, should_auto_add_github_cli_feature,
+        uid_gid_sync_base_image, uid_gid_sync_warning,
     };
 
     #[test]
@@ -1862,6 +1863,79 @@ require_local = true
                 container: 3000,
                 host: Some(3001),
                 host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }]
+        );
+    }
+
+    #[test]
+    fn compose_auto_forward_publish_exclusions_use_primary_service_only() {
+        let published_ports = vec![
+            PublishedPortRuntimeState {
+                source: PublishedPortSource::Compose,
+                kind: PublishedPortRuntimeType::Published,
+                service: "db".to_owned(),
+                port_entry_index: 0,
+                target: PublishedPortTarget {
+                    port: 3000,
+                    protocol: "tcp".to_owned(),
+                },
+                requested: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3000,
+                },
+                planned: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3000,
+                },
+                actual_bindings: Vec::new(),
+                relocated: false,
+            },
+            PublishedPortRuntimeState {
+                source: PublishedPortSource::Compose,
+                kind: PublishedPortRuntimeType::Published,
+                service: "app".to_owned(),
+                port_entry_index: 0,
+                target: PublishedPortTarget {
+                    port: 8080,
+                    protocol: "tcp".to_owned(),
+                },
+                requested: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    host_port: 18080,
+                },
+                planned: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    host_port: 18080,
+                },
+                actual_bindings: Vec::new(),
+                relocated: false,
+            },
+        ];
+
+        assert_eq!(
+            published_port_host_reservations(&published_ports),
+            vec![
+                HostPortReservation {
+                    host_ip: "0.0.0.0".to_owned(),
+                    host: 3000,
+                },
+                HostPortReservation {
+                    host_ip: "127.0.0.1".to_owned(),
+                    host: 18080,
+                },
+            ]
+        );
+        assert_eq!(
+            published_port_publish_ports_for_service(&published_ports, Some("app")),
+            vec![ResolvedPublishPort {
+                container: 8080,
+                host: Some(18080),
+                host_ip: Some("127.0.0.1".to_owned()),
                 protocol: PortProtocol::Tcp,
             }]
         );

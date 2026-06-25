@@ -155,7 +155,10 @@ async fn resolve_forwarding_agent_targets(
 ) -> Result<Vec<ForwardingAgentTarget>> {
     let published_host_reservations =
         published_port_host_reservations(&started.state.borrow().published_ports);
-    let published_ports = published_port_publish_ports(&started.state.borrow().published_ports);
+    let published_ports = published_port_publish_ports_for_service(
+        &started.state.borrow().published_ports,
+        primary_compose_service(&started.plan),
+    );
     let mut targets = plan_forwarding_agent_targets_with_host_reservations(
         &started.plan,
         primary_runtime_dir,
@@ -301,12 +304,26 @@ pub(in crate::up) fn published_port_host_reservations(
         .collect()
 }
 
+#[cfg(test)]
 pub(in crate::up) fn published_port_publish_ports(
     published_ports: &[PublishedPortRuntimeState],
 ) -> Vec<ResolvedPublishPort> {
+    published_port_publish_ports_for_service(published_ports, None)
+}
+
+pub(in crate::up) fn published_port_publish_ports_for_service(
+    published_ports: &[PublishedPortRuntimeState],
+    service: Option<&str>,
+) -> Vec<ResolvedPublishPort> {
     published_ports
         .iter()
-        .filter(|port| port.target.protocol == "tcp")
+        .filter(|port| {
+            port.target.protocol == "tcp"
+                && match service {
+                    Some(service) => port.service == service,
+                    None => true,
+                }
+        })
         .map(|port| ResolvedPublishPort {
             container: port.target.port,
             host: Some(port.planned.host_port),
