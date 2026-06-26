@@ -22,6 +22,7 @@ use crate::{
 };
 
 const DOTFILES_MOUNT_ROOT: &str = "/opt/decune/dotfiles";
+const DOTFILE_BACKINGS_MOUNT_ROOT: &str = "/opt/decune/dotfile-backings";
 const DOTFILE_MOUNT_SKELETON_DIR: &str = "dotfile-mount-skeleton";
 const MAX_DOTFILE_TREE_DEPTH: u32 = 32;
 const MAX_DOTFILE_MOUNTS: usize = 1024;
@@ -39,9 +40,9 @@ pub(crate) struct DotfileSkeletonPlan {
     entries: BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum DotfileSkeletonEntryKind {
-    File,
+    Symlink { target: String },
     Directory,
 }
 
@@ -459,6 +460,12 @@ struct DotfileTree {
     has_symlink: bool,
 }
 
+#[derive(Debug)]
+struct DotfileDirectoryEntry {
+    name: String,
+    path: PathBuf,
+}
+
 impl DotfileTree {
     fn insert(
         &mut self,
@@ -511,30 +518,42 @@ fn collect_dotfile_tree(source: &Path) -> Result<DotfileTree> {
     Ok(tree)
 }
 
+fn read_dotfile_directory_entries(source: &Path) -> Result<Vec<DotfileDirectoryEntry>> {
+    let read_dir = fs::read_dir(source).with_context(|| {
+        format!(
+            "Failed to read dotfile source directory: {}",
+            source.display()
+        )
+    })?;
+    let mut entries = Vec::new();
+    for entry in read_dir {
+        let entry = entry
+            .with_context(|| format!("Failed to read directory entry in: {}", source.display()))?;
+        let name = entry.file_name();
+        let name = name.to_str().ok_or_else(|| {
+            anyhow::anyhow!(
+                "Dotfile source entry is not valid Unicode: {}",
+                entry.path().display()
+            )
+        })?;
+        entries.push(DotfileDirectoryEntry {
+            name: name.to_owned(),
+            path: entry.path(),
+        });
+    }
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+
+    Ok(entries)
+}
+
 fn directory_contains_any_symlink(source: &Path) -> Result<bool> {
     let mut pending = vec![source.to_path_buf()];
     while let Some(directory) = pending.pop() {
-        let entries = fs::read_dir(&directory).with_context(|| {
-            format!(
-                "Failed to read dotfile source directory: {}",
-                directory.display()
-            )
-        })?;
-        for entry in entries {
-            let entry = entry.with_context(|| {
-                format!("Failed to read directory entry in: {}", directory.display())
-            })?;
-            let name = entry.file_name();
-            let _name = name.to_str().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Dotfile source entry is not valid Unicode: {}",
-                    entry.path().display()
-                )
-            })?;
-            let metadata = fs::symlink_metadata(entry.path()).with_context(|| {
+        for entry in read_dotfile_directory_entries(&directory)? {
+            let metadata = fs::symlink_metadata(&entry.path).with_context(|| {
                 format!(
                     "Failed to read dotfile source metadata: {}",
-                    entry.path().display()
+                    entry.path.display()
                 )
             })?;
             let file_type = metadata.file_type();
@@ -542,11 +561,11 @@ fn directory_contains_any_symlink(source: &Path) -> Result<bool> {
                 return Ok(true);
             }
             if file_type.is_dir() {
-                pending.push(entry.path());
+                pending.push(entry.path);
             } else if !file_type.is_file() {
                 bail!(
                     "Dotfile source entry must be a file, directory, or symlink: {}",
-                    entry.path().display()
+                    entry.path.display()
                 );
             }
         }
@@ -570,26 +589,10 @@ fn collect_logical_directory(
         );
     }
 
-    let entries = fs::read_dir(source).with_context(|| {
-        format!(
-            "Failed to read dotfile source directory: {}",
-            source.display()
-        )
-    })?;
-
-    for entry in entries {
-        let entry = entry
-            .with_context(|| format!("Failed to read directory entry in: {}", source.display()))?;
-        let name = entry.file_name();
-        let name = name.to_str().ok_or_else(|| {
-            anyhow::anyhow!(
-                "Dotfile source entry is not valid Unicode: {}",
-                entry.path().display()
-            )
-        })?;
-        let relative = relative_parent.join(name);
+    for entry in read_dotfile_directory_entries(source)? {
+        let relative = relative_parent.join(&entry.name);
         collect_logical_entry(
-            &entry.path(),
+            &entry.path,
             relative,
             from_symlink,
             ancestors,
@@ -787,6 +790,7 @@ fn collect_physical_directory_without_symlinks(
     let Ok(read_dir) = fs::read_dir(source) else {
         return Ok(false);
     };
+    let mut directory_entries = Vec::new();
     for entry in read_dir {
         let Ok(entry) = entry else {
             return Ok(false);
@@ -795,8 +799,13 @@ fn collect_physical_directory_without_symlinks(
         let Some(name) = name.to_str() else {
             return Ok(false);
         };
+        directory_entries.push((name.to_owned(), entry.path()));
+    }
+    directory_entries.sort_by(|left, right| left.0.cmp(&right.0));
+
+    for (name, path) in directory_entries {
         let relative = relative_parent.join(name);
-        let Ok(metadata) = fs::symlink_metadata(entry.path()) else {
+        let Ok(metadata) = fs::symlink_metadata(&path) else {
             return Ok(false);
         };
         let Some(kind) = kind_from_metadata(&metadata) else {
@@ -804,12 +813,7 @@ fn collect_physical_directory_without_symlinks(
         };
         entries.insert(relative.clone(), kind);
         if kind == DotfileTreeEntryKind::Directory
-            && !collect_physical_directory_without_symlinks(
-                &entry.path(),
-                &relative,
-                depth + 1,
-                entries,
-            )?
+            && !collect_physical_directory_without_symlinks(&path, &relative, depth + 1, entries)?
         {
             return Ok(false);
         }
@@ -857,8 +861,11 @@ fn skeleton_dotfile_mount_plan(
         read_only,
         mounts,
         skeleton_entries: BTreeMap::new(),
+        backing_files: BTreeMap::new(),
+        backing_sources: BTreeMap::new(),
     };
     builder.build_directory(&source, Path::new(""), &mut ancestors, 0)?;
+    builder.finalize_backing_mounts()?;
     builder.mounts[1..].sort_by(|left, right| {
         container_path_depth(&left.target)
             .cmp(&container_path_depth(&right.target))
@@ -880,6 +887,14 @@ struct DotfileSkeletonBuilder<'a> {
     read_only: bool,
     mounts: Vec<DockerMountSpec>,
     skeleton_entries: BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
+    backing_files: BTreeMap<PathBuf, DotfileBackingFile>,
+    backing_sources: BTreeMap<PathBuf, ()>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DotfileBackingFile {
+    source: PathBuf,
+    relative: PathBuf,
 }
 
 impl DotfileSkeletonBuilder<'_> {
@@ -897,25 +912,9 @@ impl DotfileSkeletonBuilder<'_> {
             );
         }
 
-        let entries = fs::read_dir(source).with_context(|| {
-            format!(
-                "Failed to read dotfile source directory: {}",
-                source.display()
-            )
-        })?;
-        for entry in entries {
-            let entry = entry.with_context(|| {
-                format!("Failed to read directory entry in: {}", source.display())
-            })?;
-            let name = entry.file_name();
-            let name = name.to_str().ok_or_else(|| {
-                anyhow::anyhow!(
-                    "Dotfile source entry is not valid Unicode: {}",
-                    entry.path().display()
-                )
-            })?;
-            let relative = relative_parent.join(name);
-            self.build_entry(&entry.path(), relative, ancestors, depth + 1)?;
+        for entry in read_dotfile_directory_entries(source)? {
+            let relative = relative_parent.join(&entry.name);
+            self.build_entry(&entry.path, relative, ancestors, depth + 1)?;
         }
 
         Ok(())
@@ -954,11 +953,7 @@ impl DotfileSkeletonBuilder<'_> {
                 )
             })?;
             if metadata.is_file() {
-                self.push_skeleton_entry(relative.clone(), DotfileSkeletonEntryKind::File)?;
-                self.push_mount(
-                    &real_path,
-                    container_child_target(self.container_root, &relative)?,
-                )?;
+                self.push_backed_file(relative, &real_path)?;
             } else if metadata.is_dir() {
                 self.build_directory_or_mount(&real_path, &relative, ancestors, depth)?;
             } else {
@@ -971,11 +966,7 @@ impl DotfileSkeletonBuilder<'_> {
             let real_path = path.canonicalize().with_context(|| {
                 format!("Failed to canonicalize dotfile file: {}", path.display())
             })?;
-            self.push_skeleton_entry(relative.clone(), DotfileSkeletonEntryKind::File)?;
-            self.push_mount(
-                &real_path,
-                container_child_target(self.container_root, &relative)?,
-            )?;
+            self.push_backed_file(relative, &real_path)?;
         } else if file_type.is_dir() {
             let real_path = path.canonicalize().with_context(|| {
                 format!(
@@ -1024,13 +1015,83 @@ impl DotfileSkeletonBuilder<'_> {
         relative: PathBuf,
         kind: DotfileSkeletonEntryKind,
     ) -> Result<()> {
-        if let Some(existing) = self.skeleton_entries.insert(relative.clone(), kind)
+        if self.backing_files.contains_key(&relative) {
+            bail!(
+                "Dotfile skeleton path generated with conflicting entry kinds: {}",
+                relative.display()
+            );
+        }
+        self.insert_skeleton_entry(relative, kind)
+    }
+
+    fn insert_skeleton_entry(
+        &mut self,
+        relative: PathBuf,
+        kind: DotfileSkeletonEntryKind,
+    ) -> Result<()> {
+        let existing = self.skeleton_entries.insert(relative.clone(), kind.clone());
+        if let Some(existing) = existing
             && existing != kind
         {
             bail!(
                 "Dotfile skeleton path generated with conflicting entry kinds: {}",
                 relative.display()
             );
+        }
+
+        Ok(())
+    }
+
+    fn push_backed_file(&mut self, relative: PathBuf, real_path: &Path) -> Result<()> {
+        if self.skeleton_entries.contains_key(&relative) {
+            bail!(
+                "Dotfile skeleton path generated with conflicting entry kinds: {}",
+                relative.display()
+            );
+        }
+
+        let backing_file = backing_file(real_path)?;
+        if let Some(existing) = self.backing_files.get(&relative)
+            && existing != &backing_file
+        {
+            bail!(
+                "Dotfile skeleton path generated with conflicting backing files: {}",
+                relative.display()
+            );
+        }
+        self.backing_sources.insert(backing_file.source.clone(), ());
+        self.backing_files.insert(relative, backing_file);
+
+        Ok(())
+    }
+
+    fn finalize_backing_mounts(&mut self) -> Result<()> {
+        let mut backing_targets = BTreeMap::new();
+        for source in self.backing_sources.keys() {
+            let target = format!("{DOTFILE_BACKINGS_MOUNT_ROOT}/{}", backing_targets.len());
+            backing_targets.insert(source.clone(), target.clone());
+            self.mounts
+                .push(dotfile_bind_mount(source, target, self.read_only));
+        }
+
+        let backing_entries = self
+            .backing_files
+            .iter()
+            .map(|(relative, backing_file)| (relative.clone(), backing_file.clone()))
+            .collect::<Vec<_>>();
+        for (relative, backing_file) in backing_entries {
+            let backing_root = backing_targets.get(&backing_file.source).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "Dotfile backing directory missing for skeleton entry: {}",
+                    relative.display()
+                )
+            })?;
+            self.insert_skeleton_entry(
+                relative,
+                DotfileSkeletonEntryKind::Symlink {
+                    target: container_child_target(backing_root, &backing_file.relative)?,
+                },
+            )?;
         }
 
         Ok(())
@@ -1054,6 +1115,21 @@ impl DotfileSkeletonBuilder<'_> {
     }
 }
 
+fn backing_file(real_path: &Path) -> Result<DotfileBackingFile> {
+    let source = real_path
+        .parent()
+        .ok_or_else(|| anyhow::anyhow!("Dotfile file has no parent: {}", real_path.display()))?
+        .to_path_buf();
+    let file_name = real_path
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("Dotfile file has no file name: {}", real_path.display()))?;
+
+    Ok(DotfileBackingFile {
+        source,
+        relative: PathBuf::from(file_name),
+    })
+}
+
 fn directory_contains_symlink(source: &Path, ancestors: &[PathBuf], depth: u32) -> Result<bool> {
     if depth > MAX_DOTFILE_TREE_DEPTH {
         bail!(
@@ -1071,19 +1147,11 @@ fn directory_contains_symlink(source: &Path, ancestors: &[PathBuf], depth: u32) 
 
     let mut ancestors = ancestors.to_vec();
     ancestors.push(source.clone());
-    let entries = fs::read_dir(&source).with_context(|| {
-        format!(
-            "Failed to read dotfile source directory: {}",
-            source.display()
-        )
-    })?;
-    for entry in entries {
-        let entry = entry
-            .with_context(|| format!("Failed to read directory entry in: {}", source.display()))?;
-        let metadata = fs::symlink_metadata(entry.path()).with_context(|| {
+    for entry in read_dotfile_directory_entries(&source)? {
+        let metadata = fs::symlink_metadata(&entry.path).with_context(|| {
             format!(
                 "Failed to read dotfile source metadata: {}",
-                entry.path().display()
+                entry.path.display()
             )
         })?;
         let file_type = metadata.file_type();
@@ -1091,13 +1159,13 @@ fn directory_contains_symlink(source: &Path, ancestors: &[PathBuf], depth: u32) 
             return Ok(true);
         }
         if file_type.is_dir() {
-            if directory_contains_symlink(&entry.path(), &ancestors, depth + 1)? {
+            if directory_contains_symlink(&entry.path, &ancestors, depth + 1)? {
                 return Ok(true);
             }
         } else if !file_type.is_file() {
             bail!(
                 "Dotfile source entry must be a file, directory, or symlink: {}",
-                entry.path().display()
+                entry.path.display()
             );
         }
     }
@@ -1114,8 +1182,8 @@ fn materialize_dotfile_skeleton(skeleton: &DotfileSkeletonPlan) -> Result<()> {
             DotfileSkeletonEntryKind::Directory => {
                 materialize_skeleton_directory(&path, skeleton.read_only)?;
             }
-            DotfileSkeletonEntryKind::File => {
-                materialize_skeleton_file(&path, skeleton.read_only)?;
+            DotfileSkeletonEntryKind::Symlink { target } => {
+                materialize_skeleton_symlink(&path, target, skeleton.read_only)?;
             }
         }
     }
@@ -1187,23 +1255,28 @@ fn materialize_skeleton_directory(path: &Path, replace_conflict: bool) -> Result
     }
 }
 
-fn materialize_skeleton_file(path: &Path, replace_conflict: bool) -> Result<()> {
+fn materialize_skeleton_symlink(
+    path: &Path,
+    target: &str,
+    replace_parent_conflict: bool,
+) -> Result<()> {
     if let Some(parent) = path.parent() {
-        materialize_skeleton_directory(parent, replace_conflict)?;
+        materialize_skeleton_directory(parent, replace_parent_conflict)?;
     }
 
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.file_type().is_file() => Ok(()),
-        Ok(metadata) if replace_conflict => {
-            remove_skeleton_path(path, &metadata)?;
-            create_skeleton_file_without_truncate(path)
+        Ok(metadata)
+            if metadata.file_type().is_symlink()
+                && fs::read_link(path).ok().as_deref() == Some(Path::new(target)) =>
+        {
+            Ok(())
         }
-        Ok(_) => bail!(
-            "Dotfile mount skeleton path conflicts with desired file: {}",
-            path.display()
-        ),
+        Ok(metadata) => {
+            remove_skeleton_path(path, &metadata)?;
+            create_skeleton_symlink(path, target)
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            create_skeleton_file_without_truncate(path)
+            create_skeleton_symlink(path, target)
         }
         Err(error) => Err(error).with_context(|| {
             format!(
@@ -1214,18 +1287,14 @@ fn materialize_skeleton_file(path: &Path, replace_conflict: bool) -> Result<()> 
     }
 }
 
-fn create_skeleton_file_without_truncate(path: &Path) -> Result<()> {
-    fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(path)
-        .with_context(|| {
-            format!(
-                "Failed to create dotfile mount skeleton file: {}",
-                path.display()
-            )
-        })?;
+fn create_skeleton_symlink(path: &Path, target: &str) -> Result<()> {
+    std::os::unix::fs::symlink(target, path).with_context(|| {
+        format!(
+            "Failed to create dotfile mount skeleton symlink: {} -> {}",
+            path.display(),
+            target
+        )
+    })?;
 
     Ok(())
 }
@@ -1386,6 +1455,25 @@ mod tests {
         let plan = dotfile_mount_plan(config, workspace_root, variables, state_root)?;
         materialize_dotfile_skeletons(&plan.skeletons)?;
         Ok(plan.mounts)
+    }
+
+    fn backing_mount_target_for_source(mounts: &[DockerMountSpec], source: &Path) -> String {
+        let source = source.canonicalize().unwrap();
+        mounts
+            .iter()
+            .find(|mount| {
+                mount.source.as_deref() == source.to_str()
+                    && mount.target.starts_with(DOTFILE_BACKINGS_MOUNT_ROOT)
+            })
+            .expect("expected dotfile backing mount")
+            .target
+            .clone()
+    }
+
+    #[cfg(unix)]
+    fn assert_skeleton_symlink(path: &Path, target: &str) {
+        assert!(path.symlink_metadata().unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_link(path).unwrap(), Path::new(target));
     }
 
     #[test]
@@ -1992,7 +2080,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn uses_skeleton_and_direct_file_mount_when_backing_root_has_extra_entries() {
+    fn uses_skeleton_and_backing_directory_mount_when_backing_root_has_extra_entries() {
         let workspace = tempfile::tempdir().unwrap();
         let dotfiles_real = workspace.path().join("dotfiles-real");
         fs::create_dir_all(&dotfiles_real).unwrap();
@@ -2038,21 +2126,76 @@ mod tests {
         );
         assert_eq!(mounts[0].target, "/opt/decune/dotfiles/.config/lazygit");
         assert!(mounts[0].read_only);
+        let backing_target = backing_mount_target_for_source(&mounts, &dotfiles_real);
         assert_eq!(
             mounts[1].source.as_deref(),
-            Some(dotfiles_real.join("config.yml").to_str().unwrap())
+            Some(dotfiles_real.canonicalize().unwrap().to_str().unwrap())
         );
-        assert_eq!(
-            mounts[1].target,
-            "/opt/decune/dotfiles/.config/lazygit/config.yml"
-        );
+        assert_eq!(mounts[1].target, backing_target);
         assert!(mounts[1].read_only);
 
         let skeleton_file = skeleton_path.join("config.yml");
-        assert!(skeleton_file.is_file());
-        assert!(!skeleton_file.symlink_metadata().unwrap().is_symlink());
-        assert_eq!(fs::read_to_string(&skeleton_file).unwrap(), "");
+        assert_skeleton_symlink(&skeleton_file, &format!("{backing_target}/config.yml"));
         assert!(!skeleton_path.join("extra.yml").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn uses_backing_directory_mount_for_regular_file_when_skeleton_is_needed() {
+        let workspace = tempfile::tempdir().unwrap();
+        let dotfiles_real = workspace.path().join("dotfiles-real");
+        let source_dir = workspace.path().join("lazygit-source");
+        fs::create_dir_all(&dotfiles_real).unwrap();
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(dotfiles_real.join("config.yml"), "key: value\n").unwrap();
+        fs::write(source_dir.join("local.yml"), "local: true\n").unwrap();
+        unix_fs::symlink(
+            dotfiles_real.join("config.yml"),
+            source_dir.join("config.yml"),
+        )
+        .unwrap();
+
+        let config = ResolvedConfig {
+            dotfiles: vec![ResolvedDotfile {
+                source: "lazygit-source".to_owned(),
+                target: ".config/lazygit".to_owned(),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            }],
+            ..ResolvedConfig::default()
+        };
+
+        let mounts = materialized_dotfile_mount_specs(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+
+        let skeleton_path = workspace
+            .path()
+            .join(DOTFILE_MOUNT_SKELETON_DIR)
+            .join(".config/lazygit");
+        let real_backing_target = backing_mount_target_for_source(&mounts, &dotfiles_real);
+        let source_backing_target = backing_mount_target_for_source(&mounts, &source_dir);
+
+        assert_eq!(mounts.len(), 3);
+        assert!(
+            !mounts
+                .iter()
+                .any(|mount| mount.target == "/opt/decune/dotfiles/.config/lazygit/config.yml")
+        );
+        assert_skeleton_symlink(
+            &skeleton_path.join("config.yml"),
+            &format!("{real_backing_target}/config.yml"),
+        );
+        assert_skeleton_symlink(
+            &skeleton_path.join("local.yml"),
+            &format!("{source_backing_target}/local.yml"),
+        );
     }
 
     #[cfg(unix)]
@@ -2102,14 +2245,12 @@ mod tests {
         );
         assert_eq!(mounts[0].target, "/opt/decune/dotfiles/.config/lazygit");
         assert!(!mounts[0].read_only);
+        let backing_target = backing_mount_target_for_source(&mounts, &dotfiles_real);
         assert_eq!(
             mounts[1].source.as_deref(),
-            Some(dotfiles_real.join("config.yml").to_str().unwrap())
+            Some(dotfiles_real.canonicalize().unwrap().to_str().unwrap())
         );
-        assert_eq!(
-            mounts[1].target,
-            "/opt/decune/dotfiles/.config/lazygit/config.yml"
-        );
+        assert_eq!(mounts[1].target, backing_target);
         assert_eq!(
             mounts[2].source.as_deref(),
             Some(source_dir.join("plugins").to_str().unwrap())
@@ -2122,6 +2263,10 @@ mod tests {
             mount.source.as_deref() == dotfiles_real.to_str()
                 && mount.target == "/opt/decune/dotfiles/.config/lazygit"
         }));
+        assert_skeleton_symlink(
+            &skeleton_path.join("config.yml"),
+            &format!("{backing_target}/config.yml"),
+        );
     }
 
     #[cfg(unix)]
@@ -2164,10 +2309,8 @@ mod tests {
         assert_eq!(mounts.len(), 2);
         assert_eq!(mounts[0].target, "/opt/decune/dotfiles/.config/lazygit");
         assert!(!mounts[0].read_only);
-        assert_eq!(
-            mounts[1].target,
-            "/opt/decune/dotfiles/.config/lazygit/config.yml"
-        );
+        let backing_target = backing_mount_target_for_source(&mounts, &dotfiles_real);
+        assert_eq!(mounts[1].target, backing_target);
         assert!(!mounts[1].read_only);
     }
 
@@ -2371,10 +2514,11 @@ mod tests {
         fs::create_dir_all(&source_dir).unwrap();
         for index in 0..MAX_DOTFILE_MOUNTS {
             let name = format!("file-{index}.txt");
-            fs::write(real_dir.join(&name), "content").unwrap();
-            unix_fs::symlink(real_dir.join(&name), source_dir.join(&name)).unwrap();
+            let real_parent = real_dir.join(format!("parent-{index}"));
+            fs::create_dir_all(&real_parent).unwrap();
+            fs::write(real_parent.join("config.txt"), "content").unwrap();
+            unix_fs::symlink(real_parent.join("config.txt"), source_dir.join(&name)).unwrap();
         }
-        fs::write(real_dir.join("extra.txt"), "extra").unwrap();
         let config = ResolvedConfig {
             dotfiles: vec![ResolvedDotfile {
                 source: "dotdir".to_owned(),
@@ -2404,7 +2548,7 @@ mod tests {
 
     #[cfg(unix)]
     #[test]
-    fn materialize_preserves_desired_skeleton_path_inodes_and_file_contents() {
+    fn materialize_preserves_matching_symlink_and_replaces_conflicting_desired_path() {
         let workspace = tempfile::tempdir().unwrap();
         let dotfiles_real = workspace.path().join("real");
         fs::create_dir_all(&dotfiles_real).unwrap();
@@ -2444,16 +2588,26 @@ mod tests {
         .unwrap();
         materialize_dotfile_skeletons(&plan.skeletons).unwrap();
         let file_path = skeleton_path.join("config.yml");
-        fs::write(&file_path, "placeholder").unwrap();
-        fs::write(skeleton_path.join("stale"), "stale").unwrap();
+        let backing_target = backing_mount_target_for_source(&plan.mounts, &dotfiles_real);
+        let expected_target = format!("{backing_target}/config.yml");
         let root_ino = skeleton_path.symlink_metadata().unwrap().ino();
         let file_ino = file_path.symlink_metadata().unwrap().ino();
+        assert_skeleton_symlink(&file_path, &expected_target);
 
         materialize_dotfile_skeletons(&plan.skeletons).unwrap();
 
         assert_eq!(skeleton_path.symlink_metadata().unwrap().ino(), root_ino);
         assert_eq!(file_path.symlink_metadata().unwrap().ino(), file_ino);
-        assert_eq!(fs::read_to_string(&file_path).unwrap(), "placeholder");
+        assert_skeleton_symlink(&file_path, &expected_target);
+
+        fs::remove_file(&file_path).unwrap();
+        fs::write(&file_path, "placeholder").unwrap();
+        fs::write(skeleton_path.join("stale"), "stale").unwrap();
+
+        materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+
+        assert_eq!(skeleton_path.symlink_metadata().unwrap().ino(), root_ino);
+        assert_skeleton_symlink(&file_path, &expected_target);
         assert!(!skeleton_path.join("stale").exists());
     }
 
@@ -2498,10 +2652,15 @@ mod tests {
         )
         .unwrap();
         materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+        let backing_target = backing_mount_target_for_source(&plan.mounts, &dotfiles_real);
+        let expected_target = format!("{backing_target}/config.yml");
+        fs::remove_file(skeleton_path.join("config.yml")).unwrap();
+        fs::write(skeleton_path.join("config.yml"), "local replacement").unwrap();
         fs::write(skeleton_path.join("new.json"), "new").unwrap();
 
         materialize_dotfile_skeletons(&plan.skeletons).unwrap();
 
+        assert_skeleton_symlink(&skeleton_path.join("config.yml"), &expected_target);
         assert_eq!(
             fs::read_to_string(skeleton_path.join("new.json")).unwrap(),
             "new"
@@ -2549,6 +2708,8 @@ mod tests {
             .path()
             .join(DOTFILE_MOUNT_SKELETON_DIR)
             .join(".config/app");
+        let backing_target = backing_mount_target_for_source(&mounts1, &dotfiles_real);
+        let expected_target = format!("{backing_target}/config.yml");
         fs::write(skeleton_path.join("stale"), "stale").unwrap();
         fs::write(dotfiles_real.join("config.yml"), "v2").unwrap();
 
@@ -2561,10 +2722,7 @@ mod tests {
         .unwrap();
 
         assert_eq!(mounts1[0].source, mounts2[0].source);
-        assert_eq!(
-            fs::read_to_string(skeleton_path.join("config.yml")).unwrap(),
-            ""
-        );
+        assert_skeleton_symlink(&skeleton_path.join("config.yml"), &expected_target);
         assert!(!skeleton_path.join("stale").exists());
         assert!(!skeleton_path.join("extra.yml").exists());
     }

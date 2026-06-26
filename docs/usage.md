@@ -332,6 +332,12 @@ install_feature_if_missing = true
 
 完全なスキーマと merge rule は [specification.md](specification.md#decune-toml-設定) を参照してください。
 
+dotfiles は remote home へ直接 bind mount せず、`/opt/decune/dotfiles/<target>` から symlink します。`/opt/decune` と `/run/decune` 配下は decune の internal path なので、`[[mounts]].target` には使えません。
+
+directory source の symlink 解決で skeleton fallback が必要な場合、decune は backing parent directory を internal path に bind mount します。そのため、同じ parent directory の sibling file が `/opt/decune/dotfile-backings/<n>` 経由で container から見える場合があります。remote home 側には設定した dotfile entry だけが現れます。
+
+host 側で通常ファイルまたは解決済み symlink target file を atomic rename 置換した場合、起動中 container から新しい内容が見えます。source 側 symlink path 自体を regular file に置換した場合は自動反映されないため、container を recreate してください。詳細な挙動は [specification.md](specification.md#dotfiles) を参照してください。
+
 ## ポートフォワーディングと published port
 
 `forwardPorts`、decune `[[ports]]`、CLI `-p` は decune のポートフォワーディングです。Docker published port ではありません。既定ではホスト側 `127.0.0.1` で listen し、container-side agent 経由で container port へ転送します。container 内で localhost にだけ listen しているプロセスにも届きます。
