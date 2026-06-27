@@ -284,11 +284,12 @@ impl DockerComposeCli {
 mod tests {
     use std::{collections::BTreeMap, path::PathBuf};
 
+    use crate::runtime::compose_ports::diagnostics::COMPOSE_PUBLISHED_PORT_COLLISION;
     use crate::runtime::{
         command::{FakeRuntimeCommand, RuntimeOutput},
         compose_cli::config::ComposeConfigModel,
         compose_ports::{
-            COMPOSE_PUBLISHED_PORT_COLLISION, ComposePortEligibility, ComposePublishedPortPlan,
+            ComposePortEligibility, ComposePublishedPortPlan,
             ComposePublishedPortStartupDiagnostics, classify_compose_published_ports,
             compose_published_port_planning_input,
         },

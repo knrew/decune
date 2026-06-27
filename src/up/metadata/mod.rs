@@ -82,30 +82,21 @@ static IMAGE_COMMAND_PROBE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 mod compose_override_hash;
 mod feature;
-mod finalize;
-mod github_cli;
+pub(in crate::up) mod finalize;
+pub(in crate::up) mod github_cli;
 mod image;
-mod messages;
+pub(in crate::up) mod messages;
 mod resources;
 mod startup_command;
 
-#[allow(unused_imports)]
 pub(in crate::up) use finalize::{
-    ComposePublishedPortFinalization, FinalizeUpPlanMountsOptions, FinalizeUpPlanResult,
-    finalize_up_plan_mounts,
-};
-#[allow(unused_imports)]
-pub(in crate::up) use github_cli::{
-    add_github_cli_feature_to_plan, should_auto_add_github_cli_feature,
+    ComposePublishedPortFinalization, FinalizeUpPlanMountsOptions, finalize_up_plan_mounts,
 };
 pub(in crate::up) use image::{
     build_existing_container_decision_plan, existing_remote_user_image_for_decision,
     prepare_compose_image_metadata, prepare_image_based_metadata,
 };
-#[allow(unused_imports)]
-pub(in crate::up) use messages::{
-    deferred_config_warnings, report_deferred_config_messages, security_notices,
-};
+pub(in crate::up) use messages::report_deferred_config_messages;
 pub(in crate::up) use startup_command::effective_startup_command;
 
 use compose_override_hash::compose_generated_override_hash_input;

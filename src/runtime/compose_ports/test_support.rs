@@ -8,10 +8,11 @@ use crate::{
         compose_ports::{
             ComposePortEntry, ComposePublishedPortPlan, ComposePublishedPortPlanningInput,
             classify_compose_published_ports, compose_published_port_planning_input,
-            plan_compose_published_ports_with,
         },
     },
 };
+
+use super::planning::plan_compose_published_ports_with;
 
 pub(super) fn model(value: JsonValue) -> ComposeConfigModel {
     serde_json::from_value(value).unwrap()
