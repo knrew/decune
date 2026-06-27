@@ -1,7 +1,3 @@
-#![allow(
-    reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
-)]
-
 use std::{
     env,
     io::{Read, Write},

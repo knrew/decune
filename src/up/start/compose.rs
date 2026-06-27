@@ -115,7 +115,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     )
     .await?;
     plan.base_image = compose_primary_image.to_owned();
-    let finalized = finalize_up_plan_mounts(
+    let finalized = Box::pin(finalize_up_plan_mounts(
         client,
         workspace,
         plan,
@@ -132,7 +132,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
             compose_primary_service,
             compose_published_ports,
         },
-    )
+    ))
     .await?;
     let mut plan = finalized.plan;
     let published_port_plan = finalized.compose_published_port_plan;
@@ -282,7 +282,7 @@ pub(super) async fn start_compose_project(
         },
     );
 
-    if let Some(started) = try_reuse_running_compose_container_before_image_prepare(
+    if let Some(started) = Box::pin(try_reuse_running_compose_container_before_image_prepare(
         &client,
         &workspace,
         ComposeRunningReuseInput {
@@ -297,7 +297,7 @@ pub(super) async fn start_compose_project(
             published_port_policy_input: &published_port_policy_input,
             compose_published_ports,
         },
-    )
+    ))
     .await?
     {
         return Ok(started);
@@ -359,7 +359,7 @@ pub(super) async fn start_compose_project(
     )
     .await?;
     plan.base_image = compose_primary_image.clone();
-    let finalized = finalize_up_plan_mounts(
+    let finalized = Box::pin(finalize_up_plan_mounts(
         &client,
         &workspace,
         plan,
@@ -379,7 +379,7 @@ pub(super) async fn start_compose_project(
             compose_primary_service: compose_primary_service.as_ref(),
             compose_published_ports,
         },
-    )
+    ))
     .await?;
     let mut plan = finalized.plan;
     let published_port_plan = finalized.compose_published_port_plan;

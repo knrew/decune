@@ -523,19 +523,19 @@ exit 91
 fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {
     workspace
         .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")
-        .unwrap();
+        .must();
     workspace
         .write_file(
             "container-tools/linux-amd64/git-credential-decune",
             b"helper",
         )
-        .unwrap();
+        .must();
     workspace
         .write_file(
             "container-tools/manifest.json",
             r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
         )
-        .unwrap();
+        .must();
     workspace.path().join("container-tools")
 }
 

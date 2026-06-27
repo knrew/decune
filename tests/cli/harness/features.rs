@@ -7,7 +7,7 @@ use std::{
 };
 use tar::{Builder, Header};
 
-use super::names::hex_lower;
+use super::{TestUnwrap as _, names::hex_lower};
 
 pub(crate) fn write_fake_github_cli_feature_cache(
     workspace_root: &Path,
@@ -15,7 +15,7 @@ pub(crate) fn write_fake_github_cli_feature_cache(
     manifest_digest: &str,
     install_script: &str,
 ) {
-    fs::create_dir_all(workspace_root.join(".decune")).unwrap();
+    fs::create_dir_all(workspace_root.join(".decune")).must();
     fs::write(
         workspace_root.join(".decune/features.lock.toml"),
         format!(
@@ -29,10 +29,10 @@ digest = "{manifest_digest}"
 "#
         ),
     )
-    .unwrap();
+    .must();
 
     let cache_root = cache_home.join("decune/features");
-    fs::create_dir_all(&cache_root).unwrap();
+    fs::create_dir_all(&cache_root).must();
     let archive = cache_root.join(format!("{}.tgz", manifest_digest.replace(':', "_")));
     let metadata = r#"{"id":"github-cli","version":"1.0.0","name":"GitHub CLI"}"#;
     write_feature_archive(
@@ -42,17 +42,17 @@ digest = "{manifest_digest}"
             ("devcontainer-feature.json", metadata.as_bytes()),
         ],
     );
-    let blob = fs::read(&archive).unwrap();
+    let blob = fs::read(&archive).must();
     let layer_digest = format!("sha256:{}", hex_lower(&Sha256::digest(&blob)));
     fs::write(
         archive.with_extension("tgz.toml"),
         format!("manifest_digest = \"{manifest_digest}\"\nlayer_digest = \"{layer_digest}\"\n"),
     )
-    .unwrap();
+    .must();
 }
 
 fn write_feature_archive(path: &PathBuf, entries: &[(&str, &[u8])]) {
-    let file = fs::File::create(path).unwrap();
+    let file = fs::File::create(path).must();
     let encoder = GzEncoder::new(file, Compression::default());
     let mut builder = Builder::new(encoder);
     for (path, content) in entries {
@@ -62,9 +62,9 @@ fn write_feature_archive(path: &PathBuf, entries: &[(&str, &[u8])]) {
         header.set_cksum();
         builder
             .append_data(&mut header, *path, &mut &content[..])
-            .unwrap();
+            .must();
     }
-    let encoder = builder.into_inner().unwrap();
-    let mut file = encoder.finish().unwrap();
-    file.flush().unwrap();
+    let encoder = builder.into_inner().must();
+    let mut file = encoder.finish().must();
+    file.flush().must();
 }

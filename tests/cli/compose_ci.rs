@@ -1,5 +1,7 @@
 use std::{fs, path::Path};
 
+use crate::harness::TestUnwrap as _;
+
 #[test]
 fn package_dist_strict_version_smoke_is_release_only() {
     let reusable = read_workspace_file(".github/workflows/package-dist-reusable.yaml");
@@ -19,5 +21,5 @@ fn package_dist_strict_version_smoke_is_release_only() {
 }
 
 fn read_workspace_file(path: &str) -> String {
-    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).unwrap()
+    fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join(path)).must()
 }

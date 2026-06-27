@@ -1,8 +1,5 @@
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
-use futures_util::FutureExt;
-
 use crate::{
     docker::{
         build::{DockerBuildInput, FEATURE_ENTRYPOINT_WRAPPER, build_image},
@@ -26,6 +23,7 @@ use crate::{
     },
     workspace::Workspace,
 };
+use anyhow::{Context, Result, bail};
 
 use super::{
     KEEPALIVE_STARTUP_CHECK_DELAY, ORIGINAL_COMMAND_STARTUP_MONITOR_WINDOW,

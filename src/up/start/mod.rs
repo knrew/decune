@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, BTreeSet},
     fs,
     io::{Read as _, Write as _},
@@ -8,7 +7,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use futures_util::{
     FutureExt,
     future::{Either, select},
@@ -19,17 +18,12 @@ use crate::{
     devcontainer::lifecycle::{LifecycleRunPath, run_host_initialize_lifecycle},
     docker::{
         build::{
-            DockerBuildInput, FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_TOKEN,
-            FEATURE_ENTRYPOINT_WRAPPER, build_image,
+            FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_TOKEN, FEATURE_ENTRYPOINT_WRAPPER,
         },
         client::DockerClient,
-        container::{
-            ContainerCreateInput, ContainerCreateSpec, ContainerInspect, create_container,
-            devcontainer_keepalive_command, remove_container, start_container, stop_container,
-        },
-        dotfiles::materialize_dotfile_skeletons,
+        container::devcontainer_keepalive_command,
         exec::{ExecCommandSpec, exec_capture_output},
-        image::{PullPolicy, ensure_image, image_container_tool_platform, image_startup_command},
+        image::{image_container_tool_platform, image_startup_command},
         mounts::{DockerMountSpec, normalize_container_path},
         user::{UidGidSyncPlan, uid_gid_sync_runtime_user},
     },
@@ -46,41 +40,27 @@ use crate::{
     },
     runtime::{
         compose_cli::{
-            ComposeBuildOptions, ComposeConfigOutput, ComposeConfigService, ComposeIntrospector,
-            ComposeLifecyclePlan, ComposeOverridePatch, ComposeOverrideServicePatch,
-            ComposePrimaryImageResolver, ComposeProjectPlan, ComposePullOptions,
-            ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, write_compose_override,
+            ComposeConfigService, ComposeOverridePatch, ComposeOverrideServicePatch,
+            ComposeProjectPlan, write_compose_override,
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
             ComposePublishedPortOverride, ComposePublishedPortPlan,
-            ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
-            ComposePublishedPortStartupDiagnostics, compose_published_port_plan_has_relocations,
-            compose_published_port_runtime_plan, validate_compose_published_port_diagnostics,
         },
     },
-    state::{
-        self, LifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
-        PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
-        PublishedPortSource, PublishedPortTarget, StateContainerSnapshot, WorkspaceState,
-    },
-    ui,
+    state, ui,
     up::{
-        build::{
-            build_workspace_image_layers, plan_requires_final_image_layer,
-            prepare_base_image_for_plan,
-        },
+        build::plan_requires_final_image_layer,
         existing::{self, CredentialRuntimeMountPolicy, decide_existing_container},
         metadata::{
-            ComposePublishedPortFinalization, FinalizeUpPlanMountsOptions,
-            build_existing_container_decision_plan, existing_remote_user_image_for_decision,
-            finalize_up_plan_mounts, prepare_compose_image_metadata, prepare_image_based_metadata,
-            report_deferred_config_messages,
+            FinalizeUpPlanMountsOptions, build_existing_container_decision_plan,
+            existing_remote_user_image_for_decision, finalize_up_plan_mounts,
+            prepare_image_based_metadata, report_deferred_config_messages,
         },
         plan::build_preliminary_up_plan_with_forwarding_resolution,
         types::{
-            ExistingContainerDecision, ForwardingResolution, StartupVerification,
-            UpContainerSummary, UpMountSummary, UpOptions, UpOutcome, UpPlan, UpPlanResolution,
+            ExistingContainerDecision, ForwardingResolution, UpContainerSummary, UpMountSummary,
+            UpOptions, UpOutcome, UpPlan, UpPlanResolution,
         },
     },
     workspace::Workspace,
@@ -165,10 +145,143 @@ pub(in crate::up) async fn ensure_container_started(
     )?;
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     if preliminary_plan.compose_project.is_some() {
-        validate_compose_canonical_model(&preliminary_plan).await?;
-        return start_compose_project(workspace, preliminary_plan, options, forwarding_resolution)
-            .await;
+        return ensure_compose_project_started(
+            workspace,
+            preliminary_plan,
+            options,
+            forwarding_resolution,
+        )
+        .await;
     }
+    Box::pin(ensure_image_container_started(
+        workspace,
+        preliminary_plan,
+        options,
+        forwarding_resolution,
+    ))
+    .await
+}
+
+async fn ensure_compose_project_started(
+    workspace: Workspace,
+    preliminary_plan: UpPlan,
+    options: UpOptions,
+    forwarding_resolution: ForwardingResolution,
+) -> Result<StartedUpContainer> {
+    validate_compose_canonical_model(&preliminary_plan).await?;
+    Box::pin(start_compose_project(
+        workspace,
+        preliminary_plan,
+        options,
+        forwarding_resolution,
+    ))
+    .await
+}
+
+async fn try_start_existing_image_container(
+    client: &DockerClient,
+    workspace: &Workspace,
+    preliminary_plan: &UpPlan,
+    options: &UpOptions,
+    forwarding_resolution: ForwardingResolution,
+    plan_resolution: UpPlanResolution,
+    containers: &[UpContainerSummary],
+) -> Result<Option<StartedUpContainer>> {
+    if options.reuse.rebuild || containers.is_empty() {
+        return Ok(None);
+    }
+
+    let existing_plan = build_existing_container_decision_plan(
+        client,
+        workspace,
+        options.config_path.as_deref(),
+        options.cli_layer.clone(),
+        containers
+            .first()
+            .and_then(existing::existing_container_image_id),
+        preliminary_plan,
+        plan_resolution,
+    )
+    .await?;
+    let existing_container_image = containers
+        .first()
+        .and_then(existing::existing_container_image_id);
+    let existing_remote_user_image =
+        existing_remote_user_image_for_decision(client, &existing_plan, existing_container_image)
+            .await?;
+    let finalized = Box::pin(finalize_up_plan_mounts(
+        client,
+        workspace,
+        existing_plan,
+        existing_remote_user_image,
+        containers
+            .first()
+            .and_then(existing::existing_container_config_hash),
+        Some((options.build.pull, options.build.no_cache)),
+        FinalizeUpPlanMountsOptions {
+            forwarding: forwarding_resolution,
+            update_features: options.build.update_features,
+            compose_canonical_model: None,
+            compose_primary_service_user: None,
+            compose_primary_service: None,
+            compose_published_ports: None,
+        },
+    ))
+    .await?;
+    let existing_plan = finalized.plan;
+    let platform =
+        container_tool_platform_for_plan(client, &existing_plan, existing_container_image).await?;
+    let (existing_plan, credentials) =
+        add_credential_runtime_mounts(existing_plan, workspace.paths().runtime_dir(), platform)?;
+
+    match decide_existing_container(
+        containers,
+        &existing_plan.resources.config_hash,
+        credentials.mount_policy(),
+        false,
+    )? {
+        ExistingContainerDecision::ReuseRunning { id, name } => {
+            report_deferred_config_messages(&existing_plan.config);
+            let outcome = UpOutcome {
+                container_id: id,
+                container_name: name,
+                reused: true,
+            };
+            started_up_container(
+                client.clone(),
+                workspace.clone(),
+                existing_plan,
+                outcome,
+                LifecycleRunPath::Running,
+                credentials,
+            )
+            .map(Some)
+        }
+        ExistingContainerDecision::StartStopped { id, name } => {
+            report_deferred_config_messages(&existing_plan.config);
+            let (outcome, state) =
+                start_stopped_existing_container(client, workspace, &existing_plan, id, name)
+                    .await?;
+            Ok(Some(started_up_container_with_state(
+                client.clone(),
+                workspace.clone(),
+                existing_plan,
+                outcome,
+                LifecycleRunPath::Started,
+                credentials,
+                state,
+            )))
+        }
+        ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => Ok(None),
+    }
+}
+
+async fn ensure_image_container_started(
+    workspace: Workspace,
+    preliminary_plan: UpPlan,
+    options: UpOptions,
+    forwarding_resolution: ForwardingResolution,
+) -> Result<StartedUpContainer> {
     let plan_resolution = UpPlanResolution::new(
         forwarding_resolution,
         options.build.update_features,
@@ -181,96 +294,18 @@ pub(in crate::up) async fn ensure_container_started(
         state::reconcile_state_without_container(workspace.paths().state_dir())?;
     }
 
-    if !options.reuse.rebuild && !containers.is_empty() {
-        let existing_plan = build_existing_container_decision_plan(
-            &client,
-            &workspace,
-            options.config_path.as_deref(),
-            options.cli_layer.clone(),
-            containers
-                .first()
-                .and_then(existing::existing_container_image_id),
-            &preliminary_plan,
-            plan_resolution,
-        )
-        .await?;
-        let existing_container_image = containers
-            .first()
-            .and_then(existing::existing_container_image_id);
-        let existing_remote_user_image = existing_remote_user_image_for_decision(
-            &client,
-            &existing_plan,
-            existing_container_image,
-        )
-        .await?;
-        let finalized = finalize_up_plan_mounts(
-            &client,
-            &workspace,
-            existing_plan,
-            existing_remote_user_image,
-            containers
-                .first()
-                .and_then(existing::existing_container_config_hash),
-            Some((options.build.pull, options.build.no_cache)),
-            FinalizeUpPlanMountsOptions {
-                forwarding: forwarding_resolution,
-                update_features: options.build.update_features,
-                compose_canonical_model: None,
-                compose_primary_service_user: None,
-                compose_primary_service: None,
-                compose_published_ports: None,
-            },
-        )
-        .await?;
-        let existing_plan = finalized.plan;
-        let platform =
-            container_tool_platform_for_plan(&client, &existing_plan, existing_container_image)
-                .await?;
-        let (existing_plan, credentials) = add_credential_runtime_mounts(
-            existing_plan,
-            workspace.paths().runtime_dir(),
-            platform,
-        )?;
-
-        match decide_existing_container(
-            &containers,
-            &existing_plan.resources.config_hash,
-            credentials.mount_policy(),
-            false,
-        )? {
-            ExistingContainerDecision::ReuseRunning { id, name } => {
-                report_deferred_config_messages(&existing_plan.config);
-                let outcome = UpOutcome {
-                    container_id: id,
-                    container_name: name,
-                    reused: true,
-                };
-                return started_up_container(
-                    client,
-                    workspace,
-                    existing_plan,
-                    outcome,
-                    LifecycleRunPath::Running,
-                    credentials,
-                );
-            }
-            ExistingContainerDecision::StartStopped { id, name } => {
-                report_deferred_config_messages(&existing_plan.config);
-                let (outcome, state) =
-                    start_stopped_existing_container(&client, &workspace, &existing_plan, id, name)
-                        .await?;
-                return Ok(started_up_container_with_state(
-                    client,
-                    workspace,
-                    existing_plan,
-                    outcome,
-                    LifecycleRunPath::Started,
-                    credentials,
-                    state,
-                ));
-            }
-            ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => {}
-        }
+    if let Some(started) = Box::pin(try_start_existing_image_container(
+        &client,
+        &workspace,
+        &preliminary_plan,
+        &options,
+        forwarding_resolution,
+        plan_resolution,
+        &containers,
+    ))
+    .await?
+    {
+        return Ok(started);
     }
 
     let (plan, image_prepared) = prepare_image_based_metadata(
@@ -283,7 +318,7 @@ pub(in crate::up) async fn ensure_container_started(
         plan_resolution,
     )
     .await?;
-    let finalized = finalize_up_plan_mounts(
+    let finalized = Box::pin(finalize_up_plan_mounts(
         &client,
         &workspace,
         plan,
@@ -298,7 +333,7 @@ pub(in crate::up) async fn ensure_container_started(
             compose_primary_service: None,
             compose_published_ports: None,
         },
-    )
+    ))
     .await?;
     let plan = finalized.plan;
     let mount_image_prepared = finalized.image_prepared;

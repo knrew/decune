@@ -281,7 +281,7 @@ mod tests {
             ensure_image(&client, "alpine:3.20", PullPolicy::Missing)
                 .await
                 .unwrap();
-            let finalized = finalize_up_plan_mounts(
+            let finalized = Box::pin(finalize_up_plan_mounts(
                 &client,
                 &workspace,
                 plan,
@@ -296,7 +296,7 @@ mod tests {
                     compose_primary_service: None,
                     compose_published_ports: None,
                 },
-            )
+            ))
             .await
             .unwrap();
             let plan = finalized.plan;
@@ -347,12 +347,12 @@ mod tests {
             let container_name = plan.resources.container_name.clone();
             let client = DockerClient::connect_from_env();
 
-            let result: anyhow::Result<()> = async {
+            let result: anyhow::Result<()> = Box::pin(async {
                 remove_container(&client, &container_name, true, true).await?;
                 remove_image(&client, &image, true).await?;
                 build_uid_gid_user_image(&client, &image, "imageuser", 2001, 2001).await?;
 
-                let finalized = finalize_up_plan_mounts(
+                let finalized = Box::pin(finalize_up_plan_mounts(
                     &client,
                     &workspace,
                     plan,
@@ -367,7 +367,7 @@ mod tests {
                         compose_primary_service: None,
                         compose_published_ports: None,
                     },
-                )
+                ))
                 .await?;
                 let plan = finalized.plan;
                 let image_prepared = finalized.image_prepared;
@@ -386,7 +386,7 @@ mod tests {
                 assert!(plan.uid_gid_sync_build_context_dir.is_none());
 
                 Ok(())
-            }
+            })
             .await;
 
             let container_cleanup = remove_container(&client, &container_name, true, true).await;
@@ -431,12 +431,12 @@ mod tests {
             let container_name = plan.resources.container_name.clone();
             let client = DockerClient::connect_from_env();
 
-            let result: anyhow::Result<()> = async {
+            let result: anyhow::Result<()> = Box::pin(async {
                 remove_container(&client, &container_name, true, true).await?;
                 remove_image(&client, &image, true).await?;
                 build_uid_gid_user_image(&client, &image, "syncuser", 2001, 2001).await?;
 
-                let finalized = finalize_up_plan_mounts(
+                let finalized = Box::pin(finalize_up_plan_mounts(
                     &client,
                     &workspace,
                     plan,
@@ -451,7 +451,7 @@ mod tests {
                         compose_primary_service: None,
                         compose_published_ports: None,
                     },
-                )
+                ))
                 .await?;
                 let plan = finalized.plan;
                 let image_prepared = finalized.image_prepared;
@@ -487,7 +487,7 @@ mod tests {
                 assert_eq!(target.kind, UidGidSyncTargetKind::RemoteUser);
 
                 Ok(())
-            }
+            })
             .await;
 
             let container_cleanup = remove_container(&client, &container_name, true, true).await;

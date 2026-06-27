@@ -3,6 +3,7 @@ use std::{collections::HashMap, path::Path, process::Command};
 use serde::Deserialize;
 
 use super::{
+    TestUnwrap as _,
     locks::acquire_exclusive_docker_resource_lock,
     names::{workspace_id, workspace_image_repository},
 };
@@ -123,7 +124,7 @@ pub(crate) fn cleanup_workspace_containers(workspace_root: &Path) -> anyhow::Res
 }
 
 pub(crate) fn assert_container_is_not_running(container_id: &str) {
-    let inspect = inspect_container(container_id).unwrap();
+    let inspect = inspect_container(container_id).must();
 
     assert_eq!(inspect.state.and_then(|state| state.running), Some(false));
 }
