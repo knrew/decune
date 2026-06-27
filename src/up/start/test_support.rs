@@ -11,7 +11,10 @@ use crate::{
             UidGidSyncTargetKind,
         },
     },
-    up::{CredentialRuntimeMountPolicy, UpContainerSummary, UpMountSummary, UpOptions, UpPlan},
+    up::{
+        UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
+        existing::CredentialRuntimeMountPolicy,
+    },
 };
 
 pub(super) fn generated_override_test_plan(mounts: Vec<DockerMountSpec>) -> UpPlan {

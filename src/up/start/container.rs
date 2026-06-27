@@ -300,3 +300,123 @@ pub(in crate::up) async fn wait_for_container_exit_code(
         .await
         .with_context(|| format!("Failed to wait for Docker container: {container}"))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::ConfigLayer,
+        docker::{
+            client::DockerClient,
+            container::remove_container,
+            user::{EffectiveUserResolveInput, resolve_effective_users},
+        },
+        up::{
+            UpOptions,
+            plan::build_up_plan,
+            run_detached_up,
+            start::list_workspace_containers,
+            test_support::{test_up_plan_with_image_source, test_workspace, write_devcontainer},
+        },
+    };
+
+    #[test]
+    fn create_and_start_container_uses_effective_container_user() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let mut plan = test_up_plan_with_image_source("alpine:3.20");
+            plan.workspace_folder = "/".to_owned();
+            plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
+                devcontainer_remote_user: None,
+                devcontainer_container_user: Some("nobody"),
+                image_metadata_remote_user: None,
+                image_metadata_container_user: None,
+                image_config_user: None,
+            })
+            .unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                let workspace = test_workspace("docker-up-effective-container-user-state");
+                create_and_start_container(&client, &workspace, &plan, false, false, false).await?;
+
+                let inspect = client.cli().inspect_container(&container_name).await?;
+                assert_eq!(
+                    inspect.config.and_then(|config| config.user),
+                    Some("nobody".to_owned())
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+    #[test]
+    fn up_detach_removes_new_container_when_start_fails() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-start-failure-cleanup");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "containerUser": "decune-missing-user"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let error = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await
+                .unwrap_err();
+                assert!(
+                    error
+                        .to_string()
+                        .contains("Remote user does not exist in container")
+                );
+                assert!(error.to_string().contains("decune-missing-user"));
+
+                let containers = list_workspace_containers(&client, workspace.id()).await?;
+                assert!(
+                    !containers
+                        .iter()
+                        .any(|container| container.name == container_name)
+                );
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+}

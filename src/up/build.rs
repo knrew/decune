@@ -230,3 +230,31 @@ fn feature_install_env(plan: &UpPlan, image_user: &str) -> BTreeMap<String, Stri
         ("_REMOTE_USER_HOME".to_owned(), String::new()),
     ])
 }
+
+#[cfg(test)]
+mod tests {
+    use super::feature_layer_image;
+    use crate::{
+        config::resolved::ResolvedConfig,
+        up::{
+            test_support::{sync_plan, test_resources, test_up_plan_with_config},
+            uid_gid::uid_gid_sync_base_image,
+        },
+    };
+
+    #[test]
+    fn feature_layer_image_uses_pre_uid_gid_sync_resources_when_sync_layer_is_needed() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.entrypoints = vec!["/usr/local/share/decune/feature.sh".to_owned()];
+        let mut plan = test_up_plan_with_config(config);
+        plan.image = "decune/test:final-sync-hash".to_owned();
+        plan.resources.image_tag = plan.image.clone();
+        plan.resources.config_hash = "final-sync-hash".to_owned();
+        plan.pre_uid_gid_sync_resources = Some(test_resources("pre-sync-hash"));
+        plan.base_image = "alpine:3.20".to_owned();
+        plan.uid_gid_sync_plan = sync_plan();
+
+        assert_eq!(feature_layer_image(&plan), "decune/test:pre-sync-hash");
+        assert_eq!(uid_gid_sync_base_image(&plan), "decune/test:pre-sync-hash");
+    }
+}

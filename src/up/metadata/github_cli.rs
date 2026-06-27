@@ -279,3 +279,61 @@ async fn image_has_command(
         )),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{add_github_cli_feature_to_plan, should_auto_add_github_cli_feature};
+    use crate::{
+        config::{resolved::ResolvedConfig, types::GithubCredentialsMode},
+        up::test_support::test_up_plan_with_image_source,
+    };
+
+    #[test]
+    fn github_cli_auto_add_requires_token_and_missing_container_binary() {
+        let mut config = ResolvedConfig::default();
+
+        assert!(should_auto_add_github_cli_feature(&config, true, false));
+        assert!(!should_auto_add_github_cli_feature(&config, false, false));
+        assert!(!should_auto_add_github_cli_feature(&config, true, true));
+
+        config.credentials.github.install_feature_if_missing = false;
+        assert!(!should_auto_add_github_cli_feature(&config, true, false));
+
+        config.credentials.github.install_feature_if_missing = true;
+        config.credentials.github.enabled = false;
+        assert!(!should_auto_add_github_cli_feature(&config, true, false));
+
+        config.credentials.github.enabled = true;
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+        assert!(!should_auto_add_github_cli_feature(&config, true, false));
+    }
+    #[test]
+    fn github_cli_auto_add_injects_feature_once() {
+        let plan = test_up_plan_with_image_source("alpine:3.20");
+
+        let plan = add_github_cli_feature_to_plan(plan).unwrap();
+        let plan = add_github_cli_feature_to_plan(plan).unwrap();
+
+        let github_cli_features = plan
+            .config
+            .features
+            .iter()
+            .filter(|feature| feature.canonical_id == "ghcr.io/devcontainers/features/github-cli")
+            .collect::<Vec<_>>();
+        assert_eq!(github_cli_features.len(), 1);
+        assert_eq!(
+            github_cli_features[0].id,
+            "ghcr.io/devcontainers/features/github-cli:1"
+        );
+    }
+    #[test]
+    fn github_cli_auto_add_retickets_image_sources_to_workspace_layer() {
+        let plan = test_up_plan_with_image_source("ubuntu:24.04");
+
+        let plan = add_github_cli_feature_to_plan(plan).unwrap();
+
+        assert_eq!(plan.base_image, "ubuntu:24.04");
+        assert_eq!(plan.image, plan.resources.image_tag);
+        assert_ne!(plan.image, plan.base_image);
+    }
+}

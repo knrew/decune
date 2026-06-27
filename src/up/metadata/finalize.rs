@@ -196,3 +196,269 @@ impl Default for FinalizeUpPlanMountsOptions<'_> {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        config::ConfigLayer,
+        docker::{
+            client::DockerClient,
+            container::remove_container,
+            image::{PullPolicy, ensure_image, remove_image},
+            user::{
+                HostPlatform, UidGidSyncNoopReason, UidGidSyncPlan, UidGidSyncTargetKind,
+                current_host_user_ids,
+            },
+        },
+        up::{
+            ForwardingResolution,
+            plan::build_up_plan,
+            test_support::{build_uid_gid_user_image, test_workspace, write_devcontainer},
+        },
+    };
+
+    #[cfg(unix)]
+    #[test]
+    fn up_plan_finalization_noops_uid_gid_sync_for_root_remote_user() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-root-noop");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "remoteUser": "root"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            ensure_image(&client, "alpine:3.20", PullPolicy::Missing)
+                .await
+                .unwrap();
+            let finalized = finalize_up_plan_mounts(
+                &client,
+                &workspace,
+                plan,
+                None,
+                None,
+                Some((false, false)),
+                FinalizeUpPlanMountsOptions {
+                    forwarding: ForwardingResolution::Resolve,
+                    update_features: false,
+                    compose_canonical_model: None,
+                    compose_primary_service_user: None,
+                    compose_primary_service: None,
+                    compose_published_ports: None,
+                },
+            )
+            .await
+            .unwrap();
+            let plan = finalized.plan;
+            let image_prepared = finalized.image_prepared;
+
+            assert!(!image_prepared);
+            assert_eq!(plan.image, "alpine:3.20");
+            assert_eq!(plan.base_image, "alpine:3.20");
+            assert_eq!(
+                plan.uid_gid_sync_plan,
+                UidGidSyncPlan::Noop {
+                    reason: UidGidSyncNoopReason::Root
+                }
+            );
+            assert!(plan.pre_uid_gid_sync_resources.is_none());
+            assert!(plan.uid_gid_sync_build_context_dir.is_none());
+        });
+    }
+    #[cfg(unix)]
+    #[test]
+    fn up_plan_finalization_uses_image_user_without_uid_gid_sync_when_metadata_user_is_missing() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-image-user-only");
+            let image = format!(
+                "decune-test/uid-gid-sync-image-user-only-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_user_image(&client, &image, "imageuser", 2001, 2001).await?;
+
+                let finalized = finalize_up_plan_mounts(
+                    &client,
+                    &workspace,
+                    plan,
+                    None,
+                    None,
+                    Some((false, false)),
+                    FinalizeUpPlanMountsOptions {
+                        forwarding: ForwardingResolution::Resolve,
+                        update_features: false,
+                        compose_canonical_model: None,
+                        compose_primary_service_user: None,
+                        compose_primary_service: None,
+                        compose_published_ports: None,
+                    },
+                )
+                .await?;
+                let plan = finalized.plan;
+                let image_prepared = finalized.image_prepared;
+
+                assert!(!image_prepared);
+                assert_eq!(plan.image, image);
+                assert_eq!(plan.base_image, image);
+                assert_eq!(plan.effective_users.remote_user.user, "imageuser");
+                assert_eq!(
+                    plan.uid_gid_sync_plan,
+                    UidGidSyncPlan::Noop {
+                        reason: UidGidSyncNoopReason::NoExplicitUser
+                    }
+                );
+                assert!(plan.pre_uid_gid_sync_resources.is_none());
+                assert!(plan.uid_gid_sync_build_context_dir.is_none());
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+    #[cfg(unix)]
+    #[test]
+    fn up_plan_finalization_includes_uid_gid_sync_state_in_final_hash_and_image_tag() {
+        if HostPlatform::current() != HostPlatform::Linux {
+            return;
+        }
+        let host = current_host_user_ids();
+        if host.uid == 0 || host.gid == 0 {
+            return;
+        }
+
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-uid-gid-sync-hash-tag");
+            let image = format!(
+                "decune-test/uid-gid-sync-hash-tag-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "remoteUser": "syncuser"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+                build_uid_gid_user_image(&client, &image, "syncuser", 2001, 2001).await?;
+
+                let finalized = finalize_up_plan_mounts(
+                    &client,
+                    &workspace,
+                    plan,
+                    None,
+                    None,
+                    Some((false, false)),
+                    FinalizeUpPlanMountsOptions {
+                        forwarding: ForwardingResolution::Resolve,
+                        update_features: false,
+                        compose_canonical_model: None,
+                        compose_primary_service_user: None,
+                        compose_primary_service: None,
+                        compose_published_ports: None,
+                    },
+                )
+                .await?;
+                let plan = finalized.plan;
+                let image_prepared = finalized.image_prepared;
+                let pre_sync_resources = plan
+                    .pre_uid_gid_sync_resources
+                    .as_ref()
+                    .expect("sync plan must preserve pre-sync resources");
+
+                assert!(!image_prepared);
+                assert!(matches!(
+                    plan.uid_gid_sync_plan,
+                    UidGidSyncPlan::Sync { .. }
+                ));
+                assert_eq!(plan.image, plan.resources.image_tag);
+                assert_eq!(plan.base_image, image);
+                assert_eq!(
+                    plan.resources.labels["decune.config_hash"],
+                    plan.resources.config_hash
+                );
+                assert_eq!(
+                    pre_sync_resources.labels["decune.config_hash"],
+                    pre_sync_resources.config_hash
+                );
+                assert_ne!(plan.resources.config_hash, pre_sync_resources.config_hash);
+                assert_ne!(plan.resources.image_tag, pre_sync_resources.image_tag);
+                assert!(plan.uid_gid_sync_build_context_dir.is_some());
+
+                let UidGidSyncPlan::Sync { target, .. } = &plan.uid_gid_sync_plan else {
+                    unreachable!("sync plan was checked above");
+                };
+                assert_eq!(target.host, host);
+                assert_eq!(target.user, "syncuser");
+                assert_eq!(target.kind, UidGidSyncTargetKind::RemoteUser);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+}
