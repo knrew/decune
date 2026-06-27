@@ -1,10 +1,9 @@
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
-use crate::runtime::{
-    command::RuntimeOutput,
-    compose_cli::{ComposeCliCapabilities, ComposeCommandPlan},
-};
+use crate::runtime::command::RuntimeOutput;
 use crate::workspace::Workspace;
+
+use super::{capabilities::ComposeCliCapabilities, command_plan::ComposeCommandPlan};
 
 pub(super) fn fixture_workspace(name: &str) -> (tempfile::TempDir, Workspace) {
     let temp = tempfile::tempdir().unwrap();
