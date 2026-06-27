@@ -1,5 +1,4 @@
 #![allow(
-    clippy::map_unwrap_or,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 
@@ -71,10 +70,10 @@ fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<String> {
         return Ok(response.output.unwrap_or_default());
     }
 
-    let message = response
-        .error
-        .map(|error| error.message)
-        .unwrap_or_else(|| "Host daemon request failed".to_owned());
+    let message = response.error.map_or_else(
+        || "Host daemon request failed".to_owned(),
+        |error| error.message,
+    );
     Err(anyhow!(message))
 }
 

@@ -1,4 +1,5 @@
 use std::{
+    fmt::Write as _,
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -99,7 +100,7 @@ pub(crate) fn checksum(dist_dir: &Path, version: Option<&str>) -> Result<()> {
             .file_name()
             .and_then(|name| name.to_str())
             .context("Dist archive file name is not UTF-8")?;
-        sums.push_str(&format!("{}  {}\n", sha256_file(&archive)?, file_name));
+        writeln!(sums, "{}  {}", sha256_file(&archive)?, file_name)?;
     }
     fs::write(dist_dir.join("SHA256SUMS"), sums)
         .with_context(|| format!("Failed to write {}", dist_dir.join("SHA256SUMS").display()))

@@ -143,6 +143,7 @@ where
             host_ip: reservation_host_ip(&planned).to_owned(),
             host: planned.host_port,
         });
+        let relocated = requested.host_port != planned.host_port;
 
         plan_entries.push(ComposePublishedPortPlanEntry {
             service: entry.service.clone(),
@@ -153,9 +154,9 @@ where
                 .target_port
                 .expect("eligible Compose published port entry has target port"),
             protocol: entry.protocol.clone(),
-            relocated: requested.host_port != planned.host_port,
             requested,
             planned,
+            relocated,
             allocation_reason,
         });
     }

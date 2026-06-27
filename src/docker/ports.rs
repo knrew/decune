@@ -167,7 +167,11 @@ where
     let mut resolved = existing_forward_ports.to_vec();
     let mut additions = Vec::new();
 
-    for container in detected_ports.into_iter().collect::<BTreeSet<_>>() {
+    let mut detected_ports = detected_ports.into_iter().collect::<Vec<_>>();
+    // Deduplicate while preserving ascending port order without per-entry tree allocation.
+    detected_ports.sort_unstable();
+    detected_ports.dedup();
+    for container in detected_ports {
         if container < auto_ports.min
             || container >= auto_ports.max
             || ignored.contains(&container)

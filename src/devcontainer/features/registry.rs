@@ -7,9 +7,10 @@ use reqwest::{
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::hex::hex_lower;
+
 use super::{
     auth::{DockerConfigAuthStore, RegistryAuth},
-    hex_lower,
     reference::{OciFeatureRef, validate_oci_digest},
 };
 

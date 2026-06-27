@@ -1,10 +1,8 @@
 #![allow(
     clippy::expect_used,
     clippy::filetype_is_file,
-    clippy::inconsistent_struct_constructor,
     clippy::let_underscore_must_use,
     clippy::let_underscore_untyped,
-    clippy::map_unwrap_or,
     clippy::panic,
     clippy::similar_names,
     clippy::tests_outside_test_module,

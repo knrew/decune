@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fmt::Write as _,
     fs, io,
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
@@ -40,8 +41,7 @@ pub(crate) fn build_container_tools(workspace: &Path, out: &Path, locked: bool) 
     let out = workspace_relative(workspace, out);
     let temp_parent = out
         .parent()
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| workspace.to_path_buf());
+        .map_or_else(|| workspace.to_path_buf(), Path::to_path_buf);
     fs::create_dir_all(&temp_parent).with_context(|| {
         format!(
             "Failed to create container tools output parent directory: {}",
@@ -266,10 +266,10 @@ pub(crate) fn default_xtask_container_tools_bundle_dir(workspace: &Path) -> Path
 }
 
 pub(crate) fn resolve_container_tools_bundle_arg(workspace: &Path, path: Option<&Path>) -> PathBuf {
-    match path {
-        Some(path) => workspace_relative(workspace, path),
-        None => default_xtask_container_tools_bundle_dir(workspace),
-    }
+    path.map_or_else(
+        || default_xtask_container_tools_bundle_dir(workspace),
+        |path| workspace_relative(workspace, path),
+    )
 }
 
 fn write_manifest_and_sums(dir: &Path, entries: Vec<ManifestEntry>) -> Result<()> {
@@ -284,7 +284,7 @@ fn write_manifest_and_sums(dir: &Path, entries: Vec<ManifestEntry>) -> Result<()
 
     let mut sums = String::new();
     for entry in &manifest.tools {
-        sums.push_str(&format!("{}  {}\n", entry.sha256, entry.path));
+        writeln!(sums, "{}  {}", entry.sha256, entry.path)?;
     }
     fs::write(dir.join("SHA256SUMS"), sums)
         .with_context(|| format!("Failed to write {}", dir.join("SHA256SUMS").display()))

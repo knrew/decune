@@ -1,7 +1,4 @@
 #![allow(
-    clippy::format_collect,
-    clippy::format_push_string,
-    clippy::map_unwrap_or,
     clippy::unnecessary_debug_formatting,
     clippy::wildcard_enum_match_arm,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
@@ -9,7 +6,9 @@
 
 use std::{
     collections::BTreeSet,
-    env, fs,
+    env,
+    fmt::Write as _,
+    fs,
     path::{Component, Path, PathBuf},
     process::Command,
 };
@@ -219,8 +218,7 @@ fn resolve_bundle_dir() -> Result<PathBuf> {
     let manifest_dir =
         PathBuf::from(env::var_os("CARGO_MANIFEST_DIR").context("CARGO_MANIFEST_DIR is not set")?);
     let bundle_dir = env::var_os("DECUNE_CONTAINER_TOOLS_BUNDLE_DIR")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| default_bundle_dir(&manifest_dir));
+        .map_or_else(|| default_bundle_dir(&manifest_dir), PathBuf::from);
     if bundle_dir.is_absolute() {
         Ok(bundle_dir)
     } else {
@@ -261,13 +259,14 @@ fn write_bundle(path: &Path, entries: &[ValidatedEntry]) -> Result<()> {
     );
     for entry in entries {
         code.push_str("    EmbeddedContainerToolArtifact {\n");
-        code.push_str(&format!("        name: {:?},\n", entry.name));
-        code.push_str(&format!("        platform: {:?},\n", entry.platform));
-        code.push_str(&format!("        sha256: {:?},\n", entry.sha256));
-        code.push_str(&format!(
-            "        bytes: include_bytes!({:?}),\n",
+        writeln!(code, "        name: {:?},", entry.name)?;
+        writeln!(code, "        platform: {:?},", entry.platform)?;
+        writeln!(code, "        sha256: {:?},", entry.sha256)?;
+        writeln!(
+            code,
+            "        bytes: include_bytes!({:?}),",
             entry.absolute_path
-        ));
+        )?;
         code.push_str("    },\n");
     }
     code.push_str("];\n");
@@ -440,7 +439,18 @@ fn validate_executable(_path: &Path) -> Result<()> {
 }
 
 fn hex_lower(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+    let mut hex = String::with_capacity(bytes.len() * 2);
+    for &byte in bytes {
+        push_hex_byte(&mut hex, byte);
+    }
+    hex
+}
+
+fn push_hex_byte(output: &mut String, byte: u8) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+
+    output.push(HEX[(byte >> 4) as usize] as char);
+    output.push(HEX[(byte & 0x0f) as usize] as char);
 }
 
 #[derive(Debug, Deserialize)]

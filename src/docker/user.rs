@@ -93,14 +93,15 @@ impl EffectiveUsers {
             user: ROOT_USER.to_owned(),
             source: RemoteUserSource::RootFallback,
         };
+        let remote_user = EffectiveRemoteUser {
+            user: container_user.user.clone(),
+            source: container_user.source,
+            origin: EffectiveRemoteUserOrigin::Container,
+        };
 
         Self {
-            remote_user: EffectiveRemoteUser {
-                user: container_user.user.clone(),
-                source: container_user.source,
-                origin: EffectiveRemoteUserOrigin::Container,
-            },
             container_user,
+            remote_user,
         }
     }
 
@@ -363,32 +364,33 @@ pub(crate) fn resolve_effective_users_with_compose_service_user(
     compose_service_user: Option<&str>,
 ) -> Result<EffectiveUsers> {
     let image_config_user = parse_docker_image_config_user(input.image_config_user)?;
-    let container_user = if let Some(user) = normalize_user(input.devcontainer_container_user) {
-        EffectiveUser {
+    let container_user = normalize_user(input.devcontainer_container_user)
+        .map(|user| EffectiveUser {
             user,
             source: RemoteUserSource::Explicit,
-        }
-    } else if let Some(user) = normalize_user(input.image_metadata_container_user) {
-        EffectiveUser {
-            user,
-            source: RemoteUserSource::ImageMetadata,
-        }
-    } else if let Some(user) = normalize_user(compose_service_user) {
-        EffectiveUser {
-            user,
-            source: RemoteUserSource::ComposeService,
-        }
-    } else if let Some(user) = image_config_user {
-        EffectiveUser {
-            user: user.raw,
-            source: RemoteUserSource::ImageConfig,
-        }
-    } else {
-        EffectiveUser {
+        })
+        .or_else(|| {
+            normalize_user(input.image_metadata_container_user).map(|user| EffectiveUser {
+                user,
+                source: RemoteUserSource::ImageMetadata,
+            })
+        })
+        .or_else(|| {
+            normalize_user(compose_service_user).map(|user| EffectiveUser {
+                user,
+                source: RemoteUserSource::ComposeService,
+            })
+        })
+        .or_else(|| {
+            image_config_user.map(|user| EffectiveUser {
+                user: user.raw,
+                source: RemoteUserSource::ImageConfig,
+            })
+        })
+        .unwrap_or_else(|| EffectiveUser {
             user: ROOT_USER.to_owned(),
             source: RemoteUserSource::RootFallback,
-        }
-    };
+        });
 
     let remote_user = if let Some(user) = normalize_user(input.devcontainer_remote_user) {
         EffectiveRemoteUser {
@@ -481,11 +483,13 @@ pub(crate) fn select_remote_user(input: RemoteUserSelectionInput<'_>) -> RemoteU
         image_metadata_container_user: None,
         image_config_user: input.image_config_user,
     })
-    .map(|users| users.remote_selection())
-    .unwrap_or_else(|_| RemoteUserSelection {
-        user: ROOT_USER.to_owned(),
-        source: RemoteUserSource::RootFallback,
-    })
+    .map_or_else(
+        |_| RemoteUserSelection {
+            user: ROOT_USER.to_owned(),
+            source: RemoteUserSource::RootFallback,
+        },
+        |users| users.remote_selection(),
+    )
 }
 
 async fn resolve_selected_remote_user(
@@ -731,10 +735,7 @@ fn normalize_user(value: Option<&str>) -> Option<String> {
 }
 
 fn docker_user_lookup_key(user: &str) -> &str {
-    user.split_once(':')
-        .map(|(name, _)| name)
-        .unwrap_or(user)
-        .trim()
+    user.split_once(':').map_or(user, |(name, _)| name).trim()
 }
 
 fn is_numeric_user_identity(user: &str) -> bool {

@@ -325,12 +325,12 @@ fn normalize_host_ip(value: &str) -> Result<String> {
 
 const fn on_auto_forward_to_config(value: &OnAutoForward) -> ConfigOnAutoForward {
     match value {
-        OnAutoForward::Notify => ConfigOnAutoForward::Notify,
-        OnAutoForward::Silent => ConfigOnAutoForward::Silent,
-        OnAutoForward::Ignore => ConfigOnAutoForward::Ignore,
-        OnAutoForward::OpenBrowser
+        OnAutoForward::Notify
+        | OnAutoForward::OpenBrowser
         | OnAutoForward::OpenBrowserOnce
         | OnAutoForward::OpenPreview => ConfigOnAutoForward::Notify,
+        OnAutoForward::Silent => ConfigOnAutoForward::Silent,
+        OnAutoForward::Ignore => ConfigOnAutoForward::Ignore,
     }
 }
 

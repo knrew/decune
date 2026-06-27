@@ -256,13 +256,11 @@ pub(crate) fn sync_state_with_container_and_compose_project_and_published_ports(
         .cloned();
     let lifecycle = matching_existing
         .as_ref()
-        .map(|state| state.lifecycle)
-        .unwrap_or(default_lifecycle);
+        .map_or(default_lifecycle, |state| state.lifecycle);
     let now = current_timestamp();
     let created_at = matching_existing
         .as_ref()
-        .map(|state| state.created_at.clone())
-        .unwrap_or_else(|| now.clone());
+        .map_or_else(|| now.clone(), |state| state.created_at.clone());
     let last_used_at = matching_existing
         .as_ref()
         .and_then(|state| state.last_used_at.clone());
@@ -435,8 +433,7 @@ fn state_matches_container(state: &WorkspaceState, container: &StateContainerSna
 fn temporary_state_file_path(state_dir: &Path) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_nanos());
     state_dir.join(format!(
         "state.toml.tmp.{}.{}",
         std::process::id(),
@@ -447,8 +444,7 @@ fn temporary_state_file_path(state_dir: &Path) -> PathBuf {
 fn current_timestamp() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or(0);
+        .map_or(0, |duration| duration.as_secs());
     format!("unix:{seconds}")
 }
 

@@ -37,8 +37,9 @@ pub(in crate::up) async fn resolve_up_exec_target(
 }
 
 fn exec_target_from_compose_container(container: ComposePsContainer) -> UpExecTarget {
+    let display_name = container.name.unwrap_or_else(|| container.id.clone());
     UpExecTarget {
-        display_name: container.name.unwrap_or_else(|| container.id.clone()),
         id: container.id,
+        display_name,
     }
 }

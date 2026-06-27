@@ -777,10 +777,10 @@ fn up_container_summary_from_inspect(container: ContainerInspect) -> Result<UpCo
     let id = container
         .id
         .context("Docker container inspect output was missing Id")?;
-    let name = container
-        .name
-        .map(|name| name.trim_start_matches('/').to_owned())
-        .unwrap_or_else(|| id.clone());
+    let name = container.name.map_or_else(
+        || id.clone(),
+        |name| name.trim_start_matches('/').to_owned(),
+    );
     let labels = container
         .config
         .as_ref()

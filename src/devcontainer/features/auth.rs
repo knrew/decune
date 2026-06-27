@@ -36,14 +36,13 @@ pub(super) struct DockerConfigAuthStore {
 
 impl DockerConfigAuthStore {
     pub(super) fn from_default_config() -> Result<Self> {
-        let path = match env::var_os("DOCKER_CONFIG").map(PathBuf::from) {
-            Some(config_dir) => config_dir.join("config.json"),
-            None => {
-                let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
-                    return Ok(Self::default());
-                };
-                home.join(".docker").join("config.json")
-            }
+        let path = if let Some(config_dir) = env::var_os("DOCKER_CONFIG").map(PathBuf::from) {
+            config_dir.join("config.json")
+        } else {
+            let Some(home) = env::var_os("HOME").map(PathBuf::from) else {
+                return Ok(Self::default());
+            };
+            home.join(".docker").join("config.json")
         };
         if !path.exists() {
             return Ok(Self::default());

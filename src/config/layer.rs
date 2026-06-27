@@ -129,18 +129,20 @@ pub(crate) struct LayerFeature {
 impl LayerFeature {
     pub(crate) fn new(id: impl Into<String>) -> Self {
         let id = id.into();
+        let canonical_id = canonical_feature_id(&id);
         Self {
-            canonical_id: canonical_feature_id(&id),
             id,
+            canonical_id,
             enabled: true,
             options: BTreeMap::new(),
         }
     }
 
     fn from_raw(id: String, raw: RawFeatureConfig) -> Self {
+        let canonical_id = canonical_feature_id(&id);
         Self {
-            canonical_id: canonical_feature_id(&id),
             id,
+            canonical_id,
             enabled: raw.enabled.unwrap_or(true),
             options: raw.options,
         }

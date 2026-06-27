@@ -45,15 +45,16 @@ impl OciFeatureRef {
     }
 
     pub(super) fn normalized_reference(&self) -> String {
-        if let Some(digest) = &self.digest {
-            format!("{}@{digest}", self.canonical_id)
-        } else {
-            format!(
-                "{}:{}",
-                self.canonical_id,
-                self.tag.as_deref().unwrap_or("latest")
-            )
-        }
+        self.digest.as_ref().map_or_else(
+            || {
+                format!(
+                    "{}:{}",
+                    self.canonical_id,
+                    self.tag.as_deref().unwrap_or("latest")
+                )
+            },
+            |digest| format!("{}@{digest}", self.canonical_id),
+        )
     }
 }
 

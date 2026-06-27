@@ -221,10 +221,8 @@ fn compose_startup_error_mentions_endpoint_for_protocol(
         return false;
     }
 
-    match compose_startup_error_protocol_hint(stderr) {
-        Some(hint) => compose_port_protocol_matches_startup_error_hint(protocol, hint),
-        None => true,
-    }
+    compose_startup_error_protocol_hint(stderr)
+        .is_none_or(|hint| compose_port_protocol_matches_startup_error_hint(protocol, hint))
 }
 
 fn compose_startup_error_protocol_hint(stderr: &str) -> Option<ComposeStartupErrorProtocolHint> {
@@ -267,10 +265,8 @@ fn compose_startup_error_mentions_endpoint(
 
     match endpoint.host_ip_kind {
         ComposePublishedPortHostIpKind::Omitted => true,
-        ComposePublishedPortHostIpKind::Explicit => endpoint
-            .host_ip_value
-            .as_deref()
-            .map(|host_ip| {
+        ComposePublishedPortHostIpKind::Explicit => {
+            endpoint.host_ip_value.as_deref().is_some_and(|host_ip| {
                 let host_ip = host_ip.to_ascii_lowercase();
                 contains_endpoint_token_with_port_boundary(
                     &lower,
@@ -280,7 +276,7 @@ fn compose_startup_error_mentions_endpoint(
                     &format!("[{host_ip}]:{}", endpoint.host_port),
                 )
             })
-            .unwrap_or(false),
+        }
     }
 }
 

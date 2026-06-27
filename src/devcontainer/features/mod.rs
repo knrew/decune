@@ -25,12 +25,3 @@ pub(crate) use reference::{
     parse_feature_ref_from_devcontainer_dir,
 };
 pub(crate) use registry::HttpOciRegistryClient;
-
-fn hex_lower(bytes: &[u8]) -> String {
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        use std::fmt::Write as _;
-        let _ = write!(output, "{byte:02x}");
-    }
-    output
-}

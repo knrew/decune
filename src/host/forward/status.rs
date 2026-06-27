@@ -193,10 +193,10 @@ pub(crate) fn forward_status_dir(runtime_dir: &Path) -> PathBuf {
         .and_then(|name| name.to_str())
         .filter(|name| !name.is_empty())
         .unwrap_or("workspace");
-    match runtime_dir.parent() {
-        Some(parent) => parent.join(format!("{name}{FORWARD_STATUS_DIR_SUFFIX}")),
-        None => PathBuf::from(format!("{name}{FORWARD_STATUS_DIR_SUFFIX}")),
-    }
+    runtime_dir.parent().map_or_else(
+        || PathBuf::from(format!("{name}{FORWARD_STATUS_DIR_SUFFIX}")),
+        |parent| parent.join(format!("{name}{FORWARD_STATUS_DIR_SUFFIX}")),
+    )
 }
 
 pub(crate) async fn list_active_forward_status_ports(

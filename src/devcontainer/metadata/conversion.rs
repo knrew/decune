@@ -205,15 +205,15 @@ fn json_to_toml(value: &Value) -> Result<toml::Value> {
     match value {
         Value::String(value) => Ok(toml::Value::String(value.clone())),
         Value::Bool(value) => Ok(toml::Value::Boolean(*value)),
-        Value::Number(value) => {
-            if let Some(value) = value.as_i64() {
-                Ok(toml::Value::Integer(value))
-            } else if let Some(value) = value.as_f64() {
-                Ok(toml::Value::Float(value))
-            } else {
-                Err(anyhow!("JSON number cannot be represented as TOML"))
-            }
-        }
+        Value::Number(value) => value.as_i64().map_or_else(
+            || {
+                value.as_f64().map_or_else(
+                    || Err(anyhow!("JSON number cannot be represented as TOML")),
+                    |value| Ok(toml::Value::Float(value)),
+                )
+            },
+            |value| Ok(toml::Value::Integer(value)),
+        ),
         Value::Array(values) => values
             .iter()
             .map(json_to_toml)

@@ -178,8 +178,7 @@ fn feature_option_env_name(option: &str) -> String {
     let prefix_len = sanitized
         .char_indices()
         .find(|(_, ch)| !ch.is_ascii_digit() && *ch != '_')
-        .map(|(index, _)| index)
-        .unwrap_or(sanitized.len());
+        .map_or(sanitized.len(), |(index, _)| index);
     if prefix_len > 0 {
         sanitized.replace_range(..prefix_len, "_");
     } else if sanitized.is_empty() {

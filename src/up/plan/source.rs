@@ -24,8 +24,9 @@ pub(in crate::up) fn final_image_source(
 
     match &config.devcontainer.source {
         Some(ResolvedDevcontainerSource::Image(image)) => Ok(image.clone()),
-        Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
-        Some(ResolvedDevcontainerSource::Compose(_)) => Ok(resources.image_tag.clone()),
+        Some(
+            ResolvedDevcontainerSource::Dockerfile(_) | ResolvedDevcontainerSource::Compose(_),
+        ) => Ok(resources.image_tag.clone()),
         None => bail!("Devcontainer image is required"),
     }
 }
@@ -42,8 +43,9 @@ pub(in crate::up) fn base_image_source(
         {
             Ok(format!("{}-base", resources.image_tag))
         }
-        Some(ResolvedDevcontainerSource::Dockerfile(_)) => Ok(resources.image_tag.clone()),
-        Some(ResolvedDevcontainerSource::Compose(_)) => Ok(resources.image_tag.clone()),
+        Some(
+            ResolvedDevcontainerSource::Dockerfile(_) | ResolvedDevcontainerSource::Compose(_),
+        ) => Ok(resources.image_tag.clone()),
         None => bail!("Devcontainer image is required"),
     }
 }

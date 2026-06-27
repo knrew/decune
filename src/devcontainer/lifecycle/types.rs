@@ -34,7 +34,7 @@ impl LifecycleDefinition {
     }
 
     pub(crate) fn commands(&self, stage: LifecycleStage) -> &[LifecycleCommand] {
-        self.commands.get(&stage).map(Vec::as_slice).unwrap_or(&[])
+        self.commands.get(&stage).map_or(&[], Vec::as_slice)
     }
 
     pub(crate) fn has_commands(&self) -> bool {

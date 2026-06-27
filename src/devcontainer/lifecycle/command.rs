@@ -139,10 +139,7 @@ fn run_host_parallel(
         }
     }
 
-    match first_error {
-        Some(error) => Err(error),
-        None => Ok(()),
-    }
+    first_error.map_or_else(|| Ok(()), Err)
 }
 
 pub(in crate::devcontainer::lifecycle) async fn run_container_process(
@@ -194,10 +191,7 @@ pub(in crate::devcontainer::lifecycle) fn same_container_user(left: &str, right:
 }
 
 fn docker_user_lookup_key(user: &str) -> &str {
-    user.split_once(':')
-        .map(|(name, _)| name)
-        .unwrap_or(user)
-        .trim()
+    user.split_once(':').map_or(user, |(name, _)| name).trim()
 }
 
 fn is_root_user(user: &str) -> bool {
@@ -222,7 +216,7 @@ pub(in crate::devcontainer::lifecycle) fn run_host_process(
                 workdir.display()
             )
         })?;
-    let exit_code = output.status.code().map(i64::from).unwrap_or(-1);
+    let exit_code = output.status.code().map_or(-1, i64::from);
 
     ensure_lifecycle_success(
         stage_name,

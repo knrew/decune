@@ -80,15 +80,15 @@ pub(crate) async fn prepare_container_lifecycle(
     .await?;
 
     Ok(PreparedLifecycleRunContext {
-        remote_env,
-        remote_process_env,
-        remote_env_redactions,
         client: context.client,
         container: context.container,
         config: context.config,
         workspace_root: context.workspace_root,
         workspace_folder: context.workspace_folder,
         remote_user: context.remote_user,
+        remote_env,
+        remote_process_env,
+        remote_env_redactions,
     })
 }
 

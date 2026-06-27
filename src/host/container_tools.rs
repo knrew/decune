@@ -9,6 +9,8 @@ use anyhow::{Context, Result, bail};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 
+use crate::hex::hex_lower;
+
 pub(crate) const CONTAINER_TOOLS_ENV: &str = "DECUNE_CONTAINER_TOOLS_DIR";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,10 +388,6 @@ fn verify_sha256(bytes: &[u8], expected: &str, display: impl FnOnce() -> String)
         bail!("Container tool artifact checksum mismatch: {}", display());
     }
     Ok(())
-}
-
-fn hex_lower(bytes: &[u8]) -> String {
-    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn container_tool_override_dirs() -> Vec<PathBuf> {

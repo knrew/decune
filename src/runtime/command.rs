@@ -264,13 +264,12 @@ async fn run_capture_process(
                 wait_for_child_and_capture(&mut child, &mut tasks, &command_display),
             )
             .await;
-            match result {
-                Ok(output) => output?,
-                Err(_) => {
-                    kill_and_wait_child(&mut child, &command_display).await?;
-                    tasks.abort_and_join().await;
-                    return Err(timeout_error(&command_display));
-                }
+            if let Ok(output) = result {
+                output?
+            } else {
+                kill_and_wait_child(&mut child, &command_display).await?;
+                tasks.abort_and_join().await;
+                return Err(timeout_error(&command_display));
             }
         }
         None => wait_for_child_and_capture(&mut child, &mut tasks, &command_display).await?,
@@ -307,14 +306,11 @@ async fn wait_for_child(
 ) -> Result<ExitStatus> {
     let wait = child.wait();
     if let Some(timeout) = timeout {
-        match tokio::time::timeout(timeout, wait).await {
-            Ok(status) => {
-                status.with_context(|| format!("Failed to run command: {command_display}"))
-            }
-            Err(_) => {
-                kill_and_wait_child(child, command_display).await?;
-                Err(timeout_error(command_display))
-            }
+        if let Ok(status) = tokio::time::timeout(timeout, wait).await {
+            status.with_context(|| format!("Failed to run command: {command_display}"))
+        } else {
+            kill_and_wait_child(child, command_display).await?;
+            Err(timeout_error(command_display))
         }
     } else {
         wait.await

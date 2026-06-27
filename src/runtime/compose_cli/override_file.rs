@@ -597,13 +597,22 @@ fn yaml_double_quote(value: &str) -> String {
             '\u{08}' => quoted.push_str("\\b"),
             '\u{0c}' => quoted.push_str("\\f"),
             ch if ch.is_control() => {
-                quoted.push_str(&format!("\\u{:04x}", ch as u32));
+                push_yaml_unicode_escape(&mut quoted, ch);
             }
             ch => quoted.push(ch),
         }
     }
     quoted.push('"');
     quoted
+}
+
+fn push_yaml_unicode_escape(output: &mut String, ch: char) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let value = ch as u32;
+    output.push_str("\\u");
+    for shift in [12, 8, 4, 0] {
+        output.push(HEX[((value >> shift) & 0x0f) as usize] as char);
+    }
 }
 
 #[cfg(test)]

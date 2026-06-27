@@ -36,30 +36,27 @@ pub(crate) async fn discover_status_inventory() -> Result<StatusInventory> {
 }
 
 pub(crate) async fn run_status(options: StatusOptions) -> Result<()> {
-    match options.workspace {
-        Some(path) => {
-            let workspace = Workspace::resolve(path)?;
-            let current_config = current_workspace_config(&workspace)?;
-            let status = discover_workspace_status(&workspace, current_config.clone()).await?;
-            let mut ports = collect_workspace_ports(&workspace, false).await?;
-            for warning in &ports.warnings {
-                ui::warn(warning);
-            }
-            sort_ports(&mut ports.ports);
-            print!("{}", render_workspace_detail(&status, &ports.ports));
+    if let Some(path) = options.workspace {
+        let workspace = Workspace::resolve(path)?;
+        let current_config = current_workspace_config(&workspace)?;
+        let status = discover_workspace_status(&workspace, current_config.clone()).await?;
+        let mut ports = collect_workspace_ports(&workspace, false).await?;
+        for warning in &ports.warnings {
+            ui::warn(warning);
         }
-        None => {
-            let inventory = discover_status_inventory().await?;
-            for issue in &inventory.issues {
-                ui::warn(&issue.message);
-            }
-            let mut ports = collect_all_ports().await?;
-            for warning in &ports.warnings {
-                ui::warn(warning);
-            }
-            sort_ports(&mut ports.ports);
-            print!("{}", render_status_summary(&inventory, &ports));
+        sort_ports(&mut ports.ports);
+        print!("{}", render_workspace_detail(&status, &ports.ports));
+    } else {
+        let inventory = discover_status_inventory().await?;
+        for issue in &inventory.issues {
+            ui::warn(&issue.message);
         }
+        let mut ports = collect_all_ports().await?;
+        for warning in &ports.warnings {
+            ui::warn(warning);
+        }
+        sort_ports(&mut ports.ports);
+        print!("{}", render_status_summary(&inventory, &ports));
     }
 
     Ok(())

@@ -487,14 +487,11 @@ fn host_github_auth_token_from(command: &Path) -> Result<Option<String>> {
         return Ok(None);
     }
 
-    let token = match String::from_utf8(output.stdout) {
-        Ok(token) => token,
-        Err(_) => {
-            ui::warn(
-                "GitHub CLI token forwarding is unavailable: host gh auth token returned non-UTF-8 output",
-            );
-            return Ok(None);
-        }
+    let Ok(token) = String::from_utf8(output.stdout) else {
+        ui::warn(
+            "GitHub CLI token forwarding is unavailable: host gh auth token returned non-UTF-8 output",
+        );
+        return Ok(None);
     };
     Ok(normalize_github_token(&token))
 }
