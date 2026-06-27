@@ -41,11 +41,6 @@ use forwarding::{
     published_port_publish_ports, published_port_publish_ports_for_service,
 };
 #[cfg(test)]
-use metadata::{
-    add_github_cli_feature_to_plan, deferred_config_warnings, finalize_up_plan_mounts,
-    security_notices, should_auto_add_github_cli_feature,
-};
-#[cfg(test)]
 use mounts::default_workspace_folder;
 pub(crate) use mounts::mount_hash_inputs;
 pub(in crate::up) use mounts::{
@@ -225,23 +220,26 @@ mod tests {
         PublishedPortRuntimeState, PublishedPortRuntimeType, PublishedPortSource,
         PublishedPortTarget,
     };
+    use crate::up::metadata::{
+        finalize::finalize_up_plan_mounts,
+        github_cli::{add_github_cli_feature_to_plan, should_auto_add_github_cli_feature},
+        messages::{deferred_config_warnings, security_notices},
+    };
     use crate::workspace::Workspace;
 
     use super::{
         CredentialRuntimeMountPolicy, DECUNE_RUNTIME_TARGET, ExistingContainerDecision,
         ForwardingResolution, UpContainerSummary, UpMountSummary, UpOptions, UpPlan,
         add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-        add_github_cli_feature_to_plan, build_preliminary_up_plan_with_forwarding_resolution,
-        build_up_plan, build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
+        build_preliminary_up_plan_with_forwarding_resolution, build_up_plan,
+        build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
         build_up_plan_with_update_features, container_summary, create_and_start_container,
-        decide_existing_container, default_workspace_folder, deferred_config_warnings,
-        feature_layer_image, finalize_up_plan_mounts, first_successful_shell_candidate,
-        generated_compose_override_content, list_workspace_containers, mount_hash_inputs,
-        plan_forwarding_agent_targets, plan_forwarding_agent_targets_with_host_reservations,
-        published_port_host_reservations, published_port_publish_ports,
-        published_port_publish_ports_for_service, run_attached_up, run_detached_up,
-        security_notices, shell_command_candidates, should_auto_add_github_cli_feature,
-        uid_gid_sync_base_image, uid_gid_sync_warning,
+        decide_existing_container, default_workspace_folder, feature_layer_image,
+        first_successful_shell_candidate, generated_compose_override_content,
+        list_workspace_containers, mount_hash_inputs, plan_forwarding_agent_targets,
+        plan_forwarding_agent_targets_with_host_reservations, published_port_host_reservations,
+        published_port_publish_ports, published_port_publish_ports_for_service, run_attached_up,
+        run_detached_up, shell_command_candidates, uid_gid_sync_base_image, uid_gid_sync_warning,
     };
 
     #[test]

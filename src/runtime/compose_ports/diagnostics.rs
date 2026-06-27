@@ -1,10 +1,11 @@
 use crate::runtime::compose_ports::{
     ComposePortEligibility, ComposePortProtocol, ComposePublishedPortEndpoint,
-    ComposePublishedPortPlanError, ComposePublishedPortPlanningInput, compose_port_protocol_name,
+    ComposePublishedPortPlanningInput, compose_port_protocol_name,
     compose_published_port_endpoint_display,
 };
 
 use super::endpoint::endpoint_for_entry;
+use super::planning::ComposePublishedPortPlanError;
 
 pub(crate) const COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED: &str =
     "compose_published_port_multi_replica_unsupported";
@@ -186,8 +187,7 @@ mod tests {
 
     use super::*;
     use crate::runtime::compose_ports::{
-        COMPOSE_PUBLISHED_PORT_INVALID, COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED,
-        plan_compose_published_ports_with,
+        planning::plan_compose_published_ports_with,
         test_support::{plan_with_availability, planning_input},
     };
 

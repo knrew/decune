@@ -297,10 +297,12 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::runtime::compose_ports::{
+    use crate::runtime::compose_ports::diagnostics::{
         COMPOSE_PUBLISHED_PORT_BIND_RACE, COMPOSE_PUBLISHED_PORT_COLLISION,
-        COMPOSE_PUBLISHED_PORT_UNSUPPORTED, ComposePublishedPortPlan,
-        ComposePublishedPortStartupDiagnostics,
+        COMPOSE_PUBLISHED_PORT_UNSUPPORTED,
+    };
+    use crate::runtime::compose_ports::{
+        ComposePublishedPortPlan, ComposePublishedPortStartupDiagnostics,
         test_support::{plan_with_availability, planning_input},
     };
 
