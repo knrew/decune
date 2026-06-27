@@ -36,11 +36,9 @@ fn up_uses_image_metadata_remote_user_and_remote_env() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_devcontainer_metadata(&workspace_root, &image_tag)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_devcontainer_metadata(&workspace_root, &image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -54,8 +52,8 @@ fn up_uses_image_metadata_remote_user_and_remote_env() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -95,13 +93,12 @@ fn up_detach_accepts_workspace_folder_from_image_metadata_for_workspace_mount() 
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
         create_image_with_devcontainer_metadata_label(
             &image_tag,
             r#"{"workspaceFolder":"/workspace"}"#,
         )
-        .await
         .unwrap();
     });
 
@@ -115,9 +112,7 @@ fn up_detach_accepts_workspace_folder_from_image_metadata_for_workspace_mount() 
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -133,8 +128,8 @@ fn up_detach_accepts_workspace_folder_from_image_metadata_for_workspace_mount() 
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -170,11 +165,9 @@ fn up_detects_image_metadata_label_change_before_reuse() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_without_devcontainer_metadata(&image_tag)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_without_devcontainer_metadata(&image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -187,9 +180,7 @@ fn up_detects_image_metadata_label_change_before_reuse() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            create_image_with_devcontainer_metadata(&workspace_root, &image_tag)
-                .await
-                .unwrap();
+            create_image_with_devcontainer_metadata(&workspace_root, &image_tag).unwrap();
         });
 
         decune()
@@ -202,8 +193,8 @@ fn up_detects_image_metadata_label_change_before_reuse() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -243,12 +234,10 @@ fn up_reuses_image_metadata_when_source_tag_is_missing() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        remove_image_if_exists(&hold_tag).await.unwrap();
-        create_image_with_devcontainer_metadata(&workspace_root, &image_tag)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        remove_image_if_exists(&hold_tag).unwrap();
+        create_image_with_devcontainer_metadata(&workspace_root, &image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -261,8 +250,8 @@ fn up_reuses_image_metadata_when_source_tag_is_missing() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            tag_image(&image_tag, &hold_tag).await.unwrap();
-            remove_image_if_exists(&image_tag).await.unwrap();
+            tag_image(&image_tag, &hold_tag).unwrap();
+            remove_image_if_exists(&image_tag).unwrap();
         });
 
         decune()
@@ -275,9 +264,9 @@ fn up_reuses_image_metadata_when_source_tag_is_missing() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let source_image_cleanup = remove_image_if_exists(&image_tag).await;
-        let hold_image_cleanup = remove_image_if_exists(&hold_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let source_image_cleanup = remove_image_if_exists(&image_tag);
+        let hold_image_cleanup = remove_image_if_exists(&hold_tag);
         container_cleanup
             .and(source_image_cleanup)
             .and(hold_image_cleanup)
@@ -316,13 +305,12 @@ fn up_detach_ignores_unsupported_image_metadata_forward_ports() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
         create_image_with_devcontainer_metadata_label(
             &image_tag,
             r#"{"forwardPorts":["db:5432"]}"#,
         )
-        .await
         .unwrap();
     });
 
@@ -340,8 +328,8 @@ fn up_detach_ignores_unsupported_image_metadata_forward_ports() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -378,11 +366,9 @@ fn up_detach_default_override_command_keeps_short_lived_image_running() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_cmd(&image_tag, vec!["true"])
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_cmd(&image_tag, vec!["true"]).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -395,7 +381,7 @@ fn up_detach_default_override_command_keeps_short_lived_image_running() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             assert!(
                 containers[0]
@@ -407,8 +393,8 @@ fn up_detach_default_override_command_keeps_short_lived_image_running() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -445,11 +431,9 @@ fn up_detach_override_command_false_respects_short_lived_image_command() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_cmd(&image_tag, vec!["true"])
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_cmd(&image_tag, vec!["true"]).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -464,8 +448,8 @@ fn up_detach_override_command_false_respects_short_lived_image_command() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -502,11 +486,9 @@ fn up_detach_override_command_false_detects_delayed_image_command_exit() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_cmd(&image_tag, vec!["/bin/sh", "-c", "sleep 1; exit 23"])
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_cmd(&image_tag, vec!["/bin/sh", "-c", "sleep 1; exit 23"]).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -522,8 +504,8 @@ fn up_detach_override_command_false_detects_delayed_image_command_exit() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -561,8 +543,8 @@ fn up_detach_detects_override_false_image_command_change_before_reuse() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
         create_image_with_cmd(
             &image_tag,
             vec![
@@ -571,7 +553,6 @@ fn up_detach_detects_override_false_image_command_change_before_reuse() {
                 "touch /tmp/decune-first-command && trap 'exit 0' TERM; while sleep 1 & wait $!; do :; done",
             ],
         )
-        .await
         .unwrap();
     });
 
@@ -593,7 +574,6 @@ fn up_detach_detects_override_false_image_command_change_before_reuse() {
                     "touch /tmp/decune-second-command && trap 'exit 0' TERM; while sleep 1 & wait $!; do :; done",
                 ],
             )
-            .await
             .unwrap();
         });
 
@@ -607,8 +587,8 @@ fn up_detach_detects_override_false_image_command_change_before_reuse() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -645,14 +625,13 @@ fn up_detach_image_metadata_entrypoint_defaults_to_keepalive() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
         create_image_with_devcontainer_metadata_label_and_cmd(
             &image_tag,
             r#"{"entrypoint":"touch /tmp/decune-image-metadata-entrypoint"}"#,
             vec!["/bin/sh", "-c", "touch /tmp/decune-image-command"],
         )
-        .await
         .unwrap();
     });
 
@@ -667,8 +646,8 @@ fn up_detach_image_metadata_entrypoint_defaults_to_keepalive() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -705,8 +684,8 @@ fn up_detach_runs_image_metadata_only_entrypoint_without_feature_layer() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
         create_image_with_devcontainer_metadata_label_and_cmd(
             &image_tag,
             r#"{"overrideCommand":false,"entrypoint":"touch /tmp/decune-image-metadata-entrypoint"}"#,
@@ -716,7 +695,6 @@ fn up_detach_runs_image_metadata_only_entrypoint_without_feature_layer() {
                 "touch /tmp/decune-image-command && trap 'exit 0' TERM; while sleep 1 & wait $!; do :; done",
             ],
         )
-        .await
         .unwrap();
     });
 
@@ -731,8 +709,8 @@ fn up_detach_runs_image_metadata_only_entrypoint_without_feature_layer() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -769,10 +747,10 @@ fn up_runs_initialize_before_image_pull() {
         .unwrap();
 
     runtime.block_on(async {
-        let docker = Docker::connect_with_defaults().unwrap();
-        ensure_alpine_image(&docker).await.unwrap();
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
+        let docker = Docker::connect_with_defaults();
+        ensure_alpine_image(&docker).unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -786,8 +764,8 @@ fn up_runs_initialize_before_image_pull() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -824,14 +802,13 @@ fn up_detach_runs_image_metadata_entrypoint_as_nonroot_image_user() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
         create_nonroot_image_with_devcontainer_metadata_label_and_cmd(
             &image_tag,
             r#"{"entrypoint":"touch /tmp/decune-image-metadata-entrypoint"}"#,
             vec!["true"],
         )
-        .await
         .unwrap();
     });
 
@@ -846,8 +823,8 @@ fn up_detach_runs_image_metadata_entrypoint_as_nonroot_image_user() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -896,11 +873,9 @@ fn up_devcontainer_remote_user_overrides_image_metadata() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_devcontainer_metadata(&workspace_root, &image_tag)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_devcontainer_metadata(&workspace_root, &image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -914,8 +889,8 @@ fn up_devcontainer_remote_user_overrides_image_metadata() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 

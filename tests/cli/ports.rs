@@ -366,8 +366,8 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let mut child = None;
@@ -422,8 +422,8 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
         _ = child.wait();
     }
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -494,8 +494,8 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let mut child = None;
@@ -533,8 +533,8 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
         _ = child.wait();
     }
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -605,8 +605,8 @@ fn up_attached_auto_forwards_new_container_listen_port() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let mut child = None;
@@ -639,8 +639,8 @@ fn up_attached_auto_forwards_new_container_listen_port() {
         _ = child.wait();
     }
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -693,8 +693,8 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -742,8 +742,8 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -777,7 +777,7 @@ fn up_detach_warns_when_app_port_has_no_host_ip() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -797,7 +797,7 @@ fn up_detach_warns_when_app_port_has_no_host_ip() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {

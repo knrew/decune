@@ -22,11 +22,9 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
     let volume_name = format!("decune-rebuild-test-{}", workspace_id(&workspace_root));
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_volumes(&workspace_root).await.unwrap();
-        create_managed_volume(&workspace_root, &volume_name)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_volumes(&workspace_root).unwrap();
+        create_managed_volume(&workspace_root, &volume_name).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -39,7 +37,7 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             .stderr(predicate::str::contains("Started dev container"));
 
         let first_id = runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             containers[0].id.clone().unwrap()
         });
@@ -56,7 +54,7 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             assert_ne!(containers[0].id.as_deref(), Some(first_id.as_str()));
             assert!(
@@ -66,12 +64,12 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
                     .is_some_and(|state| state == "running")
             );
 
-            let volumes = workspace_volumes(&workspace_root).await.unwrap();
+            let volumes = workspace_volumes(&workspace_root).unwrap();
             assert_eq!(volumes, vec![volume_name.clone()]);
         });
 
         let second_id = runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             containers[0].id.clone().unwrap()
         });
 
@@ -87,18 +85,18 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             assert_ne!(containers[0].id.as_deref(), Some(second_id.as_str()));
 
-            let volumes = workspace_volumes(&workspace_root).await.unwrap();
+            let volumes = workspace_volumes(&workspace_root).unwrap();
             assert_eq!(volumes, vec![volume_name.clone()]);
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let volume_cleanup = cleanup_workspace_volumes(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let volume_cleanup = cleanup_workspace_volumes(&workspace_root);
         container_cleanup.and(volume_cleanup).unwrap();
     });
 
@@ -139,8 +137,8 @@ fn rebuild_no_cache_reruns_dockerfile_build_steps() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -154,7 +152,7 @@ fn rebuild_no_cache_reruns_dockerfile_build_steps() {
 
         let first_token = runtime
             .block_on(async {
-                exec_single_workspace_container(&workspace_root, ["cat", "/build-token"]).await
+                exec_single_workspace_container(&workspace_root, ["cat", "/build-token"])
             })
             .unwrap();
 
@@ -171,7 +169,7 @@ fn rebuild_no_cache_reruns_dockerfile_build_steps() {
 
         let second_token = runtime
             .block_on(async {
-                exec_single_workspace_container(&workspace_root, ["cat", "/build-token"]).await
+                exec_single_workspace_container(&workspace_root, ["cat", "/build-token"])
             })
             .unwrap();
 
@@ -179,8 +177,8 @@ fn rebuild_no_cache_reruns_dockerfile_build_steps() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 

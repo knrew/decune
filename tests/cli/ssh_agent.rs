@@ -39,7 +39,7 @@ fn up_detach_mounts_ssh_agent_socket_and_sets_container_env() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -53,9 +53,7 @@ fn up_detach_mounts_ssh_agent_socket_and_sets_container_env() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let env = inspect.config.unwrap_or_default().env.unwrap_or_default();
             assert!(
                 env.iter()
@@ -65,7 +63,7 @@ fn up_detach_mounts_ssh_agent_socket_and_sets_container_env() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -110,7 +108,7 @@ fn up_detach_recreates_container_when_ssh_agent_socket_becomes_unavailable() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -124,9 +122,7 @@ fn up_detach_recreates_container_when_ssh_agent_socket_becomes_unavailable() {
             .stderr(predicate::str::contains("Started dev container"));
 
         let first_id = runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert!(inspect_has_env(
                 &inspect,
                 "SSH_AUTH_SOCK=/run/decune/ssh-agent.sock"
@@ -148,9 +144,7 @@ fn up_detach_recreates_container_when_ssh_agent_socket_becomes_unavailable() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert_ne!(inspect.id.as_deref(), Some(first_id.as_str()));
             assert!(!inspect_has_env(
                 &inspect,
@@ -164,7 +158,7 @@ fn up_detach_recreates_container_when_ssh_agent_socket_becomes_unavailable() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {

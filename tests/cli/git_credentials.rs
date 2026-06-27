@@ -87,8 +87,8 @@ fn up_detach_routes_git_credential_helper_actions_through_host_daemon() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -109,8 +109,8 @@ fn up_detach_routes_git_credential_helper_actions_through_host_daemon() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -175,8 +175,8 @@ fn up_detach_uses_selected_git_credential_helper_independent_of_container_uname(
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -190,8 +190,8 @@ fn up_detach_uses_selected_git_credential_helper_independent_of_container_uname(
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -279,8 +279,8 @@ fn up_detach_runs_git_credential_helper_as_nonroot_alpine_remote_user() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -296,8 +296,8 @@ fn up_detach_runs_git_credential_helper_as_nonroot_alpine_remote_user() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -388,8 +388,8 @@ fn up_detach_sets_git_credential_home_for_nonroot_remote_user() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -405,8 +405,8 @@ fn up_detach_sets_git_credential_home_for_nonroot_remote_user() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -498,8 +498,8 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -517,8 +517,8 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -612,8 +612,8 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -630,8 +630,8 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 

@@ -41,7 +41,7 @@ fn down_and_remove_manage_image_container() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -61,13 +61,13 @@ fn down_and_remove_manage_image_container() {
             .stderr(predicate::str::contains("Stopped dev container"));
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
-            assert_container_is_not_running(containers[0].id.as_deref().unwrap()).await;
+            assert_container_is_not_running(containers[0].id.as_deref().unwrap());
         });
 
         let stopped_id = runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             containers[0].id.clone().unwrap()
         });
 
@@ -81,7 +81,7 @@ fn down_and_remove_manage_image_container() {
             .stderr(predicate::str::contains("Started existing dev container"));
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             assert_eq!(containers[0].id.as_deref(), Some(stopped_id.as_str()));
             assert!(
@@ -101,7 +101,7 @@ fn down_and_remove_manage_image_container() {
             .stderr(predicate::str::contains("Removed dev container resources"));
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert!(containers.is_empty());
         });
 
@@ -125,7 +125,7 @@ fn down_and_remove_manage_image_container() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -156,7 +156,7 @@ fn down_removes_github_token_file_and_keeps_secret_directory_without_container()
     fs::write(&marker_file, "keep\n").unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -178,7 +178,7 @@ fn down_removes_github_token_file_and_keeps_secret_directory_without_container()
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -277,10 +277,8 @@ fn remove_without_no_confirm_fails_non_interactive_without_removing_managed_volu
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_volumes(&workspace_root).await.unwrap();
-        create_managed_volume(&workspace_root, &volume_name)
-            .await
-            .unwrap();
+        cleanup_workspace_volumes(&workspace_root).unwrap();
+        create_managed_volume(&workspace_root, &volume_name).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -295,13 +293,13 @@ fn remove_without_no_confirm_fails_non_interactive_without_removing_managed_volu
             ));
 
         runtime.block_on(async {
-            let volumes = workspace_volumes(&workspace_root).await.unwrap();
+            let volumes = workspace_volumes(&workspace_root).unwrap();
             assert_eq!(volumes, vec![volume_name.clone()]);
         });
     });
 
     runtime.block_on(async {
-        cleanup_workspace_volumes(&workspace_root).await.unwrap();
+        cleanup_workspace_volumes(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -319,12 +317,12 @@ fn remove_without_no_confirm_fails_non_interactive_without_removing_managed_cont
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
         runtime.block_on(async {
-            create_term_marker_container(&workspace_root).await.unwrap();
+            create_term_marker_container(&workspace_root).unwrap();
         });
 
         decune()
@@ -338,7 +336,7 @@ fn remove_without_no_confirm_fails_non_interactive_without_removing_managed_cont
             ));
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             assert!(
                 containers[0]
@@ -350,7 +348,7 @@ fn remove_without_no_confirm_fails_non_interactive_without_removing_managed_cont
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -369,12 +367,12 @@ fn remove_no_confirm_stops_running_container_before_removal() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
         runtime.block_on(async {
-            create_term_marker_container(&workspace_root).await.unwrap();
+            create_term_marker_container(&workspace_root).unwrap();
         });
 
         decune()
@@ -388,13 +386,13 @@ fn remove_no_confirm_stops_running_container_before_removal() {
         assert_eq!(fs::read_to_string(&marker).unwrap(), "term\n");
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert!(containers.is_empty());
         });
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -428,7 +426,7 @@ fn remove_no_confirm_removes_state_and_runtime_directories() {
     fs::write(port_status_dir.join("forward-status-stale.json"), "{}").unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -448,7 +446,7 @@ fn remove_no_confirm_removes_state_and_runtime_directories() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -468,11 +466,9 @@ fn remove_images_removes_workspace_images_only_when_requested() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
-        create_workspace_image_tag(&workspace_root, "remove-test")
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
+        create_workspace_image_tag(&workspace_root, "remove-test").unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -485,7 +481,7 @@ fn remove_images_removes_workspace_images_only_when_requested() {
             .stderr(predicate::str::contains("Removed dev container resources"));
 
         runtime.block_on(async {
-            let images = workspace_images(&workspace_root).await.unwrap();
+            let images = workspace_images(&workspace_root).unwrap();
             assert_eq!(images, vec![image_tag.clone()]);
         });
 
@@ -498,14 +494,14 @@ fn remove_images_removes_workspace_images_only_when_requested() {
             .stderr(predicate::str::contains("Removed dev container resources"));
 
         runtime.block_on(async {
-            let images = workspace_images(&workspace_root).await.unwrap();
+            let images = workspace_images(&workspace_root).unwrap();
             assert!(images.is_empty());
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 

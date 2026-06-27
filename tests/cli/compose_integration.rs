@@ -1893,7 +1893,7 @@ fn cleanup_compose_workspace(workspace: &Path) {
         .build()
         .unwrap();
     runtime.block_on(async {
-        _ = cleanup_workspace_images(workspace).await;
+        _ = cleanup_workspace_images(workspace);
     });
     _ = docker_status([
         "network",

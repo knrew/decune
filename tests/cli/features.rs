@@ -88,8 +88,8 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -103,9 +103,7 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let config = inspect.config.unwrap_or_default();
             let env = config.env.unwrap_or_default();
             assert!(env.iter().any(|entry| entry == "FROM_FEATURE=yes"));
@@ -126,8 +124,8 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -212,8 +210,8 @@ fn up_detach_uses_dockerfile_metadata_user_for_feature_install_env() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -227,8 +225,8 @@ fn up_detach_uses_dockerfile_metadata_user_for_feature_install_env() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -284,8 +282,8 @@ fn up_detach_rejects_feature_metadata_remote_user() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -299,8 +297,8 @@ fn up_detach_rejects_feature_metadata_remote_user() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -354,8 +352,8 @@ fn up_detach_rejects_feature_metadata_missing_name() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -371,8 +369,8 @@ fn up_detach_rejects_feature_metadata_missing_name() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -443,8 +441,8 @@ fn up_detach_preserves_base_image_user_after_feature_layer() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -458,8 +456,8 @@ fn up_detach_preserves_base_image_user_after_feature_layer() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -551,8 +549,8 @@ fn up_detach_isolates_feature_option_env_between_features() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -566,8 +564,8 @@ fn up_detach_isolates_feature_option_env_between_features() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -625,8 +623,8 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -640,7 +638,6 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
 
         runtime.block_on(async {
             let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
                 .unwrap();
             let container_labels = inspect
                 .config
@@ -656,8 +653,7 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
                 .as_ref()
                 .and_then(|config| config.image.clone())
                 .expect("container image should exist");
-            let docker = Docker::connect_with_defaults().unwrap();
-            let image = docker.inspect_image(&image).await.unwrap();
+            let image = inspect_image(&image).unwrap();
             let labels = image.config.and_then(|config| config.labels);
             assert!(
                 !labels
@@ -684,8 +680,8 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -755,8 +751,8 @@ fn up_detach_runs_feature_lifecycle_before_user_lifecycle() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -770,8 +766,8 @@ fn up_detach_runs_feature_lifecycle_before_user_lifecycle() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -826,8 +822,8 @@ fn up_detach_runs_feature_entrypoint_before_lifecycle() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -841,8 +837,8 @@ fn up_detach_runs_feature_entrypoint_before_lifecycle() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -909,8 +905,8 @@ fn up_detach_runs_feature_entrypoint_as_nonroot_image_user() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -924,8 +920,8 @@ fn up_detach_runs_feature_entrypoint_as_nonroot_image_user() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -992,8 +988,8 @@ fn up_detach_runs_feature_entrypoint_when_override_command_is_false() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1007,8 +1003,8 @@ fn up_detach_runs_feature_entrypoint_when_override_command_is_false() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1078,8 +1074,8 @@ fn up_detach_runs_feature_entrypoints_in_install_order() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1093,8 +1089,8 @@ fn up_detach_runs_feature_entrypoints_in_install_order() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1149,8 +1145,8 @@ fn up_detach_waits_for_slow_feature_entrypoint_without_timing_out() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1164,8 +1160,8 @@ fn up_detach_waits_for_slow_feature_entrypoint_without_timing_out() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1219,8 +1215,8 @@ fn up_detach_fails_when_feature_entrypoint_exits_non_zero() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1235,8 +1231,8 @@ fn up_detach_fails_when_feature_entrypoint_exits_non_zero() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1290,8 +1286,8 @@ fn up_detach_fails_when_feature_entrypoint_exits_non_zero_after_delay() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1307,8 +1303,8 @@ fn up_detach_fails_when_feature_entrypoint_exits_non_zero_after_delay() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1345,8 +1341,8 @@ fn up_detach_starts_container_with_public_devcontainer_feature() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1360,8 +1356,8 @@ fn up_detach_starts_container_with_public_devcontainer_feature() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 

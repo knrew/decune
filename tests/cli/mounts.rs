@@ -22,7 +22,7 @@ fn up_detach_publishes_app_port() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -35,9 +35,7 @@ fn up_detach_publishes_app_port() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let ports = inspect
                 .network_settings
                 .and_then(|settings| settings.ports)
@@ -60,7 +58,7 @@ fn up_detach_publishes_app_port() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -106,7 +104,7 @@ read_only = true
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -119,9 +117,7 @@ read_only = true
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -137,7 +133,7 @@ read_only = true
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -167,7 +163,7 @@ fn up_detach_rejects_workspace_mount_without_workspace_folder() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -183,7 +179,7 @@ fn up_detach_rejects_workspace_mount_without_workspace_folder() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -219,7 +215,7 @@ fn up_detach_uses_explicit_workspace_folder_with_workspace_mount() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -232,9 +228,7 @@ fn up_detach_uses_explicit_workspace_folder_with_workspace_mount() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -249,7 +243,7 @@ fn up_detach_uses_explicit_workspace_folder_with_workspace_mount() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -280,7 +274,7 @@ fn up_detach_rejects_workspace_folder_outside_workspace_mount_target() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -296,7 +290,7 @@ fn up_detach_rejects_workspace_folder_outside_workspace_mount_target() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -336,11 +330,9 @@ fn up_detach_resolves_remote_user_home_workspace_mount_target_before_validation(
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_nonstandard_home_user(&workspace_root, &image_tag)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_nonstandard_home_user(&workspace_root, &image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -353,9 +345,7 @@ fn up_detach_resolves_remote_user_home_workspace_mount_target_before_validation(
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -377,8 +367,8 @@ fn up_detach_resolves_remote_user_home_workspace_mount_target_before_validation(
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -419,11 +409,9 @@ fn up_detach_resolves_remote_user_home_workspace_folder_at_runtime() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_nonstandard_home_user(&workspace_root, &image_tag)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_nonstandard_home_user(&workspace_root, &image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -436,9 +424,7 @@ fn up_detach_resolves_remote_user_home_workspace_folder_at_runtime() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -460,8 +446,8 @@ fn up_detach_resolves_remote_user_home_workspace_folder_at_runtime() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -502,11 +488,9 @@ fn up_detach_resolves_remote_user_home_mount_target() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_nonstandard_home_user(&workspace_root, &image_tag)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_nonstandard_home_user(&workspace_root, &image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -519,9 +503,7 @@ fn up_detach_resolves_remote_user_home_mount_target() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -543,8 +525,8 @@ fn up_detach_resolves_remote_user_home_mount_target() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -590,7 +572,7 @@ fn up_detach_resolves_remote_user_home_mount_target_for_dockerfile() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -603,9 +585,7 @@ fn up_detach_resolves_remote_user_home_mount_target_for_dockerfile() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -627,7 +607,7 @@ fn up_detach_resolves_remote_user_home_mount_target_for_dockerfile() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -672,7 +652,7 @@ type = "bind"
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -685,9 +665,7 @@ type = "bind"
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -705,7 +683,7 @@ type = "bind"
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
