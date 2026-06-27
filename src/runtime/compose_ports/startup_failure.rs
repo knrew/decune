@@ -122,8 +122,8 @@ fn unsupported_requested_endpoint_display_for_startup_failure(
     match &entry.published_host_port {
         ComposePublishedHostPort::Single(host_port) => {
             let endpoint = ComposePublishedPortEndpoint {
-                host_ip_kind,
-                host_ip_value,
+                ip_kind: host_ip_kind,
+                ip_value: host_ip_value,
                 host_port: *host_port,
             };
             compose_startup_error_mentions_endpoint_for_protocol(stderr, &endpoint, &entry.protocol)
@@ -134,8 +134,8 @@ fn unsupported_requested_endpoint_display_for_startup_failure(
             (start..=end)
                 .any(|host_port| {
                     let endpoint = ComposePublishedPortEndpoint {
-                        host_ip_kind,
-                        host_ip_value: host_ip_value.clone(),
+                        ip_kind: host_ip_kind,
+                        ip_value: host_ip_value.clone(),
                         host_port,
                     };
                     compose_startup_error_mentions_endpoint_for_protocol(
@@ -182,16 +182,16 @@ fn parse_published_host_port_range(range: &str) -> Option<(u16, u16)> {
 }
 
 fn compose_published_port_range_endpoint_display(
-    host_ip_kind: ComposePublishedPortHostIpKind,
-    host_ip_value: Option<&String>,
+    ip_kind: ComposePublishedPortHostIpKind,
+    ip_value: Option<&String>,
     range: &str,
 ) -> String {
-    match host_ip_kind {
+    match ip_kind {
         ComposePublishedPortHostIpKind::Omitted => {
             format!("<host_ip omitted>:{range}")
         }
         ComposePublishedPortHostIpKind::Explicit => {
-            format!("{}:{range}", host_ip_value.map_or("", String::as_str))
+            format!("{}:{range}", ip_value.map_or("", String::as_str))
         }
     }
 }
@@ -263,10 +263,10 @@ fn compose_startup_error_mentions_endpoint(
         return false;
     }
 
-    match endpoint.host_ip_kind {
+    match endpoint.ip_kind {
         ComposePublishedPortHostIpKind::Omitted => true,
         ComposePublishedPortHostIpKind::Explicit => {
-            endpoint.host_ip_value.as_deref().is_some_and(|host_ip| {
+            endpoint.ip_value.as_deref().is_some_and(|host_ip| {
                 let host_ip = host_ip.to_ascii_lowercase();
                 contains_endpoint_token_with_port_boundary(
                     &lower,

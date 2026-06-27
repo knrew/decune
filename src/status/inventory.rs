@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::state::WorkspaceState;
+use crate::state::{LifecycleCompletion, WorkspaceState};
 
 use super::{
     evidence::{
@@ -274,12 +274,12 @@ const fn lifecycle_status(
         return LifecycleStatus::Unknown;
     };
     let lifecycle = state.lifecycle;
-    if lifecycle.on_create_completed
-        && lifecycle.after_on_create_completed
-        && lifecycle.update_content_completed
-        && lifecycle.after_update_content_completed
-        && lifecycle.post_create_completed
-        && lifecycle.after_post_create_completed
+    if lifecycle.is_command_completed(LifecycleCompletion::OnCreate)
+        && lifecycle.is_after_hook_completed(LifecycleCompletion::OnCreate)
+        && lifecycle.is_command_completed(LifecycleCompletion::UpdateContent)
+        && lifecycle.is_after_hook_completed(LifecycleCompletion::UpdateContent)
+        && lifecycle.is_command_completed(LifecycleCompletion::PostCreate)
+        && lifecycle.is_after_hook_completed(LifecycleCompletion::PostCreate)
     {
         LifecycleStatus::Complete
     } else {

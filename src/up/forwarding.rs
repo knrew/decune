@@ -290,8 +290,8 @@ pub(in crate::up) fn published_port_host_reservations(
         }
         reservations.insert((
             published_endpoint_reservation_host_ip(
-                port.planned.host_ip_kind,
-                port.planned.host_ip_value.as_deref(),
+                port.planned.ip_kind,
+                port.planned.ip_value.as_deref(),
             ),
             port.planned.host_port,
         ));
@@ -325,9 +325,9 @@ pub(in crate::up) fn published_port_publish_ports_for_service(
         .map(|port| ResolvedPublishPort {
             container: port.target.port,
             host: Some(port.planned.host_port),
-            host_ip: match port.planned.host_ip_kind {
+            host_ip: match port.planned.ip_kind {
                 PublishedPortHostIpKind::Omitted => None,
-                PublishedPortHostIpKind::Explicit => port.planned.host_ip_value.clone(),
+                PublishedPortHostIpKind::Explicit => port.planned.ip_value.clone(),
             },
             protocol: PortProtocol::Tcp,
         })
@@ -577,13 +577,13 @@ mod tests {
                     protocol: "tcp".to_owned(),
                 },
                 requested: PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: PublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 3000,
                 },
                 planned: PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: PublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 3001,
                 },
                 actual_bindings: vec![
@@ -608,13 +608,13 @@ mod tests {
                     protocol: "udp".to_owned(),
                 },
                 requested: PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    ip_kind: PublishedPortHostIpKind::Explicit,
+                    ip_value: Some("127.0.0.1".to_owned()),
                     host_port: 8125,
                 },
                 planned: PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    ip_kind: PublishedPortHostIpKind::Explicit,
+                    ip_value: Some("127.0.0.1".to_owned()),
                     host_port: 8125,
                 },
                 actual_bindings: Vec::new(),
@@ -660,13 +660,13 @@ mod tests {
                     protocol: "tcp".to_owned(),
                 },
                 requested: PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: PublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 3000,
                 },
                 planned: PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: PublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 3000,
                 },
                 actual_bindings: Vec::new(),
@@ -682,13 +682,13 @@ mod tests {
                     protocol: "tcp".to_owned(),
                 },
                 requested: PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    ip_kind: PublishedPortHostIpKind::Explicit,
+                    ip_value: Some("127.0.0.1".to_owned()),
                     host_port: 18080,
                 },
                 planned: PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    ip_kind: PublishedPortHostIpKind::Explicit,
+                    ip_value: Some("127.0.0.1".to_owned()),
                     host_port: 18080,
                 },
                 actual_bindings: Vec::new(),

@@ -271,7 +271,7 @@ pub(super) async fn resolve_effective_users_for_image(
 
     resolve_effective_users_with_compose_service_user(
         EffectiveUserResolveInput {
-            image_config_user: image_config_user.as_deref(),
+            image_config: image_config_user.as_deref(),
             ..input
         },
         Some(compose_primary_service_user),

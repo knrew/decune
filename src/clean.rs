@@ -29,9 +29,24 @@ use crate::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CleanOptions {
+    pub(crate) safety: CleanSafetyOptions,
+    pub(crate) output: CleanOutputOptions,
+    pub(crate) scope: CleanScopeOptions,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CleanSafetyOptions {
     pub(crate) dry_run: bool,
     pub(crate) no_confirm: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CleanOutputOptions {
     pub(crate) json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CleanScopeOptions {
     pub(crate) include_feature_cache: bool,
 }
 
@@ -138,33 +153,34 @@ impl CleanReason {
 }
 
 pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
-    let mut report = build_clean_report(options.dry_run, options.include_feature_cache).await?;
+    let mut report =
+        build_clean_report(options.safety.dry_run, options.scope.include_feature_cache).await?;
     let has_remove_candidates = report.summary.remove_candidates > 0;
 
-    if !options.json {
-        print_clean_summary(&report, options.dry_run);
+    if !options.output.json {
+        print_clean_summary(&report, options.safety.dry_run);
     }
 
-    if !options.dry_run {
+    if !options.safety.dry_run {
         ensure_clean_confirmed(CleanConfirmation {
-            no_confirm: options.no_confirm,
+            no_confirm: options.safety.no_confirm,
             stdin_is_terminal: io::stdin().is_terminal(),
             has_targets: has_remove_candidates,
         })?;
     }
 
-    if !options.dry_run {
+    if !options.safety.dry_run {
         apply_clean_report(&mut report).await?;
     }
 
-    if options.json {
+    if options.output.json {
         println!(
             "{}",
             serde_json::to_string_pretty(&report).context("Failed to serialize clean report")?
         );
     } else if report.summary.remove_candidates == 0 {
         ui::done("No stale decune generated data found");
-    } else if options.dry_run {
+    } else if options.safety.dry_run {
         ui::done("Dry run completed without removing generated data");
     } else {
         ui::done("Removed stale decune generated data");
@@ -795,9 +811,9 @@ mod tests {
     fn workspace_target_removes_stale_workspace_paths_as_a_unit() {
         let roots = TestRoots::new();
         let workspace_id = "123456abcdef";
-        let cache = roots.cache_home.path().join("decune").join(workspace_id);
-        let state = roots.state_home.path().join("decune").join(workspace_id);
-        let runtime = roots.runtime_home.path().join("decune").join(workspace_id);
+        let cache = roots.cache.path().join("decune").join(workspace_id);
+        let state = roots.state.path().join("decune").join(workspace_id);
+        let runtime = roots.runtime.path().join("decune").join(workspace_id);
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&runtime).unwrap();
@@ -866,7 +882,7 @@ mod tests {
     fn workspace_target_skips_managed_resource() {
         let roots = TestRoots::new();
         let workspace_id = "123456abcdef";
-        let cache = roots.cache_home.path().join("decune").join(workspace_id);
+        let cache = roots.cache.path().join("decune").join(workspace_id);
         fs::create_dir_all(&cache).unwrap();
         let _env = roots.apply();
         let managed = BTreeSet::from([workspace_id.to_owned()]);
@@ -881,7 +897,7 @@ mod tests {
     fn workspace_target_skips_active_runtime_socket() {
         let roots = TestRoots::new();
         let workspace_id = "123456abcdef";
-        let runtime = roots.runtime_home.path().join("decune").join(workspace_id);
+        let runtime = roots.runtime.path().join("decune").join(workspace_id);
         fs::create_dir_all(&runtime).unwrap();
         let _listener = UnixListener::bind(runtime.join("host-daemon.sock")).unwrap();
         let _env = roots.apply();
@@ -896,7 +912,7 @@ mod tests {
     fn workspace_target_skips_active_runtime_lock() {
         let roots = TestRoots::new();
         let workspace_id = "123456abcdef";
-        let runtime = roots.runtime_home.path().join("decune").join(workspace_id);
+        let runtime = roots.runtime.path().join("decune").join(workspace_id);
         fs::create_dir_all(&runtime).unwrap();
         let lock = OpenOptions::new()
             .create(true)
@@ -919,9 +935,9 @@ mod tests {
     fn workspace_target_is_revalidated_before_removal() {
         let roots = TestRoots::new();
         let workspace_id = "123456abcdef";
-        let cache = roots.cache_home.path().join("decune").join(workspace_id);
-        let state = roots.state_home.path().join("decune").join(workspace_id);
-        let runtime = roots.runtime_home.path().join("decune").join(workspace_id);
+        let cache = roots.cache.path().join("decune").join(workspace_id);
+        let state = roots.state.path().join("decune").join(workspace_id);
+        let runtime = roots.runtime.path().join("decune").join(workspace_id);
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&state).unwrap();
         fs::create_dir_all(&runtime).unwrap();
@@ -969,8 +985,8 @@ mod tests {
     fn workspace_target_rejects_symlink_descendant() {
         let roots = TestRoots::new();
         let workspace_id = "123456abcdef";
-        let cache = roots.cache_home.path().join("decune").join(workspace_id);
-        let outside = roots.cache_home.path().join("outside");
+        let cache = roots.cache.path().join("decune").join(workspace_id);
+        let outside = roots.cache.path().join("outside");
         fs::create_dir_all(&cache).unwrap();
         fs::create_dir_all(&outside).unwrap();
         unix_fs::symlink(&outside, cache.join("link")).unwrap();
@@ -1015,7 +1031,7 @@ mod tests {
     #[test]
     fn feature_cache_is_additive_and_uses_its_own_target() {
         let roots = TestRoots::new();
-        let cache = roots.cache_home.path().join("decune/features");
+        let cache = roots.cache.path().join("decune/features");
         fs::create_dir_all(&cache).unwrap();
         fs::write(cache.join("archive.tgz"), "archive\n").unwrap();
         let _env = roots.apply();
@@ -1098,26 +1114,22 @@ mod tests {
     }
 
     struct TestRoots {
-        state_home: tempfile::TempDir,
-        cache_home: tempfile::TempDir,
-        runtime_home: tempfile::TempDir,
+        state: tempfile::TempDir,
+        cache: tempfile::TempDir,
+        runtime: tempfile::TempDir,
     }
 
     impl TestRoots {
         fn new() -> Self {
             Self {
-                state_home: tempfile::tempdir().unwrap(),
-                cache_home: tempfile::tempdir().unwrap(),
-                runtime_home: tempfile::tempdir().unwrap(),
+                state: tempfile::tempdir().unwrap(),
+                cache: tempfile::tempdir().unwrap(),
+                runtime: tempfile::tempdir().unwrap(),
             }
         }
 
         fn apply(&self) -> EnvGuard {
-            apply_env(
-                self.state_home.path(),
-                self.cache_home.path(),
-                self.runtime_home.path(),
-            )
+            apply_env(self.state.path(), self.cache.path(), self.runtime.path())
         }
     }
 
@@ -1144,16 +1156,16 @@ mod tests {
         ENV_MUTEX.get_or_init(|| Mutex::new(()))
     }
 
-    fn apply_env(state_home: &Path, cache_home: &Path, runtime_home: &Path) -> EnvGuard {
+    fn apply_env(state: &Path, cache: &Path, runtime: &Path) -> EnvGuard {
         let guard = env_mutex().lock().unwrap();
         let original = [
             ("XDG_STATE_HOME", std::env::var_os("XDG_STATE_HOME")),
             ("XDG_CACHE_HOME", std::env::var_os("XDG_CACHE_HOME")),
             ("XDG_RUNTIME_DIR", std::env::var_os("XDG_RUNTIME_DIR")),
         ];
-        set_env("XDG_STATE_HOME", state_home);
-        set_env("XDG_CACHE_HOME", cache_home);
-        set_env("XDG_RUNTIME_DIR", runtime_home);
+        set_env("XDG_STATE_HOME", state);
+        set_env("XDG_CACHE_HOME", cache);
+        set_env("XDG_RUNTIME_DIR", runtime);
         EnvGuard {
             _guard: guard,
             original,

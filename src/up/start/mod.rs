@@ -160,8 +160,8 @@ pub(in crate::up) async fn ensure_container_started(
         options.config_path.as_deref(),
         options.cli_layer.clone(),
         forwarding_resolution,
-        options.update_features,
-        options.skip_global_config,
+        options.build.update_features,
+        options.config.skip_global_config,
     )?;
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     if preliminary_plan.compose_project.is_some() {
@@ -171,8 +171,8 @@ pub(in crate::up) async fn ensure_container_started(
     }
     let plan_resolution = UpPlanResolution::new(
         forwarding_resolution,
-        options.update_features,
-        options.skip_global_config,
+        options.build.update_features,
+        options.config.skip_global_config,
     );
 
     let client = DockerClient::connect_from_env();
@@ -181,7 +181,7 @@ pub(in crate::up) async fn ensure_container_started(
         state::reconcile_state_without_container(workspace.paths().state_dir())?;
     }
 
-    if !options.rebuild && !containers.is_empty() {
+    if !options.reuse.rebuild && !containers.is_empty() {
         let existing_plan = build_existing_container_decision_plan(
             &client,
             &workspace,
@@ -211,10 +211,10 @@ pub(in crate::up) async fn ensure_container_started(
             containers
                 .first()
                 .and_then(existing::existing_container_config_hash),
-            Some((options.pull, options.no_cache)),
+            Some((options.build.pull, options.build.no_cache)),
             FinalizeUpPlanMountsOptions {
                 forwarding: forwarding_resolution,
-                update_features: options.update_features,
+                update_features: options.build.update_features,
                 compose_canonical_model: None,
                 compose_primary_service_user: None,
                 compose_primary_service: None,
@@ -279,7 +279,7 @@ pub(in crate::up) async fn ensure_container_started(
         options.config_path.as_deref(),
         options.cli_layer,
         preliminary_plan,
-        options.pull,
+        options.build.pull,
         plan_resolution,
     )
     .await?;
@@ -289,10 +289,10 @@ pub(in crate::up) async fn ensure_container_started(
         plan,
         None,
         None,
-        Some((options.pull, options.no_cache)),
+        Some((options.build.pull, options.build.no_cache)),
         FinalizeUpPlanMountsOptions {
             forwarding: forwarding_resolution,
-            update_features: options.update_features,
+            update_features: options.build.update_features,
             compose_canonical_model: None,
             compose_primary_service_user: None,
             compose_primary_service: None,
@@ -309,8 +309,8 @@ pub(in crate::up) async fn ensure_container_started(
             &client,
             &plan,
             ImagePreparation {
-                pull: options.pull,
-                no_cache: options.no_cache,
+                pull: options.build.pull,
+                no_cache: options.build.no_cache,
                 image_prepared,
             },
         )
@@ -327,7 +327,7 @@ pub(in crate::up) async fn ensure_container_started(
         &containers,
         &plan.resources.config_hash,
         credentials.mount_policy(),
-        options.rebuild,
+        options.reuse.rebuild,
     )? {
         ExistingContainerDecision::Create => {
             let outcome = create_and_start_container(
@@ -335,8 +335,8 @@ pub(in crate::up) async fn ensure_container_started(
                 &workspace,
                 &plan,
                 ImagePreparation {
-                    pull: options.pull,
-                    no_cache: options.no_cache,
+                    pull: options.build.pull,
+                    no_cache: options.build.no_cache,
                     image_prepared,
                 },
             )
@@ -357,8 +357,8 @@ pub(in crate::up) async fn ensure_container_started(
                 &workspace,
                 &plan,
                 ImagePreparation {
-                    pull: options.pull,
-                    no_cache: options.no_cache,
+                    pull: options.build.pull,
+                    no_cache: options.build.no_cache,
                     image_prepared,
                 },
             )

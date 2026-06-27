@@ -3,7 +3,7 @@ use std::{ffi::OsStr, path::PathBuf, str::FromStr};
 use anyhow::{Result, bail};
 use clap::{Args, Parser, Subcommand};
 
-use crate::clean::CleanOptions;
+use crate::clean::{CleanOptions, CleanOutputOptions, CleanSafetyOptions, CleanScopeOptions};
 use crate::config::{
     layer::{ConfigLayer, LayerAutoPorts, LayerCompose, LayerComposePublishedPorts, LayerPort},
     ports::{PortSpecSegments, split_port_spec},
@@ -12,7 +12,9 @@ use crate::config::{
 use crate::down::{DownOptions, RemoveOptions, RemoveTarget};
 use crate::ports::PortsOptions;
 use crate::status::StatusOptions;
-use crate::up::{UpOptions, run_attached_up, run_detached_up};
+use crate::up::{
+    UpBuildOptions, UpConfigOptions, UpOptions, UpReuseOptions, run_attached_up, run_detached_up,
+};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -46,33 +48,14 @@ enum Commands {
 
 #[derive(Debug, Args)]
 struct UpArgs {
-    /// Devcontainer metadata file.
-    #[arg(long, value_name = "PATH")]
-    config: Option<PathBuf>,
-    /// Do not apply the global decune config.
-    #[arg(long)]
-    no_global_config: bool,
-    /// Start the container without attaching a shell.
-    #[arg(long)]
-    detach: bool,
-    /// Recreate an existing container while preserving managed volumes.
-    #[arg(long)]
-    rebuild: bool,
-    /// Do not use build cache for Dockerfile or Feature layers.
-    #[arg(long)]
-    no_cache: bool,
-    /// Pull the base image before create or build.
-    #[arg(long)]
-    pull: bool,
-    /// Disable automatic port forwarding.
-    #[arg(long)]
-    no_auto_forward: bool,
-    /// Enable Docker/Compose published port relocation.
-    #[arg(long, conflicts_with = "no_published_port_relocation")]
-    published_port_relocation: bool,
-    /// Disable Docker/Compose published port relocation.
-    #[arg(long, conflicts_with = "published_port_relocation")]
-    no_published_port_relocation: bool,
+    #[command(flatten)]
+    config: CliConfigArgs,
+    #[command(flatten)]
+    startup: UpStartupArgs,
+    #[command(flatten)]
+    build: UpBuildArgs,
+    #[command(flatten)]
+    forwarding: UpForwardingArgs,
     /// Add a manual port forwarding rule.
     #[arg(short = 'p', long = "port", value_name = "SPEC")]
     ports: Vec<ManualPort>,
@@ -82,16 +65,37 @@ struct UpArgs {
 }
 
 #[derive(Debug, Args)]
-struct RebuildArgs {
+struct CliConfigArgs {
     /// Devcontainer metadata file.
     #[arg(long, value_name = "PATH")]
     config: Option<PathBuf>,
     /// Do not apply the global decune config.
     #[arg(long)]
     no_global_config: bool,
+}
+
+#[derive(Debug, Args)]
+struct UpStartupArgs {
     /// Start the container without attaching a shell.
     #[arg(long)]
     detach: bool,
+    /// Recreate an existing container while preserving managed volumes.
+    #[arg(long)]
+    rebuild: bool,
+}
+
+#[derive(Debug, Args)]
+struct UpBuildArgs {
+    /// Do not use build cache for Dockerfile or Feature layers.
+    #[arg(long)]
+    no_cache: bool,
+    /// Pull the base image before create or build.
+    #[arg(long)]
+    pull: bool,
+}
+
+#[derive(Debug, Args)]
+struct RebuildBuildArgs {
     /// Do not use build cache for Dockerfile or Feature layers.
     #[arg(long)]
     no_cache: bool,
@@ -101,6 +105,10 @@ struct RebuildArgs {
     /// Resolve Feature references without using the lock file.
     #[arg(long)]
     update_features: bool,
+}
+
+#[derive(Debug, Args)]
+struct UpForwardingArgs {
     /// Disable automatic port forwarding.
     #[arg(long)]
     no_auto_forward: bool,
@@ -110,6 +118,19 @@ struct RebuildArgs {
     /// Disable Docker/Compose published port relocation.
     #[arg(long, conflicts_with = "published_port_relocation")]
     no_published_port_relocation: bool,
+}
+
+#[derive(Debug, Args)]
+struct RebuildArgs {
+    #[command(flatten)]
+    config: CliConfigArgs,
+    #[command(flatten)]
+    build: RebuildBuildArgs,
+    #[command(flatten)]
+    forwarding: UpForwardingArgs,
+    /// Start the container without attaching a shell.
+    #[arg(long)]
+    detach: bool,
     /// Add a manual port forwarding rule.
     #[arg(short = 'p', long = "port", value_name = "SPEC")]
     ports: Vec<ManualPort>,
@@ -166,15 +187,33 @@ struct RemoveArgs {
 
 #[derive(Debug, Args)]
 struct CleanArgs {
+    #[command(flatten)]
+    safety: CleanSafetyArgs,
+    #[command(flatten)]
+    output: CleanOutputArgs,
+    #[command(flatten)]
+    scope: CleanScopeArgs,
+}
+
+#[derive(Debug, Args)]
+struct CleanSafetyArgs {
     /// Show cleanup candidates without removing generated data.
     #[arg(long)]
     dry_run: bool,
     /// Remove generated data without confirmation.
     #[arg(long)]
     no_confirm: bool,
+}
+
+#[derive(Debug, Args)]
+struct CleanOutputArgs {
     /// Output cleanup candidates as JSON.
     #[arg(long)]
     json: bool,
+}
+
+#[derive(Debug, Args)]
+struct CleanScopeArgs {
     /// Also remove the shared Feature archive cache.
     #[arg(long)]
     include_feature_cache: bool,
@@ -222,39 +261,33 @@ async fn run_cli(cli: Cli) -> Result<i32> {
 async fn run_up(args: UpArgs) -> Result<i32> {
     let UpArgs {
         config,
-        no_global_config,
-        detach,
-        rebuild,
-        no_cache,
-        pull,
-        no_auto_forward,
-        published_port_relocation,
-        no_published_port_relocation,
+        startup,
+        build,
+        forwarding,
         ports,
         workspace,
     } = args;
 
-    reject_detached_cli_ports(detach, &ports)?;
+    reject_detached_cli_ports(startup.detach, &ports)?;
 
     let options = UpOptions {
         workspace,
-        config_path: config,
-        skip_global_config: no_global_config,
-        cli_layer: cli_config_layer(
-            ports,
-            CliConfigLayerOptions {
-                no_auto_forward,
-                published_port_relocation,
-                no_published_port_relocation,
-            },
-        ),
-        pull,
-        rebuild,
-        no_cache,
-        update_features: false,
+        config_path: config.config,
+        cli_layer: cli_config_layer(ports, forwarding.into()),
+        config: UpConfigOptions {
+            skip_global_config: config.no_global_config,
+        },
+        build: UpBuildOptions {
+            pull: build.pull,
+            no_cache: build.no_cache,
+            update_features: false,
+        },
+        reuse: UpReuseOptions {
+            rebuild: startup.rebuild,
+        },
     };
 
-    if detach {
+    if startup.detach {
         run_detached_up(options).await?;
         return Ok(0);
     }
@@ -277,14 +310,9 @@ async fn run_rebuild(args: RebuildArgs) -> Result<i32> {
 fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
     let RebuildArgs {
         config,
-        no_global_config,
+        build,
+        forwarding,
         detach,
-        no_cache,
-        pull,
-        update_features,
-        no_auto_forward,
-        published_port_relocation,
-        no_published_port_relocation,
         ports,
         workspace,
     } = args;
@@ -293,20 +321,17 @@ fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
 
     Ok(UpOptions {
         workspace,
-        config_path: config,
-        skip_global_config: no_global_config,
-        cli_layer: cli_config_layer(
-            ports,
-            CliConfigLayerOptions {
-                no_auto_forward,
-                published_port_relocation,
-                no_published_port_relocation,
-            },
-        ),
-        pull,
-        rebuild: true,
-        no_cache,
-        update_features,
+        config_path: config.config,
+        cli_layer: cli_config_layer(ports, forwarding.into()),
+        config: UpConfigOptions {
+            skip_global_config: config.no_global_config,
+        },
+        build: UpBuildOptions {
+            pull: build.pull,
+            no_cache: build.no_cache,
+            update_features: build.update_features,
+        },
+        reuse: UpReuseOptions { rebuild: true },
     })
 }
 
@@ -369,10 +394,16 @@ async fn run_remove(args: RemoveArgs) -> Result<i32> {
 
 async fn run_clean(args: CleanArgs) -> Result<i32> {
     crate::clean::run_clean(CleanOptions {
-        dry_run: args.dry_run,
-        no_confirm: args.no_confirm,
-        json: args.json,
-        include_feature_cache: args.include_feature_cache,
+        safety: CleanSafetyOptions {
+            dry_run: args.safety.dry_run,
+            no_confirm: args.safety.no_confirm,
+        },
+        output: CleanOutputOptions {
+            json: args.output.json,
+        },
+        scope: CleanScopeOptions {
+            include_feature_cache: args.scope.include_feature_cache,
+        },
     })
     .await?;
     Ok(0)
@@ -393,6 +424,16 @@ struct CliConfigLayerOptions {
     no_auto_forward: bool,
     published_port_relocation: bool,
     no_published_port_relocation: bool,
+}
+
+impl From<UpForwardingArgs> for CliConfigLayerOptions {
+    fn from(args: UpForwardingArgs) -> Self {
+        Self {
+            no_auto_forward: args.no_auto_forward,
+            published_port_relocation: args.published_port_relocation,
+            no_published_port_relocation: args.no_published_port_relocation,
+        }
+    }
 }
 
 fn cli_config_layer(ports: Vec<ManualPort>, options: CliConfigLayerOptions) -> ConfigLayer {
@@ -531,8 +572,8 @@ mod tests {
 
     use super::Cli;
     use super::{
-        CliConfigLayerOptions, Commands, PortProtocol, cli_config_layer,
-        is_standalone_version_request, rebuild_up_options_from_args, reject_detached_cli_ports,
+        Commands, PortProtocol, cli_config_layer, is_standalone_version_request,
+        rebuild_up_options_from_args, reject_detached_cli_ports,
     };
 
     #[test]
@@ -584,17 +625,17 @@ mod tests {
 
         assert_eq!(args.workspace, PathBuf::from("workspace"));
         assert_eq!(
-            args.config.as_deref(),
+            args.config.config.as_deref(),
             Some(PathBuf::from(".devcontainer/rust/devcontainer.json").as_path())
         );
-        assert!(args.no_global_config);
-        assert!(args.detach);
-        assert!(args.rebuild);
-        assert!(args.no_cache);
-        assert!(args.pull);
-        assert!(args.no_auto_forward);
-        assert!(args.published_port_relocation);
-        assert!(!args.no_published_port_relocation);
+        assert!(args.config.no_global_config);
+        assert!(args.startup.detach);
+        assert!(args.startup.rebuild);
+        assert!(args.build.no_cache);
+        assert!(args.build.pull);
+        assert!(args.forwarding.no_auto_forward);
+        assert!(args.forwarding.published_port_relocation);
+        assert!(!args.forwarding.no_published_port_relocation);
         assert_eq!(args.ports.len(), 2);
         assert_eq!(args.ports[0].container, 3000);
         assert_eq!(args.ports[0].host, None);
@@ -604,14 +645,7 @@ mod tests {
         assert_eq!(args.ports[1].host, Some(8080));
         assert_eq!(args.ports[1].host_ip, "127.0.0.1");
 
-        let cli_layer = cli_config_layer(
-            args.ports.clone(),
-            CliConfigLayerOptions {
-                no_auto_forward: args.no_auto_forward,
-                published_port_relocation: args.published_port_relocation,
-                no_published_port_relocation: args.no_published_port_relocation,
-            },
-        );
+        let cli_layer = cli_config_layer(args.ports.clone(), args.forwarding.into());
 
         assert_eq!(cli_layer.auto_ports.unwrap().enabled, Some(false));
         assert_eq!(cli_layer.compose.published_ports.relocation, Some(true));
@@ -718,17 +752,17 @@ mod tests {
 
         assert_eq!(args.workspace, PathBuf::from("."));
         assert_eq!(
-            args.config.as_deref(),
+            args.config.config.as_deref(),
             Some(PathBuf::from(".devcontainer.json").as_path())
         );
-        assert!(args.no_global_config);
+        assert!(args.config.no_global_config);
         assert!(args.detach);
-        assert!(args.no_cache);
-        assert!(args.pull);
-        assert!(args.update_features);
-        assert!(args.no_auto_forward);
-        assert!(!args.published_port_relocation);
-        assert!(args.no_published_port_relocation);
+        assert!(args.build.no_cache);
+        assert!(args.build.pull);
+        assert!(args.build.update_features);
+        assert!(args.forwarding.no_auto_forward);
+        assert!(!args.forwarding.published_port_relocation);
+        assert!(args.forwarding.no_published_port_relocation);
         assert_eq!(args.ports.len(), 1);
         assert_eq!(args.ports[0].container, 80);
         assert_eq!(args.ports[0].host, Some(8080));
@@ -743,7 +777,7 @@ mod tests {
 
         let options = rebuild_up_options_from_args(args).unwrap();
 
-        assert!(options.update_features);
+        assert!(options.build.update_features);
     }
 
     #[test]
@@ -755,7 +789,7 @@ mod tests {
 
         let options = rebuild_up_options_from_args(args).unwrap();
 
-        assert!(options.skip_global_config);
+        assert!(options.config.skip_global_config);
     }
 
     #[test]
@@ -795,14 +829,7 @@ mod tests {
             panic!("expected up command");
         };
 
-        let layer = cli_config_layer(
-            Vec::new(),
-            CliConfigLayerOptions {
-                no_auto_forward: args.no_auto_forward,
-                published_port_relocation: args.published_port_relocation,
-                no_published_port_relocation: args.no_published_port_relocation,
-            },
-        );
+        let layer = cli_config_layer(Vec::new(), args.forwarding.into());
 
         assert_eq!(layer.auto_ports.unwrap().enabled, Some(false));
         assert_eq!(layer.compose.published_ports.relocation, Some(true));
@@ -838,7 +865,7 @@ mod tests {
             panic!("expected up command");
         };
 
-        let error = reject_detached_cli_ports(args.detach, &args.ports).unwrap_err();
+        let error = reject_detached_cli_ports(args.startup.detach, &args.ports).unwrap_err();
 
         assert!(error.to_string().contains("use appPort"));
     }
@@ -903,10 +930,10 @@ mod tests {
             panic!("expected clean command");
         };
 
-        assert!(args.dry_run);
-        assert!(args.no_confirm);
-        assert!(args.json);
-        assert!(args.include_feature_cache);
+        assert!(args.safety.dry_run);
+        assert!(args.safety.no_confirm);
+        assert!(args.output.json);
+        assert!(args.scope.include_feature_cache);
     }
 
     #[test]

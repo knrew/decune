@@ -108,8 +108,8 @@ pub(crate) enum ComposePublishedPortPlanEntryType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposePublishedPortEndpoint {
-    pub(crate) host_ip_kind: ComposePublishedPortHostIpKind,
-    pub(crate) host_ip_value: Option<String>,
+    pub(crate) ip_kind: ComposePublishedPortHostIpKind,
+    pub(crate) ip_value: Option<String>,
     pub(crate) host_port: u16,
 }
 

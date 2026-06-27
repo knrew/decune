@@ -51,8 +51,18 @@ pub(crate) struct ComposeLifecyclePlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposeCleanupPlan {
+    pub(crate) compose: ComposeResourceCleanupPlan,
+    pub(crate) workspace: ComposeWorkspaceCleanupPlan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComposeResourceCleanupPlan {
     pub(crate) remove_project: bool,
     pub(crate) remove_volumes: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComposeWorkspaceCleanupPlan {
     pub(crate) remove_state: bool,
     pub(crate) remove_generated_images: bool,
 }
@@ -83,10 +93,14 @@ impl ComposeLifecyclePlan {
             project,
             services: Vec::new(),
             cleanup: ComposeCleanupPlan {
-                remove_project: true,
-                remove_volumes: true,
-                remove_state: true,
-                remove_generated_images: images,
+                compose: ComposeResourceCleanupPlan {
+                    remove_project: true,
+                    remove_volumes: true,
+                },
+                workspace: ComposeWorkspaceCleanupPlan {
+                    remove_state: true,
+                    remove_generated_images: images,
+                },
             },
         }
     }
@@ -95,10 +109,14 @@ impl ComposeLifecyclePlan {
 impl ComposeCleanupPlan {
     const fn keep_all() -> Self {
         Self {
-            remove_project: false,
-            remove_volumes: false,
-            remove_state: false,
-            remove_generated_images: false,
+            compose: ComposeResourceCleanupPlan {
+                remove_project: false,
+                remove_volumes: false,
+            },
+            workspace: ComposeWorkspaceCleanupPlan {
+                remove_state: false,
+                remove_generated_images: false,
+            },
         }
     }
 }
@@ -487,10 +505,10 @@ mod tests {
                 "stop",
             ]
         );
-        assert!(!plan.cleanup.remove_project);
-        assert!(!plan.cleanup.remove_volumes);
-        assert!(!plan.cleanup.remove_state);
-        assert!(!plan.cleanup.remove_generated_images);
+        assert!(!plan.cleanup.compose.remove_project);
+        assert!(!plan.cleanup.compose.remove_volumes);
+        assert!(!plan.cleanup.workspace.remove_state);
+        assert!(!plan.cleanup.workspace.remove_generated_images);
     }
 
     #[test]
@@ -527,14 +545,14 @@ mod tests {
         let command = compose_down_command(
             &plan.project,
             ComposeDownOptions {
-                volumes: plan.cleanup.remove_volumes,
+                volumes: plan.cleanup.compose.remove_volumes,
                 remove_orphans: true,
             },
         );
 
-        assert!(plan.cleanup.remove_project);
-        assert!(plan.cleanup.remove_state);
-        assert!(!plan.cleanup.remove_generated_images);
+        assert!(plan.cleanup.compose.remove_project);
+        assert!(plan.cleanup.workspace.remove_state);
+        assert!(!plan.cleanup.workspace.remove_generated_images);
         assert!(command.args_vec().contains(&"--volumes".to_owned()));
         assert!(command.args_vec().contains(&"--remove-orphans".to_owned()));
         assert!(!command.args_vec().contains(&"--rmi".to_owned()));
@@ -544,7 +562,7 @@ mod tests {
     fn compose_remove_images_targets_only_decune_generated_image_policy() {
         let plan = ComposeLifecyclePlan::remove(lifecycle_command_plan(), true);
 
-        assert!(plan.cleanup.remove_generated_images);
+        assert!(plan.cleanup.workspace.remove_generated_images);
         assert!(plan.services.is_empty());
     }
 }

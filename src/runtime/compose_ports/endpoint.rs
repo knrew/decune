@@ -25,13 +25,13 @@ pub(crate) fn compose_port_protocol_name(protocol: &ComposePortProtocol) -> &str
 pub(crate) fn compose_published_port_endpoint_display(
     endpoint: &ComposePublishedPortEndpoint,
 ) -> String {
-    match endpoint.host_ip_kind {
+    match endpoint.ip_kind {
         ComposePublishedPortHostIpKind::Omitted => {
             format!("<host_ip omitted>:{}", endpoint.host_port)
         }
         ComposePublishedPortHostIpKind::Explicit => format!(
             "{}:{}",
-            endpoint.host_ip_value.as_deref().unwrap_or(""),
+            endpoint.ip_value.as_deref().unwrap_or(""),
             endpoint.host_port
         ),
     }
@@ -65,18 +65,18 @@ pub(super) fn endpoint_for_entry(entry: &ComposePortEntry) -> ComposePublishedPo
         }
     };
     ComposePublishedPortEndpoint {
-        host_ip_kind,
-        host_ip_value,
+        ip_kind: host_ip_kind,
+        ip_value: host_ip_value,
         host_port: requested_host_port(entry)
             .expect("eligible Compose published port entry has published host port"),
     }
 }
 
 pub(super) fn reservation_host_ip(endpoint: &ComposePublishedPortEndpoint) -> &str {
-    match endpoint.host_ip_kind {
+    match endpoint.ip_kind {
         ComposePublishedPortHostIpKind::Omitted => OMITTED_HOST_IP_RESERVATION,
         ComposePublishedPortHostIpKind::Explicit => endpoint
-            .host_ip_value
+            .ip_value
             .as_deref()
             .expect("explicit Compose published port endpoint has host_ip value"),
     }

@@ -129,12 +129,27 @@ pub(crate) struct UpPlan {
 pub(crate) struct UpOptions {
     pub(crate) workspace: PathBuf,
     pub(crate) config_path: Option<PathBuf>,
-    pub(crate) skip_global_config: bool,
     pub(crate) cli_layer: ConfigLayer,
+    pub(crate) config: UpConfigOptions,
+    pub(crate) build: UpBuildOptions,
+    pub(crate) reuse: UpReuseOptions,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct UpConfigOptions {
+    pub(crate) skip_global_config: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct UpBuildOptions {
     pub(crate) pull: bool,
-    pub(crate) rebuild: bool,
     pub(crate) no_cache: bool,
     pub(crate) update_features: bool,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct UpReuseOptions {
+    pub(crate) rebuild: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

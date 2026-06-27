@@ -178,7 +178,7 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
                 .down(
                     &plan.project,
                     ComposeDownOptions {
-                        volumes: plan.cleanup.remove_volumes,
+                        volumes: plan.cleanup.compose.remove_volumes,
                         remove_orphans: true,
                     },
                 )
@@ -188,7 +188,7 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
                 plan.project.project_name
             ));
 
-            remove_generated_images |= plan.cleanup.remove_generated_images;
+            remove_generated_images |= plan.cleanup.workspace.remove_generated_images;
             push_unique(
                 &mut compose_projects_removed_by_compose,
                 plan.project.project_name,

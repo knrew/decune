@@ -37,8 +37,9 @@ pub(crate) use plan::{
     build_read_only_up_plan_with_forwarding_resolution, build_up_plan_with_forwarding_resolution,
 };
 pub(crate) use types::{
-    ExistingContainerDecision, ForwardingResolution, MountResolution, UpContainerSummary,
-    UpMountSummary, UpOptions, UpOutcome, UpPlan, UpPlanResolution, WorkspaceLocation,
+    ExistingContainerDecision, ForwardingResolution, MountResolution, UpBuildOptions,
+    UpConfigOptions, UpContainerSummary, UpMountSummary, UpOptions, UpOutcome, UpPlan,
+    UpPlanResolution, UpReuseOptions, WorkspaceLocation,
 };
 pub(in crate::up) use uid_gid::static_uid_gid_sync_hash_input;
 
@@ -153,7 +154,7 @@ mod tests {
     use anyhow::Context;
 
     use super::{
-        UpOptions,
+        UpOptions, UpReuseOptions,
         plan::build_up_plan,
         run_attached_up, run_detached_up,
         test_support::{test_workspace, write_devcontainer},
@@ -197,12 +198,10 @@ mod tests {
                 run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
 
@@ -288,12 +287,10 @@ mod tests {
                 let exit_code = run_attached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
                 assert_eq!(exit_code, 0);
@@ -359,12 +356,10 @@ mod tests {
                     let exit_code = run_attached_up(UpOptions {
                         workspace: workspace.root().to_path_buf(),
                         config_path: None,
-                        skip_global_config: false,
-                        cli_layer: ConfigLayer::default(),
-                        pull: false,
-                        rebuild: false,
-                        no_cache: false,
-                    update_features: false,
+                    cli_layer: ConfigLayer::default(),
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                     })
                     .await?;
                     assert_eq!(exit_code, 0);
@@ -438,12 +433,10 @@ mod tests {
                     let exit_code = run_attached_up(UpOptions {
                         workspace: workspace.root().to_path_buf(),
                         config_path: None,
-                        skip_global_config: false,
-                        cli_layer: ConfigLayer::default(),
-                        pull: false,
-                        rebuild: false,
-                        no_cache: false,
-                        update_features: false,
+                    cli_layer: ConfigLayer::default(),
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                     })
                     .await?;
                     assert_eq!(exit_code, 0);
@@ -533,12 +526,10 @@ mod tests {
                 run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
                 stop_container(&client, &container_name, 10).await?;
@@ -546,12 +537,10 @@ mod tests {
                 let exit_code = run_attached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
                 assert_eq!(exit_code, 0);
@@ -620,12 +609,10 @@ mod tests {
                 let first = run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
                 assert!(!first.reused);
@@ -633,12 +620,10 @@ mod tests {
                 let exit_code = run_attached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: true,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: UpReuseOptions { rebuild: true },
                 })
                 .await?;
                 assert_eq!(exit_code, 0);

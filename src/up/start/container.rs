@@ -367,11 +367,11 @@ mod tests {
             let mut plan = test_up_plan_with_image_source("alpine:3.20");
             plan.workspace_folder = "/".to_owned();
             plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
-                devcontainer_remote_user: None,
-                devcontainer_container_user: Some("nobody"),
-                image_metadata_remote_user: None,
-                image_metadata_container_user: None,
-                image_config_user: None,
+                devcontainer_remote: None,
+                devcontainer_container: Some("nobody"),
+                image_metadata_remote: None,
+                image_metadata_container: None,
+                image_config: None,
             })
             .unwrap();
             let container_name = plan.resources.container_name.clone();
@@ -434,12 +434,10 @@ mod tests {
                 let error = run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await
                 .unwrap_err();

@@ -3,7 +3,10 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-use crate::ports::{PortInventory, PortInventoryEntry, PortUsageType, render_ports_table};
+use crate::{
+    ports::{PortInventory, PortInventoryEntry, PortUsageType, render_ports_table},
+    state::LifecycleCompletion,
+};
 
 use super::types::{
     EnvironmentStatus, LifecycleStatus, StatusInventory, WorkspaceMode, WorkspaceStatus,
@@ -187,24 +190,24 @@ pub(super) fn render_workspace_detail(
                 output,
                 "  onCreateCommand: {}",
                 completion(
-                    lifecycle.on_create_completed,
-                    lifecycle.after_on_create_completed
+                    lifecycle.is_command_completed(LifecycleCompletion::OnCreate),
+                    lifecycle.is_after_hook_completed(LifecycleCompletion::OnCreate)
                 )
             );
             _ = writeln!(
                 output,
                 "  updateContentCommand: {}",
                 completion(
-                    lifecycle.update_content_completed,
-                    lifecycle.after_update_content_completed
+                    lifecycle.is_command_completed(LifecycleCompletion::UpdateContent),
+                    lifecycle.is_after_hook_completed(LifecycleCompletion::UpdateContent)
                 )
             );
             _ = writeln!(
                 output,
                 "  postCreateCommand: {}",
                 completion(
-                    lifecycle.post_create_completed,
-                    lifecycle.after_post_create_completed
+                    lifecycle.is_command_completed(LifecycleCompletion::PostCreate),
+                    lifecycle.is_after_hook_completed(LifecycleCompletion::PostCreate)
                 )
             );
         } else {

@@ -47,18 +47,18 @@ pub(crate) struct DockerImageConfigUser {
 #[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RemoteUserSelectionInput<'a> {
-    pub(crate) explicit_remote_user: Option<&'a str>,
-    pub(crate) image_metadata_remote_user: Option<&'a str>,
-    pub(crate) image_config_user: Option<&'a str>,
+    pub(crate) explicit_remote: Option<&'a str>,
+    pub(crate) image_metadata_remote: Option<&'a str>,
+    pub(crate) image_config: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct EffectiveUserResolveInput<'a> {
-    pub(crate) devcontainer_remote_user: Option<&'a str>,
-    pub(crate) devcontainer_container_user: Option<&'a str>,
-    pub(crate) image_metadata_remote_user: Option<&'a str>,
-    pub(crate) image_metadata_container_user: Option<&'a str>,
-    pub(crate) image_config_user: Option<&'a str>,
+    pub(crate) devcontainer_remote: Option<&'a str>,
+    pub(crate) devcontainer_container: Option<&'a str>,
+    pub(crate) image_metadata_remote: Option<&'a str>,
+    pub(crate) image_metadata_container: Option<&'a str>,
+    pub(crate) image_config: Option<&'a str>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,7 +238,7 @@ pub(crate) async fn resolve_effective_users_from_image(
 ) -> Result<EffectiveUsers> {
     let image_config_user = image_config_user(client, image).await?;
     resolve_effective_users(EffectiveUserResolveInput {
-        image_config_user: image_config_user.as_deref(),
+        image_config: image_config_user.as_deref(),
         ..input
     })
 }
@@ -363,14 +363,14 @@ pub(crate) fn resolve_effective_users_with_compose_service_user(
     input: EffectiveUserResolveInput<'_>,
     compose_service_user: Option<&str>,
 ) -> Result<EffectiveUsers> {
-    let image_config_user = parse_docker_image_config_user(input.image_config_user)?;
-    let container_user = normalize_user(input.devcontainer_container_user)
+    let image_config_user = parse_docker_image_config_user(input.image_config)?;
+    let container_user = normalize_user(input.devcontainer_container)
         .map(|user| EffectiveUser {
             user,
             source: RemoteUserSource::Explicit,
         })
         .or_else(|| {
-            normalize_user(input.image_metadata_container_user).map(|user| EffectiveUser {
+            normalize_user(input.image_metadata_container).map(|user| EffectiveUser {
                 user,
                 source: RemoteUserSource::ImageMetadata,
             })
@@ -392,13 +392,13 @@ pub(crate) fn resolve_effective_users_with_compose_service_user(
             source: RemoteUserSource::RootFallback,
         });
 
-    let remote_user = if let Some(user) = normalize_user(input.devcontainer_remote_user) {
+    let remote_user = if let Some(user) = normalize_user(input.devcontainer_remote) {
         EffectiveRemoteUser {
             user,
             source: RemoteUserSource::Explicit,
             origin: EffectiveRemoteUserOrigin::ExplicitRemote,
         }
-    } else if let Some(user) = normalize_user(input.image_metadata_remote_user) {
+    } else if let Some(user) = normalize_user(input.image_metadata_remote) {
         EffectiveRemoteUser {
             user,
             source: RemoteUserSource::ImageMetadata,
@@ -477,11 +477,11 @@ pub(crate) fn current_host_user_ids() -> HostUserIds {
 #[cfg(test)]
 pub(crate) fn select_remote_user(input: RemoteUserSelectionInput<'_>) -> RemoteUserSelection {
     resolve_effective_users(EffectiveUserResolveInput {
-        devcontainer_remote_user: input.explicit_remote_user,
-        devcontainer_container_user: None,
-        image_metadata_remote_user: input.image_metadata_remote_user,
-        image_metadata_container_user: None,
-        image_config_user: input.image_config_user,
+        devcontainer_remote: input.explicit_remote,
+        devcontainer_container: None,
+        image_metadata_remote: input.image_metadata_remote,
+        image_metadata_container: None,
+        image_config: input.image_config,
     })
     .map_or_else(
         |_| RemoteUserSelection {
@@ -882,11 +882,11 @@ mod tests {
     #[test]
     fn resolves_effective_container_and_remote_users_from_all_sources() {
         let remote_only = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: Some("remote"),
-            devcontainer_container_user: None,
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: None,
+            devcontainer_remote: Some("remote"),
+            devcontainer_container: None,
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: None,
         })
         .unwrap();
         assert_eq!(remote_only.container_user.user, "root");
@@ -902,11 +902,11 @@ mod tests {
         );
 
         let container_only = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: None,
-            devcontainer_container_user: Some("container"),
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: None,
+            devcontainer_remote: None,
+            devcontainer_container: Some("container"),
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: None,
         })
         .unwrap();
         assert_eq!(container_only.container_user.user, "container");
@@ -917,22 +917,22 @@ mod tests {
         );
 
         let both = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: Some("remote"),
-            devcontainer_container_user: Some("container"),
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: None,
+            devcontainer_remote: Some("remote"),
+            devcontainer_container: Some("container"),
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: None,
         })
         .unwrap();
         assert_eq!(both.container_user.user, "container");
         assert_eq!(both.remote_user.user, "remote");
 
         let image_metadata = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: None,
-            devcontainer_container_user: None,
-            image_metadata_remote_user: Some("metadata-remote"),
-            image_metadata_container_user: Some("metadata-container"),
-            image_config_user: Some("image-user"),
+            devcontainer_remote: None,
+            devcontainer_container: None,
+            image_metadata_remote: Some("metadata-remote"),
+            image_metadata_container: Some("metadata-container"),
+            image_config: Some("image-user"),
         })
         .unwrap();
         assert_eq!(image_metadata.container_user.user, "metadata-container");
@@ -947,11 +947,11 @@ mod tests {
         );
 
         let image_config = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: None,
-            devcontainer_container_user: None,
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: Some("1001:1002"),
+            devcontainer_remote: None,
+            devcontainer_container: None,
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: Some("1001:1002"),
         })
         .unwrap();
         assert_eq!(image_config.container_user.user, "1001:1002");
@@ -967,11 +967,11 @@ mod tests {
 
         let compose_service = resolve_effective_users_with_compose_service_user(
             EffectiveUserResolveInput {
-                devcontainer_remote_user: None,
-                devcontainer_container_user: None,
-                image_metadata_remote_user: None,
-                image_metadata_container_user: None,
-                image_config_user: Some("image-user"),
+                devcontainer_remote: None,
+                devcontainer_container: None,
+                image_metadata_remote: None,
+                image_metadata_container: None,
+                image_config: Some("image-user"),
             },
             Some("compose-user"),
         )
@@ -988,11 +988,11 @@ mod tests {
         );
 
         let root = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: None,
-            devcontainer_container_user: None,
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: Some(""),
+            devcontainer_remote: None,
+            devcontainer_container: None,
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: Some(""),
         })
         .unwrap();
         assert_eq!(root.container_user.user, "root");
@@ -1003,11 +1003,11 @@ mod tests {
     fn decides_uid_gid_sync_target_and_noop_reasons() {
         let host = HostUserIds { uid: 501, gid: 20 };
         let remote_only = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: Some("remote"),
-            devcontainer_container_user: None,
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: None,
+            devcontainer_remote: Some("remote"),
+            devcontainer_container: None,
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: None,
         })
         .unwrap();
         assert_eq!(
@@ -1020,11 +1020,11 @@ mod tests {
         );
 
         let container_only = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: None,
-            devcontainer_container_user: Some("container"),
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: None,
+            devcontainer_remote: None,
+            devcontainer_container: Some("container"),
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: None,
         })
         .unwrap();
         assert_eq!(
@@ -1038,11 +1038,11 @@ mod tests {
 
         let compose_service_only = resolve_effective_users_with_compose_service_user(
             EffectiveUserResolveInput {
-                devcontainer_remote_user: None,
-                devcontainer_container_user: None,
-                image_metadata_remote_user: None,
-                image_metadata_container_user: None,
-                image_config_user: None,
+                devcontainer_remote: None,
+                devcontainer_container: None,
+                image_metadata_remote: None,
+                image_metadata_container: None,
+                image_config: None,
             },
             Some("compose-user"),
         )
@@ -1057,11 +1057,11 @@ mod tests {
         );
 
         let image_user_only = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: None,
-            devcontainer_container_user: None,
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: Some("image-user"),
+            devcontainer_remote: None,
+            devcontainer_container: None,
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: Some("image-user"),
         })
         .unwrap();
         assert_eq!(
@@ -1070,11 +1070,11 @@ mod tests {
         );
 
         let root = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: Some("root"),
-            devcontainer_container_user: None,
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: None,
+            devcontainer_remote: Some("root"),
+            devcontainer_container: None,
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: None,
         })
         .unwrap();
         assert_eq!(
@@ -1094,9 +1094,9 @@ mod tests {
     #[test]
     fn selects_explicit_remote_user_before_image_sources() {
         let selected = select_remote_user(RemoteUserSelectionInput {
-            explicit_remote_user: Some("vscode"),
-            image_metadata_remote_user: Some("metadata-user"),
-            image_config_user: Some("image-user"),
+            explicit_remote: Some("vscode"),
+            image_metadata_remote: Some("metadata-user"),
+            image_config: Some("image-user"),
         });
 
         assert_eq!(
@@ -1111,19 +1111,19 @@ mod tests {
     #[test]
     fn falls_back_through_image_metadata_image_config_and_root() {
         let metadata = select_remote_user(RemoteUserSelectionInput {
-            explicit_remote_user: None,
-            image_metadata_remote_user: Some("metadata-user"),
-            image_config_user: Some("image-user"),
+            explicit_remote: None,
+            image_metadata_remote: Some("metadata-user"),
+            image_config: Some("image-user"),
         });
         let image = select_remote_user(RemoteUserSelectionInput {
-            explicit_remote_user: None,
-            image_metadata_remote_user: None,
-            image_config_user: Some("image-user"),
+            explicit_remote: None,
+            image_metadata_remote: None,
+            image_config: Some("image-user"),
         });
         let root = select_remote_user(RemoteUserSelectionInput {
-            explicit_remote_user: None,
-            image_metadata_remote_user: None,
-            image_config_user: None,
+            explicit_remote: None,
+            image_metadata_remote: None,
+            image_config: None,
         });
 
         assert_eq!(metadata.user, "metadata-user");
@@ -1137,9 +1137,9 @@ mod tests {
     #[test]
     fn preserves_image_config_user_group_suffix_for_exec_user() {
         let selected = select_remote_user(RemoteUserSelectionInput {
-            explicit_remote_user: None,
-            image_metadata_remote_user: None,
-            image_config_user: Some("node:node"),
+            explicit_remote: None,
+            image_metadata_remote: None,
+            image_config: Some("node:node"),
         });
 
         assert_eq!(selected.user, "node:node");
@@ -1149,9 +1149,9 @@ mod tests {
     #[test]
     fn preserves_numeric_image_config_user_group_suffix_for_exec_user() {
         let selected = select_remote_user(RemoteUserSelectionInput {
-            explicit_remote_user: None,
-            image_metadata_remote_user: None,
-            image_config_user: Some("1000:2000"),
+            explicit_remote: None,
+            image_metadata_remote: None,
+            image_config: Some("1000:2000"),
         });
 
         assert_eq!(selected.user, "1000:2000");
@@ -1306,11 +1306,11 @@ mod tests {
                     &client,
                     &image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: None,
-                        devcontainer_container_user: None,
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: None,
+                        devcontainer_container: None,
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1389,11 +1389,11 @@ mod tests {
                     &client,
                     &image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: None,
-                        devcontainer_container_user: None,
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: None,
+                        devcontainer_container: None,
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1440,11 +1440,11 @@ mod tests {
                     &client,
                     &image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: None,
-                        devcontainer_container_user: None,
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: None,
+                        devcontainer_container: None,
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1486,11 +1486,11 @@ mod tests {
                 create_running_user_test_container(&client, &name, "alpine:3.20").await?;
 
                 let effective_users = resolve_effective_users(EffectiveUserResolveInput {
-                    devcontainer_remote_user: Some("missing-user"),
-                    devcontainer_container_user: None,
-                    image_metadata_remote_user: None,
-                    image_metadata_container_user: None,
-                    image_config_user: None,
+                    devcontainer_remote: Some("missing-user"),
+                    devcontainer_container: None,
+                    image_metadata_remote: None,
+                    image_metadata_container: None,
+                    image_config: None,
                 })?;
                 let error = resolve_remote_user(
                     &client,
@@ -1532,18 +1532,18 @@ mod tests {
                 remove_image(&client, &image, true).await?;
 
                 let explicit_users = resolve_effective_users(EffectiveUserResolveInput {
-                    devcontainer_remote_user: Some("vscode"),
-                    devcontainer_container_user: None,
-                    image_metadata_remote_user: None,
-                    image_metadata_container_user: None,
-                    image_config_user: None,
+                    devcontainer_remote: Some("vscode"),
+                    devcontainer_container: None,
+                    image_metadata_remote: None,
+                    image_metadata_container: None,
+                    image_config: None,
                 })?;
                 let metadata_users = resolve_effective_users(EffectiveUserResolveInput {
-                    devcontainer_remote_user: None,
-                    devcontainer_container_user: None,
-                    image_metadata_remote_user: Some("vscode"),
-                    image_metadata_container_user: None,
-                    image_config_user: None,
+                    devcontainer_remote: None,
+                    devcontainer_container: None,
+                    image_metadata_remote: Some("vscode"),
+                    image_metadata_container: None,
+                    image_config: None,
                 })?;
                 let explicit = resolve_remote_user(
                     &client,
@@ -1598,11 +1598,11 @@ mod tests {
                     &client,
                     &image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: Some("remote"),
-                        devcontainer_container_user: None,
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: Some("remote"),
+                        devcontainer_container: None,
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1629,11 +1629,11 @@ mod tests {
                     &client,
                     &image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: None,
-                        devcontainer_container_user: Some("container"),
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: None,
+                        devcontainer_container: Some("container"),
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1660,11 +1660,11 @@ mod tests {
                     &client,
                     &image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: Some("remote"),
-                        devcontainer_container_user: Some("container"),
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: Some("remote"),
+                        devcontainer_container: Some("container"),
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1717,11 +1717,11 @@ mod tests {
                     &client,
                     &named_image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: None,
-                        devcontainer_container_user: None,
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: None,
+                        devcontainer_container: None,
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1745,11 +1745,11 @@ mod tests {
                     &client,
                     &numeric_image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: None,
-                        devcontainer_container_user: None,
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: None,
+                        devcontainer_container: None,
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1801,11 +1801,11 @@ mod tests {
                     &client,
                     &image,
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: Some("2004:2005"),
-                        devcontainer_container_user: None,
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: Some("2004:2005"),
+                        devcontainer_container: None,
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
@@ -1849,11 +1849,11 @@ mod tests {
                     &client,
                     "alpine:3.20",
                     EffectiveUserResolveInput {
-                        devcontainer_remote_user: Some("missing-user"),
-                        devcontainer_container_user: None,
-                        image_metadata_remote_user: None,
-                        image_metadata_container_user: None,
-                        image_config_user: None,
+                        devcontainer_remote: Some("missing-user"),
+                        devcontainer_container: None,
+                        image_metadata_remote: None,
+                        image_metadata_container: None,
+                        image_config: None,
                     },
                 )
                 .await?;
