@@ -208,3 +208,328 @@ fn primary_compose_service(plan: &UpPlan) -> Option<&str> {
         _ => None,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::os::unix::net::UnixListener;
+
+    use super::{
+        add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
+    };
+    use crate::{
+        config::{
+            resolved::ResolvedConfig,
+            types::{GitHttpsMode, GithubCredentialsMode, PortProtocol},
+        },
+        docker::ports::ResolvedForwardPort,
+        host::credentials::{
+            DECUNE_RUNTIME_TARGET, GITHUB_CLI_CONFIG_TARGET, GITHUB_CLI_TOKEN_TARGET,
+            SSH_AGENT_SOCKET_TARGET,
+        },
+        up::{
+            ExistingContainerDecision, UpContainerSummary,
+            existing::decide_existing_container,
+            start::generated_compose_override_content,
+            test_support::{mount_summary, test_up_plan_with_config},
+        },
+    };
+
+    #[test]
+    fn credential_runtime_mounts_add_ssh_agent_without_hashing_socket_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let socket_path_a = temp.path().join("agent-a.sock");
+        let socket_path_b = temp.path().join("agent-b.sock");
+        let _listener_a = UnixListener::bind(&socket_path_a).unwrap();
+        let _listener_b = UnixListener::bind(&socket_path_b).unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::Off;
+        let plan = test_up_plan_with_config(config);
+
+        let (plan_a, _runtime_a) = add_credential_runtime_mounts_with_ssh_socket(
+            plan.clone(),
+            &runtime_dir,
+            Some(&socket_path_a),
+        )
+        .unwrap();
+        let (plan_b, _runtime_b) =
+            add_credential_runtime_mounts_with_ssh_socket(plan, &runtime_dir, Some(&socket_path_b))
+                .unwrap();
+
+        assert_eq!(plan_a.resources.config_hash, "stable-hash");
+        assert_eq!(plan_b.resources.config_hash, "stable-hash");
+        assert_eq!(
+            plan_a
+                .config
+                .devcontainer
+                .container_env
+                .get("SSH_AUTH_SOCK")
+                .map(String::as_str),
+            Some(SSH_AGENT_SOCKET_TARGET)
+        );
+        assert_eq!(
+            plan_a
+                .mounts
+                .iter()
+                .find(|mount| mount.target == SSH_AGENT_SOCKET_TARGET)
+                .and_then(|mount| mount.source.as_deref()),
+            socket_path_a.to_str()
+        );
+        assert_eq!(
+            plan_b
+                .mounts
+                .iter()
+                .find(|mount| mount.target == SSH_AGENT_SOCKET_TARGET)
+                .and_then(|mount| mount.source.as_deref()),
+            socket_path_b.to_str()
+        );
+    }
+    #[test]
+    fn credential_runtime_mounts_add_github_token_file_without_hashing_token_or_env() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::Off;
+        let plan = test_up_plan_with_config(config);
+
+        let (plan_a, _runtime_a) = add_credential_runtime_mounts_with_inputs(
+            plan.clone(),
+            &runtime_dir,
+            None,
+            Some("first-secret\n"),
+        )
+        .unwrap();
+        let (plan_b, _runtime_b) = add_credential_runtime_mounts_with_inputs(
+            plan,
+            &runtime_dir,
+            None,
+            Some("second-secret\n"),
+        )
+        .unwrap();
+
+        assert_eq!(plan_a.resources.config_hash, "stable-hash");
+        assert_eq!(plan_b.resources.config_hash, "stable-hash");
+        assert!(
+            plan_a
+                .config
+                .devcontainer
+                .container_env
+                .values()
+                .all(|value| !value.contains("first-secret"))
+        );
+        assert!(
+            plan_a
+                .resources
+                .labels
+                .values()
+                .all(|value| !value.contains("first-secret"))
+        );
+        assert!(plan_a.mounts.iter().any(|mount| {
+            mount.target == GITHUB_CLI_TOKEN_TARGET
+                && mount
+                    .source
+                    .as_deref()
+                    .is_some_and(|source| source.ends_with("secrets/github-token"))
+                && mount.read_only
+        }));
+        assert_eq!(
+            plan_a
+                .config
+                .devcontainer
+                .container_env
+                .get("GH_CONFIG_DIR")
+                .map(String::as_str),
+            Some(GITHUB_CLI_CONFIG_TARGET)
+        );
+        assert!(
+            plan_a
+                .mounts
+                .iter()
+                .any(|mount| mount.target == GITHUB_CLI_CONFIG_TARGET && !mount.read_only)
+        );
+    }
+    #[test]
+    fn credential_runtime_mounts_add_forward_agent_without_hashing_ports() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.https = GitHttpsMode::Off;
+        let mut plan = test_up_plan_with_config(config);
+        plan.forward_ports = vec![ResolvedForwardPort {
+            service: None,
+            container: 4321,
+            requested_host: 54321,
+            host: 54321,
+            host_ip: "127.0.0.1".to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
+            label: None,
+        }];
+
+        let (plan, runtime) =
+            add_credential_runtime_mounts_with_inputs(plan, &runtime_dir, None, None).unwrap();
+
+        assert_eq!(plan.resources.config_hash, "stable-hash");
+        assert!(runtime_dir.join("decune-forward-agent").is_file());
+        assert!(plan.mounts.iter().any(|mount| {
+            mount.target == DECUNE_RUNTIME_TARGET
+                && mount.source.as_deref() == Some(runtime_dir.to_str().unwrap())
+                && !mount.read_only
+        }));
+        assert!(
+            runtime
+                .mount_policy()
+                .required_mounts()
+                .iter()
+                .any(|mount| mount.target == DECUNE_RUNTIME_TARGET)
+        );
+    }
+    #[test]
+    fn credential_runtime_mounts_add_forward_runtime_without_ports() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+        let plan = test_up_plan_with_config(config);
+
+        let (plan, runtime) =
+            add_credential_runtime_mounts_with_inputs(plan, &runtime_dir, None, None).unwrap();
+
+        assert_eq!(plan.resources.config_hash, "stable-hash");
+        assert!(runtime_dir.join("decune-forward-agent").is_file());
+        assert!(plan.mounts.iter().any(|mount| {
+            mount.target == DECUNE_RUNTIME_TARGET
+                && mount.source.as_deref() == Some(runtime_dir.to_str().unwrap())
+                && !mount.read_only
+        }));
+        assert!(
+            runtime
+                .mount_policy()
+                .required_mounts()
+                .iter()
+                .any(|mount| mount.target == DECUNE_RUNTIME_TARGET)
+        );
+    }
+    #[test]
+    fn compose_credentials_secret_leak_generated_override_injects_primary_runtime_mounts() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let socket_path = temp.path().join("agent.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        let mut config = ResolvedConfig::default();
+        config
+            .devcontainer
+            .container_env
+            .insert("APP_ENV".to_owned(), "compose-credentials-test".to_owned());
+        let mut plan = test_up_plan_with_config(config);
+        plan.forward_ports = vec![ResolvedForwardPort {
+            service: None,
+            container: 4321,
+            requested_host: 54321,
+            host: 54321,
+            host_ip: "127.0.0.1".to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
+            label: None,
+        }];
+
+        let (plan, _runtime) = add_credential_runtime_mounts_with_inputs(
+            plan,
+            &runtime_dir,
+            Some(&socket_path),
+            Some("compose-github-secret\n"),
+        )
+        .unwrap();
+        let yaml = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(yaml.contains("  'app':\n"));
+        assert!(!yaml.contains("sidecar"));
+        assert!(yaml.contains(DECUNE_RUNTIME_TARGET));
+        assert!(yaml.contains(SSH_AGENT_SOCKET_TARGET));
+        assert!(yaml.contains(GITHUB_CLI_TOKEN_TARGET));
+        assert!(yaml.contains("read_only: true"));
+        assert!(yaml.contains(GITHUB_CLI_CONFIG_TARGET));
+        assert!(yaml.contains("type: tmpfs"));
+        assert!(yaml.contains("'SSH_AUTH_SOCK': '/run/decune/ssh-agent.sock'"));
+        assert!(yaml.contains("'GH_CONFIG_DIR': '/run/decune/gh'"));
+        assert!(!yaml.contains("compose-github-secret"));
+    }
+    #[test]
+    fn compose_credentials_generated_override_honors_disabled_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let socket_path = temp.path().join("agent.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+        let plan = test_up_plan_with_config(config);
+
+        let (plan, _runtime) = add_credential_runtime_mounts_with_inputs(
+            plan,
+            &runtime_dir,
+            Some(&socket_path),
+            Some("disabled-github-secret\n"),
+        )
+        .unwrap();
+        let yaml = generated_compose_override_content("app", &plan).unwrap();
+
+        assert!(yaml.contains("  'app':\n"));
+        assert!(yaml.contains(DECUNE_RUNTIME_TARGET));
+        assert!(!yaml.contains(SSH_AGENT_SOCKET_TARGET));
+        assert!(!yaml.contains(GITHUB_CLI_TOKEN_TARGET));
+        assert!(!yaml.contains(GITHUB_CLI_CONFIG_TARGET));
+        assert!(!yaml.contains("SSH_AUTH_SOCK"));
+        assert!(!yaml.contains("GH_CONFIG_DIR"));
+        assert!(!yaml.contains("disabled-github-secret"));
+    }
+    #[test]
+    fn existing_container_decision_reuses_runtime_mount_when_forward_ports_are_added_later() {
+        let runtime_dir = tempfile::tempdir().unwrap();
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.credentials.github.mode = GithubCredentialsMode::Off;
+        let mut plan = test_up_plan_with_config(config);
+        plan.forward_ports = vec![ResolvedForwardPort {
+            service: None,
+            container: 4321,
+            requested_host: 54321,
+            host: 54321,
+            host_ip: "127.0.0.1".to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
+            label: None,
+        }];
+        let (_plan, runtime) =
+            add_credential_runtime_mounts_with_inputs(plan, runtime_dir.path(), None, None)
+                .unwrap();
+        let container = UpContainerSummary {
+            id: "container-id".to_owned(),
+            name: "decune-project-abc123".to_owned(),
+            image_id: None,
+            config_hash: Some("stable-hash".to_owned()),
+            config_file: None,
+            mounts: Some(vec![mount_summary(
+                runtime_dir.path().to_str(),
+                DECUNE_RUNTIME_TARGET,
+            )]),
+            running: true,
+        };
+
+        let decision =
+            decide_existing_container(&[container], "stable-hash", runtime.mount_policy(), false)
+                .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::ReuseRunning {
+                id: "container-id".to_owned(),
+                name: "decune-project-abc123".to_owned()
+            }
+        );
+    }
+}

@@ -439,6 +439,15 @@ async fn detect_container_arch_for_forward_agent(
 mod tests {
     use std::path::Path;
 
+    use crate::{
+        config::{resolved::ResolvedPublishPort, types::PortProtocol},
+        docker::ports::HostPortReservation,
+        state::{
+            PublishedPortActualBinding, PublishedPortEndpointState, PublishedPortRuntimeState,
+            PublishedPortRuntimeType, PublishedPortSource, PublishedPortTarget,
+        },
+        up::test_support::{compose_config, forward_port_for_service, test_up_plan_with_config},
+    };
     use tempfile::TempDir;
     use tokio::{
         io::AsyncReadExt,
@@ -492,5 +501,292 @@ mod tests {
             stream.read_to_end(&mut bytes).await.unwrap();
             String::from_utf8(bytes).unwrap()
         })
+    }
+    #[test]
+    fn auto_only_forwarding_skips_unsupported_container_architecture() {
+        assert_eq!(
+        super::decide_forward_agent_start(false, true, Some("riscv64")),
+        super::ForwardAgentStartDecision::SkipAutoWithWarning(
+            "Automatic port forwarding is disabled because the container architecture is not supported by the port forwarding agent: riscv64".to_owned()
+        )
+    );
+        assert_eq!(
+            super::decide_forward_agent_start(true, true, Some("riscv64")),
+            super::ForwardAgentStartDecision::Start
+        );
+        assert_eq!(
+            super::decide_forward_agent_start(false, true, Some("x86_64")),
+            super::ForwardAgentStartDecision::Start
+        );
+        assert_eq!(
+            super::decide_forward_agent_start(false, true, Some("aarch64")),
+            super::ForwardAgentStartDecision::Start
+        );
+    }
+    #[test]
+    fn compose_forwarding_targets_split_primary_and_sidecar_services() {
+        let mut plan = test_up_plan_with_config(compose_config("app"));
+        plan.forward_ports = vec![
+            forward_port_for_service(None, 3000),
+            forward_port_for_service(Some("app"), 3001),
+            forward_port_for_service(Some("db"), 5432),
+        ];
+
+        let targets =
+            plan_forwarding_agent_targets(&plan, PathBuf::from("/tmp/decune-runtime").as_path())
+                .unwrap();
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].service.as_deref(), None);
+        assert_eq!(
+            targets[0]
+                .forward_ports
+                .iter()
+                .map(|port| port.container)
+                .collect::<Vec<_>>(),
+            vec![3000, 3001]
+        );
+        assert!(targets[0].auto_forward.is_some());
+        assert_eq!(targets[1].service.as_deref(), Some("db"));
+        assert_eq!(targets[1].forward_ports[0].container, 5432);
+        assert!(targets[1].auto_forward.is_none());
+    }
+    #[test]
+    fn compose_automatic_forwarding_targets_primary_service_only() {
+        let mut plan = test_up_plan_with_config(compose_config("app"));
+        plan.forward_ports = vec![forward_port_for_service(Some("db"), 5432)];
+
+        let targets =
+            plan_forwarding_agent_targets(&plan, PathBuf::from("/tmp/decune-runtime").as_path())
+                .unwrap();
+
+        assert_eq!(targets.len(), 2);
+        assert_eq!(targets[0].service.as_deref(), None);
+        assert!(targets[0].forward_ports.is_empty());
+        assert!(targets[0].auto_forward.is_some());
+        assert_eq!(targets[1].service.as_deref(), Some("db"));
+        assert_eq!(targets[1].forward_ports[0].container, 5432);
+        assert!(targets[1].auto_forward.is_none());
+    }
+    #[test]
+    fn compose_published_ports_become_auto_forward_host_reservations() {
+        let published_ports = vec![
+            PublishedPortRuntimeState {
+                source: PublishedPortSource::Compose,
+                kind: PublishedPortRuntimeType::Published,
+                service: "app".to_owned(),
+                port_entry_index: 0,
+                target: PublishedPortTarget {
+                    port: 3000,
+                    protocol: "tcp".to_owned(),
+                },
+                requested: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3000,
+                },
+                planned: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3001,
+                },
+                actual_bindings: vec![
+                    PublishedPortActualBinding {
+                        host_ip: "0.0.0.0".to_owned(),
+                        host_port: 3001,
+                    },
+                    PublishedPortActualBinding {
+                        host_ip: "::".to_owned(),
+                        host_port: 3001,
+                    },
+                ],
+                relocated: true,
+            },
+            PublishedPortRuntimeState {
+                source: PublishedPortSource::Compose,
+                kind: PublishedPortRuntimeType::Published,
+                service: "app".to_owned(),
+                port_entry_index: 1,
+                target: PublishedPortTarget {
+                    port: 8125,
+                    protocol: "udp".to_owned(),
+                },
+                requested: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    host_port: 8125,
+                },
+                planned: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    host_port: 8125,
+                },
+                actual_bindings: Vec::new(),
+                relocated: false,
+            },
+        ];
+
+        let reservations = published_port_host_reservations(&published_ports);
+
+        assert_eq!(
+            reservations,
+            vec![
+                HostPortReservation {
+                    host_ip: "0.0.0.0".to_owned(),
+                    host: 3001,
+                },
+                HostPortReservation {
+                    host_ip: "::".to_owned(),
+                    host: 3001,
+                },
+            ]
+        );
+        assert_eq!(
+            published_port_publish_ports(&published_ports),
+            vec![ResolvedPublishPort {
+                container: 3000,
+                host: Some(3001),
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }]
+        );
+    }
+    #[test]
+    fn compose_auto_forward_publish_exclusions_use_primary_service_only() {
+        let published_ports = vec![
+            PublishedPortRuntimeState {
+                source: PublishedPortSource::Compose,
+                kind: PublishedPortRuntimeType::Published,
+                service: "db".to_owned(),
+                port_entry_index: 0,
+                target: PublishedPortTarget {
+                    port: 3000,
+                    protocol: "tcp".to_owned(),
+                },
+                requested: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3000,
+                },
+                planned: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Omitted,
+                    host_ip_value: None,
+                    host_port: 3000,
+                },
+                actual_bindings: Vec::new(),
+                relocated: false,
+            },
+            PublishedPortRuntimeState {
+                source: PublishedPortSource::Compose,
+                kind: PublishedPortRuntimeType::Published,
+                service: "app".to_owned(),
+                port_entry_index: 0,
+                target: PublishedPortTarget {
+                    port: 8080,
+                    protocol: "tcp".to_owned(),
+                },
+                requested: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    host_port: 18080,
+                },
+                planned: PublishedPortEndpointState {
+                    host_ip_kind: PublishedPortHostIpKind::Explicit,
+                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    host_port: 18080,
+                },
+                actual_bindings: Vec::new(),
+                relocated: false,
+            },
+        ];
+
+        assert_eq!(
+            published_port_host_reservations(&published_ports),
+            vec![
+                HostPortReservation {
+                    host_ip: "0.0.0.0".to_owned(),
+                    host: 3000,
+                },
+                HostPortReservation {
+                    host_ip: "127.0.0.1".to_owned(),
+                    host: 18080,
+                },
+            ]
+        );
+        assert_eq!(
+            published_port_publish_ports_for_service(&published_ports, Some("app")),
+            vec![ResolvedPublishPort {
+                container: 8080,
+                host: Some(18080),
+                host_ip: Some("127.0.0.1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }]
+        );
+    }
+    #[test]
+    fn auto_forward_target_receives_compose_published_port_reservations() {
+        let plan = test_up_plan_with_config(compose_config("app"));
+        let reservations = vec![HostPortReservation {
+            host_ip: "0.0.0.0".to_owned(),
+            host: 3000,
+        }];
+
+        let targets = plan_forwarding_agent_targets_with_host_reservations(
+            &plan,
+            PathBuf::from("/tmp/decune-runtime").as_path(),
+            reservations.clone(),
+            vec![ResolvedPublishPort {
+                container: 3000,
+                host: Some(3000),
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }],
+        )
+        .unwrap();
+
+        assert_eq!(targets.len(), 1);
+        assert!(targets[0].forward_ports.is_empty());
+        assert_eq!(
+            targets[0]
+                .auto_forward
+                .as_ref()
+                .unwrap()
+                .host_port_reservations(),
+            reservations.as_slice()
+        );
+        assert_eq!(
+            targets[0].auto_forward.as_ref().unwrap().publish_ports(),
+            [ResolvedPublishPort {
+                container: 3000,
+                host: Some(3000),
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }]
+        );
+    }
+    #[test]
+    fn compose_published_port_relocation_does_not_enable_auto_forwarding() {
+        let mut config = compose_config("app");
+        config.ports.auto.enabled = false;
+        config.compose.published_ports.relocation = true;
+        let plan = test_up_plan_with_config(config);
+
+        let targets = plan_forwarding_agent_targets_with_host_reservations(
+            &plan,
+            PathBuf::from("/tmp/decune-runtime").as_path(),
+            vec![HostPortReservation {
+                host_ip: "0.0.0.0".to_owned(),
+                host: 3000,
+            }],
+            vec![ResolvedPublishPort {
+                container: 3000,
+                host: Some(3000),
+                host_ip: None,
+                protocol: PortProtocol::Tcp,
+            }],
+        )
+        .unwrap();
+
+        assert!(targets.is_empty());
     }
 }

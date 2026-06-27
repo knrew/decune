@@ -825,15 +825,32 @@ fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{fs, net::TcpListener, path::PathBuf};
 
     use crate::{
-        config::{ConfigLayer, layer::LayerRunArg, types::MountType},
-        up::ForwardingResolution,
+        config::{
+            ConfigLayer,
+            layer::LayerRunArg,
+            resolved::{ResolvedDevcontainerSource, ResolvedPublishPort},
+            types::{MountType, PortProtocol},
+        },
+        docker::{
+            mounts::{MountBindOptions, MountBindPropagation, MountVolumeOptions},
+            ports::ResolvedForwardPort,
+        },
+        up::{
+            ForwardingResolution,
+            test_support::{config_hash_for_mount, test_mount, test_volume_mount, test_workspace},
+        },
         workspace::Workspace,
     };
 
-    use super::{build_up_plan, build_up_plan_with_forwarding_resolution};
+    use super::super::mounts::default_workspace_folder;
+    use super::{
+        build_preliminary_up_plan_with_forwarding_resolution, build_up_plan,
+        build_up_plan_with_forwarding_resolution, build_up_plan_with_image_metadata,
+        build_up_plan_with_update_features,
+    };
 
     struct EnvVarGuard {
         name: &'static str,
@@ -1355,5 +1372,932 @@ mod tests {
         let second = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
         assert_ne!(first.resources.config_hash, second.resources.config_hash);
+    }
+    #[test]
+    fn build_up_plan_records_image_source_labels_and_workspace_mount() {
+        let workspace = test_workspace("image-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceFolder": "/workspace"
+        }
+        "#,
+        );
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.image, "alpine:3.20");
+        assert!(plan.build_context.is_none());
+        assert_eq!(plan.workspace_folder, "/workspace");
+        assert_eq!(plan.mounts.len(), 1);
+        assert_eq!(
+            plan.mounts[0].source.as_deref(),
+            Some(workspace.root().to_str().unwrap())
+        );
+        assert_eq!(plan.mounts[0].target, "/workspaces/image-plan");
+        assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
+        assert!(!plan.mounts[0].read_only);
+        assert!(matches!(
+            plan.config.devcontainer.source,
+            Some(ResolvedDevcontainerSource::Image(ref image)) if image == "alpine:3.20"
+        ));
+        assert_eq!(
+            plan.resources.labels["devcontainer.config_file"],
+            workspace
+                .root()
+                .join(".devcontainer/devcontainer.json")
+                .display()
+                .to_string()
+        );
+    }
+    #[test]
+    fn build_up_plan_includes_feature_lock_digest_in_config_hash() {
+        let workspace = test_workspace("feature-lock-hash");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "features": {
+            "ghcr.io/example/features/tool:1": {}
+          }
+        }
+        "#,
+        );
+        let baseline = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/features.lock.toml"),
+            r#"
+version = 1
+
+[[features]]
+id = "ghcr.io/example/features/tool"
+ref = "ghcr.io/example/features/tool:1"
+digest = "sha256:locked"
+"#,
+        )
+        .unwrap();
+
+        let locked = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_ne!(baseline.resources.config_hash, locked.resources.config_hash);
+    }
+    #[test]
+    fn build_up_plan_ignores_feature_lock_digest_when_features_are_updated() {
+        let workspace = test_workspace("feature-lock-update-hash");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "features": {
+            "ghcr.io/example/features/tool:1": {}
+          }
+        }
+        "#,
+        );
+        let baseline = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/features.lock.toml"),
+            r#"
+version = 1
+
+[[features]]
+id = "ghcr.io/example/features/tool"
+ref = "ghcr.io/example/features/tool:1"
+digest = "sha256:locked"
+"#,
+        )
+        .unwrap();
+
+        let locked = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        let updated =
+            build_up_plan_with_update_features(&workspace, None, ConfigLayer::default(), true)
+                .unwrap();
+
+        assert_ne!(baseline.resources.config_hash, locked.resources.config_hash);
+        assert_eq!(
+            baseline.resources.config_hash,
+            updated.resources.config_hash
+        );
+    }
+    #[test]
+    fn build_up_plan_rejects_invalid_feature_ref_with_ref_in_error() {
+        let workspace = test_workspace("invalid-feature-ref");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "features": {
+            "ghcr.io/features": {}
+          }
+        }
+        "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains("ghcr.io/features"), "{error:#}");
+    }
+    #[test]
+    fn build_up_plan_separates_forward_ports_from_app_port_publish() {
+        let workspace = test_workspace("port-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20"
+        }
+        "#,
+        );
+        let baseline = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "forwardPorts": [3000]
+        }
+        "#,
+        );
+        let forwarding = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "forwardPorts": [3000],
+          "appPort": ["127.0.0.1:18080:8080"]
+        }
+        "#,
+        );
+        let published = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(
+            forwarding.forward_ports,
+            vec![ResolvedForwardPort {
+                service: None,
+                container: 3000,
+                requested_host: 3000,
+                host: 3000,
+                host_ip: "127.0.0.1".to_owned(),
+                protocol: PortProtocol::Tcp,
+                require_local: false,
+                label: None,
+            }]
+        );
+        assert!(forwarding.config.devcontainer.publish_ports.is_empty());
+        assert_eq!(
+            published.config.devcontainer.publish_ports,
+            vec![ResolvedPublishPort {
+                container: 8080,
+                host: Some(18080),
+                host_ip: Some("127.0.0.1".to_owned()),
+                protocol: PortProtocol::Tcp,
+            }]
+        );
+        assert_eq!(
+            baseline.resources.config_hash,
+            forwarding.resources.config_hash
+        );
+        assert_ne!(
+            forwarding.resources.config_hash,
+            published.resources.config_hash
+        );
+    }
+    #[test]
+    fn build_up_plan_rejects_service_qualified_forward_ports_without_compose_source() {
+        let workspace = test_workspace("service-forward-port-image-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "forwardPorts": ["db:5432"]
+        }
+        "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains(
+            "Service-qualified port forwarding is only supported in Docker Compose mode"
+        ));
+        assert!(error.to_string().contains("db:5432"));
+    }
+    #[test]
+    fn build_up_plan_rejects_service_qualified_forward_ports_with_dockerfile_source() {
+        let workspace = test_workspace("service-forward-port-dockerfile-plan");
+        fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+        fs::write(
+            workspace.root().join(".devcontainer/Dockerfile"),
+            "FROM alpine:3.20\n",
+        )
+        .unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "build": {
+            "dockerfile": "Dockerfile"
+          },
+          "forwardPorts": ["db:5432"]
+        }
+        "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains(
+            "Service-qualified port forwarding is only supported in Docker Compose mode"
+        ));
+        assert!(error.to_string().contains("db:5432"));
+    }
+    #[test]
+    fn build_up_plan_rejects_service_qualified_decune_ports_without_compose_source() {
+        let workspace = test_workspace("service-decune-port-image-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20"
+        }
+        "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[ports]]
+service = "db"
+container = 5432
+"#,
+        )
+        .unwrap();
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(error.to_string().contains(
+            "Service-qualified port forwarding is only supported in Docker Compose mode"
+        ));
+        assert!(error.to_string().contains("db:5432"));
+    }
+    #[test]
+    fn detached_up_plan_keeps_config_hash_stable_when_forward_ports_are_ignored() {
+        let workspace = test_workspace("detached-forward-port-hash-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "forwardPorts": [3000]
+        }
+        "#,
+        );
+
+        let attached = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        let detached = build_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::IgnoreDetached,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            attached.forward_ports,
+            vec![ResolvedForwardPort {
+                service: None,
+                container: 3000,
+                requested_host: 3000,
+                host: 3000,
+                host_ip: "127.0.0.1".to_owned(),
+                protocol: PortProtocol::Tcp,
+                require_local: false,
+                label: None,
+            }]
+        );
+        assert!(detached.forward_ports.is_empty());
+        assert!(detached.ignored_detached_forwarding);
+        assert_eq!(
+            attached.resources.config_hash,
+            detached.resources.config_hash
+        );
+    }
+    #[test]
+    fn detached_up_plan_ignores_forward_ports_without_binding_host_port() {
+        let workspace = test_workspace("detached-port-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20"
+        }
+        "#,
+        );
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let host_port = listener.local_addr().unwrap().port();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            format!(
+                r#"
+version = 1
+
+[[ports]]
+container = 4321
+host = {host_port}
+require_local = true
+"#
+            ),
+        )
+        .unwrap();
+
+        let plan = build_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::IgnoreDetached,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(plan.forward_ports.is_empty());
+        assert_eq!(plan.config.ports.entries.len(), 1);
+        assert!(plan.ignored_detached_forwarding);
+    }
+    #[test]
+    fn detached_up_plan_ignores_unsupported_devcontainer_forward_ports_before_conversion() {
+        let workspace = test_workspace("detached-unsupported-forward-port-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "forwardPorts": ["db:5432"]
+        }
+        "#,
+        );
+
+        let plan = build_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::IgnoreDetached,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert!(plan.forward_ports.is_empty());
+        assert!(plan.config.ports.entries.is_empty());
+        assert!(plan.ignored_detached_forwarding);
+    }
+    #[test]
+    fn build_up_plan_rejects_workspace_mount_without_workspace_folder() {
+        let workspace = test_workspace("workspace-mount-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+        }
+        "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "workspaceFolder is required when workspaceMount is specified"
+        );
+    }
+    #[test]
+    fn preliminary_up_plan_defers_workspace_mount_without_workspace_folder() {
+        let workspace = test_workspace("preliminary-workspace-mount-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind"
+        }
+        "#,
+        );
+
+        let plan = build_preliminary_up_plan_with_forwarding_resolution(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            ForwardingResolution::Resolve,
+            false,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(plan.workspace_folder, "/workspace");
+        assert_eq!(plan.mounts[0].target, "/workspace");
+    }
+    #[test]
+    fn build_up_plan_uses_explicit_workspace_folder_for_workspace_mount_variables() {
+        let workspace = test_workspace("workspace-mount-variable-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceMount": "source=${localWorkspaceFolder},target=${containerWorkspaceFolder},type=bind",
+          "workspaceFolder": "/workspace"
+        }
+        "#,
+        );
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.workspace_folder, "/workspace");
+        assert_eq!(plan.mounts.len(), 1);
+        assert_eq!(
+            plan.mounts[0].source.as_deref(),
+            Some(workspace.root().to_str().unwrap())
+        );
+        assert_eq!(plan.mounts[0].target, plan.workspace_folder);
+        assert_eq!(plan.mounts[0].mount_type, MountType::Bind);
+    }
+    #[test]
+    fn build_up_plan_defers_workspace_folder_mount_target_check_until_runtime() {
+        let workspace = test_workspace("workspace-folder-outside-mount-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+          "workspaceFolder": "/other"
+        }
+        "#,
+        );
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.workspace_folder, "/other");
+        assert_eq!(plan.mounts[0].target, "/workspace");
+    }
+    #[test]
+    fn build_up_plan_rejects_relative_workspace_folder() {
+        let workspace = test_workspace("relative-workspace-folder-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceFolder": "workspace"
+        }
+        "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "workspaceFolder must be an absolute container path: workspace"
+        );
+    }
+    #[test]
+    fn build_up_plan_uses_explicit_workspace_folder_with_workspace_mount() {
+        let workspace = test_workspace("workspace-folder-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+          "workspaceFolder": "/workspace/app"
+        }
+        "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "/opt/${containerWorkspaceFolderBasename}"
+type = "volume"
+"#,
+        )
+        .unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.workspace_folder, "/workspace/app");
+        assert_eq!(plan.mounts[0].target, "/workspace");
+        assert_eq!(plan.mounts[1].target, "/opt/app");
+    }
+    #[test]
+    fn build_up_plan_rejects_mount_target_that_conflicts_with_workspace_mount() {
+        let workspace = test_workspace("workspace-mount-conflict-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20"
+        }
+        "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            format!(
+                r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "{}"
+type = "volume"
+"#,
+                default_workspace_folder(&workspace)
+            ),
+        )
+        .unwrap();
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target conflicts with workspace mount target")
+        );
+    }
+    #[test]
+    fn build_up_plan_rejects_mount_target_that_normalizes_to_workspace_mount() {
+        let workspace = test_workspace("normalized-workspace-mount-conflict-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20"
+        }
+        "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            format!(
+                r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "{}/."
+type = "volume"
+"#,
+                default_workspace_folder(&workspace)
+            ),
+        )
+        .unwrap();
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Mount target conflicts with workspace mount target")
+        );
+    }
+    #[test]
+    fn build_up_plan_rejects_workspace_mount_under_reserved_decune_path() {
+        let workspace = test_workspace("reserved-workspace-mount-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceMount": "source=${localWorkspaceFolder},target=/run/decune/workspace,type=bind",
+          "workspaceFolder": "/run/decune/workspace"
+        }
+        "#,
+        );
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Mount target is reserved for decune internal use"));
+    }
+    #[test]
+    fn build_up_plan_merges_image_metadata_and_includes_it_in_config_hash() {
+        let workspace = test_workspace("image-metadata-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20"
+        }
+        "#,
+        );
+        let image_layer = ConfigLayer {
+            devcontainer: Some(crate::config::layer::LayerDevcontainerMetadata {
+                remote_user: Some("image-user".to_owned()),
+                remote_env: [("FROM_IMAGE".to_owned(), "1".to_owned())].into(),
+                ..crate::config::layer::LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        };
+        let changed_image_layer = ConfigLayer {
+            devcontainer: Some(crate::config::layer::LayerDevcontainerMetadata {
+                remote_user: Some("image-user".to_owned()),
+                remote_env: [("FROM_IMAGE".to_owned(), "2".to_owned())].into(),
+                ..crate::config::layer::LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        };
+
+        let plan = build_up_plan_with_image_metadata(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            vec![image_layer],
+        )
+        .unwrap();
+        let changed = build_up_plan_with_image_metadata(
+            &workspace,
+            None,
+            ConfigLayer::default(),
+            vec![changed_image_layer],
+        )
+        .unwrap();
+
+        assert_eq!(
+            plan.config.devcontainer.remote_user.as_deref(),
+            Some("image-user")
+        );
+        assert_eq!(
+            plan.config
+                .devcontainer
+                .remote_env
+                .get("FROM_IMAGE")
+                .map(String::as_str),
+            Some("1")
+        );
+        assert_ne!(plan.resources.config_hash, changed.resources.config_hash);
+    }
+    #[test]
+    fn build_up_plan_uses_dockerfile_source_and_build_context() {
+        let workspace = test_workspace("dockerfile-plan");
+        fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+        fs::write(
+            workspace.root().join(".devcontainer/Dockerfile"),
+            "FROM alpine\n",
+        )
+        .unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "build": {
+            "dockerfile": "Dockerfile",
+            "args": {
+              "VARIANT": "bookworm"
+            },
+            "options": [
+              "--platform=linux/amd64",
+              "--network",
+              "host"
+            ],
+            "target": "dev",
+            "cacheFrom": "type=registry,ref=example.test/cache:latest"
+          }
+        }
+        "#,
+        );
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.image, plan.resources.image_tag);
+        let build_context = plan
+            .build_context
+            .expect("build context should be resolved");
+        assert_eq!(
+            build_context.context_dir,
+            workspace.root().join(".devcontainer")
+        );
+        assert_eq!(
+            build_context.dockerfile_path,
+            workspace.root().join(".devcontainer/Dockerfile")
+        );
+        assert_eq!(
+            build_context.dockerfile_in_context,
+            PathBuf::from("Dockerfile")
+        );
+        assert_eq!(
+            plan.build_options
+                .build_args
+                .get("VARIANT")
+                .map(String::as_str),
+            Some("bookworm")
+        );
+        assert_eq!(plan.build_options.target.as_deref(), Some("dev"));
+        assert_eq!(
+            plan.build_options.options,
+            vec!["--platform=linux/amd64", "--network", "host"]
+        );
+        assert_eq!(
+            plan.build_options.cache_from,
+            vec!["type=registry,ref=example.test/cache:latest"]
+        );
+        assert!(!plan.build_options.no_cache);
+        assert!(!plan.build_options.pull);
+    }
+    #[test]
+    fn build_up_plan_hash_changes_when_dockerfile_content_changes() {
+        let workspace = test_workspace("dockerfile-hash-plan");
+        fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+        fs::write(
+            workspace.root().join(".devcontainer/Dockerfile"),
+            "FROM alpine\n",
+        )
+        .unwrap();
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "build": {
+            "dockerfile": "Dockerfile"
+          }
+        }
+        "#,
+        );
+
+        let first = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::write(
+            workspace.root().join(".devcontainer/Dockerfile"),
+            "FROM alpine\nRUN true\n",
+        )
+        .unwrap();
+        let second = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_ne!(first.resources.config_hash, second.resources.config_hash);
+        assert_ne!(first.image, second.image);
+    }
+    #[cfg(unix)]
+    #[test]
+    fn build_up_plan_hash_changes_when_resolved_mount_source_changes() {
+        let workspace = test_workspace("mount-source-hash-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20"
+        }
+        "#,
+        );
+        fs::create_dir_all(workspace.root().join("first-cache")).unwrap();
+        fs::create_dir_all(workspace.root().join("second-cache")).unwrap();
+        let link = workspace.root().join("host-cache");
+        std::os::unix::fs::symlink(workspace.root().join("first-cache"), &link).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[mounts]]
+source = "host-cache"
+target = "/cache"
+type = "bind"
+resolve_symlink = true
+"#,
+        )
+        .unwrap();
+
+        let first = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+        fs::remove_file(&link).unwrap();
+        std::os::unix::fs::symlink(workspace.root().join("second-cache"), &link).unwrap();
+        let second = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_ne!(first.mounts[1].source, second.mounts[1].source);
+        assert_ne!(first.resources.config_hash, second.resources.config_hash);
+    }
+    #[test]
+    fn config_hash_changes_when_resolved_mount_options_change() {
+        let mut cached = test_mount();
+        cached.consistency = Some("cached".to_owned());
+        let mut delegated = test_mount();
+        delegated.consistency = Some("delegated".to_owned());
+        assert_ne!(
+            config_hash_for_mount(cached),
+            config_hash_for_mount(delegated)
+        );
+
+        let mut rshared = test_mount();
+        rshared.bind_options = Some(MountBindOptions {
+            propagation: Some(MountBindPropagation::RShared),
+            ..MountBindOptions::default()
+        });
+        let mut rslave = test_mount();
+        rslave.bind_options = Some(MountBindOptions {
+            propagation: Some(MountBindPropagation::RSlave),
+            ..MountBindOptions::default()
+        });
+        assert_ne!(
+            config_hash_for_mount(rshared),
+            config_hash_for_mount(rslave)
+        );
+
+        let mut deps = test_volume_mount();
+        deps.volume_options = Some(MountVolumeOptions {
+            subpath: Some("deps".to_owned()),
+            ..MountVolumeOptions::default()
+        });
+        let mut cache = test_volume_mount();
+        cache.volume_options = Some(MountVolumeOptions {
+            subpath: Some("cache".to_owned()),
+            ..MountVolumeOptions::default()
+        });
+        assert_ne!(config_hash_for_mount(deps), config_hash_for_mount(cache));
+    }
+    #[test]
+    fn build_up_plan_uses_container_workspace_folder_basename_variable() {
+        let workspace = test_workspace("container-basename-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20",
+          "workspaceFolder": "/src"
+        }
+        "#,
+        );
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "/opt/${containerWorkspaceFolderBasename}"
+type = "volume"
+"#,
+        )
+        .unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(plan.workspace_folder, "/src");
+        assert_eq!(plan.mounts[0].target, default_workspace_folder(&workspace));
+        assert_eq!(plan.mounts[1].target, "/opt/src");
+    }
+    #[cfg(unix)]
+    #[test]
+    fn build_up_plan_uses_current_uid_and_gid_variables() {
+        let workspace = test_workspace("uid-gid-plan");
+        write_devcontainer(
+            &workspace,
+            r#"
+        {
+          "image": "alpine:3.20"
+        }
+        "#,
+        );
+        let uid = unsafe { libc::getuid() };
+        let gid = unsafe { libc::getgid() };
+        let cache = workspace.root().join(format!("{uid}-{gid}"));
+        fs::create_dir_all(&cache).unwrap();
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[[mounts]]
+source = "${uid}-${gid}"
+target = "/cache"
+type = "bind"
+"#,
+        )
+        .unwrap();
+
+        let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+
+        assert_eq!(
+            plan.mounts[1].source.as_deref(),
+            Some(cache.canonicalize().unwrap().to_str().unwrap())
+        );
     }
 }

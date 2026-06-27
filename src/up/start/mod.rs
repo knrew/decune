@@ -115,10 +115,6 @@ mod test_support;
 pub(in crate::up) use compose_override::generated_compose_override_content;
 pub(in crate::up) use container::create_and_start_container;
 pub(in crate::up) use container::wait_for_container_exit_code;
-#[cfg(test)]
-pub(in crate::up) use credentials::{
-    add_credential_runtime_mounts_with_inputs, add_credential_runtime_mounts_with_ssh_socket,
-};
 pub(in crate::up) use listing::list_workspace_containers;
 pub(in crate::up) use state_sync::StartedUpContainer;
 

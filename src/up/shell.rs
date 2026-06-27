@@ -106,4 +106,11 @@ mod tests {
 
         assert_eq!(selected, "/bin/sh");
     }
+    #[test]
+    fn shell_candidates_fall_back_to_bash_then_sh() {
+        assert_eq!(
+            shell_command_candidates(None, None),
+            vec!["/bin/bash".to_owned(), "/bin/sh".to_owned()]
+        );
+    }
 }

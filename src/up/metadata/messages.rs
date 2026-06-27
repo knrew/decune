@@ -193,3 +193,244 @@ fn unsupported_single_port_attribute_warnings(
 
     warnings
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::{deferred_config_warnings, security_notices};
+    use crate::config::{
+        layer::LayerUserEnvProbe,
+        resolved::{
+            ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes, ResolvedPublishPort,
+        },
+        types::{PortProtocol, SshAgentMode},
+    };
+
+    #[test]
+    fn security_notices_are_empty_for_default_plan_security_surface() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        let notices = security_notices(&config);
+
+        assert!(notices.is_empty());
+    }
+    #[test]
+    fn security_notices_report_risky_container_settings() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.devcontainer.privileged = Some(true);
+        config.devcontainer.cap_add = vec!["SYS_PTRACE".to_owned()];
+        config.devcontainer.security_opt = vec!["seccomp=unconfined".to_owned()];
+        config.devcontainer.mounts = vec![crate::config::layer::LayerDevcontainerMount::String(
+            "type=bind,source=/tmp,target=/host-tmp".to_owned(),
+        )];
+
+        let notices = security_notices(&config);
+
+        assert!(notices.iter().any(|notice| notice.contains("privileged")));
+        assert!(notices.iter().any(|notice| notice.contains("SYS_PTRACE")));
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("seccomp=unconfined"))
+        );
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("additional bind mounts"))
+        );
+        assert!(notices.iter().all(|notice| !notice.contains("/tmp")));
+    }
+    #[test]
+    fn security_notices_skip_devcontainer_volume_mounts() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.devcontainer.mounts = vec![
+            crate::config::layer::LayerDevcontainerMount::String(
+                "type=volume,source=project-cache,target=/cache".to_owned(),
+            ),
+            crate::config::layer::LayerDevcontainerMount::Object(
+                [
+                    ("type".to_owned(), serde_json::json!("volume")),
+                    ("source".to_owned(), serde_json::json!("project-deps")),
+                    ("target".to_owned(), serde_json::json!("/deps")),
+                ]
+                .into(),
+            ),
+        ];
+        config.devcontainer.workspace_mount =
+            Some("type=volume,source=project-workspace,target=/workspace".to_owned());
+
+        let notices = security_notices(&config);
+
+        assert!(
+            notices
+                .iter()
+                .all(|notice| !notice.contains("additional bind mounts"))
+        );
+    }
+    #[test]
+    fn security_notices_report_devcontainer_workspace_bind_mount() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.devcontainer.workspace_mount =
+            Some("type=bind,source=${localWorkspaceFolder},target=/workspace".to_owned());
+
+        let notices = security_notices(&config);
+
+        assert!(
+            notices
+                .iter()
+                .any(|notice| notice.contains("additional bind mounts"))
+        );
+    }
+    #[test]
+    fn security_notices_report_code_execution_surfaces() {
+        let mut config = ResolvedConfig::default();
+        config.credentials.git.enabled = false;
+        config.credentials.github.enabled = false;
+        config.features = vec![crate::config::resolved::ResolvedFeature {
+            id: "tool".to_owned(),
+            canonical_id: "ghcr.io/example/features/tool".to_owned(),
+            options: BTreeMap::new(),
+        }];
+        config.devcontainer.source = Some(ResolvedDevcontainerSource::Dockerfile(
+            crate::config::layer::LayerDevcontainerBuild {
+                dockerfile: "Dockerfile".to_owned(),
+                context: None,
+                args: BTreeMap::new(),
+                options: Vec::new(),
+                target: None,
+                cache_from: Vec::new(),
+            },
+        ));
+        config.devcontainer.entrypoints = vec!["/usr/local/bin/start".to_owned()];
+        config.devcontainer.lifecycle = Some(
+            crate::devcontainer::lifecycle::parse_lifecycle_definition(&BTreeMap::from([(
+                crate::devcontainer::metadata::LifecycleProperty::PostStartCommand,
+                serde_json::json!("make setup"),
+            )]))
+            .unwrap(),
+        );
+        config.devcontainer.user_env_probe = Some(LayerUserEnvProbe::LoginShell);
+
+        let notices = security_notices(&config);
+
+        assert!(notices.iter().any(|notice| notice.contains("Dockerfile")));
+        assert!(notices.iter().any(|notice| notice.contains("install.sh")));
+        assert!(notices.iter().any(|notice| notice.contains("entrypoint")));
+        assert!(notices.iter().any(|notice| notice.contains("lifecycle")));
+        assert!(notices.iter().any(|notice| {
+            notice.contains("userEnvProbe") && notice.contains("userEnvProbe to \"none\"")
+        }));
+    }
+    #[test]
+    fn security_notices_report_enabled_credentials() {
+        let notices = security_notices(&ResolvedConfig::default());
+
+        assert!(notices.iter().any(|notice| {
+            notice.contains("Git credential forwarding")
+                && notice.contains("[credentials.git].enabled = false")
+        }));
+        assert!(notices.iter().any(|notice| {
+            notice.contains("SSH agent forwarding") && notice.contains("ssh_agent = \"off\"")
+        }));
+        assert!(notices.iter().any(|notice| {
+            notice.contains("GitHub credential forwarding")
+                && notice.contains("[credentials.github].enabled = false")
+        }));
+
+        let mut disabled = ResolvedConfig::default();
+        disabled.credentials.git.enabled = false;
+        disabled.credentials.github.enabled = false;
+        let disabled_notices = security_notices(&disabled);
+        assert!(
+            disabled_notices
+                .iter()
+                .all(|notice| !notice.contains("credential forwarding"))
+        );
+
+        let mut ssh_off = ResolvedConfig::default();
+        ssh_off.credentials.git.ssh_agent = SshAgentMode::Off;
+        let ssh_off_notices = security_notices(&ssh_off);
+        assert!(
+            ssh_off_notices
+                .iter()
+                .all(|notice| !notice.contains("SSH agent forwarding"))
+        );
+    }
+    #[test]
+    fn deferred_config_warnings_report_app_port_without_explicit_host_ip() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.publish_ports = vec![ResolvedPublishPort {
+            container: 8080,
+            host: Some(18080),
+            host_ip: None,
+            protocol: PortProtocol::Tcp,
+        }];
+
+        let warnings = deferred_config_warnings(&config);
+        let warning = warnings
+            .iter()
+            .find(|warning| warning.contains("appPort"))
+            .expect("expected appPort warning");
+
+        assert!(warning.contains("forwardPorts"));
+        assert!(warning.contains("[[ports]]"));
+        assert!(warning.contains("localhost-only"));
+    }
+    #[test]
+    fn deferred_config_warnings_skip_localhost_only_app_port() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.publish_ports = vec![ResolvedPublishPort {
+            container: 8080,
+            host: Some(18080),
+            host_ip: Some("127.0.0.1".to_owned()),
+            protocol: PortProtocol::Tcp,
+        }];
+
+        let warnings = deferred_config_warnings(&config);
+
+        assert!(!warnings.iter().any(|warning| warning.contains("appPort")));
+    }
+    #[test]
+    fn deferred_config_warnings_report_unsupported_port_attributes() {
+        let mut config = ResolvedConfig::default();
+        config.devcontainer.port_attributes.insert(
+            "3000".to_owned(),
+            ResolvedPortAttributes {
+                label: Some("web".to_owned()),
+                on_auto_forward: None,
+                require_local_port: Some(true),
+                unsupported_protocol: Some("https".to_owned()),
+                unsupported_elevate_if_needed: Some(true),
+            },
+        );
+        config.devcontainer.other_ports_attributes = Some(ResolvedPortAttributes {
+            label: None,
+            on_auto_forward: None,
+            require_local_port: None,
+            unsupported_protocol: Some("http".to_owned()),
+            unsupported_elevate_if_needed: None,
+        });
+
+        let warnings = deferred_config_warnings(&config);
+
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("portsAttributes.3000.protocol")
+                && warning.contains("ignored")
+                && warning.contains("label")
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("portsAttributes.3000.elevateIfNeeded") && warning.contains("ignored")
+        }));
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("otherPortsAttributes.protocol") && warning.contains("ignored")
+        }));
+    }
+}

@@ -115,11 +115,29 @@ pub(super) async fn recreate_existing_containers(
 
 #[cfg(test)]
 mod tests {
+    use std::{collections::BTreeMap, fs};
+
     use super::super::test_support::{mount_policy, reusable_container};
     use super::*;
     use crate::{
+        config::ConfigLayer,
         config::types::MountType,
-        up::{ExistingContainerDecision, UpMountSummary, decide_existing_container},
+        docker::{
+            client::DockerClient,
+            container::remove_container,
+            exec::{ExecCommandSpec, exec_capture},
+            image::{PullPolicy, ensure_image, remove_image},
+        },
+        up::{
+            ExistingContainerDecision, UpMountSummary, UpOptions,
+            existing::decide_existing_container,
+            plan::build_up_plan,
+            run_detached_up,
+            start::create_and_start_container,
+            test_support::{
+                build_user_image, container_has_mount_target, test_workspace, write_devcontainer,
+            },
+        },
     };
 
     #[test]
@@ -271,5 +289,447 @@ mod tests {
             &decision,
             ExistingContainerReusePolicy::default()
         ));
+    }
+    #[test]
+    fn up_detach_creates_and_reuses_container() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-detach");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert_eq!(first.container_name, container_name);
+                assert!(!first.reused);
+
+                let inspect = client.cli().inspect_container(&container_name).await?;
+                assert_eq!(inspect.state.and_then(|state| state.running), Some(true));
+
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert_eq!(second.container_name, container_name);
+                assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+    #[test]
+    fn up_detach_recreates_legacy_container_missing_decune_runtime_mount() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-legacy-runtime-mount");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20"
+                }
+                "#,
+            );
+            let legacy_plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = legacy_plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let legacy = create_and_start_container(
+                    &client,
+                    &workspace,
+                    &legacy_plan,
+                    false,
+                    false,
+                    false,
+                )
+                .await?;
+                let legacy_inspect = client.cli().inspect_container(&container_name).await?;
+                assert!(!container_has_mount_target(
+                    &legacy_inspect.mounts,
+                    "/run/decune"
+                ));
+
+                let recreated = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!recreated.reused);
+                assert_ne!(legacy.container_id, recreated.container_id);
+
+                let recreated_inspect = client.cli().inspect_container(&container_name).await?;
+                assert!(container_has_mount_target(
+                    &recreated_inspect.mounts,
+                    "/run/decune"
+                ));
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
+    }
+    #[test]
+    fn up_detach_reuses_container_when_built_image_tag_is_removed() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-reuse-missing-image-tag");
+            fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
+            fs::write(
+                workspace.root().join(".devcontainer/Dockerfile"),
+                r#"
+                FROM alpine:3.20
+                RUN adduser -D vscode
+                USER vscode
+                "#,
+            )
+            .unwrap();
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "build": {
+                    "dockerfile": "Dockerfile"
+                  }
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let image = plan.image.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!first.reused);
+
+                remove_image(&client, &image, true).await?;
+
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert_eq!(second.container_name, container_name);
+                assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+    #[test]
+    fn up_detach_reuses_image_container_when_source_image_tag_is_removed() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-reuse-missing-source-image");
+            let image = format!(
+                "localhost:9/decune-test/reuse-source-image-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}",
+                      "initializeCommand": "docker tag alpine:3.20 {image}"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert_eq!(first.container_name, container_name);
+                assert!(!first.reused);
+
+                remove_image(&client, &image, true).await?;
+
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert_eq!(second.container_name, container_name);
+                assert!(second.reused);
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+    #[test]
+    fn up_detach_reuses_existing_image_config_user_when_source_tag_user_changes() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-up-reuse-image-user-change");
+            let image = format!(
+                "decune-test/reuse-image-user-change-{}:latest",
+                workspace.id()
+            );
+            write_devcontainer(
+                &workspace,
+                &format!(
+                    r#"
+                    {{
+                      "image": "{image}"
+                    }}
+                    "#
+                ),
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+                remove_image(&client, &image, true).await?;
+
+                build_user_image(&client, &image, "olduser").await?;
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!first.reused);
+
+                build_user_image(&client, &image, "newuser").await?;
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert_eq!(second.container_name, container_name);
+                assert!(second.reused);
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec!["id".to_owned(), "-un".to_owned()],
+                        user: Some("olduser".to_owned()),
+                        working_dir: None,
+                        env: BTreeMap::new(),
+                        redactions: Vec::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout)?, "olduser\n");
+
+                Ok(())
+            }
+            .await;
+
+            let container_cleanup = remove_container(&client, &container_name, true, true).await;
+            let image_cleanup = remove_image(&client, &image, true).await;
+            result.and(container_cleanup).and(image_cleanup).unwrap();
+        });
+    }
+    #[test]
+    fn rebuild_detach_recreates_without_post_attach() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            let workspace = test_workspace("docker-rebuild-detach-no-post-attach");
+            write_devcontainer(
+                &workspace,
+                r#"
+                {
+                  "image": "alpine:3.20",
+                  "postStartCommand": "printf post-start >/tmp/decune-rebuild-post-start",
+                  "postAttachCommand": "printf post-attach >/tmp/decune-rebuild-post-attach"
+                }
+                "#,
+            );
+            let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
+            let container_name = plan.resources.container_name.clone();
+            let client = DockerClient::connect_from_env().unwrap();
+
+            let result: anyhow::Result<()> = async {
+                remove_container(&client, &container_name, true, true).await?;
+
+                let first = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: false,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!first.reused);
+
+                let second = run_detached_up(UpOptions {
+                    workspace: workspace.root().to_path_buf(),
+                    config_path: None,
+                    skip_global_config: false,
+                    cli_layer: ConfigLayer::default(),
+                    pull: false,
+                    rebuild: true,
+                    no_cache: false,
+                    update_features: false,
+                })
+                .await?;
+                assert!(!second.reused);
+                assert_ne!(first.container_id, second.container_id);
+
+                let output = exec_capture(
+                    &client,
+                    &container_name,
+                    &ExecCommandSpec {
+                        command: vec![
+                            "/bin/sh".to_owned(),
+                            "-c".to_owned(),
+                            "test -f /tmp/decune-rebuild-post-start && test ! -e /tmp/decune-rebuild-post-attach && cat /tmp/decune-rebuild-post-start".to_owned(),
+                        ],
+                        user: None,
+                        working_dir: None,
+                        env: BTreeMap::new(),
+            redactions: Vec::new(),
+                        tty: false,
+                    },
+                )
+                .await?;
+                assert_eq!(String::from_utf8(output.stdout).unwrap(), "post-start");
+
+                Ok(())
+            }
+            .await;
+
+            let cleanup = remove_container(&client, &container_name, true, true).await;
+            result.and(cleanup).unwrap();
+        });
     }
 }
