@@ -1,4 +1,36 @@
-use super::*;
+use anyhow::Result;
+use serde_json::Value as JsonValue;
+
+use crate::{
+    devcontainer::features::remove_feature_lock_file,
+    docker::{
+        client::DockerClient,
+        image::{remove_image, tag_image},
+    },
+    runtime::{
+        compose_cli::ComposeConfigService,
+        compose_ports::{
+            ComposePublishedPortOverride, ComposePublishedPortPlan,
+            ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
+        },
+    },
+    up::{
+        build::{
+            build_feature_layer_image, build_workspace_image_layers,
+            plan_requires_final_image_layer, plan_requires_workspace_layer,
+            prepare_base_image_for_plan,
+        },
+        plan::rebuild_up_plan_with_image_metadata_layers,
+        types::{ForwardingResolution, MountResolution, UpPlan, UpPlanResolution},
+    },
+    workspace::Workspace,
+};
+
+use super::{
+    ImageLookupPreparation, dockerfile_image_metadata_for_plan,
+    finalize_mounts_and_resources_for_plan, maybe_auto_add_github_cli_feature_to_plan,
+    prepare_feature_metadata_for_plan,
+};
 
 pub(in crate::up) async fn finalize_up_plan_mounts(
     client: &DockerClient,

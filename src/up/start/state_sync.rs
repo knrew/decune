@@ -1,4 +1,25 @@
-use super::*;
+use std::{cell::RefCell, collections::BTreeSet};
+
+use anyhow::{Result, bail};
+use futures_util::FutureExt;
+
+use crate::{
+    devcontainer::lifecycle::LifecycleRunPath,
+    docker::{client::DockerClient, container::ContainerInspect},
+    runtime::compose_ports::{
+        ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind, ComposePublishedPortPlan,
+        ComposePublishedPortPlanningInput, compose_published_port_runtime_plan,
+    },
+    state::{
+        self, LifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
+        PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
+        PublishedPortSource, PublishedPortTarget, StateContainerSnapshot, WorkspaceState,
+    },
+    up::types::{UpOutcome, UpPlan},
+    workspace::Workspace,
+};
+
+use super::{CredentialRuntime, compose_port_protocol_name};
 
 pub(in crate::up) struct StartedUpContainer {
     pub(in crate::up) client: DockerClient,

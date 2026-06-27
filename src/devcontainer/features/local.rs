@@ -74,7 +74,7 @@ fn hash_local_feature_directory(root: &Path, directory: &Path, hasher: &mut Sha2
                 directory.display()
             )
         })?;
-    entries.sort_by_key(|entry| entry.path());
+    entries.sort_by_key(std::fs::DirEntry::path);
 
     for entry in entries {
         let path = entry.path();

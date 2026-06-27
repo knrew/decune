@@ -102,14 +102,14 @@ impl ForwardStatusRegistry {
         let mut ports = self
             .ports
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         ports.push(active_forward_port(port, source));
     }
 
     fn list(&self) -> Vec<ActiveForwardPort> {
         self.ports
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone()
     }
 }
@@ -222,7 +222,7 @@ pub(crate) async fn list_active_forward_status_ports(
     };
 
     let mut metadata_paths = entries
-        .filter_map(|entry| entry.ok())
+        .filter_map(std::result::Result::ok)
         .map(|entry| entry.path())
         .filter(|path| is_forward_status_metadata_path(path))
         .collect::<Vec<_>>();

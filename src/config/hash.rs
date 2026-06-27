@@ -748,7 +748,7 @@ fn write_devcontainer_mount(writer: &mut CanonicalWriter, mount: &ResolvedDevcon
         ResolvedDevcontainerMount::Object(values) => {
             writer.object("DevcontainerMountObject", |writer| {
                 writer.field("value", |writer| {
-                    writer.map(values.iter(), |writer, value| writer.json_value(value));
+                    writer.map(values.iter(), CanonicalWriter::json_value);
                 });
             });
         }

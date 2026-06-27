@@ -179,7 +179,7 @@ fn append_tar_header(
     write_tar_bytes(&mut header[0..100], name.as_bytes());
     write_tar_octal(
         &mut header[100..108],
-        metadata.permissions().mode() as u64 & 0o7777,
+        u64::from(metadata.permissions().mode()) & 0o7777,
     );
     write_tar_octal(&mut header[108..116], 0);
     write_tar_octal(&mut header[116..124], 0);
@@ -208,7 +208,7 @@ fn append_tar_header(
     if let Some(prefix) = prefix {
         write_tar_bytes(&mut header[345..500], prefix.as_bytes());
     }
-    let checksum = header.iter().map(|byte| *byte as u32).sum::<u32>();
+    let checksum = header.iter().map(|byte| u32::from(*byte)).sum::<u32>();
     write_tar_checksum(&mut header[148..156], checksum);
     output.extend(header);
 
@@ -336,7 +336,7 @@ fn glob_match_bytes(pattern: &[u8], text: &[u8]) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
 
     use crate::config::layer::LayerDevcontainerBuild;
     use tempfile::TempDir;
@@ -359,7 +359,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -398,7 +398,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -425,7 +425,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -451,7 +451,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -479,7 +479,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -511,7 +511,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -548,7 +548,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -580,7 +580,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),

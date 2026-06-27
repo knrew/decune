@@ -985,7 +985,7 @@ mod tests {
             Some("decune-project-abc123".to_owned())
         );
 
-        let empty = BTreeMap::from([("com.docker.compose.project".to_owned(), "".to_owned())]);
+        let empty = BTreeMap::from([("com.docker.compose.project".to_owned(), String::new())]);
         assert_eq!(super::compose_project_name_from_labels(&empty), None);
         assert_eq!(
             super::compose_project_name_from_labels(&BTreeMap::new()),

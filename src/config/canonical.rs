@@ -127,11 +127,11 @@ impl CanonicalWriter {
             }
             Value::Array(values) => {
                 self.output.push_str("toml-array");
-                self.seq(values.iter(), |writer, value| writer.toml_value(value));
+                self.seq(values.iter(), Self::toml_value);
             }
             Value::Table(values) => {
                 self.output.push_str("toml-table");
-                self.map(values.iter(), |writer, value| writer.toml_value(value));
+                self.map(values.iter(), Self::toml_value);
             }
         }
     }
@@ -153,11 +153,11 @@ impl CanonicalWriter {
             }
             JsonValue::Array(values) => {
                 self.output.push_str("json-array");
-                self.seq(values.iter(), |writer, value| writer.json_value(value));
+                self.seq(values.iter(), Self::json_value);
             }
             JsonValue::Object(values) => {
                 self.output.push_str("json-object");
-                self.map(values.iter(), |writer, value| writer.json_value(value));
+                self.map(values.iter(), Self::json_value);
             }
         }
     }

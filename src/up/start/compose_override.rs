@@ -208,7 +208,7 @@ fn generated_compose_override_patch(
             .labels(&compose_service_forward_labels(&plan.resources.labels))
             .mount(runtime.mount().clone().into());
         if let Some(ports) = published_port_override.ports_for(runtime.service()) {
-            service = service.ports_override(ports.to_vec());
+            service = service.ports_override(ports.to_owned());
         }
         patch = patch.service(service);
     }
@@ -221,7 +221,7 @@ fn generated_compose_override_patch(
             continue;
         }
         patch = patch
-            .service(ComposeOverrideServicePatch::new(service_name).ports_override(ports.to_vec()));
+            .service(ComposeOverrideServicePatch::new(service_name).ports_override(ports.clone()));
     }
     Ok(patch)
 }
@@ -229,7 +229,8 @@ fn generated_compose_override_patch(
 pub(super) fn attach_compose_interpolation_env_to_plan(plan: &mut UpPlan) {
     let (env, redactions) = compose_interpolation_env(&plan.sensitive_container_env);
     plan.compose_interpolation_env = env.clone();
-    plan.compose_interpolation_redactions = redactions.clone();
+    plan.compose_interpolation_redactions
+        .clone_from(&redactions);
     if let Some(project) = plan.compose_project.take() {
         plan.compose_project = Some(project.with_generated_override_env(env, redactions));
     }
@@ -371,9 +372,9 @@ mod tests {
             compose_project: None,
             config_layers: ConfigMergeInput::default(),
             config,
-            sensitive_container_env: Default::default(),
-            sensitive_build_args: Default::default(),
-            compose_interpolation_env: Default::default(),
+            sensitive_container_env: crate::config::variables::SensitiveEnvMap::default(),
+            sensitive_build_args: crate::config::variables::SensitiveEnvMap::default(),
+            compose_interpolation_env: BTreeMap::default(),
             compose_interpolation_redactions: Vec::new(),
             effective_users: EffectiveUsers::root(),
             uid_gid_sync_plan: UidGidSyncPlan::default(),

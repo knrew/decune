@@ -1,4 +1,51 @@
-use super::*;
+use anyhow::{Result, bail};
+
+use crate::{
+    config::resolved::ResolvedDevcontainerSource,
+    devcontainer::lifecycle::LifecycleRunPath,
+    docker::{
+        client::DockerClient,
+        dotfiles::materialize_dotfile_skeletons,
+        image::{PullPolicy, ensure_image, image_container_tool_platform},
+    },
+    runtime::{
+        compose_cli::{
+            ComposeBuildOptions, ComposeConfigOutput, ComposeConfigService, ComposeIntrospector,
+            ComposeLifecyclePlan, ComposePrimaryImageResolver, ComposePullOptions,
+            ComposeServiceValidation, ComposeUpOptions, DockerComposeCli,
+        },
+        compose_ports::{
+            ComposePublishedPortPlanningInput, ComposePublishedPortStartupDiagnostics,
+            compose_published_port_plan_has_relocations,
+            validate_compose_published_port_diagnostics,
+        },
+    },
+    state,
+    up::{
+        build::plan_requires_final_image_layer,
+        existing::{self, decide_existing_container},
+        metadata::{
+            ComposePublishedPortFinalization, FinalizeUpPlanMountsOptions, finalize_up_plan_mounts,
+            prepare_compose_image_metadata, report_deferred_config_messages,
+        },
+        types::{
+            ExistingContainerDecision, ForwardingResolution, UpContainerSummary, UpOptions,
+            UpOutcome, UpPlan, UpPlanResolution,
+        },
+    },
+    workspace::Workspace,
+};
+
+use super::{
+    ExistingContainerReusePolicy, StartedUpContainer, add_credential_runtime_mounts,
+    attach_compose_interpolation_env_to_plan, compose_service_forward_requires_recreate,
+    container_tool_platform_for_plan, ensure_container_running_after_start,
+    list_compose_primary_containers, list_compose_project_containers,
+    list_existing_compose_project_published_ports, prepare_image_for_create,
+    should_reuse_existing_container, started_up_container_with_state,
+    startup_verification_for_plan, sync_started_compose_state,
+    warn_on_compose_published_port_relocations, write_generated_compose_override,
+};
 
 fn compose_running_reuse_fast_path_enabled(
     options: &UpOptions,

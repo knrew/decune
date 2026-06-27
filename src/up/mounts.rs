@@ -33,15 +33,11 @@ pub(in crate::up) enum WorkspaceLocationValidation {
 
 impl WorkspaceLocationValidation {
     const fn require_explicit_workspace_folder(self) -> bool {
-        matches!(
-            self,
-            WorkspaceLocationValidation::ConfigResolved
-                | WorkspaceLocationValidation::RuntimeResolved
-        )
+        matches!(self, Self::ConfigResolved | Self::RuntimeResolved)
     }
 
     const fn validate_workspace_folder_under_mount(self) -> bool {
-        matches!(self, WorkspaceLocationValidation::RuntimeResolved)
+        matches!(self, Self::RuntimeResolved)
     }
 }
 

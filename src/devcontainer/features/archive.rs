@@ -152,7 +152,7 @@ mod tests {
         header[156] = b'0';
         header[257..263].copy_from_slice(b"ustar\0");
         header[263..265].copy_from_slice(b"00");
-        let checksum = header.iter().map(|byte| u32::from(*byte)).sum::<u32>() as u64;
+        let checksum = u64::from(header.iter().map(|byte| u32::from(*byte)).sum::<u32>());
         write_checksum(&mut header[148..156], checksum);
 
         encoder.write_all(&header).unwrap();

@@ -1,4 +1,36 @@
-use super::*;
+use std::time::Duration;
+
+use anyhow::{Context, Result, bail};
+use futures_util::FutureExt;
+
+use crate::{
+    docker::{
+        build::{DockerBuildInput, FEATURE_ENTRYPOINT_WRAPPER, build_image},
+        client::DockerClient,
+        container::{
+            ContainerCreateInput, ContainerCreateSpec, create_container,
+            devcontainer_keepalive_command, remove_container, start_container,
+        },
+        dotfiles::materialize_dotfile_skeletons,
+        image::{PullPolicy, ensure_image, image_startup_command},
+        user::uid_gid_sync_runtime_user,
+    },
+    state::{self, LifecycleState, WorkspaceState},
+    ui,
+    up::{
+        build::{
+            build_workspace_image_layers, plan_requires_final_image_layer,
+            prepare_base_image_for_plan,
+        },
+        types::{StartupVerification, UpOutcome, UpPlan},
+    },
+    workspace::Workspace,
+};
+
+use super::{
+    KEEPALIVE_STARTUP_CHECK_DELAY, ORIGINAL_COMMAND_STARTUP_MONITOR_WINDOW,
+    ensure_feature_entrypoints_completed, state_compose_project_name, state_container_snapshot,
+};
 
 pub(in crate::up) async fn create_and_start_container(
     client: &DockerClient,

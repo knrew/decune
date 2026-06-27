@@ -54,7 +54,7 @@ impl UidGidScenario {
 
     fn from_workspace(workspace: TestWorkspace, image: Option<String>) -> Self {
         let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
-        let container_name = plan.resources.container_name.clone();
+        let container_name = plan.resources.container_name;
         let client = DockerClient::connect_from_env().unwrap();
 
         Self {

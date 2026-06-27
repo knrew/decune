@@ -1,4 +1,7 @@
-use std::path::{Path, PathBuf};
+use std::{
+    collections::BTreeMap,
+    path::{Path, PathBuf},
+};
 
 use anyhow::{Context, Result};
 
@@ -262,9 +265,9 @@ pub(super) fn rebuild_up_plan_with_image_metadata_layers(
         compose_project,
         config_layers,
         config,
-        sensitive_container_env: Default::default(),
+        sensitive_container_env: crate::config::variables::SensitiveEnvMap::default(),
         sensitive_build_args: static_expansion.sensitive_build_args,
-        compose_interpolation_env: Default::default(),
+        compose_interpolation_env: BTreeMap::default(),
         compose_interpolation_redactions: Vec::new(),
         effective_users: EffectiveUsers::root(),
         uid_gid_sync_plan: UidGidSyncPlan::default(),
@@ -400,9 +403,9 @@ fn build_up_plan_inner(
         compose_project,
         config_layers,
         config,
-        sensitive_container_env: Default::default(),
+        sensitive_container_env: crate::config::variables::SensitiveEnvMap::default(),
         sensitive_build_args: static_expansion.sensitive_build_args,
-        compose_interpolation_env: Default::default(),
+        compose_interpolation_env: BTreeMap::default(),
         compose_interpolation_redactions: Vec::new(),
         effective_users: EffectiveUsers::root(),
         uid_gid_sync_plan: UidGidSyncPlan::default(),
