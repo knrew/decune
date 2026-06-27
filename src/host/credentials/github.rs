@@ -42,7 +42,7 @@ pub(crate) fn prepare_github_cli_runtime(
         return Ok(GithubCliRuntime::empty());
     }
 
-    let token = host_github_auth_token()?;
+    let token = host_github_auth_token();
     prepare_github_cli_runtime_with_token(config, runtime_dir, token.as_deref())
 }
 
@@ -453,47 +453,47 @@ fn github_cli_feature_is_configured(config: &ResolvedConfig) -> bool {
         .any(|feature| feature.canonical_id == GITHUB_CLI_FEATURE_CANONICAL_ID)
 }
 
-fn host_github_auth_token() -> Result<Option<String>> {
+fn host_github_auth_token() -> Option<String> {
     host_github_auth_token_from(Path::new("gh"))
 }
 
 #[cfg(not(test))]
-pub(crate) fn host_github_auth_token_available() -> Result<bool> {
-    Ok(host_github_auth_token()?.is_some())
+pub(crate) fn host_github_auth_token_available() -> bool {
+    host_github_auth_token().is_some()
 }
 
 #[cfg(test)]
-pub(crate) const fn host_github_auth_token_available() -> Result<bool> {
-    Ok(false)
+pub(crate) const fn host_github_auth_token_available() -> bool {
+    false
 }
 
-fn host_github_auth_token_from(command: &Path) -> Result<Option<String>> {
+fn host_github_auth_token_from(command: &Path) -> Option<String> {
     let output = match Command::new(command)
         .args(["auth", "token"])
         .stderr(Stdio::null())
         .output()
     {
         Ok(output) => output,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
         Err(error) => {
             ui::warn(&format!(
                 "GitHub CLI token forwarding is unavailable: failed to run host gh auth token: {error}"
             ));
-            return Ok(None);
+            return None;
         }
     };
 
     if !output.status.success() {
-        return Ok(None);
+        return None;
     }
 
     let Ok(token) = String::from_utf8(output.stdout) else {
         ui::warn(
             "GitHub CLI token forwarding is unavailable: host gh auth token returned non-UTF-8 output",
         );
-        return Ok(None);
+        return None;
     };
-    Ok(normalize_github_token(&token))
+    normalize_github_token(&token)
 }
 
 fn normalize_github_token(token: &str) -> Option<String> {
@@ -525,7 +525,7 @@ mod tests {
     fn missing_host_gh_is_treated_as_absent_token() {
         let missing_gh = PathBuf::from("/definitely/missing/decune-test-gh");
 
-        let token = host_github_auth_token_from(&missing_gh).unwrap();
+        let token = host_github_auth_token_from(&missing_gh);
 
         assert_eq!(token, None);
     }
@@ -537,7 +537,7 @@ mod tests {
         fs::write(&gh, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o644)).unwrap();
 
-        let token = host_github_auth_token_from(&gh).unwrap();
+        let token = host_github_auth_token_from(&gh);
 
         assert_eq!(token, None);
     }
@@ -549,7 +549,7 @@ mod tests {
         fs::write(&gh, "#!/bin/sh\nprintf '\\377\\376'\n").unwrap();
         fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let token = host_github_auth_token_from(&gh).unwrap();
+        let token = host_github_auth_token_from(&gh);
 
         assert_eq!(token, None);
     }

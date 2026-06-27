@@ -317,7 +317,7 @@ async fn setup_git_user_config(
         return Ok(());
     }
 
-    let script = git_user_config_setup_script(&config.credentials.git)?;
+    let script = git_user_config_setup_script(&config.credentials.git);
     if script.is_empty() {
         return Ok(());
     }
@@ -371,18 +371,14 @@ fn git_credential_helper_setup_script(credentials: &ResolvedGitCredentials) -> R
     Ok(script)
 }
 
-fn git_user_config_setup_script(credentials: &ResolvedGitCredentials) -> Result<String> {
+fn git_user_config_setup_script(credentials: &ResolvedGitCredentials) -> String {
     if !git_user_config_copy_enabled(credentials) {
-        return Ok(String::new());
+        return String::new();
     }
 
-    let name = host_git_config_value("user.name")?;
-    let email = host_git_config_value("user.email")?;
-    Ok(git_user_config_setup_script_from_values(
-        credentials,
-        name.as_deref(),
-        email.as_deref(),
-    ))
+    let name = host_git_config_value("user.name");
+    let email = host_git_config_value("user.email");
+    git_user_config_setup_script_from_values(credentials, name.as_deref(), email.as_deref())
 }
 
 fn git_user_config_setup_script_from_values(
@@ -552,39 +548,35 @@ fn run_host_git_credential(command: GitCredentialCommand, input: &str) -> Result
     })
 }
 
-fn host_git_config_value(key: &str) -> Result<Option<String>> {
+fn host_git_config_value(key: &str) -> Option<String> {
     host_git_config_value_from(Path::new("git"), key)
 }
 
-fn host_git_config_value_from(command: &Path, key: &str) -> Result<Option<String>> {
+fn host_git_config_value_from(command: &Path, key: &str) -> Option<String> {
     let output = match Command::new(command)
         .args(["config", "--global", "--get", key])
         .output()
     {
         Ok(output) => output,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return None,
         Err(error) => {
             ui::warn(&format!(
                 "Host Git config value is unavailable for {key}: {error}"
             ));
-            return Ok(None);
+            return None;
         }
     };
 
     if !output.status.success() {
-        return Ok(None);
+        return None;
     }
 
     let Ok(value) = String::from_utf8(output.stdout) else {
         ui::warn(&format!("Host Git config value is not UTF-8: {key}"));
-        return Ok(None);
+        return None;
     };
     let value = value.trim_end_matches(['\r', '\n']).to_owned();
-    if value.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(value))
-    }
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn host_gitconfig_path() -> Option<PathBuf> {
@@ -1002,7 +994,7 @@ mod tests {
     fn missing_host_git_is_treated_as_absent_user_config() {
         let missing_git = PathBuf::from("/definitely/missing/decune-test-git");
 
-        let value = host_git_config_value_from(&missing_git, "user.name").unwrap();
+        let value = host_git_config_value_from(&missing_git, "user.name");
 
         assert_eq!(value, None);
     }
@@ -1014,7 +1006,7 @@ mod tests {
         fs::write(&git, "#!/bin/sh\nexit 0\n").unwrap();
         fs::set_permissions(&git, fs::Permissions::from_mode(0o644)).unwrap();
 
-        let value = host_git_config_value_from(&git, "user.name").unwrap();
+        let value = host_git_config_value_from(&git, "user.name");
 
         assert_eq!(value, None);
     }
@@ -1026,7 +1018,7 @@ mod tests {
         fs::write(&git, "#!/bin/sh\nprintf '\\377\\376'\n").unwrap();
         fs::set_permissions(&git, fs::Permissions::from_mode(0o755)).unwrap();
 
-        let value = host_git_config_value_from(&git, "user.name").unwrap();
+        let value = host_git_config_value_from(&git, "user.name");
 
         assert_eq!(value, None);
     }

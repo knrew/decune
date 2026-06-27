@@ -165,21 +165,20 @@ impl HttpOciRegistryClient {
             });
         };
         let token = self.fetch_bearer_token(reference, &challenge)?;
-        let response = self
-            .apply_bearer_auth(
-                reference,
-                self.client
-                    .get(response.url().clone())
-                    .header(ACCEPT, registry_accept_header()),
-                &token,
+        let response = Self::apply_bearer_auth(
+            reference,
+            self.client
+                .get(response.url().clone())
+                .header(ACCEPT, registry_accept_header()),
+            &token,
+        )
+        .send()
+        .with_context(|| {
+            format!(
+                "Failed to retry OCI registry request for feature {}",
+                reference.original
             )
-            .send()
-            .with_context(|| {
-                format!(
-                    "Failed to retry OCI registry request for feature {}",
-                    reference.original
-                )
-            })?;
+        })?;
 
         response.error_for_status().with_context(|| {
             format!(
@@ -245,13 +244,14 @@ impl HttpOciRegistryClient {
             Some(RegistryAuth::Basic { username, password }) => {
                 request.basic_auth(username, Some(password))
             }
-            Some(RegistryAuth::Bearer(token)) => self.apply_bearer_auth(reference, request, &token),
+            Some(RegistryAuth::Bearer(token)) => {
+                Self::apply_bearer_auth(reference, request, &token)
+            }
             None => request,
         })
     }
 
     fn apply_bearer_auth(
-        &self,
         _reference: &OciFeatureRef,
         request: RequestBuilder,
         token: &str,

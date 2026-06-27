@@ -151,7 +151,7 @@ pub(super) async fn run_forward_agent_at_with_access(
     socket_path: &Path,
     mut access: ForwardAgentAccess,
 ) -> Result<()> {
-    bind_forward_agent_socket(socket_path).await?;
+    bind_forward_agent_socket(socket_path)?;
     let listener = UnixListener::bind(socket_path).with_context(|| {
         format!(
             "Failed to bind port forwarding agent socket: {}",
@@ -267,7 +267,7 @@ async fn proxy_agent_connection(mut stream: UnixStream, port: u16) -> Result<()>
     Ok(())
 }
 
-async fn bind_forward_agent_socket(socket_path: &Path) -> Result<()> {
+fn bind_forward_agent_socket(socket_path: &Path) -> Result<()> {
     match fs::symlink_metadata(socket_path) {
         Ok(metadata) if metadata.file_type().is_socket() => {
             remove_socket_file(socket_path).with_context(|| {

@@ -164,7 +164,7 @@ async fn resolve_forwarding_agent_targets(
         primary_runtime_dir,
         published_host_reservations,
         published_ports,
-    )?;
+    );
     if targets.is_empty() {
         return Ok(Vec::new());
     }
@@ -220,7 +220,7 @@ async fn filter_unsupported_auto_only_targets(
 pub(in crate::up) fn plan_forwarding_agent_targets(
     plan: &UpPlan,
     primary_runtime_dir: &Path,
-) -> Result<Vec<ForwardingAgentTarget>> {
+) -> Vec<ForwardingAgentTarget> {
     plan_forwarding_agent_targets_with_host_reservations(
         plan,
         primary_runtime_dir,
@@ -234,14 +234,14 @@ pub(in crate::up) fn plan_forwarding_agent_targets_with_host_reservations(
     primary_runtime_dir: &Path,
     host_port_reservations: Vec<HostPortReservation>,
     publish_ports: Vec<ResolvedPublishPort>,
-) -> Result<Vec<ForwardingAgentTarget>> {
+) -> Vec<ForwardingAgentTarget> {
     let auto_forward = AutoForwardConfig::from_config_with_runtime_ports(
         &plan.config,
         host_port_reservations,
         publish_ports,
     );
     if plan.forward_ports.is_empty() && auto_forward.is_none() {
-        return Ok(Vec::new());
+        return Vec::new();
     }
 
     let primary_service = primary_compose_service(plan);
@@ -277,7 +277,7 @@ pub(in crate::up) fn plan_forwarding_agent_targets_with_host_reservations(
         });
     }
 
-    Ok(targets)
+    targets
 }
 
 pub(in crate::up) fn published_port_host_reservations(
@@ -531,8 +531,7 @@ mod tests {
         ];
 
         let targets =
-            plan_forwarding_agent_targets(&plan, PathBuf::from("/tmp/decune-runtime").as_path())
-                .unwrap();
+            plan_forwarding_agent_targets(&plan, PathBuf::from("/tmp/decune-runtime").as_path());
 
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].service.as_deref(), None);
@@ -555,8 +554,7 @@ mod tests {
         plan.forward_ports = vec![forward_port_for_service(Some("db"), 5432)];
 
         let targets =
-            plan_forwarding_agent_targets(&plan, PathBuf::from("/tmp/decune-runtime").as_path())
-                .unwrap();
+            plan_forwarding_agent_targets(&plan, PathBuf::from("/tmp/decune-runtime").as_path());
 
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].service.as_deref(), None);
@@ -739,8 +737,7 @@ mod tests {
                 host_ip: None,
                 protocol: PortProtocol::Tcp,
             }],
-        )
-        .unwrap();
+        );
 
         assert_eq!(targets.len(), 1);
         assert!(targets[0].forward_ports.is_empty());
@@ -782,8 +779,7 @@ mod tests {
                 host_ip: None,
                 protocol: PortProtocol::Tcp,
             }],
-        )
-        .unwrap();
+        );
 
         assert!(targets.is_empty());
     }

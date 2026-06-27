@@ -200,7 +200,7 @@ async fn build_clean_report(dry_run: bool, include_feature_cache: bool) -> Resul
 }
 
 async fn discover_managed_workspace_ids() -> Result<BTreeSet<String>> {
-    let client = DockerClient::connect_from_env()?;
+    let client = DockerClient::connect_from_env();
     let containers = client
         .cli()
         .list_all_managed_container_inspects()
@@ -237,8 +237,8 @@ fn discover_workspace_clean_targets(
     let mut workspace_ids = BTreeSet::new();
     collect_workspace_ids_from_root(&mut workspace_ids, &decune_cache_root()?, Some("features"))?;
     collect_workspace_ids_from_root(&mut workspace_ids, &decune_state_root()?, None)?;
-    collect_workspace_ids_from_root(&mut workspace_ids, &decune_runtime_root()?, None)?;
-    collect_workspace_ids_from_port_status_dirs(&mut workspace_ids, &decune_runtime_root()?)?;
+    collect_workspace_ids_from_root(&mut workspace_ids, &decune_runtime_root(), None)?;
+    collect_workspace_ids_from_port_status_dirs(&mut workspace_ids, &decune_runtime_root())?;
     workspace_ids.extend(managed_workspace_ids.iter().cloned());
 
     let mut targets = Vec::new();
@@ -337,7 +337,7 @@ fn workspace_clean_target(
 ) -> Result<WorkspaceCleanTarget> {
     let cache = cache_dir_for_workspace_id(workspace_id)?;
     let state = state_dir_for_workspace_id(workspace_id)?;
-    let runtime = runtime_dir_for_workspace_id(workspace_id)?;
+    let runtime = runtime_dir_for_workspace_id(workspace_id);
     let port_status = forward_status_dir(&runtime);
     let paths = WorkspaceCleanPaths {
         cache: display_path(&cache),
@@ -409,8 +409,8 @@ fn workspace_paths_are_unsafe(
 ) -> Result<bool> {
     Ok(path_is_unsafe_generated_dir(&decune_cache_root()?, cache)?
         || path_is_unsafe_generated_dir(&decune_state_root()?, state)?
-        || path_is_unsafe_generated_dir(&decune_runtime_root()?, runtime)?
-        || path_is_unsafe_generated_dir(&decune_runtime_root()?, port_status)?)
+        || path_is_unsafe_generated_dir(&decune_runtime_root(), runtime)?
+        || path_is_unsafe_generated_dir(&decune_runtime_root(), port_status)?)
 }
 
 fn path_is_unsafe_generated_dir(root: &Path, path: &Path) -> Result<bool> {

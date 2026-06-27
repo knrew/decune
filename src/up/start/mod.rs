@@ -175,7 +175,7 @@ pub(in crate::up) async fn ensure_container_started(
         options.skip_global_config,
     );
 
-    let client = DockerClient::connect_from_env()?;
+    let client = DockerClient::connect_from_env();
     let containers = list_workspace_containers(&client, workspace.id()).await?;
     if containers.is_empty() {
         state::reconcile_state_without_container(workspace.paths().state_dir())?;
