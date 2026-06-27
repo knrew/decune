@@ -1,3 +1,12 @@
+#![allow(
+    clippy::all,
+    clippy::cargo,
+    clippy::nursery,
+    clippy::pedantic,
+    clippy::restriction,
+    reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
+)]
+
 mod support;
 
 use std::fs;

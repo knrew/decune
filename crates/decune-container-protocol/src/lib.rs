@@ -1,3 +1,12 @@
+#![allow(
+    clippy::all,
+    clippy::cargo,
+    clippy::nursery,
+    clippy::pedantic,
+    clippy::restriction,
+    reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
+)]
+
 use serde::{Deserialize, Serialize};
 
 pub const HOST_DAEMON_PROTOCOL_VERSION: u16 = 1;
