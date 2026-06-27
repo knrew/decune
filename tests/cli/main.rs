@@ -1,13 +1,10 @@
 #![allow(
     clippy::expect_used,
-    clippy::filetype_is_file,
     clippy::panic,
-    clippy::similar_names,
     clippy::tests_outside_test_module,
     clippy::too_many_lines,
     clippy::undocumented_unsafe_blocks,
     clippy::unwrap_used,
-    clippy::wildcard_enum_match_arm,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 

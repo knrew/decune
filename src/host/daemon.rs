@@ -28,7 +28,7 @@ use crate::{
 
 const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
 const HOST_DAEMON_METADATA_NAME: &str = "host-daemon.json";
-const MAX_HOST_DAEMON_REQUEST_BYTES: u64 = 64 * 1024;
+const MAX_HOST_DAEMON_REQUEST_BYTES: usize = 64 * 1024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HostDaemonAccess {
@@ -44,14 +44,24 @@ impl HostDaemonAccess {
         }
     }
 
-    pub(crate) fn for_remote_user(remote_uid: u32, remote_gid: u32) -> Self {
-        Self::from_ids(current_uid(), current_gid(), remote_uid, remote_gid)
+    pub(crate) fn for_remote_user(remote_user_id: u32, remote_group_id: u32) -> Self {
+        Self::from_ids(
+            current_uid(),
+            current_gid(),
+            remote_user_id,
+            remote_group_id,
+        )
     }
 
-    const fn from_ids(host_uid: u32, host_gid: u32, remote_uid: u32, remote_gid: u32) -> Self {
-        if remote_uid == host_uid {
+    const fn from_ids(
+        host_user_id: u32,
+        host_group_id: u32,
+        remote_user_id: u32,
+        remote_group_id: u32,
+    ) -> Self {
+        if remote_user_id == host_user_id {
             Self::private()
-        } else if remote_gid == host_gid {
+        } else if remote_group_id == host_group_id {
             Self {
                 runtime_dir_mode: 0o710,
                 socket_mode: 0o660,
@@ -157,14 +167,14 @@ impl HostDaemon {
     #[cfg(test)]
     pub(crate) async fn start_for_remote_user(
         runtime_dir: impl AsRef<Path>,
-        remote_uid: u32,
-        remote_gid: u32,
+        remote_user_id: u32,
+        remote_group_id: u32,
     ) -> Result<Self> {
         Self::start_with_access(
             runtime_dir,
-            HostDaemonAccess::for_remote_user(remote_uid, remote_gid),
-            remote_uid,
-            remote_gid,
+            HostDaemonAccess::for_remote_user(remote_user_id, remote_group_id),
+            remote_user_id,
+            remote_group_id,
             Arc::new(SystemGitCredentialExecutor),
             GitHttpsMode::HostHelper,
         )
@@ -173,15 +183,15 @@ impl HostDaemon {
 
     pub(crate) async fn start_for_remote_user_with_git_https_mode(
         runtime_dir: impl AsRef<Path>,
-        remote_uid: u32,
-        remote_gid: u32,
+        remote_user_id: u32,
+        remote_group_id: u32,
         git_https_mode: GitHttpsMode,
     ) -> Result<Self> {
         Self::start_with_access(
             runtime_dir,
-            HostDaemonAccess::for_remote_user(remote_uid, remote_gid),
-            remote_uid,
-            remote_gid,
+            HostDaemonAccess::for_remote_user(remote_user_id, remote_group_id),
+            remote_user_id,
+            remote_group_id,
             Arc::new(SystemGitCredentialExecutor),
             git_https_mode,
         )
@@ -208,7 +218,7 @@ impl HostDaemon {
         runtime_dir: impl AsRef<Path>,
         access: HostDaemonAccess,
         allowed_peer_uid: u32,
-        remote_gid: u32,
+        remote_group_id: u32,
         git_credentials: Arc<dyn GitCredentialExecutor>,
         git_https_mode: GitHttpsMode,
     ) -> Result<Self> {
@@ -229,7 +239,7 @@ impl HostDaemon {
             &metadata_path,
             &socket_path,
             allowed_peer_uid,
-            remote_gid,
+            remote_group_id,
             git_https_mode,
             access,
         )
@@ -335,7 +345,7 @@ fn write_host_daemon_metadata(
     metadata_path: &Path,
     socket_path: &Path,
     allowed_peer_uid: u32,
-    remote_gid: u32,
+    remote_group_id: u32,
     git_https_mode: GitHttpsMode,
     access: HostDaemonAccess,
 ) -> Result<()> {
@@ -348,7 +358,7 @@ fn write_host_daemon_metadata(
     let metadata = HostDaemonMetadata {
         protocol_version: crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION,
         allowed_peer_uid,
-        remote_gid,
+        remote_gid: remote_group_id,
         git_https_mode: git_https_mode.into(),
         runtime_dir_mode: access.runtime_dir_mode,
         socket_mode: access.socket_mode,
@@ -373,8 +383,8 @@ fn write_host_daemon_metadata(
 
 pub(crate) fn ensure_host_daemon_access_for_remote_user(
     runtime_dir: &Path,
-    remote_uid: u32,
-    remote_gid: u32,
+    remote_user_id: u32,
+    remote_group_id: u32,
     git_https_mode: GitHttpsMode,
 ) -> Result<bool> {
     let metadata_path = runtime_dir.join(HOST_DAEMON_METADATA_NAME);
@@ -393,7 +403,7 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
     };
 
     if metadata.protocol_version != crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION
-        || metadata.allowed_peer_uid != remote_uid
+        || metadata.allowed_peer_uid != remote_user_id
         || metadata.git_https_mode != git_https_mode.into()
         || metadata.socket_dev != socket_metadata.dev()
         || metadata.socket_ino != socket_metadata.ino()
@@ -402,8 +412,10 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
     }
 
     let existing_access = metadata.access();
-    let access =
-        existing_access.expanded_for(HostDaemonAccess::for_remote_user(remote_uid, remote_gid));
+    let access = existing_access.expanded_for(HostDaemonAccess::for_remote_user(
+        remote_user_id,
+        remote_group_id,
+    ));
     set_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")?;
     validate_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")?;
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(access.socket_mode))
@@ -413,12 +425,12 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
                 socket_path.display()
             )
         })?;
-    if metadata.remote_gid != remote_gid || existing_access != access {
+    if metadata.remote_gid != remote_group_id || existing_access != access {
         write_host_daemon_metadata(
             &metadata_path,
             &socket_path,
-            remote_uid,
-            remote_gid,
+            remote_user_id,
+            remote_group_id,
             git_https_mode,
             access,
         )?;
@@ -429,14 +441,14 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
 
 pub(crate) async fn ensure_host_daemon_available_for_remote_user(
     runtime_dir: &Path,
-    remote_uid: u32,
-    remote_gid: u32,
+    remote_user_id: u32,
+    remote_group_id: u32,
     git_https_mode: GitHttpsMode,
 ) -> Result<bool> {
     if !ensure_host_daemon_access_for_remote_user(
         runtime_dir,
-        remote_uid,
-        remote_gid,
+        remote_user_id,
+        remote_group_id,
         git_https_mode,
     )? {
         return Ok(false);
@@ -613,15 +625,17 @@ async fn handle_connection(
 ) {
     let mut request = Vec::new();
     let read_failed = {
-        let mut limited_stream = (&mut stream).take(MAX_HOST_DAEMON_REQUEST_BYTES + 1);
+        let limit = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1)
+            .expect("host daemon request byte limit fits in u64");
+        let mut limited_stream = (&mut stream).take(limit);
         limited_stream.read_to_end(&mut request).await.is_err()
     };
     if read_failed {
         return;
     }
 
-    let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES as usize {
-        HostDaemonResponse::request_too_large(MAX_HOST_DAEMON_REQUEST_BYTES as usize)
+    let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES {
+        HostDaemonResponse::request_too_large(MAX_HOST_DAEMON_REQUEST_BYTES)
     } else {
         handle_host_daemon_request(&request, git_credentials.as_ref(), git_https_mode)
     };
@@ -732,14 +746,17 @@ mod tests {
             .unwrap();
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("workspace-runtime");
-        let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
-        let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+        let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+        let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
 
         runtime.block_on(async {
-            let daemon =
-                HostDaemon::start_for_remote_user(runtime_dir.clone(), remote_uid, remote_gid)
-                    .await
-                    .unwrap();
+            let daemon = HostDaemon::start_for_remote_user(
+                runtime_dir.clone(),
+                remote_user_id,
+                remote_group_id,
+            )
+            .await
+            .unwrap();
             let socket_path = daemon.socket_path().to_path_buf();
 
             assert_eq!(mode(&runtime_dir), 0o711);
@@ -945,7 +962,7 @@ mod tests {
             let daemon = HostDaemon::start(temp.path().join("runtime"))
                 .await
                 .unwrap();
-            let request = vec![b' '; MAX_HOST_DAEMON_REQUEST_BYTES as usize + 1];
+            let request = vec![b' '; MAX_HOST_DAEMON_REQUEST_BYTES + 1];
 
             let response = send_raw_request(daemon.socket_path(), &request).await;
 

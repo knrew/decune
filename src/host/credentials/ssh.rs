@@ -190,7 +190,7 @@ mod tests {
     fn ssh_agent_required_errors_when_socket_path_is_directory() {
         let temp = TempDir::new().unwrap();
         let socket_path = temp.path().join("agent.sock");
-        fs::create_dir(&socket_path).unwrap();
+        fs::create_dir_all(&socket_path).unwrap();
         let mut config = ResolvedConfig::default();
         config.credentials.git.ssh_agent = SshAgentMode::Required;
 

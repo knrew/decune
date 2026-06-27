@@ -1,6 +1,5 @@
 #![allow(
     clippy::multiple_crate_versions,
-    clippy::wildcard_enum_match_arm,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 

@@ -421,8 +421,8 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
     let host_home = support::TempWorkspace::new().unwrap();
     let uid = current_uid();
     let gid = current_gid();
-    let attacker_uid = if current_uid() == 20001 { 20002 } else { 20001 };
-    let attacker_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+    let attacker_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+    let attacker_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
@@ -431,8 +431,8 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
             FROM ubuntu:24.04
             RUN if getent group {gid} >/dev/null; then remote_group="$(getent group {gid} | cut -d: -f1)"; else groupadd -g {gid} decunegrp && remote_group=decunegrp; fi \
               && if getent passwd {uid} >/dev/null; then remote_user="$(getent passwd {uid} | cut -d: -f1)" && if [ "$remote_user" != decune ]; then usermod -l decune "$remote_user"; fi && usermod -d /home/decune -m decune && usermod -g "$remote_group" decune; else useradd -m -u {uid} -g "$remote_group" decune; fi \
-              && groupadd -g {attacker_gid} attackergrp \
-              && useradd -m -u {attacker_uid} -g attackergrp attacker \
+              && groupadd -g {attacker_group_id} attackergrp \
+              && useradd -m -u {attacker_user_id} -g attackergrp attacker \
               && echo 'attacker:decune-test' | chpasswd \
               && printf '%s\n' \
               '#!/bin/sh' \
@@ -531,20 +531,20 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
 fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_uid() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_home = support::TempWorkspace::new().unwrap();
-    let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
-    let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
-    let attacker_uid = if current_uid() == 20003 { 20004 } else { 20003 };
-    let attacker_gid = if current_gid() == 20003 { 20004 } else { 20003 };
+    let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+    let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+    let attacker_user_id = if current_uid() == 20003 { 20004 } else { 20003 };
+    let attacker_group_id = if current_gid() == 20003 { 20004 } else { 20003 };
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
             format!(
                 r#"
             FROM ubuntu:24.04
-            RUN groupadd -g {remote_gid} decunegrp \
-              && useradd -m -u {remote_uid} -g decunegrp decune \
-              && groupadd -g {attacker_gid} attackergrp \
-              && useradd -m -u {attacker_uid} -g attackergrp attacker \
+            RUN groupadd -g {remote_group_id} decunegrp \
+              && useradd -m -u {remote_user_id} -g decunegrp decune \
+              && groupadd -g {attacker_group_id} attackergrp \
+              && useradd -m -u {attacker_user_id} -g attackergrp attacker \
               && echo 'attacker:decune-test' | chpasswd \
               && printf '%s\n' \
               '#!/bin/sh' \

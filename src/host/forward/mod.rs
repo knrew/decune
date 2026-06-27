@@ -78,7 +78,8 @@ pub(crate) fn service_forward_runtime_dir(runtime_dir: &Path, service: &str) -> 
 fn service_runtime_key(service: &str) -> String {
     let safe = service_socket_key(service);
     let hash = sha256_hex(service.as_bytes());
-    format!("{}-{}", &safe[..safe.len().min(48)], &hash[..12])
+    let hash_prefix = hash.chars().take(12).collect::<String>();
+    format!("{safe}-{hash_prefix}")
 }
 
 fn service_socket_key(service: &str) -> String {
@@ -94,7 +95,7 @@ fn service_socket_key(service: &str) -> String {
         .collect::<String>();
     let safe = safe.trim_matches('_');
     let safe = if safe.is_empty() { "service" } else { safe };
-    safe[..safe.len().min(48)].to_owned()
+    safe.chars().take(48).collect()
 }
 
 #[cfg(test)]

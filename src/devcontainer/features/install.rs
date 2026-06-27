@@ -678,7 +678,10 @@ fn feature_dependency_options(
             "version".to_owned(),
             toml::Value::String(version.clone()),
         )])),
-        _ => {
+        serde_json::Value::Null
+        | serde_json::Value::Bool(_)
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Array(_) => {
             bail!(
                 "Unsupported Feature dependsOn value for {parent_canonical_id} dependency {dependency}"
             )
@@ -695,7 +698,10 @@ fn feature_dependency_option_value(
     match value {
         serde_json::Value::String(value) => Ok(toml::Value::String(value.clone())),
         serde_json::Value::Bool(value) => Ok(toml::Value::Boolean(*value)),
-        _ => {
+        serde_json::Value::Null
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Array(_)
+        | serde_json::Value::Object(_) => {
             bail!(
                 "Unsupported Feature dependsOn option value for {parent_canonical_id} dependency {dependency}.{option}"
             )

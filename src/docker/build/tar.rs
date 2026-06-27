@@ -95,7 +95,10 @@ impl DockerignoreRule {
 
         let negated = line.starts_with('!');
         if negated {
-            line = line[1..].trim_start();
+            line = line
+                .strip_prefix('!')
+                .expect("negated dockerignore rule starts with '!'");
+            line = line.trim_start();
         }
 
         let line = line.trim_start_matches('/');
@@ -220,8 +223,10 @@ fn split_tar_name(path: &str) -> Result<(&str, Option<&str>)> {
     }
 
     for index in path.match_indices('/').map(|(index, _)| index).rev() {
-        let prefix = &path[..index];
-        let name = &path[index + 1..];
+        let (prefix, name) = path.split_at(index);
+        let name = name
+            .strip_prefix('/')
+            .expect("tar path separator was found");
         if prefix.len() <= 155 && name.len() <= 100 {
             return Ok((name, Some(prefix)));
         }
@@ -292,7 +297,10 @@ pub(super) fn path_for_docker(path: &Path) -> String {
     path.components()
         .filter_map(|component| match component {
             Component::Normal(value) => Some(value.to_string_lossy()),
-            _ => None,
+            Component::Prefix(_)
+            | Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir => None,
         })
         .collect::<Vec<_>>()
         .join("/")

@@ -127,7 +127,7 @@ pub(super) fn directory_contains_any_symlink(source: &Path) -> Result<bool> {
             }
             if file_type.is_dir() {
                 pending.push(entry.path);
-            } else if !file_type.is_file() {
+            } else if !metadata.is_file() {
                 bail!(
                     "Dotfile source entry must be a file, directory, or symlink: {}",
                     entry.path.display()
@@ -221,7 +221,7 @@ fn collect_logical_entry(
                 path.display()
             );
         }
-    } else if file_type.is_file() {
+    } else if metadata.is_file() {
         let real_path = path
             .canonicalize()
             .with_context(|| format!("Failed to canonicalize dotfile file: {}", path.display()))?;
@@ -389,7 +389,7 @@ fn collect_physical_directory_without_symlinks(
 
 fn kind_from_metadata(metadata: &fs::Metadata) -> Option<DotfileTreeEntryKind> {
     let file_type = metadata.file_type();
-    if file_type.is_file() {
+    if metadata.is_file() {
         Some(DotfileTreeEntryKind::File)
     } else if file_type.is_dir() {
         Some(DotfileTreeEntryKind::Directory)

@@ -359,11 +359,11 @@ fn bearer_challenge(headers: &HeaderMap) -> Option<BearerChallenge> {
 pub(super) fn parse_bearer_challenge(value: &str) -> Option<BearerChallenge> {
     let value = value.trim_start();
     let scheme_end = value.find(char::is_whitespace)?;
-    let scheme = &value[..scheme_end];
+    let (scheme, parameters) = value.split_at(scheme_end);
     if !scheme.eq_ignore_ascii_case("bearer") {
         return None;
     }
-    let parameters = value[scheme_end..].trim_start();
+    let parameters = parameters.trim_start();
     let mut challenge = BearerChallenge::default();
     for entry in split_auth_parameters(parameters) {
         let Some((key, value)) = entry.split_once('=') else {
@@ -390,17 +390,18 @@ fn split_auth_parameters(value: &str) -> Vec<&str> {
     let mut parts = Vec::new();
     let mut in_quotes = false;
     let mut start = 0;
-    for (index, byte) in value.bytes().enumerate() {
-        match byte {
-            b'"' => in_quotes = !in_quotes,
-            b',' if !in_quotes => {
-                parts.push(value[start..index].trim());
-                start = index + 1;
+    for (index, ch) in value.char_indices() {
+        match ch {
+            '"' => in_quotes = !in_quotes,
+            ',' if !in_quotes => {
+                let (entry, _) = value.split_at(index);
+                parts.push(entry.split_at(start).1.trim());
+                start = index + ','.len_utf8();
             }
             _ => {}
         }
     }
-    parts.push(value[start..].trim());
+    parts.push(value.split_at(start).1.trim());
     parts
 }
 

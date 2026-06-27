@@ -1,9 +1,3 @@
-#![allow(
-    clippy::similar_names,
-    clippy::string_slice,
-    reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
-)]
-
 use std::{
     collections::BTreeSet,
     env, fs, io,
@@ -309,8 +303,8 @@ fn read_ipv6_bindv6only(path: &Path) -> Result<Option<bool>> {
 }
 
 fn listen_ports_from_proc_contents(
-    tcp_content: &str,
-    tcp6_content: &str,
+    tcp_table: &str,
+    ipv6_tcp_table: &str,
     tcp6_dual_stack: bool,
     min: u16,
     max: u16,
@@ -319,7 +313,7 @@ fn listen_ports_from_proc_contents(
     let ignored = ignore.iter().copied().collect::<BTreeSet<_>>();
     let mut ports = BTreeSet::new();
 
-    for line in tcp_content.lines().skip(1) {
+    for line in tcp_table.lines().skip(1) {
         let Some(port) = parse_proc_net_tcp_listen_port(line)? else {
             continue;
         };
@@ -327,7 +321,7 @@ fn listen_ports_from_proc_contents(
             ports.insert(port);
         }
     }
-    for line in tcp6_content.lines().skip(1) {
+    for line in ipv6_tcp_table.lines().skip(1) {
         let Some(port) = parse_proc_net_tcp6_listen_port(line, tcp6_dual_stack)? else {
             continue;
         };
@@ -414,7 +408,10 @@ fn parse_proc_net_tcp6_address(address_hex: &str) -> Result<[u8; 16]> {
     let mut address = [0u8; 16];
     for chunk in 0..4 {
         let start = chunk * 8;
-        let value = u32::from_str_radix(&address_hex[start..start + 8], 16)
+        let Some(chunk_hex) = address_hex.get(start..start + 8) else {
+            bail!("Invalid /proc/net/tcp6 local address: {address_hex}");
+        };
+        let value = u32::from_str_radix(chunk_hex, 16)
             .with_context(|| format!("Invalid /proc/net/tcp6 local address: {address_hex}"))?;
         address[chunk * 4..chunk * 4 + 4].copy_from_slice(&value.to_le_bytes());
     }

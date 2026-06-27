@@ -184,7 +184,7 @@ mod tests {
     fn compose_project_name_is_stable_for_same_workspace_path() {
         let (_temp, workspace) = fixture_workspace("Project Name");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
 
         let first =
@@ -207,7 +207,7 @@ mod tests {
         let (_second_temp, second_workspace) = fixture_workspace("Project Name");
         for workspace in [&first_workspace, &second_workspace] {
             let devcontainer_dir = workspace.root().join(".devcontainer");
-            fs::create_dir(&devcontainer_dir).unwrap();
+            fs::create_dir_all(&devcontainer_dir).unwrap();
             write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
         }
 
@@ -232,7 +232,7 @@ mod tests {
     fn compose_plan_preserves_multi_file_order() {
         let (_temp, workspace) = fixture_workspace("multi-file");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
         write_compose_file(
             devcontainer_dir.join("compose.override.yaml"),
@@ -310,7 +310,7 @@ mod tests {
         let devcontainer_dir = workspace.root().join(".devcontainer");
         let target_dir = workspace.root().join("shared-compose");
         fs::create_dir_all(&devcontainer_dir).unwrap();
-        fs::create_dir(&target_dir).unwrap();
+        fs::create_dir_all(&target_dir).unwrap();
         write_compose_file(target_dir.join("compose.yaml"), "services: {}\n");
         std::os::unix::fs::symlink(
             target_dir.join("compose.yaml"),
@@ -341,7 +341,7 @@ mod tests {
     fn compose_generated_override_path_is_under_state_directory() {
         let (_temp, workspace) = fixture_workspace("generated-override");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
 
         let plan =
@@ -358,7 +358,7 @@ mod tests {
     fn compose_project_plan_collects_canonical_file_hash_inputs() {
         let (_temp, workspace) = fixture_workspace("config-hash-input");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
 
         let plan =
@@ -382,7 +382,7 @@ mod tests {
     fn generated_override_file_is_passed_after_user_compose_files() {
         let (_temp, workspace) = fixture_workspace("generated-override-order");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
         write_compose_file(devcontainer_dir.join("dev.yaml"), "services: {}\n");
         let project = ComposeProjectPlan::resolve(
@@ -431,7 +431,7 @@ mod tests {
     fn compose_project_plan_rejects_missing_compose_file() {
         let (_temp, workspace) = fixture_workspace("missing-compose-file");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
 
         let error =
             ComposeProjectPlan::resolve(&workspace, &devcontainer_dir, &["missing.yaml".into()])

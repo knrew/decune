@@ -125,7 +125,7 @@ mod tests {
     fn compose_introspector_builds_active_published_port_planning_input() {
         let (_temp, workspace) = fixture_workspace("active-port-planning");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
         let project =
             ComposeProjectPlan::resolve(&workspace, &devcontainer_dir, &["compose.yaml".into()])
@@ -187,7 +187,7 @@ mod tests {
     fn compose_introspector_includes_dependency_published_ports_from_config_output() {
         let (_temp, workspace) = fixture_workspace("dependency-port-planning");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
         let project =
             ComposeProjectPlan::resolve(&workspace, &devcontainer_dir, &["compose.yaml".into()])
@@ -248,7 +248,7 @@ mod tests {
     fn compose_introspection_reads_user_and_generated_config_paths() {
         let (_temp, workspace) = fixture_workspace("introspection-paths");
         let devcontainer_dir = workspace.root().join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         write_compose_file(devcontainer_dir.join("compose.yaml"), "services: {}\n");
         let project =
             ComposeProjectPlan::resolve(&workspace, &devcontainer_dir, &["compose.yaml".into()])

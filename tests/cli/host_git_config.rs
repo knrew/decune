@@ -442,20 +442,20 @@ fn up_detach_keeps_copied_host_gitconfig_after_dotfile_gitconfig_setup() {
 fn up_detach_does_not_expose_host_gitconfig_when_remote_user_uid_differs_from_host_uid() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_home = support::TempWorkspace::new().unwrap();
-    let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
-    let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
-    let attacker_uid = if current_uid() == 20003 { 20004 } else { 20003 };
-    let attacker_gid = if current_gid() == 20003 { 20004 } else { 20003 };
+    let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+    let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+    let attacker_user_id = if current_uid() == 20003 { 20004 } else { 20003 };
+    let attacker_group_id = if current_gid() == 20003 { 20004 } else { 20003 };
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
             format!(
                 r"
             FROM ubuntu:24.04
-            RUN groupadd -g {remote_gid} decunegrp \
-              && useradd -m -u {remote_uid} -g decunegrp decune \
-              && groupadd -g {attacker_gid} attackergrp \
-              && useradd -m -u {attacker_uid} -g attackergrp attacker \
+            RUN groupadd -g {remote_group_id} decunegrp \
+              && useradd -m -u {remote_user_id} -g decunegrp decune \
+              && groupadd -g {attacker_group_id} attackergrp \
+              && useradd -m -u {attacker_user_id} -g attackergrp attacker \
               && echo 'attacker:decune-test' | chpasswd
             ",
             ),

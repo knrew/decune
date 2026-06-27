@@ -548,7 +548,7 @@ pub(crate) fn canonical_feature_id(id: &str) -> String {
 
     let canonical = match (last_slash, last_colon) {
         (_, Some(colon)) if last_slash.is_none_or(|slash| colon > slash) => {
-            &without_digest[..colon]
+            without_digest.split_at(colon).0
         }
         _ => without_digest,
     };
@@ -569,7 +569,9 @@ pub(crate) fn feature_merge_identity(id: &str) -> String {
     let last_slash = id.rfind('/');
     let last_colon = id.rfind(':');
     let tag = match (last_slash, last_colon) {
-        (_, Some(colon)) if last_slash.is_none_or(|slash| colon > slash) => &id[colon + 1..],
+        (_, Some(colon)) if last_slash.is_none_or(|slash| colon > slash) => {
+            id.split_at(colon + ':'.len_utf8()).1
+        }
         _ => "latest",
     };
 

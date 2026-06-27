@@ -114,7 +114,13 @@ fn feature_option_toml_value(
             }
             value.to_string()
         }
-        _ => bail!("Unsupported Feature option value for {feature_id}.{option}"),
+        toml::Value::Integer(_)
+        | toml::Value::Float(_)
+        | toml::Value::Datetime(_)
+        | toml::Value::Array(_)
+        | toml::Value::Table(_) => {
+            bail!("Unsupported Feature option value for {feature_id}.{option}");
+        }
     };
 
     validate_feature_option_enum(feature_id, option, &resolved, schema)?;
@@ -140,7 +146,12 @@ fn feature_option_json_value(
             }
             value.to_string()
         }
-        _ => bail!("Unsupported Feature option default for {feature_id}.{option}"),
+        serde_json::Value::Null
+        | serde_json::Value::Number(_)
+        | serde_json::Value::Array(_)
+        | serde_json::Value::Object(_) => {
+            bail!("Unsupported Feature option default for {feature_id}.{option}");
+        }
     };
 
     validate_feature_option_enum(feature_id, option, &resolved, Some(schema))?;

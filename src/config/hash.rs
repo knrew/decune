@@ -245,7 +245,7 @@ fn sanitize_compose_canonical_model_value(value: &mut JsonValue, path: &mut Vec<
                 path.pop();
             }
         }
-        _ => {}
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {}
     }
 }
 
@@ -269,7 +269,7 @@ fn digest_json_leaf_values(value: &mut JsonValue, path: &mut Vec<String>) {
                 path.pop();
             }
         }
-        _ => {
+        JsonValue::Null | JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_) => {
             *value = JsonValue::String(compose_environment_value_hash_marker(path, value));
         }
     }
