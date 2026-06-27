@@ -79,7 +79,7 @@ impl ConfigLayer {
                 .collect(),
             forward_ports: Vec::new(),
             auto_ports: raw.ports.auto.map(LayerAutoPorts::from_raw),
-            compose: LayerCompose::from_raw(raw.compose),
+            compose: LayerCompose::from_raw(&raw.compose),
             devcontainer: None,
             credentials: LayerCredentials::from_raw(raw.credentials),
             hooks: LayerHooks::from_raw(raw.hooks),
@@ -93,10 +93,11 @@ pub(crate) struct LayerCompose {
 }
 
 impl LayerCompose {
-    fn from_raw(raw: RawComposeConfig) -> Self {
+    fn from_raw(raw: &RawComposeConfig) -> Self {
         Self {
             published_ports: raw
                 .published_ports
+                .as_ref()
                 .map(LayerComposePublishedPorts::from_raw)
                 .unwrap_or_default(),
         }
@@ -110,7 +111,7 @@ pub(crate) struct LayerComposePublishedPorts {
 }
 
 impl LayerComposePublishedPorts {
-    const fn from_raw(raw: RawComposePublishedPortsConfig) -> Self {
+    const fn from_raw(raw: &RawComposePublishedPortsConfig) -> Self {
         Self {
             relocation: raw.relocation,
             warn_on_relocation: raw.warn_on_relocation,

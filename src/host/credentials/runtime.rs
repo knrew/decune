@@ -52,7 +52,7 @@ impl GitCredentialRuntime {
 impl Drop for GitCredentialRuntime {
     fn drop(&mut self) {
         for path in &self.cleanup_paths {
-            let _ = fs::remove_file(path);
+            _ = fs::remove_file(path);
         }
     }
 }

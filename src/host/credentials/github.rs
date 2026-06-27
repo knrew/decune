@@ -338,7 +338,7 @@ async fn clear_github_cli_config_dir(
         "if [ -d {config_dir} ]; then rm -rf {config_dir}/* {config_dir}/.[!.]* {config_dir}/..?* 2>/dev/null || true; fi\n"
     );
 
-    let _ = exec_capture(
+    _ = exec_capture(
         client,
         container,
         &ExecCommandSpec {

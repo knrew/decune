@@ -389,7 +389,7 @@ impl DockerCli {
             &command,
             &output,
         )?;
-        Ok(lines_from_output(output.stdout_string()?))
+        Ok(lines_from_output(&output.stdout_string()?))
     }
 
     pub(crate) async fn list_compose_project_networks(
@@ -411,7 +411,7 @@ impl DockerCli {
             &command,
             &output,
         )?;
-        Ok(lines_from_output(output.stdout_string()?))
+        Ok(lines_from_output(&output.stdout_string()?))
     }
 
     pub(crate) async fn remove_network(&self, network: &str) -> Result<()> {
@@ -506,7 +506,7 @@ impl DockerCli {
             &command,
             &output,
         )?;
-        let names = lines_from_output(output.stdout_string()?);
+        let names = lines_from_output(&output.stdout_string()?);
         if names.is_empty() {
             return Ok(Vec::new());
         }
@@ -744,7 +744,7 @@ fn is_not_found_or_not_running(output: &RuntimeOutput) -> bool {
     is_not_found(output) || stderr.contains("is not running")
 }
 
-fn lines_from_output(output: String) -> Vec<String> {
+fn lines_from_output(output: &str) -> Vec<String> {
     output
         .lines()
         .map(str::trim)

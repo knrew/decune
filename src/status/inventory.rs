@@ -64,7 +64,7 @@ pub(super) fn build_status_inventory(
     let workspaces = workspaces
         .into_iter()
         .map(|(workspace_id, evidence)| {
-            workspace_status_with_config(workspace_id, evidence, docker_unavailable, None)
+            workspace_status_with_config(workspace_id, &evidence, docker_unavailable, None)
         })
         .collect();
 
@@ -76,9 +76,9 @@ pub(super) fn build_status_inventory(
 
 pub(super) fn workspace_status_with_config(
     workspace_id: String,
-    evidence: WorkspaceEvidence,
+    evidence: &WorkspaceEvidence,
     docker_unavailable: bool,
-    current_config: Option<CurrentWorkspaceConfig>,
+    current_config: Option<&CurrentWorkspaceConfig>,
 ) -> WorkspaceStatus {
     let state = evidence
         .state
@@ -91,37 +91,30 @@ pub(super) fn workspace_status_with_config(
             .iter()
             .find_map(|container| container.workspace_path.clone())
     });
-    let environment_status = environment_status(
-        &evidence,
-        state,
-        docker_unavailable,
-        current_config.as_ref(),
-    );
+    let environment_status =
+        environment_status(evidence, state, docker_unavailable, current_config);
     let config_status = config_status(
-        &evidence,
+        evidence,
         state,
         state_unreadable,
         docker_unavailable,
-        current_config.as_ref(),
+        current_config,
     );
-    let health_status = health_status(&evidence, docker_unavailable);
+    let health_status = health_status(evidence, docker_unavailable);
     let lifecycle_status = lifecycle_status(state, state_unreadable);
-    let mode = current_config
-        .as_ref()
-        .map_or(WorkspaceMode::Unknown, |config| config.mode);
+    let mode = current_config.map_or(WorkspaceMode::Unknown, |config| config.mode);
     let config_file = current_config
-        .as_ref()
         .and_then(|config| config.config_file.clone())
         .or_else(|| state.and_then(|state| state.config_file.clone()));
-    let issues = workspace_issues(WorkspaceIssueInput {
-        evidence: &evidence,
+    let issues = workspace_issues(&WorkspaceIssueInput {
+        evidence,
         state,
         state_unreadable,
         docker_unavailable,
         environment_status,
         config_status,
         health_status,
-        current_config: current_config.as_ref(),
+        current_config,
     });
 
     WorkspaceStatus {
@@ -294,17 +287,15 @@ const fn lifecycle_status(
     }
 }
 
-fn workspace_issues(input: WorkspaceIssueInput<'_>) -> Vec<StatusIssue> {
-    let WorkspaceIssueInput {
-        evidence,
-        state,
-        state_unreadable,
-        docker_unavailable,
-        environment_status,
-        config_status,
-        health_status,
-        current_config,
-    } = input;
+fn workspace_issues(input: &WorkspaceIssueInput<'_>) -> Vec<StatusIssue> {
+    let evidence = input.evidence;
+    let state = input.state;
+    let state_unreadable = input.state_unreadable;
+    let docker_unavailable = input.docker_unavailable;
+    let environment_status = input.environment_status;
+    let config_status = input.config_status;
+    let health_status = input.health_status;
+    let current_config = input.current_config;
     let mut issues = Vec::new();
     if docker_unavailable {
         issues.push(docker_unavailable_issue(None));
@@ -617,7 +608,7 @@ mod tests {
     fn current_config_uses_docker_label_hash_before_state_hash() {
         let workspace = workspace_status_with_config(
             WORKSPACE_ID.to_owned(),
-            WorkspaceEvidence {
+            &WorkspaceEvidence {
                 state: Some(Ok(state("container-id", "hash"))),
                 containers: vec![container(
                     WORKSPACE_ID,
@@ -630,7 +621,7 @@ mod tests {
                 volumes: Vec::new(),
             },
             false,
-            Some(current_config("hash")),
+            Some(&current_config("hash")),
         );
 
         assert_eq!(workspace.config_status, ConfigStatus::NeedsRebuild);
@@ -640,7 +631,7 @@ mod tests {
     fn current_config_ignores_containers_without_config_hash_labels() {
         let workspace = workspace_status_with_config(
             WORKSPACE_ID.to_owned(),
-            WorkspaceEvidence {
+            &WorkspaceEvidence {
                 state: Some(Ok(state("container-id", "old-hash"))),
                 containers: vec![
                     container(
@@ -663,7 +654,7 @@ mod tests {
                 volumes: Vec::new(),
             },
             false,
-            Some(current_config("hash")),
+            Some(&current_config("hash")),
         );
 
         assert_eq!(workspace.config_status, ConfigStatus::Current);
@@ -831,7 +822,7 @@ mod tests {
             .join("decune-status-tests")
             .join(std::process::id().to_string())
             .join(name);
-        let _ = fs::remove_dir_all(&root);
+        _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
     }

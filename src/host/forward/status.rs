@@ -172,7 +172,7 @@ impl ForwardStatusServer {
     async fn shutdown(&mut self) {
         if let Some(task) = self.task.take() {
             task.abort();
-            let _ = task.await;
+            _ = task.await;
         }
         cleanup_status_files(&self.metadata_path, &self.socket_path);
     }
@@ -288,7 +288,7 @@ async fn run_forward_status_server(listener: UnixListener, registry: ForwardStat
     while let Ok((stream, _)) = listener.accept().await {
         let registry = registry.clone();
         tokio::spawn(async move {
-            let _ = handle_forward_status_connection(stream, registry).await;
+            _ = handle_forward_status_connection(stream, registry).await;
         });
     }
 }
@@ -497,8 +497,8 @@ fn remove_file_if_exists(path: &Path) -> Result<()> {
 }
 
 fn cleanup_status_files(metadata_path: &Path, socket_path: &Path) {
-    let _ = fs::remove_file(metadata_path);
-    let _ = fs::remove_file(socket_path);
+    _ = fs::remove_file(metadata_path);
+    _ = fs::remove_file(socket_path);
 }
 
 #[cfg(test)]

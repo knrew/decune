@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn generated_override_semantic_hash_changes_for_meaningful_override_change() {
         let first = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
+            &PathBuf::from("/state/compose.override.yaml"),
             &compose_hash_plan("stable-hash", "decune/test:first", "1.0.0"),
             &[],
             None,
@@ -317,7 +317,7 @@ mod tests {
         )
         .unwrap();
         let second = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
+            &PathBuf::from("/state/compose.override.yaml"),
             &compose_hash_plan("stable-hash", "decune/test:first", "1.0.1"),
             &[],
             None,
@@ -332,7 +332,7 @@ mod tests {
     fn generated_override_semantic_hash_changes_for_published_port_override() {
         let plan = compose_hash_plan("stable-hash", "decune/test:first", "1.0.0");
         let baseline = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
+            &PathBuf::from("/state/compose.override.yaml"),
             &plan,
             &[],
             None,
@@ -348,7 +348,7 @@ mod tests {
         )]));
 
         let changed = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
+            &PathBuf::from("/state/compose.override.yaml"),
             &plan,
             &[],
             None,
@@ -404,7 +404,7 @@ mod tests {
     #[test]
     fn generated_override_semantic_hash_excludes_hash_derived_values() {
         let first = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
+            &PathBuf::from("/state/compose.override.yaml"),
             &compose_hash_plan("first-hash", "decune/test:first-hash", "1.0.0"),
             &[],
             None,
@@ -412,7 +412,7 @@ mod tests {
         )
         .unwrap();
         let second = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
+            &PathBuf::from("/state/compose.override.yaml"),
             &compose_hash_plan("second-hash", "decune/test:second-hash", "1.0.0"),
             &[],
             None,
@@ -431,7 +431,7 @@ mod tests {
         explicit_false.config.devcontainer.privileged = Some(false);
 
         let first = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
+            &PathBuf::from("/state/compose.override.yaml"),
             &unspecified,
             &[],
             None,
@@ -439,7 +439,7 @@ mod tests {
         )
         .unwrap();
         let second = compose_generated_override_hash_input(
-            PathBuf::from("/state/compose.override.yaml"),
+            &PathBuf::from("/state/compose.override.yaml"),
             &explicit_false,
             &[],
             None,

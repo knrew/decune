@@ -69,7 +69,7 @@ impl ServiceForwardRuntime {
 impl Drop for ForwardRuntime {
     fn drop(&mut self) {
         for path in &self.cleanup_paths {
-            let _ = fs::remove_file(path);
+            _ = fs::remove_file(path);
         }
     }
 }
@@ -77,7 +77,7 @@ impl Drop for ForwardRuntime {
 impl Drop for ServiceForwardRuntime {
     fn drop(&mut self) {
         for path in &self.cleanup_paths {
-            let _ = fs::remove_file(path);
+            _ = fs::remove_file(path);
         }
     }
 }
@@ -96,14 +96,14 @@ fn prepare_forward_runtime_with_tool_dirs(
     tool_source_dirs: Option<Vec<PathBuf>>,
 ) -> Result<ForwardRuntime> {
     prepare_private_runtime_dir(runtime_dir, "port forwarding")?;
-    remove_stale_agent_start_file(runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME))?;
-    remove_stale_agent_start_file(runtime_dir.join(FORWARD_AGENT_STATUS_NAME))?;
+    remove_stale_agent_start_file(&runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME))?;
+    remove_stale_agent_start_file(&runtime_dir.join(FORWARD_AGENT_STATUS_NAME))?;
     let agent_path = match tool_source_dirs {
         Some(source_dirs) => crate::host::container_tools::stage_container_tool_from_dirs(
             ContainerTool::ForwardAgent,
             platform,
             runtime_dir,
-            source_dirs,
+            &source_dirs,
         )?,
         None => stage_container_tool(ContainerTool::ForwardAgent, platform, runtime_dir)?,
     };
@@ -155,11 +155,11 @@ fn prepare_service_forward_runtime(
 ) -> Result<ServiceForwardRuntime> {
     let runtime_dir = service_forward_runtime_dir(runtime_dir, service);
     prepare_private_runtime_dir(&runtime_dir, "service port forwarding")?;
-    remove_stale_agent_start_file(runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME))?;
-    remove_stale_agent_start_file(runtime_dir.join(FORWARD_AGENT_STATUS_NAME))?;
+    remove_stale_agent_start_file(&runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME))?;
+    remove_stale_agent_start_file(&runtime_dir.join(FORWARD_AGENT_STATUS_NAME))?;
     let agent_path = stage_container_tool(ContainerTool::ForwardAgent, platform, &runtime_dir)?;
     let socket_path = runtime_dir.join(forward_agent_socket_name(Some(service)));
-    remove_stale_agent_start_file(socket_path.clone())?;
+    remove_stale_agent_start_file(&socket_path)?;
 
     Ok(ServiceForwardRuntime {
         service: service.to_owned(),
@@ -181,8 +181,8 @@ fn prepare_service_forward_runtime(
     })
 }
 
-fn remove_stale_agent_start_file(path: PathBuf) -> Result<()> {
-    match fs::remove_file(&path) {
+fn remove_stale_agent_start_file(path: &Path) -> Result<()> {
+    match fs::remove_file(path) {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error).with_context(|| {

@@ -371,7 +371,7 @@ mod tests {
         let root = std::env::temp_dir()
             .join("decune-workspace-tests")
             .join(format!("{}-{}", name, std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
     }
@@ -399,7 +399,7 @@ mod tests {
     fn symlinked_workspace_uses_same_canonical_id() {
         let root = fixture_root("symlink-target");
         let link = root.with_file_name("symlink-link");
-        let _ = fs::remove_file(&link);
+        _ = fs::remove_file(&link);
         unix_fs::symlink(&root, &link).unwrap();
 
         let target_workspace = Workspace::resolve(&root).unwrap();

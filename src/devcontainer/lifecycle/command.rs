@@ -169,7 +169,12 @@ pub(in crate::devcontainer::lifecycle) async fn run_container_process(
     .await
     .with_context(|| format!("Failed to run lifecycle stage {stage_name}"))?;
 
-    ensure_lifecycle_success(stage_name, &command, output, &context.remote_env_redactions)
+    ensure_lifecycle_success(
+        stage_name,
+        &command,
+        &output,
+        &context.remote_env_redactions,
+    )
 }
 
 fn lifecycle_process_env(
@@ -218,16 +223,12 @@ pub(in crate::devcontainer::lifecycle) fn run_host_process(
         })?;
     let exit_code = output.status.code().map_or(-1, i64::from);
 
-    ensure_lifecycle_success(
-        stage_name,
-        argv,
-        ExecOutput {
-            stdout: output.stdout,
-            stderr: output.stderr,
-            exit_code,
-        },
-        &[],
-    )
+    let output = ExecOutput {
+        stdout: output.stdout,
+        stderr: output.stderr,
+        exit_code,
+    };
+    ensure_lifecycle_success(stage_name, argv, &output, &[])
 }
 
 pub(crate) fn lifecycle_command_argv(command: &LifecycleCommand) -> Vec<String> {
@@ -254,7 +255,7 @@ fn shell_argv(command: &str) -> Vec<String> {
 pub(in crate::devcontainer::lifecycle) fn ensure_lifecycle_success(
     stage_name: &str,
     command: &[String],
-    output: ExecOutput,
+    output: &ExecOutput,
     redactions: &[String],
 ) -> Result<()> {
     if output.exit_code == 0 {
@@ -386,7 +387,7 @@ mod tests {
         let error = ensure_lifecycle_success(
             "postStartCommand",
             &command,
-            output,
+            &output,
             &["secret-token".to_owned()],
         )
         .unwrap_err();

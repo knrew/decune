@@ -421,13 +421,13 @@ impl CaptureTasks {
         }
 
         if let Some(stdout) = self.stdout.take() {
-            let _ = stdout.await;
+            _ = stdout.await;
         }
         if let Some(stderr) = self.stderr.take() {
-            let _ = stderr.await;
+            _ = stderr.await;
         }
         if let Some(stdin) = self.stdin.take() {
-            let _ = stdin.await;
+            _ = stdin.await;
         }
     }
 }

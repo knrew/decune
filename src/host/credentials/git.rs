@@ -108,7 +108,7 @@ pub(crate) fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<Strin
 }
 
 pub(crate) fn handle_git_credential_request(
-    request: GitCredentialHostRequest,
+    request: &GitCredentialHostRequest,
     executor: &dyn GitCredentialExecutor,
     mode: GitHttpsMode,
 ) -> Result<String> {
@@ -175,7 +175,7 @@ pub(super) fn prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
                 ContainerTool::GitCredentialHelper,
                 platform,
                 runtime_dir,
-                source_dirs,
+                &source_dirs,
             )?,
             None => {
                 stage_container_tool(ContainerTool::GitCredentialHelper, platform, runtime_dir)?
@@ -708,7 +708,7 @@ mod tests {
         );
 
         let output =
-            handle_git_credential_request(request, &executor, GitHttpsMode::HostHelperReadOnly)
+            handle_git_credential_request(&request, &executor, GitHttpsMode::HostHelperReadOnly)
                 .unwrap();
 
         assert_eq!(output, "username=octo\npassword=SECRET\n");
@@ -730,7 +730,7 @@ mod tests {
         );
 
         let output =
-            handle_git_credential_request(request, &executor, GitHttpsMode::HostHelperReadOnly)
+            handle_git_credential_request(&request, &executor, GitHttpsMode::HostHelperReadOnly)
                 .unwrap();
 
         assert_eq!(output, "");
@@ -746,7 +746,7 @@ mod tests {
         );
 
         let output =
-            handle_git_credential_request(request, &executor, GitHttpsMode::HostHelperReadOnly)
+            handle_git_credential_request(&request, &executor, GitHttpsMode::HostHelperReadOnly)
                 .unwrap();
 
         assert_eq!(output, "");
@@ -764,7 +764,7 @@ mod tests {
             GitCredentialAction::Erase,
         ] {
             let error = handle_git_credential_request(
-                GitCredentialHostRequest::new(action, "password=SECRET\n\n"),
+                &GitCredentialHostRequest::new(action, "password=SECRET\n\n"),
                 &executor,
                 GitHttpsMode::Off,
             )
@@ -783,7 +783,7 @@ mod tests {
         let executor = RecordingGitCredentialExecutor::with_output("");
 
         let store_output = handle_git_credential_request(
-            GitCredentialHostRequest::new(
+            &GitCredentialHostRequest::new(
                 GitCredentialAction::Store,
                 "protocol=https\nhost=github.com\nusername=octo\npassword=SECRET\n\n",
             ),
@@ -792,7 +792,7 @@ mod tests {
         )
         .unwrap();
         let erase_output = handle_git_credential_request(
-            GitCredentialHostRequest::new(
+            &GitCredentialHostRequest::new(
                 GitCredentialAction::Erase,
                 "protocol=https\nhost=github.com\nusername=octo\n\n",
             ),

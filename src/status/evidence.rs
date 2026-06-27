@@ -139,7 +139,7 @@ pub(super) async fn collect_workspace_docker_evidence(
             compose_project_name_from_container(&container).as_deref(),
             &context,
         );
-        if let Some(evidence) = container_evidence(container) {
+        if let Some(evidence) = container_evidence(&container) {
             containers.push(evidence);
         }
     }
@@ -150,7 +150,7 @@ pub(super) async fn collect_workspace_docker_evidence(
             .await?;
         containers.extend(
             project_containers.into_iter().filter_map(|container| {
-                container_evidence_with_context(container, &project_context)
+                container_evidence_with_context(&container, &project_context)
             }),
         );
     }
@@ -240,7 +240,7 @@ pub(super) async fn collect_docker_evidence(
     let mut containers = Vec::new();
     for container in cli.list_all_managed_container_inspects().await? {
         let project_name = compose_project_name_from_container(&container);
-        if let Some(evidence) = container_evidence(container) {
+        if let Some(evidence) = container_evidence(&container) {
             let context = ComposeProjectContext {
                 workspace_id: evidence.workspace_id.clone(),
                 workspace_path: evidence.workspace_path.clone(),
@@ -256,7 +256,7 @@ pub(super) async fn collect_docker_evidence(
             .await?;
         containers.extend(
             project_containers.into_iter().filter_map(|container| {
-                container_evidence_with_context(container, &project_context)
+                container_evidence_with_context(&container, &project_context)
             }),
         );
     }
@@ -274,10 +274,10 @@ pub(super) async fn collect_docker_evidence(
     })
 }
 
-fn container_evidence(container: ContainerInspect) -> Option<ContainerEvidence> {
-    let (workspace_id, labels) = managed_workspace_id_from_container(&container)?;
+fn container_evidence(container: &ContainerInspect) -> Option<ContainerEvidence> {
+    let (workspace_id, labels) = managed_workspace_id_from_container(container)?;
     Some(container_evidence_from_labels(
-        &container,
+        container,
         workspace_id,
         labels,
         None,
@@ -285,14 +285,14 @@ fn container_evidence(container: ContainerInspect) -> Option<ContainerEvidence> 
 }
 
 fn container_evidence_with_context(
-    container: ContainerInspect,
+    container: &ContainerInspect,
     context: &ComposeProjectContext,
 ) -> Option<ContainerEvidence> {
     let labels = container.config.as_ref()?.labels.as_ref()?;
     let workspace_id =
         managed_workspace_id_from_labels(labels).unwrap_or_else(|| context.workspace_id.clone());
     Some(container_evidence_from_labels(
-        &container,
+        container,
         workspace_id,
         labels,
         context.workspace_path.as_deref(),
@@ -308,8 +308,8 @@ fn container_evidence_from_labels(
     let workspace_path = workspace_path_from_labels(labels);
     let config_hash = config_hash_from_labels(labels);
     let service = compose_service_from_labels(labels);
-    let run_state = container_run_state(&container.state);
-    let health_status = container_health_status(&container.state);
+    let run_state = container_run_state(container.state.as_ref());
+    let health_status = container_health_status(container.state.as_ref());
     ContainerEvidence {
         workspace_id,
         id: container.id.clone(),
@@ -416,7 +416,7 @@ impl From<&VolumeEvidence> for VolumeStatusSummary {
 }
 
 fn container_run_state(
-    state: &Option<crate::docker::container::ContainerState>,
+    state: Option<&crate::docker::container::ContainerState>,
 ) -> ContainerRunState {
     let Some(state) = state else {
         return ContainerRunState::Unknown;
@@ -437,10 +437,9 @@ fn container_run_state(
 }
 
 fn container_health_status(
-    state: &Option<crate::docker::container::ContainerState>,
+    state: Option<&crate::docker::container::ContainerState>,
 ) -> HealthStatus {
     match state
-        .as_ref()
         .and_then(|state| state.health.as_ref())
         .and_then(|health| health.status.as_deref())
     {
@@ -556,7 +555,7 @@ mod tests {
             Ok(DockerEvidence {
                 containers: raw_containers
                     .into_iter()
-                    .filter_map(container_evidence)
+                    .filter_map(|container| container_evidence(&container))
                     .collect(),
                 volumes: raw_volumes
                     .into_iter()
@@ -587,7 +586,7 @@ mod tests {
             }]"#,
         )
         .unwrap();
-        let evidence = container_evidence(container.into_iter().next().unwrap()).unwrap();
+        let evidence = container_evidence(&container.into_iter().next().unwrap()).unwrap();
 
         assert_eq!(evidence.workspace_id, WORKSPACE_ID);
         assert_eq!(evidence.workspace_path.as_deref(), Some("/workspace"));
@@ -690,13 +689,13 @@ mod tests {
 
         let status = workspace_status_with_config(
             WORKSPACE_ID.to_owned(),
-            WorkspaceEvidence {
+            &WorkspaceEvidence {
                 state: Some(Ok(state)),
                 containers: evidence.containers,
                 volumes: evidence.volumes,
             },
             false,
-            Some(CurrentWorkspaceConfig {
+            Some(&CurrentWorkspaceConfig {
                 mode: WorkspaceMode::Compose,
                 config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
                 config_hash: Some("hash".to_owned()),
@@ -909,7 +908,7 @@ mod tests {
             .join("decune-status-tests")
             .join(std::process::id().to_string())
             .join(name);
-        let _ = fs::remove_dir_all(&root);
+        _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
     }

@@ -406,7 +406,7 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
             );
         let child = child.as_mut().unwrap();
         child.kill().unwrap();
-        let _ = child.wait().unwrap();
+        _ = child.wait().unwrap();
         decune()
             .args(["ports", "--json"])
             .arg(&workspace_root)
@@ -418,8 +418,8 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
     if let Some(mut child) = child
         && child.try_wait().unwrap().is_none()
     {
-        let _ = child.kill();
-        let _ = child.wait();
+        _ = child.kill();
+        _ = child.wait();
     }
     runtime.block_on(async {
         let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
@@ -523,14 +523,14 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
         }
         let child = child.as_mut().unwrap();
         child.kill().unwrap();
-        let _ = child.wait().unwrap();
+        _ = child.wait().unwrap();
     }));
 
     if let Some(mut child) = child
         && child.try_wait().unwrap().is_none()
     {
-        let _ = child.kill();
-        let _ = child.wait();
+        _ = child.kill();
+        _ = child.wait();
     }
     runtime.block_on(async {
         let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
@@ -629,14 +629,14 @@ fn up_attached_auto_forwards_new_container_listen_port() {
         }
         let child = child.as_mut().unwrap();
         child.kill().unwrap();
-        let _ = child.wait().unwrap();
+        _ = child.wait().unwrap();
     }));
 
     if let Some(mut child) = child
         && child.try_wait().unwrap().is_none()
     {
-        let _ = child.kill();
-        let _ = child.wait();
+        _ = child.kill();
+        _ = child.wait();
     }
     runtime.block_on(async {
         let container_cleanup = cleanup_workspace_containers(&workspace_root).await;

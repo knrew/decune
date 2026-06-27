@@ -1,6 +1,5 @@
 use std::{
-    fs,
-    io::Read,
+    fs, io,
     os::unix::fs::PermissionsExt,
     path::{Component, Path},
 };
@@ -158,7 +157,7 @@ fn append_tar_entry(output: &mut Vec<u8>, context_dir: &Path, relative_path: &Pa
         append_tar_header(output, &name, &metadata, metadata.len(), b'0', None)?;
         let mut file = fs::File::open(&path)
             .with_context(|| format!("Failed to read build context file: {}", path.display()))?;
-        file.read_to_end(output)
+        io::copy(&mut file, output)
             .with_context(|| format!("Failed to archive build context file: {}", path.display()))?;
         pad_tar(output);
     }

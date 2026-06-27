@@ -64,7 +64,7 @@ impl FeatureCacheLock {
 
 impl Drop for FeatureCacheLock {
     fn drop(&mut self) {
-        let _ = flock(self.file.as_raw_fd(), libc::LOCK_UN);
+        _ = flock(self.file.as_raw_fd(), libc::LOCK_UN);
     }
 }
 

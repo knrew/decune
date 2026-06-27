@@ -54,7 +54,7 @@ impl DockerResourceLock {
 impl Drop for DockerResourceLock {
     fn drop(&mut self) {
         if let Some(file) = &self.file {
-            let _ = flock(file.as_raw_fd(), libc::LOCK_UN);
+            _ = flock(file.as_raw_fd(), libc::LOCK_UN);
         }
     }
 }

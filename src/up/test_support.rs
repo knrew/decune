@@ -496,10 +496,10 @@ pub(crate) fn test_up_plan_with_image_source(image: &str) -> UpPlan {
 }
 
 pub(crate) fn container_has_mount_target(
-    mounts: &Option<Vec<ContainerMount>>,
+    mounts: Option<&Vec<ContainerMount>>,
     target: &str,
 ) -> bool {
-    mounts.as_ref().is_some_and(|mounts| {
+    mounts.is_some_and(|mounts| {
         mounts
             .iter()
             .any(|mount| mount.destination.as_deref() == Some(target))

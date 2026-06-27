@@ -62,7 +62,7 @@ async fn fix_dotfiles_mount_root_ownership(
         "chown {}:{} '{}'",
         remote_user.uid, remote_user.gid, DOTFILES_MOUNT_ROOT,
     );
-    let _ = exec_capture(
+    _ = exec_capture(
         client,
         container,
         &ExecCommandSpec {

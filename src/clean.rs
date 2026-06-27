@@ -537,7 +537,7 @@ fn lock_file_is_active(path: &Path) -> Result<bool> {
         })?;
     match flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) {
         Ok(()) => {
-            let _ = flock(file.as_raw_fd(), libc::LOCK_UN);
+            _ = flock(file.as_raw_fd(), libc::LOCK_UN);
             Ok(false)
         }
         Err(error) if error.kind() == io::ErrorKind::WouldBlock => Ok(true),

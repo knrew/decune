@@ -192,7 +192,7 @@ fn parse_forwarding_port_string(original: &str) -> Result<ParsedPort> {
             container,
             bracketed_host_ip: false,
         } if is_numeric_port_candidate(host) => {
-            let _ = parse_u16_port(container, "container port")?;
+            _ = parse_u16_port(container, "container port")?;
             Err(anyhow!(
                 "Invalid devcontainer forwardPorts entry: {original}. Use a numeric JSON value for a current-container port; host-port mappings are not supported in forwardPorts"
             ))

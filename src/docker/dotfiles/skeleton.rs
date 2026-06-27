@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map::Entry},
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -44,7 +44,7 @@ pub(crate) fn materialize_dotfile_skeletons(skeletons: &[DotfileSkeletonPlan]) -
 pub(super) fn skeleton_dotfile_mount_plan(
     source: &Path,
     dotfile_target: &str,
-    container_target: String,
+    container_target: &str,
     state_root: &Path,
     read_only: bool,
 ) -> Result<DotfileMountPlan> {
@@ -54,7 +54,7 @@ pub(super) fn skeleton_dotfile_mount_plan(
         .join(components.join("/"));
     let mounts = vec![dotfile_bind_mount(
         &skeleton_root,
-        container_target.clone(),
+        container_target.to_owned(),
         read_only,
     )];
     let source = source.canonicalize().with_context(|| {
@@ -65,7 +65,7 @@ pub(super) fn skeleton_dotfile_mount_plan(
     })?;
     let mut ancestors = vec![source.clone()];
     let mut builder = DotfileSkeletonBuilder {
-        container_root: &container_target,
+        container_root: container_target,
         read_only,
         mounts,
         skeleton_entries: BTreeMap::new(),
@@ -237,14 +237,17 @@ impl DotfileSkeletonBuilder<'_> {
         relative: PathBuf,
         kind: DotfileSkeletonEntryKind,
     ) -> Result<()> {
-        let existing = self.skeleton_entries.insert(relative.clone(), kind.clone());
-        if let Some(existing) = existing
-            && existing != kind
-        {
-            bail!(
-                "Dotfile skeleton path generated with conflicting entry kinds: {}",
-                relative.display()
-            );
+        match self.skeleton_entries.entry(relative) {
+            Entry::Vacant(entry) => {
+                entry.insert(kind);
+            }
+            Entry::Occupied(entry) if entry.get() == &kind => {}
+            Entry::Occupied(entry) => {
+                bail!(
+                    "Dotfile skeleton path generated with conflicting entry kinds: {}",
+                    entry.key().display()
+                );
+            }
         }
 
         Ok(())

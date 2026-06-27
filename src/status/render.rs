@@ -33,7 +33,7 @@ pub(super) fn render_status_summary(
         .iter()
         .filter(|workspace| !workspace.issues.is_empty())
         .count();
-    let _ = writeln!(
+    _ = writeln!(
         output,
         "Found {} decune-managed workspace environments ({} running, {} stopped, {} with issues)",
         workspaces.len(),
@@ -79,22 +79,22 @@ pub(super) fn render_workspace_detail(
     ports: &[PortInventoryEntry],
 ) -> String {
     let mut output = String::new();
-    let _ = writeln!(
+    _ = writeln!(
         output,
         "Workspace: {}",
         status.workspace_path.as_deref().unwrap_or("<unknown>")
     );
-    let _ = writeln!(output, "ID: {}", status.workspace_id);
-    let _ = writeln!(output, "Mode: {}", status.mode.as_str());
+    _ = writeln!(output, "ID: {}", status.workspace_id);
+    _ = writeln!(output, "Mode: {}", status.mode.as_str());
     output.push('\n');
 
     output.push_str("Summary\n");
-    let _ = writeln!(output, "  Runtime: {}", status.environment_status.as_str());
-    let _ = writeln!(output, "  Config: {}", status.config_status.as_str());
-    let _ = writeln!(output, "  Health: {}", status.health_status.as_str());
-    let _ = writeln!(output, "  Containers: {}", status.containers.len());
-    let _ = writeln!(output, "  Volumes: {}", status.volumes.len());
-    let _ = writeln!(
+    _ = writeln!(output, "  Runtime: {}", status.environment_status.as_str());
+    _ = writeln!(output, "  Config: {}", status.config_status.as_str());
+    _ = writeln!(output, "  Health: {}", status.health_status.as_str());
+    _ = writeln!(output, "  Containers: {}", status.containers.len());
+    _ = writeln!(output, "  Volumes: {}", status.volumes.len());
+    _ = writeln!(
         output,
         "  Last used: {}",
         format_timestamp(status.last_used_at.as_deref())
@@ -102,17 +102,17 @@ pub(super) fn render_workspace_detail(
     output.push('\n');
 
     output.push_str("Config\n");
-    let _ = writeln!(
+    _ = writeln!(
         output,
         "  File: {}",
         status.config_file.as_deref().unwrap_or("-")
     );
-    let _ = writeln!(
+    _ = writeln!(
         output,
         "  Created: {}",
         status.created_at.as_deref().unwrap_or("-")
     );
-    let _ = writeln!(
+    _ = writeln!(
         output,
         "  Last started: {}",
         status.last_started_at.as_deref().unwrap_or("-")
@@ -122,7 +122,7 @@ pub(super) fn render_workspace_detail(
     if !status.issues.is_empty() {
         output.push_str("Issues\n");
         for issue in &status.issues {
-            let _ = writeln!(
+            _ = writeln!(
                 output,
                 "  {} [{}]: {}",
                 issue.code,
@@ -140,7 +140,7 @@ pub(super) fn render_workspace_detail(
             output.push_str("  -\n");
         } else {
             for service in services {
-                let _ = writeln!(output, "  {service}");
+                _ = writeln!(output, "  {service}");
             }
         }
         output.push('\n');
@@ -157,7 +157,7 @@ pub(super) fn render_workspace_detail(
                 .or(container.id.as_deref())
                 .unwrap_or("<unknown>");
             let service = container.service.as_deref().unwrap_or("-");
-            let _ = writeln!(
+            _ = writeln!(
                 output,
                 "  {}  service={}  state={}  health={}",
                 name.trim_start_matches('/'),
@@ -171,19 +171,19 @@ pub(super) fn render_workspace_detail(
 
     output.push_str("Ports\n");
     for line in render_ports_table(ports, false).lines() {
-        let _ = writeln!(output, "  {line}");
+        _ = writeln!(output, "  {line}");
     }
     output.push('\n');
 
     output.push_str("Resources\n");
-    let _ = writeln!(output, "  Containers: {}", status.containers.len());
-    let _ = writeln!(output, "  Volumes: {}", status.volumes.len());
+    _ = writeln!(output, "  Containers: {}", status.containers.len());
+    _ = writeln!(output, "  Volumes: {}", status.volumes.len());
     output.push('\n');
 
     if status.lifecycle_status == LifecycleStatus::Incomplete {
         output.push_str("Lifecycle\n");
         if let Some(lifecycle) = status.lifecycle {
-            let _ = writeln!(
+            _ = writeln!(
                 output,
                 "  onCreateCommand: {}",
                 completion(
@@ -191,7 +191,7 @@ pub(super) fn render_workspace_detail(
                     lifecycle.after_on_create_completed
                 )
             );
-            let _ = writeln!(
+            _ = writeln!(
                 output,
                 "  updateContentCommand: {}",
                 completion(
@@ -199,7 +199,7 @@ pub(super) fn render_workspace_detail(
                     lifecycle.after_update_content_completed
                 )
             );
-            let _ = writeln!(
+            _ = writeln!(
                 output,
                 "  postCreateCommand: {}",
                 completion(
@@ -221,7 +221,7 @@ pub(super) fn render_workspace_detail(
     if !actions.is_empty() {
         output.push_str("Action\n");
         for (code, action) in actions {
-            let _ = writeln!(output, "  {code}: {action}");
+            _ = writeln!(output, "  {code}: {action}");
         }
     }
 
@@ -279,7 +279,7 @@ fn write_columns(output: &mut String, columns: &[&str], widths: &[usize]) {
         if index > 0 {
             output.push_str("  ");
         }
-        let _ = write!(output, "{:<width$}", column, width = widths[index]);
+        _ = write!(output, "{:<width$}", column, width = widths[index]);
     }
     output.push('\n');
 }

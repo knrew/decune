@@ -252,7 +252,7 @@ mod tests {
 
     fn fixture_root(name: &str) -> PathBuf {
         let root = env::temp_dir().join(format!("decune-path-tests-{name}-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
+        _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
     }

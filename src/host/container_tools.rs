@@ -106,9 +106,9 @@ pub(crate) fn stage_container_tool_from_dirs(
     tool: ContainerTool,
     platform: ContainerToolPlatform,
     runtime_dir: &Path,
-    source_dirs: Vec<PathBuf>,
+    source_dirs: &[PathBuf],
 ) -> Result<PathBuf> {
-    stage_container_tool_from_sources(tool, platform, runtime_dir, &source_dirs, &[])
+    stage_container_tool_from_sources(tool, platform, runtime_dir, source_dirs, &[])
 }
 
 #[cfg(test)]
@@ -235,7 +235,7 @@ fn stage_container_tool_from_sources(
     })();
 
     if result.is_err() {
-        let _ = fs::remove_file(&staged);
+        _ = fs::remove_file(&staged);
     }
     result.map(|()| target)
 }
@@ -457,7 +457,7 @@ mod tests {
             ContainerTool::GitCredentialHelper,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            vec![source],
+            &[source],
         )
         .unwrap();
 
@@ -519,7 +519,7 @@ mod tests {
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            vec![source],
+            &[source],
         )
         .unwrap_err();
 
@@ -548,7 +548,7 @@ mod tests {
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            vec![source],
+            &[source],
         )
         .unwrap_err();
 
@@ -605,7 +605,7 @@ mod tests {
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            vec![source],
+            &[source],
         )
         .unwrap_err();
 
