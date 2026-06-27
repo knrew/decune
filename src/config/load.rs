@@ -215,10 +215,7 @@ shell = false
         assert_eq!(config.shell.as_deref(), Some("/bin/zsh"));
         assert_eq!(config.features.len(), 2);
         assert_eq!(
-            config
-                .features
-                .get("ghcr.io/devcontainers/features/github-cli:1")
-                .unwrap()
+            config.features["ghcr.io/devcontainers/features/github-cli:1"]
                 .options
                 .get("version")
                 .and_then(|value| value.as_str()),

@@ -688,7 +688,7 @@ mod tests {
             ..ConfigMergeInput::default()
         });
 
-        let attributes = config.devcontainer.port_attributes.get("3000").unwrap();
+        let attributes = &config.devcontainer.port_attributes["3000"];
         assert_eq!(attributes.label.as_deref(), Some("web"));
         assert_eq!(
             attributes.on_auto_forward,

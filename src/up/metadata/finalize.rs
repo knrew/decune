@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Result, bail};
 use serde_json::Value as JsonValue;
 
 use crate::{
@@ -72,7 +72,9 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
             lookup_image = Some(plan.base_image.clone());
         }
     }
-    let mut lookup_image = lookup_image.expect("lookup image must be set");
+    let Some(mut lookup_image) = lookup_image else {
+        bail!("Failed to resolve image for Dockerfile metadata lookup");
+    };
     let dockerfile_metadata =
         dockerfile_image_metadata_for_plan(client, &plan, &lookup_image, options.forwarding)
             .await?;

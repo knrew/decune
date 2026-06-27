@@ -52,7 +52,7 @@ use crate::{
             ComposeServiceValidation, ComposeUpOptions, DockerComposeCli, write_compose_override,
         },
         compose_ports::{
-            ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
+            ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
             ComposePublishedPortOverride, ComposePublishedPortPlan,
             ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
             ComposePublishedPortStartupDiagnostics, compose_published_port_plan_has_relocations,

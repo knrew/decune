@@ -65,11 +65,11 @@ fn ensure_compose_up_success(
     }
 
     let stderr = command.redact_output(&output.stderr_string_lossy());
-    if let Some(diagnostics) = diagnostics
-        && let Some(diagnostic) =
-            classify_compose_published_port_startup_failure(&stderr, diagnostics)
-    {
-        return Err(diagnostic.into());
+    if let Some(diagnostics) = diagnostics {
+        match classify_compose_published_port_startup_failure(&stderr, diagnostics) {
+            Ok(Some(diagnostic)) | Err(diagnostic) => return Err(diagnostic.into()),
+            Ok(None) => {}
+        }
     }
 
     ensure_success(

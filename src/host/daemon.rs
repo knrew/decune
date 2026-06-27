@@ -625,8 +625,9 @@ async fn handle_connection(
 ) {
     let mut request = Vec::new();
     let read_failed = {
-        let limit = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1)
-            .expect("host daemon request byte limit fits in u64");
+        let Ok(limit) = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1) else {
+            return;
+        };
         let mut limited_stream = (&mut stream).take(limit);
         limited_stream.read_to_end(&mut request).await.is_err()
     };
@@ -656,7 +657,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    use anyhow::Result;
+    use anyhow::{Result, anyhow, bail};
     use serde_json::{Value, json};
     use tempfile::TempDir;
     use tokio::{
@@ -675,7 +676,9 @@ mod tests {
 
     impl GitCredentialExecutor for StaticGitCredentialExecutor {
         fn run(&self, command: GitCredentialCommand, _input: &str) -> Result<String> {
-            assert_eq!(command, GitCredentialCommand::Fill);
+            if command != GitCredentialCommand::Fill {
+                bail!("Unexpected Git credential command: {command:?}");
+            }
             Ok("username=octo\npassword=SECRET\n".to_owned())
         }
     }
@@ -687,7 +690,12 @@ mod tests {
 
     impl GitCredentialExecutor for RecordingGitCredentialExecutor {
         fn run(&self, command: GitCredentialCommand, input: &str) -> Result<String> {
-            self.calls.lock().unwrap().push((command, input.to_owned()));
+            self.calls
+                .lock()
+                .map_err(|error| {
+                    anyhow!("Git credential call recorder mutex was poisoned: {error}")
+                })?
+                .push((command, input.to_owned()));
             Ok(String::new())
         }
     }

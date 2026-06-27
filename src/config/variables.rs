@@ -207,19 +207,14 @@ where
     let mut rest = input;
 
     while let Some(start) = rest.find("${") {
-        let (prefix, after_prefix) = rest.split_at(start);
-        output.push_str(prefix);
-        let after_start = after_prefix
-            .strip_prefix("${")
-            .expect("variable marker was found");
-        let end = after_start
-            .find('}')
-            .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
-        let (expression, after_expression) = after_start.split_at(end);
-        output.push_str(&resolve_expression(expression, context, &mut local_env)?);
-        rest = after_expression
-            .strip_prefix('}')
-            .expect("closing variable marker was found");
+        let split = split_variable_expression(input, rest, start)?;
+        output.push_str(split.prefix);
+        output.push_str(&resolve_expression(
+            split.expression,
+            context,
+            &mut local_env,
+        )?);
+        rest = split.rest;
     }
 
     output.push_str(rest);
@@ -239,21 +234,12 @@ where
     let mut rest = input;
 
     while let Some(start) = rest.find("${") {
-        let (prefix, after_prefix) = rest.split_at(start);
-        output.push_str(prefix);
-        let after_start = after_prefix
-            .strip_prefix("${")
-            .expect("variable marker was found");
-        let end = after_start
-            .find('}')
-            .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
-        let (expression, after_expression) = after_start.split_at(end);
-        let resolved = resolve_expression_tracked(expression, context, &mut local_env)?;
+        let split = split_variable_expression(input, rest, start)?;
+        output.push_str(split.prefix);
+        let resolved = resolve_expression_tracked(split.expression, context, &mut local_env)?;
         output.push_str(&resolved.value);
         local_env_fragments.extend(resolved.local_env_fragments);
-        rest = after_expression
-            .strip_prefix('}')
-            .expect("closing variable marker was found");
+        rest = split.rest;
     }
 
     output.push_str(rest);
@@ -409,21 +395,45 @@ fn variable_expressions(input: &str) -> Result<Vec<&str>> {
     let mut rest = input;
 
     while let Some(start) = rest.find("${") {
-        let (_, after_prefix) = rest.split_at(start);
-        let after_start = after_prefix
-            .strip_prefix("${")
-            .expect("variable marker was found");
-        let end = after_start
-            .find('}')
-            .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
-        let (expression, after_expression) = after_start.split_at(end);
-        expressions.push(expression);
-        rest = after_expression
-            .strip_prefix('}')
-            .expect("closing variable marker was found");
+        let split = split_variable_expression(input, rest, start)?;
+        expressions.push(split.expression);
+        rest = split.rest;
     }
 
     Ok(expressions)
+}
+
+struct VariableExpressionSplit<'a> {
+    prefix: &'a str,
+    expression: &'a str,
+    rest: &'a str,
+}
+
+fn split_variable_expression<'a>(
+    input: &str,
+    rest: &'a str,
+    start: usize,
+) -> Result<VariableExpressionSplit<'a>> {
+    let (prefix, after_prefix) = rest.split_at(start);
+    let Some(after_start) = after_prefix.strip_prefix("${") else {
+        return Err(anyhow!(
+            "Unclosed variable expression in config string: {input}"
+        ));
+    };
+    let end = after_start
+        .find('}')
+        .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
+    let (expression, after_expression) = after_start.split_at(end);
+    let Some(next_rest) = after_expression.strip_prefix('}') else {
+        return Err(anyhow!(
+            "Unclosed variable expression in config string: {input}"
+        ));
+    };
+    Ok(VariableExpressionSplit {
+        prefix,
+        expression,
+        rest: next_rest,
+    })
 }
 
 #[cfg(test)]

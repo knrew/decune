@@ -1,21 +1,21 @@
 use crate::runtime::compose_ports::{
     ComposePortEligibility, ComposePortEntry, ComposePortProtocol, ComposePublishedHostPort,
-    ComposePublishedPortDiagnostic, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
+    ComposePublishedPortDiagnostic, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
     ComposePublishedPortPlanningInput, ComposePublishedPortStartupDiagnostics,
     compose_published_port_endpoint_display,
 };
 
 use super::{
-    endpoint::{endpoint_for_entry, protocol_order},
+    endpoint::{endpoint_for_entry, protocol_order, target_port_for_entry},
     planning::ordered_eligible_port_entries,
 };
 
 pub(crate) fn classify_compose_published_port_startup_failure(
     stderr: &str,
     diagnostics: ComposePublishedPortStartupDiagnostics<'_>,
-) -> Option<ComposePublishedPortDiagnostic> {
+) -> std::result::Result<Option<ComposePublishedPortDiagnostic>, ComposePublishedPortDiagnostic> {
     if !compose_startup_error_mentions_bind_conflict(stderr) {
-        return None;
+        return Ok(None);
     }
 
     if diagnostics.relocation_enabled {
@@ -27,22 +27,23 @@ pub(crate) fn classify_compose_published_port_startup_failure(
             ) {
                 continue;
             }
-            return Some(ComposePublishedPortDiagnostic::BindRace {
+            return Ok(Some(ComposePublishedPortDiagnostic::BindRace {
                 service: entry.service.clone(),
                 requested: entry.requested.clone(),
                 planned: entry.planned.clone(),
                 target_port: entry.target_port,
                 protocol: entry.protocol.clone(),
-            });
+            }));
         }
-        return classify_unsupported_compose_published_port_startup_failure(
+        return Ok(classify_unsupported_compose_published_port_startup_failure(
             stderr,
             diagnostics.input,
-        );
+        ));
     }
 
     for entry in ordered_eligible_port_entries(diagnostics.input) {
-        let requested = endpoint_for_entry(entry);
+        let requested =
+            endpoint_for_entry(entry).map_err(ComposePublishedPortDiagnostic::from_plan_error)?;
         if !compose_startup_error_mentions_endpoint_for_protocol(
             stderr,
             &requested,
@@ -50,17 +51,20 @@ pub(crate) fn classify_compose_published_port_startup_failure(
         ) {
             continue;
         }
-        return Some(ComposePublishedPortDiagnostic::Collision {
+        let target_port = target_port_for_entry(entry)
+            .map_err(ComposePublishedPortDiagnostic::from_plan_error)?;
+        return Ok(Some(ComposePublishedPortDiagnostic::Collision {
             service: entry.service.clone(),
             requested,
-            target_port: entry
-                .target_port
-                .expect("eligible Compose published port entry has target port"),
+            target_port,
             protocol: entry.protocol.clone(),
-        });
+        }));
     }
 
-    classify_unsupported_compose_published_port_startup_failure(stderr, diagnostics.input)
+    Ok(classify_unsupported_compose_published_port_startup_failure(
+        stderr,
+        diagnostics.input,
+    ))
 }
 
 fn classify_unsupported_compose_published_port_startup_failure(
@@ -118,12 +122,11 @@ fn unsupported_requested_endpoint_display_for_startup_failure(
     stderr: &str,
     entry: &ComposePortEntry,
 ) -> Option<String> {
-    let (host_ip_kind, host_ip_value) = endpoint_host_ip_for_entry(entry)?;
+    let host_ip = endpoint_host_ip_for_entry(entry)?;
     match &entry.published_host_port {
         ComposePublishedHostPort::Single(host_port) => {
             let endpoint = ComposePublishedPortEndpoint {
-                ip_kind: host_ip_kind,
-                ip_value: host_ip_value,
+                host_ip,
                 host_port: *host_port,
             };
             compose_startup_error_mentions_endpoint_for_protocol(stderr, &endpoint, &entry.protocol)
@@ -134,8 +137,7 @@ fn unsupported_requested_endpoint_display_for_startup_failure(
             (start..=end)
                 .any(|host_port| {
                     let endpoint = ComposePublishedPortEndpoint {
-                        ip_kind: host_ip_kind,
-                        ip_value: host_ip_value.clone(),
+                        host_ip: host_ip.clone(),
                         host_port,
                     };
                     compose_startup_error_mentions_endpoint_for_protocol(
@@ -144,29 +146,20 @@ fn unsupported_requested_endpoint_display_for_startup_failure(
                         &entry.protocol,
                     )
                 })
-                .then(|| {
-                    compose_published_port_range_endpoint_display(
-                        host_ip_kind,
-                        host_ip_value.as_ref(),
-                        range,
-                    )
-                })
+                .then(|| compose_published_port_range_endpoint_display(&host_ip, range))
         }
         ComposePublishedHostPort::None | ComposePublishedHostPort::Invalid(_) => None,
     }
 }
 
-fn endpoint_host_ip_for_entry(
-    entry: &ComposePortEntry,
-) -> Option<(ComposePublishedPortHostIpKind, Option<String>)> {
+fn endpoint_host_ip_for_entry(entry: &ComposePortEntry) -> Option<ComposePublishedPortHostIp> {
     match &entry.host_ip {
         crate::runtime::compose_ports::ComposePortHostIp::Omitted => {
-            Some((ComposePublishedPortHostIpKind::Omitted, None))
+            Some(ComposePublishedPortHostIp::Omitted)
         }
-        crate::runtime::compose_ports::ComposePortHostIp::Explicit(value) => Some((
-            ComposePublishedPortHostIpKind::Explicit,
-            Some(value.clone()),
-        )),
+        crate::runtime::compose_ports::ComposePortHostIp::Explicit(value) => {
+            Some(ComposePublishedPortHostIp::Explicit(value.clone()))
+        }
         crate::runtime::compose_ports::ComposePortHostIp::Invalid(_) => None,
     }
 }
@@ -182,16 +175,15 @@ fn parse_published_host_port_range(range: &str) -> Option<(u16, u16)> {
 }
 
 fn compose_published_port_range_endpoint_display(
-    ip_kind: ComposePublishedPortHostIpKind,
-    ip_value: Option<&String>,
+    host_ip: &ComposePublishedPortHostIp,
     range: &str,
 ) -> String {
-    match ip_kind {
-        ComposePublishedPortHostIpKind::Omitted => {
+    match host_ip {
+        ComposePublishedPortHostIp::Omitted => {
             format!("<host_ip omitted>:{range}")
         }
-        ComposePublishedPortHostIpKind::Explicit => {
-            format!("{}:{range}", ip_value.map_or("", String::as_str))
+        ComposePublishedPortHostIp::Explicit(value) => {
+            format!("{value}:{range}")
         }
     }
 }
@@ -263,19 +255,17 @@ fn compose_startup_error_mentions_endpoint(
         return false;
     }
 
-    match endpoint.ip_kind {
-        ComposePublishedPortHostIpKind::Omitted => true,
-        ComposePublishedPortHostIpKind::Explicit => {
-            endpoint.ip_value.as_deref().is_some_and(|host_ip| {
-                let host_ip = host_ip.to_ascii_lowercase();
-                contains_endpoint_token_with_port_boundary(
-                    &lower,
-                    &format!("{host_ip}:{}", endpoint.host_port),
-                ) || contains_endpoint_token_with_port_boundary(
-                    &lower,
-                    &format!("[{host_ip}]:{}", endpoint.host_port),
-                )
-            })
+    match &endpoint.host_ip {
+        ComposePublishedPortHostIp::Omitted => true,
+        ComposePublishedPortHostIp::Explicit(host_ip) => {
+            let host_ip = host_ip.to_ascii_lowercase();
+            contains_endpoint_token_with_port_boundary(
+                &lower,
+                &format!("{host_ip}:{}", endpoint.host_port),
+            ) || contains_endpoint_token_with_port_boundary(
+                &lower,
+                &format!("[{host_ip}]:{}", endpoint.host_port),
+            )
         }
     }
 }
@@ -297,10 +287,10 @@ mod tests {
     use super::*;
     use crate::runtime::compose_ports::diagnostics::{
         COMPOSE_PUBLISHED_PORT_BIND_RACE, COMPOSE_PUBLISHED_PORT_COLLISION,
-        COMPOSE_PUBLISHED_PORT_UNSUPPORTED,
+        COMPOSE_PUBLISHED_PORT_INVALID, COMPOSE_PUBLISHED_PORT_UNSUPPORTED,
     };
     use crate::runtime::compose_ports::{
-        ComposePublishedPortPlan, ComposePublishedPortStartupDiagnostics,
+        ComposePublishedHostPort, ComposePublishedPortPlan, ComposePublishedPortStartupDiagnostics,
         test_support::{plan_with_availability, planning_input},
     };
 
@@ -327,6 +317,7 @@ mod tests {
                 relocation_enabled: false,
             },
         )
+        .unwrap()
         .expect("bind conflict should be classified")
         .to_string();
 
@@ -335,6 +326,38 @@ mod tests {
         assert!(diagnostic.contains("<host_ip omitted>:3000"));
         assert!(diagnostic.contains("app:3000/tcp"));
         assert!(diagnostic.contains("not a decune forwarding listener"));
+    }
+
+    #[test]
+    fn startup_failure_classifier_errors_on_inconsistent_eligible_entry() {
+        let mut input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        input.port_entries[0].published_host_port = ComposePublishedHostPort::None;
+        let plan = ComposePublishedPortPlan::default();
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Error response from daemon: Bind for 0.0.0.0:3000 failed: port is already allocated",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: false,
+            },
+        )
+        .expect_err("inconsistent eligible entry must fail")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_INVALID));
+        assert!(diagnostic.contains("service `app` port entry 0"));
+        assert!(diagnostic.contains("published host port"));
     }
 
     #[test]
@@ -363,6 +386,7 @@ mod tests {
                 relocation_enabled: false,
             },
         )
+        .unwrap()
         .expect("bind conflict should be classified")
         .to_string();
 
@@ -396,6 +420,7 @@ mod tests {
                 relocation_enabled: true,
             },
         )
+        .unwrap()
         .expect("planned bind conflict should be classified")
         .to_string();
 
@@ -431,6 +456,7 @@ mod tests {
                 relocation_enabled: true,
             },
         )
+        .unwrap()
         .expect("planned bind conflict should be classified")
         .to_string();
 
@@ -469,6 +495,7 @@ mod tests {
             "Bind for 0.0.0.0:3000 failed: port is already allocated",
             diagnostics,
         )
+        .unwrap()
         .expect("unsupported UDP bind conflict should be classified")
         .to_string();
 
@@ -506,6 +533,7 @@ mod tests {
                 relocation_enabled: false,
             },
         )
+        .unwrap()
         .expect("unsupported UDP bind conflict should be classified")
         .to_string();
 
@@ -541,6 +569,7 @@ mod tests {
                 relocation_enabled: false,
             },
         )
+        .unwrap()
         .expect("unsupported range bind conflict should be classified")
         .to_string();
 
@@ -578,6 +607,7 @@ mod tests {
                 relocation_enabled: true,
             },
         )
+        .unwrap()
         .expect("unsupported UDP bind conflict should be classified after planned entries")
         .to_string();
 
@@ -613,6 +643,7 @@ mod tests {
                 relocation_enabled: true,
             },
         )
+        .unwrap()
         .expect("unsupported UDP bind conflict should be classified")
         .to_string();
 
@@ -651,6 +682,7 @@ mod tests {
                 "pull access denied for image using port 3001",
                 diagnostics,
             )
+            .unwrap()
             .is_none()
         );
         assert!(
@@ -658,6 +690,7 @@ mod tests {
                 "Bind for 0.0.0.0:3000 failed: port is already allocated",
                 diagnostics,
             )
+            .unwrap()
             .is_none()
         );
         assert!(
@@ -665,6 +698,7 @@ mod tests {
                 "Bind for 0.0.0.0:3001 failed: port is already allocated",
                 diagnostics,
             )
+            .unwrap()
             .is_none()
         );
     }

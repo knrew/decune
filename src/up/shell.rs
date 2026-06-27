@@ -55,7 +55,7 @@ fn normalized_shell(shell: Option<&str>) -> Option<String> {
 
 pub(crate) fn clamp_exit_code(exit_code: i64) -> i32 {
     match exit_code {
-        0..=255 => i32::try_from(exit_code).expect("exit code range fits in i32"),
+        0..=255 => i32::try_from(exit_code).unwrap_or(1),
         _ => 1,
     }
 }

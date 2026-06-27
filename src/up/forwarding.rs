@@ -153,12 +153,16 @@ async fn resolve_forwarding_agent_targets(
     started: &StartedUpContainer,
     primary_runtime_dir: &Path,
 ) -> Result<Vec<ForwardingAgentTarget>> {
-    let published_host_reservations =
-        published_port_host_reservations(&started.state.borrow().published_ports);
-    let published_ports = published_port_publish_ports_for_service(
-        &started.state.borrow().published_ports,
-        primary_compose_service(&started.plan),
-    );
+    let (published_host_reservations, published_ports) = {
+        let state = started.state.borrow();
+        (
+            published_port_host_reservations(&state.published_ports)?,
+            published_port_publish_ports_for_service(
+                &state.published_ports,
+                primary_compose_service(&started.plan),
+            )?,
+        )
+    };
     let mut targets = plan_forwarding_agent_targets_with_host_reservations(
         &started.plan,
         primary_runtime_dir,
@@ -282,17 +286,14 @@ pub(in crate::up) fn plan_forwarding_agent_targets_with_host_reservations(
 
 pub(in crate::up) fn published_port_host_reservations(
     published_ports: &[PublishedPortRuntimeState],
-) -> Vec<HostPortReservation> {
+) -> Result<Vec<HostPortReservation>> {
     let mut reservations = BTreeSet::<(String, u16)>::new();
     for port in published_ports {
         if port.target.protocol != "tcp" {
             continue;
         }
         reservations.insert((
-            published_endpoint_reservation_host_ip(
-                port.planned.ip_kind,
-                port.planned.ip_value.as_deref(),
-            ),
+            published_endpoint_reservation_host_ip(port, &port.planned, "planned")?,
             port.planned.host_port,
         ));
         for binding in &port.actual_bindings {
@@ -300,48 +301,81 @@ pub(in crate::up) fn published_port_host_reservations(
         }
     }
 
-    reservations
+    Ok(reservations
         .into_iter()
         .map(|(host_ip, host)| HostPortReservation { host_ip, host })
-        .collect()
+        .collect())
 }
 
 #[cfg(test)]
 pub(in crate::up) fn published_port_publish_ports(
     published_ports: &[PublishedPortRuntimeState],
-) -> Vec<ResolvedPublishPort> {
+) -> Result<Vec<ResolvedPublishPort>> {
     published_port_publish_ports_for_service(published_ports, None)
 }
 
 pub(in crate::up) fn published_port_publish_ports_for_service(
     published_ports: &[PublishedPortRuntimeState],
     service: Option<&str>,
-) -> Vec<ResolvedPublishPort> {
+) -> Result<Vec<ResolvedPublishPort>> {
     published_ports
         .iter()
         .filter(|port| {
             port.target.protocol == "tcp" && service.is_none_or(|service| port.service == service)
         })
-        .map(|port| ResolvedPublishPort {
-            container: port.target.port,
-            host: Some(port.planned.host_port),
-            host_ip: match port.planned.ip_kind {
-                PublishedPortHostIpKind::Omitted => None,
-                PublishedPortHostIpKind::Explicit => port.planned.ip_value.clone(),
-            },
-            protocol: PortProtocol::Tcp,
+        .map(|port| {
+            Ok(ResolvedPublishPort {
+                container: port.target.port,
+                host: Some(port.planned.host_port),
+                host_ip: published_endpoint_publish_host_ip(port, &port.planned, "planned")?,
+                protocol: PortProtocol::Tcp,
+            })
         })
         .collect()
 }
 
 fn published_endpoint_reservation_host_ip(
-    kind: PublishedPortHostIpKind,
-    value: Option<&str>,
-) -> String {
-    match kind {
+    port: &PublishedPortRuntimeState,
+    endpoint: &crate::state::PublishedPortEndpointState,
+    endpoint_name: &str,
+) -> Result<String> {
+    Ok(match endpoint.ip_kind {
         PublishedPortHostIpKind::Omitted => OMITTED_PUBLISHED_HOST_IP_RESERVATION.to_owned(),
-        PublishedPortHostIpKind::Explicit => value.unwrap_or_default().to_owned(),
+        PublishedPortHostIpKind::Explicit => {
+            explicit_published_endpoint_host_ip(port, endpoint, endpoint_name)?
+        }
+    })
+}
+
+fn published_endpoint_publish_host_ip(
+    port: &PublishedPortRuntimeState,
+    endpoint: &crate::state::PublishedPortEndpointState,
+    endpoint_name: &str,
+) -> Result<Option<String>> {
+    match endpoint.ip_kind {
+        PublishedPortHostIpKind::Omitted => Ok(None),
+        PublishedPortHostIpKind::Explicit => {
+            explicit_published_endpoint_host_ip(port, endpoint, endpoint_name).map(Some)
+        }
     }
+}
+
+fn explicit_published_endpoint_host_ip(
+    port: &PublishedPortRuntimeState,
+    endpoint: &crate::state::PublishedPortEndpointState,
+    endpoint_name: &str,
+) -> Result<String> {
+    endpoint
+        .ip_value
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_owned)
+        .with_context(|| {
+            format!(
+                "Compose published port runtime state for service `{}` port entry {} has {endpoint_name}.host_ip_kind explicit without {endpoint_name}.host_ip_value",
+                port.service, port.port_entry_index
+            )
+        })
 }
 
 async fn resolve_compose_forwarding_container(
@@ -622,7 +656,7 @@ mod tests {
             },
         ];
 
-        let reservations = published_port_host_reservations(&published_ports);
+        let reservations = published_port_host_reservations(&published_ports).unwrap();
 
         assert_eq!(
             reservations,
@@ -638,7 +672,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            published_port_publish_ports(&published_ports),
+            published_port_publish_ports(&published_ports).unwrap(),
             vec![ResolvedPublishPort {
                 container: 3000,
                 host: Some(3001),
@@ -697,7 +731,7 @@ mod tests {
         ];
 
         assert_eq!(
-            published_port_host_reservations(&published_ports),
+            published_port_host_reservations(&published_ports).unwrap(),
             vec![
                 HostPortReservation {
                     host_ip: "0.0.0.0".to_owned(),
@@ -710,13 +744,54 @@ mod tests {
             ]
         );
         assert_eq!(
-            published_port_publish_ports_for_service(&published_ports, Some("app")),
+            published_port_publish_ports_for_service(&published_ports, Some("app")).unwrap(),
             vec![ResolvedPublishPort {
                 container: 8080,
                 host: Some(18080),
                 host_ip: Some("127.0.0.1".to_owned()),
                 protocol: PortProtocol::Tcp,
             }]
+        );
+    }
+    #[test]
+    fn compose_published_port_state_requires_explicit_host_ip_value_for_forwarding() {
+        let published_ports = vec![PublishedPortRuntimeState {
+            source: PublishedPortSource::Compose,
+            kind: PublishedPortRuntimeType::Published,
+            service: "app".to_owned(),
+            port_entry_index: 0,
+            target: PublishedPortTarget {
+                port: 3000,
+                protocol: "tcp".to_owned(),
+            },
+            requested: PublishedPortEndpointState {
+                ip_kind: PublishedPortHostIpKind::Explicit,
+                ip_value: Some("127.0.0.1".to_owned()),
+                host_port: 3000,
+            },
+            planned: PublishedPortEndpointState {
+                ip_kind: PublishedPortHostIpKind::Explicit,
+                ip_value: None,
+                host_port: 3001,
+            },
+            actual_bindings: Vec::new(),
+            relocated: true,
+        }];
+
+        let reservation_error = published_port_host_reservations(&published_ports)
+            .expect_err("explicit host_ip_kind without host_ip_value must fail");
+        assert!(
+            reservation_error
+                .to_string()
+                .contains("planned.host_ip_kind explicit without planned.host_ip_value")
+        );
+
+        let publish_error = published_port_publish_ports(&published_ports)
+            .expect_err("explicit host_ip_kind without host_ip_value must fail");
+        assert!(
+            publish_error
+                .to_string()
+                .contains("planned.host_ip_kind explicit without planned.host_ip_value")
         );
     }
     #[test]

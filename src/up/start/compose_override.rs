@@ -123,13 +123,11 @@ fn compose_published_port_relocation_warning_messages(
 }
 
 fn compose_published_port_endpoint_display(endpoint: &ComposePublishedPortEndpoint) -> String {
-    match endpoint.ip_kind {
-        ComposePublishedPortHostIpKind::Omitted => endpoint.host_port.to_string(),
-        ComposePublishedPortHostIpKind::Explicit => format!(
-            "{}:{}",
-            endpoint.ip_value.as_deref().unwrap_or(""),
-            endpoint.host_port
-        ),
+    match &endpoint.host_ip {
+        ComposePublishedPortHostIp::Omitted => endpoint.host_port.to_string(),
+        ComposePublishedPortHostIp::Explicit(value) => {
+            format!("{}:{}", value, endpoint.host_port)
+        }
     }
 }
 
@@ -336,7 +334,7 @@ mod tests {
         runtime::compose_ports::{
             ComposePortEligibility, ComposePortEntry, ComposePortHostIp, ComposePortProtocol,
             ComposePortSyntax, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
-            ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind, ComposePublishedPortPlan,
+            ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
             ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
             ComposePublishedPortPlanSource, compose_published_port_override,
         },
@@ -670,13 +668,11 @@ mod tests {
                 target_port: 3000,
                 protocol: ComposePortProtocol::Tcp,
                 requested: ComposePublishedPortEndpoint {
-                    ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                    ip_value: Some("127.0.0.1".to_owned()),
+                    host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                     host_port: 3000,
                 },
                 planned: ComposePublishedPortEndpoint {
-                    ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                    ip_value: Some("127.0.0.1".to_owned()),
+                    host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                     host_port: 3001,
                 },
                 relocated: true,
@@ -744,13 +740,11 @@ mod tests {
                 target_port: 5432,
                 protocol: ComposePortProtocol::Tcp,
                 requested: ComposePublishedPortEndpoint {
-                    ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                    ip_value: None,
+                    host_ip: ComposePublishedPortHostIp::Omitted,
                     host_port: 5432,
                 },
                 planned: ComposePublishedPortEndpoint {
-                    ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                    ip_value: None,
+                    host_ip: ComposePublishedPortHostIp::Omitted,
                     host_port: 5433,
                 },
                 relocated: true,
@@ -788,13 +782,11 @@ mod tests {
                 target_port: 3000,
                 protocol: ComposePortProtocol::Tcp,
                 requested: ComposePublishedPortEndpoint {
-                    ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                    ip_value: None,
+                    host_ip: ComposePublishedPortHostIp::Omitted,
                     host_port: 3000,
                 },
                 planned: ComposePublishedPortEndpoint {
-                    ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                    ip_value: None,
+                    host_ip: ComposePublishedPortHostIp::Omitted,
                     host_port: 3001,
                 },
                 relocated: true,

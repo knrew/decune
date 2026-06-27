@@ -192,9 +192,9 @@ where
     let mut scan_queue = nodes.keys().cloned().collect::<VecDeque<_>>();
     let mut dependency_edges = BTreeMap::<String, BTreeSet<String>>::new();
     while let Some(canonical_id) = scan_queue.pop_front() {
-        let input = nodes
-            .get(&canonical_id)
-            .expect("queued Feature must exist in install graph");
+        let Some(input) = nodes.get(&canonical_id) else {
+            bail!("Feature install graph is missing queued Feature: {canonical_id}");
+        };
         let parent_canonical_id = input.feature.canonical_id.clone();
         let parent_reference = input.reference.clone();
         let depends_on = input
@@ -294,35 +294,31 @@ where
             bail!("Feature install order contains a dependency cycle involving: {blocked}");
         }
 
-        let max_priority = ready
-            .iter()
-            .map(|instance_key| {
-                let canonical_id = &nodes
-                    .get(instance_key)
-                    .expect("ready Feature must exist in install graph")
-                    .instance_key;
-                feature_round_priority(canonical_id, &priorities)
-            })
-            .max()
-            .unwrap_or_default();
-        let mut round = ready
-            .into_iter()
-            .filter(|instance_key| {
-                let canonical_id = &nodes
-                    .get(instance_key)
-                    .expect("ready Feature must exist in install graph")
-                    .instance_key;
-                feature_round_priority(canonical_id, &priorities) == max_priority
-            })
-            .collect::<Vec<_>>();
+        let mut max_priority = 0;
+        for instance_key in &ready {
+            let Some(input) = nodes.get(instance_key) else {
+                bail!("Feature install graph is missing ready Feature: {instance_key}");
+            };
+            max_priority =
+                max_priority.max(feature_round_priority(&input.instance_key, &priorities));
+        }
+        let mut round = Vec::new();
+        for instance_key in ready {
+            let Some(input) = nodes.get(&instance_key) else {
+                bail!("Feature install graph is missing ready Feature: {instance_key}");
+            };
+            if feature_round_priority(&input.instance_key, &priorities) == max_priority {
+                round.push(instance_key);
+            }
+        }
         round.sort_by(|left, right| stable_feature_order(nodes.get(left), nodes.get(right)));
 
         for canonical_id in round {
             worklist.remove(&canonical_id);
             installed.insert(canonical_id.clone());
-            let input = nodes
-                .get(&canonical_id)
-                .expect("ready Feature must exist in install graph");
+            let Some(input) = nodes.get(&canonical_id) else {
+                bail!("Feature install graph is missing ready Feature: {canonical_id}");
+            };
             let option_env = feature_option_env(&input.feature, &input.metadata)?;
             ordered.push(FeatureInstallPlanEntry {
                 feature: input.feature.clone(),

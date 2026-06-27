@@ -42,7 +42,7 @@ pub(crate) struct DockerBuildOptions {
 }
 
 pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) -> Result<()> {
-    let spinner = ui::spinner(&format!("Building Docker image: {}", input.image_tag));
+    let spinner = ui::spinner(&format!("Building Docker image: {}", input.image_tag))?;
 
     let tar = tar::create_build_context_tar(&input.context)?;
     let labels = input.labels.clone().into_iter().collect::<BTreeMap<_, _>>();
@@ -63,7 +63,7 @@ pub(crate) async fn build_image(client: &DockerClient, input: DockerBuildInput) 
     let output = client.cli().build(command_input).await?;
     drop(output);
 
-    spinner.finish(&format!("Built Docker image: {}", input.image_tag));
+    spinner.finish(&format!("Built Docker image: {}", input.image_tag))?;
     Ok(())
 }
 

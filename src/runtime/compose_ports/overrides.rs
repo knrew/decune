@@ -100,7 +100,7 @@ mod tests {
     use super::*;
     use crate::runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedPortAllocationReason, ComposePublishedPortEndpoint,
-        ComposePublishedPortHostIpKind, ComposePublishedPortPlan, ComposePublishedPortPlanEntry,
+        ComposePublishedPortHostIp, ComposePublishedPortPlan, ComposePublishedPortPlanEntry,
         ComposePublishedPortPlanEntryType, ComposePublishedPortPlanSource, test_support::entries,
     };
 
@@ -139,13 +139,11 @@ mod tests {
                     target_port: 3000,
                     protocol: ComposePortProtocol::Tcp,
                     requested: ComposePublishedPortEndpoint {
-                        ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                        ip_value: None,
+                        host_ip: ComposePublishedPortHostIp::Omitted,
                         host_port: 3000,
                     },
                     planned: ComposePublishedPortEndpoint {
-                        ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                        ip_value: None,
+                        host_ip: ComposePublishedPortHostIp::Omitted,
                         host_port: 3005,
                     },
                     relocated: true,
@@ -159,13 +157,11 @@ mod tests {
                     target_port: 3001,
                     protocol: ComposePortProtocol::Tcp,
                     requested: ComposePublishedPortEndpoint {
-                        ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                        ip_value: Some("127.0.0.1".to_owned()),
+                        host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                         host_port: 3001,
                     },
                     planned: ComposePublishedPortEndpoint {
-                        ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                        ip_value: Some("127.0.0.1".to_owned()),
+                        host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                         host_port: 3006,
                     },
                     relocated: true,
@@ -179,13 +175,11 @@ mod tests {
                     target_port: 3002,
                     protocol: ComposePortProtocol::Tcp,
                     requested: ComposePublishedPortEndpoint {
-                        ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                        ip_value: Some("0.0.0.0".to_owned()),
+                        host_ip: ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
                         host_port: 3002,
                     },
                     planned: ComposePublishedPortEndpoint {
-                        ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                        ip_value: Some("0.0.0.0".to_owned()),
+                        host_ip: ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
                         host_port: 3007,
                     },
                     relocated: true,

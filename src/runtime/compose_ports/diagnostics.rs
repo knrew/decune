@@ -4,7 +4,7 @@ use crate::runtime::compose_ports::{
     compose_published_port_endpoint_display,
 };
 
-use super::endpoint::endpoint_for_entry;
+use super::endpoint::{endpoint_for_entry, target_port_for_entry};
 use super::planning::ComposePublishedPortPlanError;
 
 pub(crate) const COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED: &str =
@@ -74,6 +74,15 @@ impl ComposePublishedPortDiagnostic {
             } => Self::Invalid {
                 detail: format!(
                     "Failed to check Compose published port availability for {host_ip}:{host_port}: {source:#}"
+                ),
+            },
+            ComposePublishedPortPlanError::InconsistentEntry {
+                service,
+                port_entry_index,
+                detail,
+            } => Self::Invalid {
+                detail: format!(
+                    "Internal Compose published port state is inconsistent for service `{service}` port entry {port_entry_index}: {detail}"
                 ),
             },
         }
@@ -155,13 +164,14 @@ pub(crate) fn validate_compose_published_port_diagnostics(
             continue;
         }
 
-        let target_port = entry
-            .target_port
-            .expect("eligible Compose published port entry has target port");
+        let target_port = target_port_for_entry(entry)
+            .map_err(ComposePublishedPortDiagnostic::from_plan_error)?;
+        let requested =
+            endpoint_for_entry(entry).map_err(ComposePublishedPortDiagnostic::from_plan_error)?;
         return Err(ComposePublishedPortDiagnostic::MultiReplicaUnsupported {
             service: entry.service.clone(),
             replica_count: entry.service_replica_count,
-            requested: endpoint_for_entry(entry),
+            requested,
             target_port,
             protocol: entry.protocol.clone(),
         });
@@ -241,6 +251,31 @@ mod tests {
         assert!(message.contains("<host_ip omitted>:3000"));
         assert!(message.contains("app:3000/tcp"));
         assert!(message.contains("container-only Compose port"));
+    }
+
+    #[test]
+    fn multi_replica_policy_errors_on_inconsistent_eligible_entry() {
+        let mut input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "scale": 2,
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        input.port_entries[0].target_port = None;
+
+        let error = validate_compose_published_port_diagnostics(&input)
+            .expect_err("inconsistent eligible entry must fail");
+        let message = error.to_string();
+
+        assert!(message.contains(COMPOSE_PUBLISHED_PORT_INVALID));
+        assert!(message.contains("service `app` port entry 0"));
+        assert!(message.contains("target port"));
     }
 
     #[test]
