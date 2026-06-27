@@ -146,11 +146,11 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
     }
 
     if !options.dry_run {
-        ensure_clean_confirmed(
-            options.no_confirm,
-            io::stdin().is_terminal(),
-            has_remove_candidates,
-        )?;
+        ensure_clean_confirmed(CleanConfirmation {
+            no_confirm: options.no_confirm,
+            stdin_is_terminal: io::stdin().is_terminal(),
+            has_targets: has_remove_candidates,
+        })?;
     }
 
     if !options.dry_run {
@@ -568,20 +568,23 @@ fn feature_cache_clean_target() -> Result<FeatureCacheCleanTarget> {
     })
 }
 
-fn ensure_clean_confirmed(
+#[derive(Debug, Clone, Copy)]
+struct CleanConfirmation {
     no_confirm: bool,
     stdin_is_terminal: bool,
     has_targets: bool,
-) -> Result<()> {
-    if !has_targets {
+}
+
+fn ensure_clean_confirmed(confirmation: CleanConfirmation) -> Result<()> {
+    if !confirmation.has_targets {
         return Ok(());
     }
-    if !no_confirm && !stdin_is_terminal {
+    if !confirmation.no_confirm && !confirmation.stdin_is_terminal {
         bail!(
             "Cannot confirm clean in a non-interactive terminal; rerun with --no-confirm to remove generated data"
         );
     }
-    if !no_confirm && stdin_is_terminal && !confirm_clean()? {
+    if !confirmation.no_confirm && confirmation.stdin_is_terminal && !confirm_clean()? {
         bail!("Clean cancelled");
     }
     Ok(())
@@ -1064,15 +1067,34 @@ mod tests {
 
     #[test]
     fn confirmation_rejects_non_interactive_without_no_confirm() {
-        let error = ensure_clean_confirmed(false, false, true).unwrap_err();
+        let error = ensure_clean_confirmed(CleanConfirmation {
+            no_confirm: false,
+            stdin_is_terminal: false,
+            has_targets: true,
+        })
+        .unwrap_err();
 
         assert!(
             error
                 .to_string()
                 .contains("Cannot confirm clean in a non-interactive terminal")
         );
-        assert!(ensure_clean_confirmed(true, false, true).is_ok());
-        assert!(ensure_clean_confirmed(false, false, false).is_ok());
+        assert!(
+            ensure_clean_confirmed(CleanConfirmation {
+                no_confirm: true,
+                stdin_is_terminal: false,
+                has_targets: true,
+            })
+            .is_ok()
+        );
+        assert!(
+            ensure_clean_confirmed(CleanConfirmation {
+                no_confirm: false,
+                stdin_is_terminal: false,
+                has_targets: false,
+            })
+            .is_ok()
+        );
     }
 
     struct TestRoots {

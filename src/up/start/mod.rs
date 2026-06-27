@@ -113,8 +113,8 @@ mod test_support;
 
 #[cfg(test)]
 pub(in crate::up) use compose_override::generated_compose_override_content;
-pub(in crate::up) use container::create_and_start_container;
 pub(in crate::up) use container::wait_for_container_exit_code;
+pub(in crate::up) use container::{ImagePreparation, create_and_start_container};
 pub(in crate::up) use listing::list_workspace_containers;
 pub(in crate::up) use state_sync::StartedUpContainer;
 
@@ -308,9 +308,11 @@ pub(in crate::up) async fn ensure_container_started(
         prepare_image_for_create(
             &client,
             &plan,
-            options.pull,
-            options.no_cache,
-            image_prepared,
+            ImagePreparation {
+                pull: options.pull,
+                no_cache: options.no_cache,
+                image_prepared,
+            },
         )
         .await?;
     }
@@ -332,9 +334,11 @@ pub(in crate::up) async fn ensure_container_started(
                 &client,
                 &workspace,
                 &plan,
-                options.pull,
-                options.no_cache,
-                image_prepared,
+                ImagePreparation {
+                    pull: options.pull,
+                    no_cache: options.no_cache,
+                    image_prepared,
+                },
             )
             .await?;
             started_up_container(
@@ -352,9 +356,11 @@ pub(in crate::up) async fn ensure_container_started(
                 &client,
                 &workspace,
                 &plan,
-                options.pull,
-                options.no_cache,
-                image_prepared,
+                ImagePreparation {
+                    pull: options.pull,
+                    no_cache: options.no_cache,
+                    image_prepared,
+                },
             )
             .await?;
             started_up_container(

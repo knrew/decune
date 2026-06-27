@@ -428,7 +428,7 @@ impl DockerCli {
         container: &str,
         spec: &crate::docker::exec::ExecCommandSpec,
     ) -> Result<crate::docker::exec::ExecOutput> {
-        let command = docker_exec_command(container, spec, false, false, false);
+        let command = docker_exec_command(container, spec, DockerExecMode::capture());
         let output = self.runner.run_capture(command.clone()).await?;
         Ok(crate::docker::exec::ExecOutput {
             stdout: output.stdout,
@@ -442,7 +442,7 @@ impl DockerCli {
         container: &str,
         spec: &crate::docker::exec::ExecCommandSpec,
     ) -> Result<()> {
-        let command = docker_exec_command(container, spec, false, false, true);
+        let command = docker_exec_command(container, spec, DockerExecMode::detached());
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success("start detached Docker exec", container, &command, &output)
     }
@@ -455,9 +455,7 @@ impl DockerCli {
         let command = docker_exec_command(
             container,
             spec,
-            true,
-            spec.tty && terminal::stdin_is_tty(),
-            false,
+            DockerExecMode::attached(spec.tty && terminal::stdin_is_tty()),
         );
         let status = self
             .runner
@@ -697,21 +695,52 @@ fn add_host_config_args(mut command: RuntimeCommand, spec: &ContainerCreateSpec)
     command
 }
 
-fn docker_exec_command(
-    container: &str,
-    spec: &crate::docker::exec::ExecCommandSpec,
+#[derive(Debug, Clone, Copy)]
+struct DockerExecMode {
     interactive: bool,
     tty: bool,
     detached: bool,
+}
+
+impl DockerExecMode {
+    const fn capture() -> Self {
+        Self {
+            interactive: false,
+            tty: false,
+            detached: false,
+        }
+    }
+
+    const fn detached() -> Self {
+        Self {
+            interactive: false,
+            tty: false,
+            detached: true,
+        }
+    }
+
+    const fn attached(tty: bool) -> Self {
+        Self {
+            interactive: true,
+            tty,
+            detached: false,
+        }
+    }
+}
+
+fn docker_exec_command(
+    container: &str,
+    spec: &crate::docker::exec::ExecCommandSpec,
+    mode: DockerExecMode,
 ) -> RuntimeCommand {
     let mut command = docker_cmd(["exec"]);
-    if interactive {
+    if mode.interactive {
         command = command.arg("--interactive");
     }
-    if tty {
+    if mode.tty {
         command = command.arg("--tty");
     }
-    if detached {
+    if mode.detached {
         command = command.arg("--detach");
     }
     if let Some(user) = &spec.user {
@@ -968,8 +997,9 @@ mod tests {
         runtime::{
             command::{FakeRuntimeCommand, RuntimeOutput},
             docker_cli::{
-                DockerBuildCliInput, DockerCli, DockerMountCliExt, DockerPublishCliExt,
-                docker_build_command, docker_create_command, docker_exec_command,
+                DockerBuildCliInput, DockerCli, DockerExecMode, DockerMountCliExt,
+                DockerPublishCliExt, docker_build_command, docker_create_command,
+                docker_exec_command,
             },
         },
     };
@@ -1259,7 +1289,8 @@ mod tests {
             tty: true,
         };
 
-        let non_tty_attached = docker_exec_command("container", &spec, true, false, false);
+        let non_tty_attached =
+            docker_exec_command("container", &spec, DockerExecMode::attached(false));
         assert!(
             non_tty_attached
                 .args_vec()
@@ -1267,7 +1298,7 @@ mod tests {
         );
         assert!(!non_tty_attached.args_vec().contains(&"--tty".to_owned()));
 
-        let tty_attached = docker_exec_command("container", &spec, true, true, false);
+        let tty_attached = docker_exec_command("container", &spec, DockerExecMode::attached(true));
         assert!(
             tty_attached
                 .args_vec()
@@ -1275,7 +1306,7 @@ mod tests {
         );
         assert!(tty_attached.args_vec().contains(&"--tty".to_owned()));
 
-        let captured = docker_exec_command("container", &spec, false, false, false);
+        let captured = docker_exec_command("container", &spec, DockerExecMode::capture());
         assert!(!captured.args_vec().contains(&"--interactive".to_owned()));
         assert!(!captured.args_vec().contains(&"--tty".to_owned()));
     }
@@ -1300,7 +1331,7 @@ mod tests {
             tty: false,
         };
 
-        let command = docker_exec_command("container", &spec, false, false, true);
+        let command = docker_exec_command("container", &spec, DockerExecMode::detached());
 
         assert!(
             !command

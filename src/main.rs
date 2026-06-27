@@ -5,7 +5,6 @@
     clippy::create_dir,
     clippy::expect_used,
     clippy::filetype_is_file,
-    clippy::fn_params_excessive_bools,
     clippy::future_not_send,
     clippy::get_unwrap,
     clippy::large_futures,
