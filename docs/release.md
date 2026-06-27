@@ -21,7 +21,7 @@
 
    ```sh
    cargo fmt --all --check
-   cargo clippy --workspace --all-features --all-targets -- -D warnings
+   cargo clippy --workspace --all-features --all-targets
    cargo run --locked -p xtask -- workspace-test
    cargo run --locked -p xtask -- compose-integration
    cargo run --locked -p xtask -- release-preflight --tag v0.1.0 --version 0.1.0

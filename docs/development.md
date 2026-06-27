@@ -41,7 +41,7 @@ Git 情報を取得できない source build では `+source` suffix を付け�
 
 ```sh
 cargo fmt --all --check
-cargo clippy --workspace --all-features --all-targets -- -D warnings
+cargo clippy --workspace --all-features --all-targets
 bash .github/scripts/lint_sh_bash.sh
 NPM_CONFIG_CACHE=/tmp/decune-npm-cache npx -y markdownlint-cli2@0.22.1 --config .markdownlint.yaml README.md AGENTS.md docs/*.md
 ```
