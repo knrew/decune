@@ -793,6 +793,7 @@ async fn resolve_numeric_remote_user_ids(
 
 #[cfg(unix)]
 fn current_uid() -> u32 {
+    // SAFETY: getuid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getuid() }
 }
 
@@ -803,6 +804,7 @@ fn current_uid() -> u32 {
 
 #[cfg(unix)]
 fn current_gid() -> u32 {
+    // SAFETY: getgid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getgid() }
 }
 
@@ -868,9 +870,18 @@ mod tests {
     #[cfg(unix)]
     fn reads_current_host_user_ids_from_process_identity() {
         let ids = current_host_user_ids();
+        let expected = HostUserIds {
+            uid: {
+                // SAFETY: getuid has no preconditions, takes no pointers, and cannot fail.
+                unsafe { libc::getuid() }
+            },
+            gid: {
+                // SAFETY: getgid has no preconditions, takes no pointers, and cannot fail.
+                unsafe { libc::getgid() }
+            },
+        };
 
-        assert_eq!(ids.uid, unsafe { libc::getuid() });
-        assert_eq!(ids.gid, unsafe { libc::getgid() });
+        assert_eq!(ids, expected);
     }
 
     #[test]

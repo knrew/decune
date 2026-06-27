@@ -120,6 +120,7 @@ fn container_workspace_folder_basename(workspace_folder: &str, workspace_basenam
 
 #[cfg(unix)]
 fn current_uid() -> u32 {
+    // SAFETY: getuid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getuid() }
 }
 
@@ -130,6 +131,7 @@ fn current_uid() -> u32 {
 
 #[cfg(unix)]
 fn current_gid() -> u32 {
+    // SAFETY: getgid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getgid() }
 }
 

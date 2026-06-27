@@ -272,12 +272,20 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             match &self.previous {
-                Some(value) => unsafe {
-                    std::env::set_var(self.name, value);
-                },
-                None => unsafe {
-                    std::env::remove_var(self.name);
-                },
+                Some(value) => {
+                    // SAFETY: These tests mutate a dedicated test environment variable
+                    // synchronously and restore it before the guard is dropped.
+                    unsafe {
+                        std::env::set_var(self.name, value);
+                    }
+                }
+                None => {
+                    // SAFETY: These tests mutate a dedicated test environment variable
+                    // synchronously and restore it before the guard is dropped.
+                    unsafe {
+                        std::env::remove_var(self.name);
+                    }
+                }
             }
         }
     }
@@ -286,6 +294,8 @@ mod tests {
     fn build_up_plan_expands_build_args_and_hashes_local_env_values() {
         let env_name = "DECUNE_TEST_PLAN_BUILD_ARG_SCOPE";
         let _guard = EnvVarGuard::capture(env_name);
+        // SAFETY: This test mutates a dedicated test environment variable before exercising
+        // synchronous localEnv expansion and restores it with EnvVarGuard.
         unsafe {
             std::env::remove_var(env_name);
         }
@@ -338,6 +348,8 @@ mod tests {
             vec!["type=registry,ref=example.test/Build Arg Variables:cache"]
         );
 
+        // SAFETY: This test mutates a dedicated test environment variable before exercising
+        // synchronous localEnv expansion and restores it with EnvVarGuard.
         unsafe {
             std::env::set_var(env_name, "secret-bookworm");
         }
@@ -363,6 +375,8 @@ mod tests {
             from_env.resources.config_hash
         );
 
+        // SAFETY: This test mutates a dedicated test environment variable before exercising
+        // synchronous localEnv expansion and restores it with EnvVarGuard.
         unsafe {
             std::env::set_var(env_name, "secret-trixie");
         }
@@ -655,7 +669,9 @@ type = "volume"
         }
         "#,
         );
+        // SAFETY: getuid has no preconditions, takes no pointers, and cannot fail.
         let uid = unsafe { libc::getuid() };
+        // SAFETY: getgid has no preconditions, takes no pointers, and cannot fail.
         let gid = unsafe { libc::getgid() };
         let cache = workspace.root().join(format!("{uid}-{gid}"));
         fs::create_dir_all(&cache).unwrap();
