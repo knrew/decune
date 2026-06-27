@@ -704,14 +704,24 @@ enabled = true
 
 ### `[[dotfiles]]`
 
-dotfiles は host path を remote home に直接 bind mount しない。`/opt/decune/dotfiles/<target>` に mount し、container setup 時に remote user の home へ symlink を作る。
+dotfiles は host path を remote home に直接 bind mount しない。`/opt/decune/dotfiles/<target>` に mount し、container setup 時に remote user の home へ symlink を作る。`/opt/decune/dotfiles` と `/opt/decune/dotfile-backings` は decune の dotfiles 用 internal path として予約する。
 
 - `source`: host path。global config では `~` または absolute path。project config の relative path は workspace root 相対。
 - `target`: remote home からの相対 path。absolute path は禁止。
 - `enabled`: 既定 true。false の場合は同一 target を無効化。
 - `read_only`: 既定 true。
-- `resolve_symlink`: 既定 true。true の場合は source を canonicalize する。file の場合は canonicalized source を直接 bind mount する。directory の場合は、配下 symlink がなければ canonicalized source を直接 bind mount する。配下 symlink があり、同一 backing root に完全一致する場合は backing root を直接 bind mount する。完全一致しない場合は state dir に mount 用 skeleton を作成し、skeleton と symlink 解決後の実ファイル/実ディレクトリを追加 bind mount する。skeleton と追加 bind mount の writable/read-only は `read_only` に従う。`read_only = false` の skeleton-only path に container から新規作成された file/directory は、元 source ではなく state dir の skeleton に保存され、以後の skeleton 準備でも保持される。`read_only = true` の skeleton では現在の dotfile tree に不要な stale entry を削除するが、既存 container の running reuse では skeleton を再生成しない。dotfile 内容は state dir にコピーしない。broken symlink、循環 symlink、特殊ファイル、mount 数過多など直接 bind mount として表現できない場合は error。
+- `resolve_symlink`: 既定 true。true の場合は source を canonicalize する。file の場合は canonicalized source を直接 bind mount する。
 - `on_conflict`: `fail`, `replace-symlink`, `backup`。既定 `fail`。
+
+`resolve_symlink = true` の directory source では、配下に symlink がない場合は canonicalized source を直接 bind mount する。配下に symlink があり、同一 backing root に完全一致する場合は、その backing root を直接 bind mount する。
+
+完全一致しない場合は state dir に mount 用 skeleton を作成する。skeleton root は `/opt/decune/dotfiles/<target>` に bind mount する。source 由来 file は個別 file bind mount ではなく、canonical parent directory を `/opt/decune/dotfile-backings/<n>` に bind mount し、skeleton 内に backing file への symlink を作る。symlink を含まない実ディレクトリは direct directory bind mount として表現する。skeleton、backing directory mount、direct directory mount の writable/read-only は `read_only` に従う。
+
+backing parent directory 単位で mount するため、同じ parent directory の sibling file は `/opt/decune/dotfile-backings/<n>` 経由で container から見える。`read_only = false` の skeleton-only path に container から新規作成された file/directory は、元 source ではなく state dir の skeleton に保存し、以後の skeleton 準備でも保持する。ただし decune が計画した skeleton 内 symlink が container 内で regular file などに置換された場合、次回 skeleton 準備で計画どおりの symlink に戻す。`read_only = true` の skeleton では現在の dotfile tree に不要な stale entry を削除するが、既存 container の running reuse では skeleton を再生成しない。dotfile 内容は state dir にコピーしない。
+
+通常ファイルの host 側 atomic replacement と、解決済み symlink target file の host 側 atomic replacement は、起動中 container から見える。source 側 symlink path 自体が host 側 rename で regular file に置換される場合は、起動中 container へ自動反映しない。反映には container recreate が必要である。
+
+broken symlink、循環 symlink、特殊ファイル、mount 数の上限超過など、対応する bind mount plan として表現できない場合は error。
 
 Compose モードでは primary service に dotfiles bind mount と setup lifecycle を適用する。
 
@@ -721,7 +731,7 @@ Compose モードでは primary service に dotfiles bind mount と setup lifecy
 
 - `type`: `bind`, `volume`, `tmpfs`。`bind` と `volume` に対応し、`tmpfs` は error。
 - `source`: `bind` では必須。`volume` では volume 名。
-- `target`: container absolute path。`/opt/decune` と `/run/decune` 配下、および workspace mount target と同一 target は禁止。
+- `target`: container absolute path。`/opt/decune` と `/run/decune` 配下、および workspace mount target と同一 target は禁止。特に `/opt/decune/dotfiles` と `/opt/decune/dotfile-backings` は dotfiles 用 internal path として予約する。
 - `enabled`: 既定 true。false の場合は同一 target を無効化。
 - `read_only`: 既定 false。
 - `resolve_symlink`: bind source にのみ適用。既定 true。

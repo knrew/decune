@@ -199,7 +199,7 @@ fn up_detach_mounts_directory_symlink_entries_as_real_files() {
             r#"
             {
               "image": "alpine:3.20",
-              "postStartCommand": "test -L /root/.config/lazygit && test \"$(readlink /root/.config/lazygit)\" = \"/opt/decune/dotfiles/.config/lazygit\" && test -f /root/.config/lazygit/config.yml && test ! -L /root/.config/lazygit/config.yml && grep -q nerdFontsVersion /root/.config/lazygit/config.yml && test ! -e /root/.config/lazygit/extra.yml && if sh -c 'printf x >> /root/.config/lazygit/config.yml' 2>/tmp/decune-dotfile-write-error; then exit 19; fi"
+              "postStartCommand": "test -L /root/.config/lazygit && test \"$(readlink /root/.config/lazygit)\" = \"/opt/decune/dotfiles/.config/lazygit\" && test -L /root/.config/lazygit/config.yml && readlink /root/.config/lazygit/config.yml | grep -Eq '^/opt/decune/dotfile-backings/[0-9]+/config.yml$' && grep -q nerdFontsVersion /root/.config/lazygit/config.yml && test ! -e /root/.config/lazygit/extra.yml && if sh -c 'printf x >> /root/.config/lazygit/config.yml' 2>/tmp/decune-dotfile-write-error; then exit 19; fi"
             }
             "#,
         )
@@ -234,10 +234,7 @@ read_only = true
         .join("dotfile-mount-skeleton")
         .join(".config")
         .join("lazygit");
-    let expected_config = workspace_root
-        .join("dotfiles-real/config.yml")
-        .canonicalize()
-        .unwrap();
+    let expected_config = workspace_root.join("dotfiles-real").canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -270,18 +267,30 @@ read_only = true
                     mount.target.as_deref() == Some("/opt/decune/dotfiles/.config/lazygit")
                 })
                 .expect("expected dotfile skeleton mount");
-            let file_mount = mounts
+            let backing_mount = mounts
                 .iter()
                 .find(|mount| {
-                    mount.target.as_deref()
-                        == Some("/opt/decune/dotfiles/.config/lazygit/config.yml")
+                    mount
+                        .target
+                        .as_deref()
+                        .is_some_and(|target| target.starts_with("/opt/decune/dotfile-backings/"))
                 })
-                .expect("expected dotfile file mount");
+                .expect("expected dotfile backing mount");
 
             assert_eq!(root_mount.source.as_deref(), expected_skeleton.to_str());
             assert_eq!(root_mount.read_only, Some(true));
-            assert_eq!(file_mount.source.as_deref(), expected_config.to_str());
-            assert_eq!(file_mount.read_only, Some(true));
+            assert_eq!(backing_mount.source.as_deref(), expected_config.to_str());
+            assert_eq!(backing_mount.read_only, Some(true));
+            assert!(!mounts.iter().any(|mount| {
+                mount.target.as_deref() == Some("/opt/decune/dotfiles/.config/lazygit/config.yml")
+            }));
+            assert_eq!(
+                std::fs::read_link(expected_skeleton.join("config.yml")).unwrap(),
+                PathBuf::from(format!(
+                    "{}/config.yml",
+                    backing_mount.target.as_deref().unwrap()
+                ))
+            );
         });
     });
 
@@ -385,6 +394,210 @@ read_only = true
             })
             .unwrap();
         assert!(output.contains("nerdFontsVersion"));
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn running_container_sees_regular_file_dotfile_replaced_by_host_rename() {
+    use std::os::unix::fs as unix_fs;
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace.create_dir("dotfiles-source").unwrap();
+    workspace.create_dir("external").unwrap();
+    workspace
+        .write_file("dotfiles-source/config.yml", "before\n")
+        .unwrap();
+    workspace.write_file("external/marker", "marker\n").unwrap();
+    unix_fs::symlink(
+        workspace.path().join("external/marker"),
+        workspace.path().join("dotfiles-source/marker"),
+    )
+    .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+version = 1
+
+[credentials.github]
+enabled = false
+
+[[dotfiles]]
+source = "dotfiles-source"
+target = ".config/app"
+read_only = true
+"#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let config_path = workspace_root.join("dotfiles-source/config.yml");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let before = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/root/.config/app/config.yml"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(before, "before\n");
+
+        let replacement = config_path.with_extension("tmp");
+        std::fs::write(&replacement, "after\n").unwrap();
+        std::fs::rename(&replacement, &config_path).unwrap();
+
+        let after = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/root/.config/app/config.yml"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(after, "after\n");
+    });
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn running_container_sees_symlink_target_file_replaced_by_host_rename() {
+    use std::os::unix::fs as unix_fs;
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace.create_dir("dotfiles-real").unwrap();
+    workspace.create_dir("dotfiles-source").unwrap();
+    workspace
+        .write_file("dotfiles-real/config.yml", "before\n")
+        .unwrap();
+    workspace
+        .write_file("dotfiles-real/extra.yml", "not mounted\n")
+        .unwrap();
+    unix_fs::symlink(
+        workspace.path().join("dotfiles-real/config.yml"),
+        workspace.path().join("dotfiles-source/config.yml"),
+    )
+    .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+version = 1
+
+[credentials.github]
+enabled = false
+
+[[dotfiles]]
+source = "dotfiles-source"
+target = ".config/app"
+read_only = true
+"#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let config_path = workspace_root.join("dotfiles-real/config.yml");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        cleanup_workspace_containers(&workspace_root).await.unwrap();
+    });
+
+    let result = std::panic::catch_unwind(|| {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let before = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/root/.config/app/config.yml"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(before, "before\n");
+
+        let replacement = config_path.with_extension("tmp");
+        std::fs::write(&replacement, "after\n").unwrap();
+        std::fs::rename(&replacement, &config_path).unwrap();
+
+        let after = runtime
+            .block_on(async {
+                exec_single_workspace_container(
+                    &workspace_root,
+                    ["cat", "/root/.config/app/config.yml"],
+                )
+                .await
+            })
+            .unwrap();
+        assert_eq!(after, "after\n");
     });
 
     runtime.block_on(async {

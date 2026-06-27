@@ -1798,6 +1798,165 @@ exit 91
     ));
 }
 
+#[cfg(unix)]
+#[test]
+fn compose_dotfile_skeleton_override_uses_backing_directory_mounts() {
+    use std::os::unix::fs as unix_fs;
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace.create_dir("dotfiles-real").unwrap();
+    workspace.create_dir("lazygit-source").unwrap();
+    workspace
+        .write_file("dotfiles-real/config.yml", "key: value\n")
+        .unwrap();
+    workspace
+        .write_file("dotfiles-real/extra.yml", "not mounted\n")
+        .unwrap();
+    unix_fs::symlink(
+        workspace.path().join("dotfiles-real/config.yml"),
+        workspace.path().join("lazygit-source/config.yml"),
+    )
+    .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true,
+              "workspaceFolder": "/workspace",
+              "userEnvProbe": "none"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: "alpine:3.20"
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [credentials.github]
+            enabled = false
+
+            [[dotfiles]]
+            source = "lazygit-source"
+            target = ".config/lazygit"
+            read_only = true
+            "#,
+        )
+        .unwrap();
+    let override_log = host_tools.path().join("generated-override.yaml");
+    let docker_path = host_tools
+        .write_file(
+            "bin/docker",
+            r#"#!/bin/sh
+set -eu
+if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
+  . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
+fi
+if [ "${1:-}" = compose ]; then
+  case " $* " in
+    *" config --format json "*)
+      printf '{"services":{"app":{"image":"alpine:3.20"}}}\n'
+      exit 0
+      ;;
+    *" up -d "*)
+      previous=
+      generated_override=
+      for argument in "$@"; do
+        if [ "$previous" = "-f" ]; then
+          case "$argument" in
+            *compose.override.yaml) generated_override=$argument ;;
+          esac
+        fi
+        previous=$argument
+      done
+      test -n "$generated_override"
+      cat "$generated_override" > "$DECUNE_FAKE_OVERRIDE_LOG"
+      exit 0
+      ;;
+    *" ps --format json app "*)
+      printf '[{"ID":"compose-app-id","Name":"compose-app-1","Service":"app","State":"running"}]\n'
+      exit 0
+      ;;
+  esac
+fi
+if [ "${1:-}" = exec ]; then
+  printf 'root:x:0:0:root:/root:/bin/sh\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"sha256:alpine","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = ps ]; then
+  exit 0
+fi
+if [ "${1:-}" = create ]; then
+  printf 'lookup-container-id\n'
+  exit 0
+fi
+if [ "${1:-}" = start ]; then
+  exit 0
+fi
+if [ "${1:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
+  printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
+  exit 0
+fi
+echo "unexpected fake docker command: $*" >&2
+exit 91
+"#,
+        )
+        .unwrap();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = format!(
+        "{}:{}",
+        docker_path.parent().unwrap().display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_OVERRIDE_LOG", &override_log)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Started dev container: compose-app-1",
+        ));
+
+    let override_yaml = fs::read_to_string(override_log).unwrap();
+    assert!(override_yaml.contains("target: '/opt/decune/dotfiles/.config/lazygit'"));
+    assert!(override_yaml.contains("target: '/opt/decune/dotfile-backings/"));
+    assert!(!override_yaml.contains("target: '/opt/decune/dotfiles/.config/lazygit/config.yml'"));
+    assert!(!override_yaml.contains("source: '/opt/decune"));
+}
+
 #[test]
 fn compose_credentials_runs_git_https_helper_setup_in_primary_container() {
     let workspace = support::TempWorkspace::new().unwrap();
