@@ -239,7 +239,7 @@ fn compose_startup_error_protocol_hint(stderr: &str) -> Option<ComposeStartupErr
     }
 }
 
-fn compose_port_protocol_matches_startup_error_hint(
+const fn compose_port_protocol_matches_startup_error_hint(
     protocol: &ComposePortProtocol,
     hint: ComposeStartupErrorProtocolHint,
 ) -> bool {

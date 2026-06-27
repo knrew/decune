@@ -80,7 +80,7 @@ impl RuntimeCommand {
             reason = "Runtime command timeouts are specified and covered by tests, but no production caller is wired yet."
         )
     )]
-    pub(crate) fn timeout(mut self, timeout: Duration) -> Self {
+    pub(crate) const fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
     }
@@ -93,7 +93,7 @@ impl RuntimeCommand {
         &self.args
     }
 
-    pub(crate) fn envs(&self) -> &BTreeMap<String, String> {
+    pub(crate) const fn envs(&self) -> &BTreeMap<String, String> {
         &self.env
     }
 
@@ -106,7 +106,7 @@ impl RuntimeCommand {
         self.env.get(key)
     }
 
-    pub(crate) fn timeout_duration(&self) -> Option<Duration> {
+    pub(crate) const fn timeout_duration(&self) -> Option<Duration> {
         self.timeout
     }
 

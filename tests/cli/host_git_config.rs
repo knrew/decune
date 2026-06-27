@@ -167,12 +167,12 @@ fn up_detach_copies_host_git_user_config_when_helper_setup_fails() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.github]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let git_path = host_tools
@@ -231,11 +231,11 @@ fn up_detach_copies_host_global_gitconfig_when_https_is_off_without_leaking_secr
         .write_file(
             ".devcontainer/Dockerfile",
             format!(
-                r#"
+                r"
             FROM alpine:3.20
             RUN addgroup -g {gid} decunegrp \
               && adduser -D -u {uid} -G decunegrp -h /home/decune decune
-            "#,
+            ",
                 uid = current_uid(),
                 gid = current_gid(),
             ),
@@ -452,14 +452,14 @@ fn up_detach_does_not_expose_host_gitconfig_when_remote_user_uid_differs_from_ho
         .write_file(
             ".devcontainer/Dockerfile",
             format!(
-                r#"
+                r"
             FROM ubuntu:24.04
             RUN groupadd -g {remote_gid} decunegrp \
               && useradd -m -u {remote_uid} -g decunegrp decune \
               && groupadd -g {attacker_gid} attackergrp \
               && useradd -m -u {attacker_uid} -g attackergrp attacker \
               && echo 'attacker:decune-test' | chpasswd
-            "#,
+            ",
             ),
         )
         .unwrap();

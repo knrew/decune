@@ -200,11 +200,11 @@ fn feature_layer_image_inner(plan: &UpPlan) -> String {
     }
 }
 
-pub(in crate::up) fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
+pub(in crate::up) const fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
     plan.feature_install.is_some() || config_requires_workspace_layer(&plan.config)
 }
 
-pub(in crate::up) fn plan_requires_final_image_layer(plan: &UpPlan) -> bool {
+pub(in crate::up) const fn plan_requires_final_image_layer(plan: &UpPlan) -> bool {
     plan_requires_workspace_layer(plan) || plan_requires_uid_gid_sync_layer(plan)
 }
 

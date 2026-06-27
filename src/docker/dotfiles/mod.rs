@@ -152,7 +152,7 @@ fn dotfile_bind_mount(source: &Path, target: String, read_only: bool) -> DockerM
     }
 }
 
-fn symlink_resolution(resolve_symlink: bool) -> SymlinkResolution {
+const fn symlink_resolution(resolve_symlink: bool) -> SymlinkResolution {
     if resolve_symlink {
         SymlinkResolution::Resolve
     } else {

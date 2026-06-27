@@ -78,7 +78,7 @@ pub(crate) struct DevcontainerMetadata {
 
 impl DevcontainerMetadata {
     #[cfg(test)]
-    pub(crate) fn source(&self) -> Option<&DevcontainerSource> {
+    pub(crate) const fn source(&self) -> Option<&DevcontainerSource> {
         self.source.as_ref()
     }
 
@@ -98,12 +98,12 @@ impl DevcontainerMetadata {
     }
 
     #[cfg(test)]
-    pub(crate) fn container_env(&self) -> &BTreeMap<String, String> {
+    pub(crate) const fn container_env(&self) -> &BTreeMap<String, String> {
         &self.container_env
     }
 
     #[cfg(test)]
-    pub(crate) fn remote_env(&self) -> &BTreeMap<String, String> {
+    pub(crate) const fn remote_env(&self) -> &BTreeMap<String, String> {
         &self.remote_env
     }
 
@@ -118,12 +118,12 @@ impl DevcontainerMetadata {
     }
 
     #[cfg(test)]
-    pub(crate) fn update_remote_user_uid(&self) -> Option<bool> {
+    pub(crate) const fn update_remote_user_uid(&self) -> Option<bool> {
         self.update_remote_user_uid
     }
 
     #[cfg(test)]
-    pub(crate) fn user_env_probe(&self) -> Option<&UserEnvProbe> {
+    pub(crate) const fn user_env_probe(&self) -> Option<&UserEnvProbe> {
         self.user_env_probe.as_ref()
     }
 
@@ -132,12 +132,12 @@ impl DevcontainerMetadata {
     }
 
     #[cfg(test)]
-    pub(crate) fn ports_attributes(&self) -> &BTreeMap<String, DevcontainerPortAttributes> {
+    pub(crate) const fn ports_attributes(&self) -> &BTreeMap<String, DevcontainerPortAttributes> {
         &self.ports_attributes
     }
 
     #[cfg(test)]
-    pub(crate) fn other_ports_attributes(&self) -> Option<&DevcontainerPortAttributes> {
+    pub(crate) const fn other_ports_attributes(&self) -> Option<&DevcontainerPortAttributes> {
         self.other_ports_attributes.as_ref()
     }
 
@@ -152,12 +152,12 @@ impl DevcontainerMetadata {
     }
 
     #[cfg(test)]
-    pub(crate) fn init(&self) -> Option<bool> {
+    pub(crate) const fn init(&self) -> Option<bool> {
         self.init
     }
 
     #[cfg(test)]
-    pub(crate) fn privileged(&self) -> Option<bool> {
+    pub(crate) const fn privileged(&self) -> Option<bool> {
         self.privileged
     }
 
@@ -172,17 +172,17 @@ impl DevcontainerMetadata {
     }
 
     #[cfg(test)]
-    pub(crate) fn lifecycle(&self) -> &BTreeMap<LifecycleProperty, Value> {
+    pub(crate) const fn lifecycle(&self) -> &BTreeMap<LifecycleProperty, Value> {
         &self.lifecycle
     }
 
     #[cfg(test)]
-    pub(crate) fn customizations(&self) -> Option<&Value> {
+    pub(crate) const fn customizations(&self) -> Option<&Value> {
         self.customizations.as_ref()
     }
 
     #[cfg(test)]
-    pub(crate) fn unsupported_properties(&self) -> &BTreeMap<String, Value> {
+    pub(crate) const fn unsupported_properties(&self) -> &BTreeMap<String, Value> {
         &self.unsupported_properties
     }
 }

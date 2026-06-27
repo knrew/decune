@@ -907,7 +907,7 @@ fn quote_mount_csv_field(field: &str) -> String {
     quoted
 }
 
-fn mount_type_value(mount_type: MountType) -> &'static str {
+const fn mount_type_value(mount_type: MountType) -> &'static str {
     match mount_type {
         MountType::Bind => "bind",
         MountType::Volume => "volume",

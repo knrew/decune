@@ -271,7 +271,10 @@ fn health_status(evidence: &WorkspaceEvidence, docker_unavailable: bool) -> Heal
     }
 }
 
-fn lifecycle_status(state: Option<&WorkspaceState>, state_unreadable: bool) -> LifecycleStatus {
+const fn lifecycle_status(
+    state: Option<&WorkspaceState>,
+    state_unreadable: bool,
+) -> LifecycleStatus {
     if state_unreadable {
         return LifecycleStatus::Unknown;
     }

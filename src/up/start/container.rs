@@ -147,7 +147,7 @@ fn persist_initial_container_state(
     )
 }
 
-pub(super) fn startup_verification_for_plan(plan: &UpPlan) -> StartupVerification {
+pub(super) const fn startup_verification_for_plan(plan: &UpPlan) -> StartupVerification {
     if !plan.config.devcontainer.entrypoints.is_empty() {
         return StartupVerification::FeatureEntrypoints {
             monitor_delegated_command: !plan.config.devcontainer.override_command,

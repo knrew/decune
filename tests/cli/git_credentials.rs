@@ -157,7 +157,7 @@ fn up_detach_uses_selected_git_credential_helper_independent_of_container_uname(
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
@@ -165,7 +165,7 @@ fn up_detach_uses_selected_git_credential_helper_independent_of_container_uname(
 
             [credentials.github]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();

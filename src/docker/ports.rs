@@ -295,7 +295,7 @@ fn parse_host_ip(value: &str) -> Option<IpAddr> {
     value.parse::<IpAddr>().ok()
 }
 
-fn same_ip_family(left: IpAddr, right: IpAddr) -> bool {
+const fn same_ip_family(left: IpAddr, right: IpAddr) -> bool {
     matches!(
         (left, right),
         (IpAddr::V4(_), IpAddr::V4(_)) | (IpAddr::V6(_), IpAddr::V6(_))

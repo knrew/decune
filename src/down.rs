@@ -382,11 +382,17 @@ async fn remove_workspace_plan(client: &DockerClient, plan: WorkspaceRemovalPlan
     Ok(())
 }
 
-pub(crate) fn remove_requires_confirmation(no_confirm: bool, stdin_is_terminal: bool) -> bool {
+pub(crate) const fn remove_requires_confirmation(
+    no_confirm: bool,
+    stdin_is_terminal: bool,
+) -> bool {
     !no_confirm && stdin_is_terminal
 }
 
-pub(crate) fn remove_rejects_non_interactive(no_confirm: bool, stdin_is_terminal: bool) -> bool {
+pub(crate) const fn remove_rejects_non_interactive(
+    no_confirm: bool,
+    stdin_is_terminal: bool,
+) -> bool {
     !no_confirm && !stdin_is_terminal
 }
 
@@ -456,7 +462,7 @@ struct StateRemovalEntry {
 }
 
 impl WorkspaceRemovalPlan {
-    fn has_targets(&self) -> bool {
+    const fn has_targets(&self) -> bool {
         self.has_state
             || self.has_runtime
             || self.has_forward_status

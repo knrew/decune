@@ -674,14 +674,14 @@ mod tests {
         fs::write(
             workspace.root().join(".decune/config.toml"),
             format!(
-                r#"
+                r"
 version = 1
 
 [[ports]]
 container = 4321
 host = {host_port}
 require_local = true
-"#
+"
             ),
         )
         .unwrap();

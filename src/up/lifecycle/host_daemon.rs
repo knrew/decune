@@ -26,7 +26,7 @@ pub(in crate::up) struct HostDaemonGuard {
 }
 
 impl HostDaemonGuard {
-    fn owned(daemon: HostDaemon) -> Self {
+    const fn owned(daemon: HostDaemon) -> Self {
         Self {
             _daemon: Some(daemon),
             monitor_task: None,
@@ -82,7 +82,7 @@ pub(in crate::up) async fn start_host_daemon_for_up(
     .await
 }
 
-fn daemon_git_https_mode(credentials: &ResolvedGitCredentials) -> GitHttpsMode {
+const fn daemon_git_https_mode(credentials: &ResolvedGitCredentials) -> GitHttpsMode {
     if credentials.enabled {
         credentials.https
     } else {

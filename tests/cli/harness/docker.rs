@@ -11,7 +11,7 @@ use super::{
 pub(crate) struct Docker;
 
 impl Docker {
-    pub(crate) fn connect_with_defaults() -> anyhow::Result<Self> {
+    pub(crate) const fn connect_with_defaults() -> anyhow::Result<Self> {
         Ok(Self)
     }
 

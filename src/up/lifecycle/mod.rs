@@ -323,13 +323,13 @@ mod tests {
             fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
             fs::write(
                 workspace.root().join(".devcontainer/Dockerfile"),
-                r#"
+                r"
                 FROM alpine:3.20
                 RUN printf '%s\n' \
                   'export DECUNE_PROBED_ENV=from-profile' \
                   'export DECUNE_ENV_PRIORITY=from-profile' \
                   >/etc/profile.d/decune-probe.sh
-                "#,
+                ",
             )
             .unwrap();
             write_devcontainer(

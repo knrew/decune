@@ -311,7 +311,7 @@ fn feature_entrypoints_file(entrypoints: &[String], devcontainer_id: &str) -> Re
     Ok(output)
 }
 
-fn feature_entrypoint_wrapper() -> &'static str {
+const fn feature_entrypoint_wrapper() -> &'static str {
     r#"#!/bin/sh
 set -eu
 feature_startup_id() {

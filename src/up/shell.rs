@@ -53,7 +53,7 @@ fn normalized_shell(shell: Option<&str>) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-pub(crate) fn clamp_exit_code(exit_code: i64) -> i32 {
+pub(crate) const fn clamp_exit_code(exit_code: i64) -> i32 {
     match exit_code {
         0..=255 => exit_code as i32,
         _ => 1,

@@ -125,7 +125,7 @@ pub(crate) enum HostPlatform {
 }
 
 impl HostPlatform {
-    pub(crate) fn current() -> Self {
+    pub(crate) const fn current() -> Self {
         if cfg!(target_os = "linux") {
             Self::Linux
         } else {

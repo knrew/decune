@@ -1,9 +1,10 @@
 #![allow(
-    clippy::all,
-    clippy::cargo,
-    clippy::nursery,
-    clippy::pedantic,
-    clippy::restriction,
+    clippy::let_underscore_must_use,
+    clippy::let_underscore_untyped,
+    clippy::option_if_let_else,
+    clippy::similar_names,
+    clippy::string_slice,
+    clippy::unused_async,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 

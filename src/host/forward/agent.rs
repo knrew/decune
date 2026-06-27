@@ -597,7 +597,7 @@ pub(super) mod tests {
                         ForwardAgentAccess::new([4321], "test-secret".to_owned()),
                     )
                     .await
-                    .unwrap()
+                    .unwrap();
                 }
             });
             wait_for_socket(&agent_socket).await;

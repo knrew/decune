@@ -577,10 +577,10 @@ fn up_detach_resolves_remote_user_home_mount_target_for_dockerfile() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN adduser -D -h /usr/local/share/node node
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();

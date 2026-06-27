@@ -37,7 +37,7 @@ pub(crate) struct HostDaemonAccess {
 }
 
 impl HostDaemonAccess {
-    fn private() -> Self {
+    const fn private() -> Self {
         Self {
             runtime_dir_mode: 0o700,
             socket_mode: 0o600,
@@ -48,7 +48,7 @@ impl HostDaemonAccess {
         Self::from_ids(current_uid(), current_gid(), remote_uid, remote_gid)
     }
 
-    fn from_ids(host_uid: u32, host_gid: u32, remote_uid: u32, remote_gid: u32) -> Self {
+    const fn from_ids(host_uid: u32, host_gid: u32, remote_uid: u32, remote_gid: u32) -> Self {
         if remote_uid == host_uid {
             Self::private()
         } else if remote_gid == host_gid {
@@ -64,7 +64,7 @@ impl HostDaemonAccess {
         }
     }
 
-    fn expanded_for(self, required: Self) -> Self {
+    const fn expanded_for(self, required: Self) -> Self {
         Self {
             runtime_dir_mode: self.runtime_dir_mode | required.runtime_dir_mode,
             socket_mode: self.socket_mode | required.socket_mode,
@@ -139,7 +139,7 @@ impl From<GitHttpsMode> for HostDaemonGitHttpsMode {
 }
 
 impl HostDaemonMetadata {
-    fn access(&self) -> HostDaemonAccess {
+    const fn access(&self) -> HostDaemonAccess {
         HostDaemonAccess {
             runtime_dir_mode: self.runtime_dir_mode,
             socket_mode: self.socket_mode,

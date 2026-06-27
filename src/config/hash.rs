@@ -38,7 +38,7 @@ pub(crate) struct ConfigHashInput<'a> {
 }
 
 impl<'a> ConfigHashInput<'a> {
-    pub(crate) fn new(config: &'a ResolvedConfig) -> Self {
+    pub(crate) const fn new(config: &'a ResolvedConfig) -> Self {
         Self {
             config,
             feature_locks: Vec::new(),
@@ -210,7 +210,7 @@ fn write_compose_file_inputs(writer: &mut CanonicalWriter, inputs: &[ComposeFile
     writer.seq(inputs.iter(), |writer, input| {
         writer.object("ComposeFile", |writer| {
             writer.field("canonical_path", |writer| {
-                writer.string(&input.canonical_path)
+                writer.string(&input.canonical_path);
             });
             writer.field("digest", |writer| writer.string(&input.digest));
         });
@@ -284,7 +284,7 @@ fn compose_environment_value_digest(path: &[String], value: &JsonValue) -> Strin
     let mut writer = CanonicalWriter::default();
 
     writer.field("version", |writer| {
-        writer.string(COMPOSE_ENV_VALUE_HASH_VERSION)
+        writer.string(COMPOSE_ENV_VALUE_HASH_VERSION);
     });
     writer.field("json_path", |writer| {
         writer.seq(path.iter(), |writer, segment| writer.string(segment));
@@ -299,7 +299,7 @@ fn compose_environment_value_digest(path: &[String], value: &JsonValue) -> Strin
     sha256_hex(writer.finish().as_bytes())
 }
 
-fn json_value_type_name(value: &JsonValue) -> &'static str {
+const fn json_value_type_name(value: &JsonValue) -> &'static str {
     match value {
         JsonValue::Null => "null",
         JsonValue::Bool(_) => "boolean",
@@ -317,10 +317,10 @@ fn write_uid_gid_sync_input(writer: &mut CanonicalWriter, input: &UidGidSyncHash
             UidGidSyncHashState::Noop(reason) => writer.string(&format!("noop:{reason}")),
         });
         writer.field("host_uid", |writer| {
-            writer.string(&input.host_uid.to_string())
+            writer.string(&input.host_uid.to_string());
         });
         writer.field("host_gid", |writer| {
-            writer.string(&input.host_gid.to_string())
+            writer.string(&input.host_gid.to_string());
         });
         writer.field("target_kind", |writer| {
             writer.option_string(input.target_kind.as_deref());
@@ -395,7 +395,7 @@ fn write_mount_bind_options(writer: &mut CanonicalWriter, options: &MountBindOpt
 fn write_mount_volume_options(writer: &mut CanonicalWriter, options: &MountVolumeOptionsHashInput) {
     writer.object("MountVolumeOptions", |writer| {
         writer.field("no_copy", |writer| {
-            write_option_bool(writer, options.no_copy)
+            write_option_bool(writer, options.no_copy);
         });
         writer.field("labels", |writer| match &options.labels {
             Some(labels) => writer.map(labels.iter(), |writer, value| writer.string(value)),
@@ -430,7 +430,7 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
     let config = input.config;
     writer.object("ResolvedConfig", |writer| {
         writer.field("shell", |writer| {
-            writer.option_string(config.shell.as_deref())
+            writer.option_string(config.shell.as_deref());
         });
         writer.field("features", |writer| {
             writer.seq(config.features.iter(), |writer, feature| {
@@ -664,10 +664,10 @@ fn write_devcontainer(
             writer.seq(devcontainer.run_args.iter(), write_run_arg);
         });
         writer.field("init", |writer| {
-            write_option_bool(writer, devcontainer.init)
+            write_option_bool(writer, devcontainer.init);
         });
         writer.field("privileged", |writer| {
-            write_option_bool(writer, devcontainer.privileged)
+            write_option_bool(writer, devcontainer.privileged);
         });
         writer.field("cap_add", |writer| {
             writer.seq(devcontainer.cap_add.iter(), |writer, capability| {
@@ -711,7 +711,7 @@ fn local_env_derived_container_env_digest(key: &str, value: &str) -> String {
     let mut writer = CanonicalWriter::default();
     writer.object("LocalEnvDerivedContainerEnvDigest", |writer| {
         writer.field("version", |writer| {
-            writer.string("decune-container-env-digest-v1")
+            writer.string("decune-container-env-digest-v1");
         });
         writer.field("key", |writer| writer.string(key));
         writer.field("value", |writer| writer.string(value));
@@ -784,7 +784,7 @@ fn write_devcontainer_source(
                 });
                 writer.field("cache_from", |writer| {
                     writer.seq(build.cache_from.iter(), |writer, entry| {
-                        writer.string(entry)
+                        writer.string(entry);
                     });
                 });
             });
@@ -798,7 +798,7 @@ fn write_devcontainer_source(
                 writer.field("run_services", |writer| match &compose.run_services {
                     Some(run_services) => {
                         writer.seq(run_services.iter(), |writer, service| {
-                            writer.string(service)
+                            writer.string(service);
                         });
                     }
                     None => writer.none(),
@@ -828,7 +828,7 @@ fn local_env_derived_build_arg_digest(key: &str, value: &str) -> String {
     let mut writer = CanonicalWriter::default();
     writer.object("LocalEnvDerivedBuildArgDigest", |writer| {
         writer.field("version", |writer| {
-            writer.string("decune-build-arg-digest-v1")
+            writer.string("decune-build-arg-digest-v1");
         });
         writer.field("key", |writer| writer.string(key));
         writer.field("value", |writer| writer.string(value));
@@ -849,7 +849,7 @@ fn write_publish_port(writer: &mut CanonicalWriter, port: &ResolvedPublishPort) 
             None => writer.none(),
         });
         writer.field("host_ip", |writer| {
-            writer.option_string(port.host_ip.as_deref())
+            writer.option_string(port.host_ip.as_deref());
         });
         writer.field("protocol", |writer| {
             writer.string(port_protocol_name(port.protocol));
@@ -861,12 +861,12 @@ fn write_run_arg(writer: &mut CanonicalWriter, run_arg: &ResolvedRunArg) {
     match run_arg {
         ResolvedRunArg::AddHost(value) => {
             writer.object("AddHost", |writer| {
-                writer.field("value", |writer| writer.string(value))
+                writer.field("value", |writer| writer.string(value));
             });
         }
         ResolvedRunArg::Dns(value) => {
             writer.object("Dns", |writer| {
-                writer.field("value", |writer| writer.string(value))
+                writer.field("value", |writer| writer.string(value));
             });
         }
         ResolvedRunArg::DnsSearch(value) => {
@@ -947,7 +947,7 @@ fn write_hooks(writer: &mut CanonicalWriter, hooks: &[ResolvedHook]) {
             writer.field("user", |writer| writer.option_string(hook.user.as_deref()));
             writer.field("shell", |writer| writer.bool(hook.shell));
             writer.field("workdir", |writer| {
-                writer.option_string(hook.workdir.as_deref())
+                writer.option_string(hook.workdir.as_deref());
             });
         });
     });
@@ -1009,7 +1009,7 @@ fn write_build_input(writer: &mut CanonicalWriter, build: &BuildHashInput) {
     });
 }
 
-fn dotfile_conflict_name(value: DotfileConflict) -> &'static str {
+const fn dotfile_conflict_name(value: DotfileConflict) -> &'static str {
     match value {
         DotfileConflict::Fail => "fail",
         DotfileConflict::ReplaceSymlink => "replace-symlink",
@@ -1017,14 +1017,14 @@ fn dotfile_conflict_name(value: DotfileConflict) -> &'static str {
     }
 }
 
-fn config_path_origin_name(value: crate::config::path::ConfigPathOrigin) -> &'static str {
+const fn config_path_origin_name(value: crate::config::path::ConfigPathOrigin) -> &'static str {
     match value {
         crate::config::path::ConfigPathOrigin::Global => "global",
         crate::config::path::ConfigPathOrigin::Project => "project",
     }
 }
 
-fn mount_type_name(value: MountType) -> &'static str {
+const fn mount_type_name(value: MountType) -> &'static str {
     match value {
         MountType::Bind => "bind",
         MountType::Volume => "volume",
@@ -1032,7 +1032,7 @@ fn mount_type_name(value: MountType) -> &'static str {
     }
 }
 
-fn mount_create_name(value: MountCreate) -> &'static str {
+const fn mount_create_name(value: MountCreate) -> &'static str {
     match value {
         MountCreate::Directory => "directory",
     }
@@ -1045,7 +1045,7 @@ fn write_option_bool(writer: &mut CanonicalWriter, value: Option<bool>) {
     }
 }
 
-fn user_env_probe_name(value: ResolvedUserEnvProbe) -> &'static str {
+const fn user_env_probe_name(value: ResolvedUserEnvProbe) -> &'static str {
     match value {
         ResolvedUserEnvProbe::None => "none",
         ResolvedUserEnvProbe::LoginShell => "loginShell",
@@ -1054,7 +1054,7 @@ fn user_env_probe_name(value: ResolvedUserEnvProbe) -> &'static str {
     }
 }
 
-fn shutdown_action_name(value: ResolvedShutdownAction) -> &'static str {
+const fn shutdown_action_name(value: ResolvedShutdownAction) -> &'static str {
     match value {
         ResolvedShutdownAction::None => "none",
         ResolvedShutdownAction::StopContainer => "stopContainer",
@@ -1062,14 +1062,14 @@ fn shutdown_action_name(value: ResolvedShutdownAction) -> &'static str {
     }
 }
 
-fn port_protocol_name(value: PortProtocol) -> &'static str {
+const fn port_protocol_name(value: PortProtocol) -> &'static str {
     match value {
         PortProtocol::Tcp => "tcp",
         PortProtocol::Udp => "udp",
     }
 }
 
-fn lifecycle_stage_name(value: LifecycleStage) -> &'static str {
+const fn lifecycle_stage_name(value: LifecycleStage) -> &'static str {
     match value {
         LifecycleStage::Initialize => "initializeCommand",
         LifecycleStage::OnCreate => "onCreateCommand",
@@ -1080,7 +1080,7 @@ fn lifecycle_stage_name(value: LifecycleStage) -> &'static str {
     }
 }
 
-fn wait_for_name(value: WaitFor) -> &'static str {
+const fn wait_for_name(value: WaitFor) -> &'static str {
     match value {
         WaitFor::Initialize => "initializeCommand",
         WaitFor::OnCreate => "onCreateCommand",
@@ -1090,7 +1090,7 @@ fn wait_for_name(value: WaitFor) -> &'static str {
     }
 }
 
-fn git_https_mode_name(value: GitHttpsMode) -> &'static str {
+const fn git_https_mode_name(value: GitHttpsMode) -> &'static str {
     match value {
         GitHttpsMode::Off => "off",
         GitHttpsMode::HostHelper => "host-helper",
@@ -1098,7 +1098,7 @@ fn git_https_mode_name(value: GitHttpsMode) -> &'static str {
     }
 }
 
-fn ssh_agent_mode_name(value: SshAgentMode) -> &'static str {
+const fn ssh_agent_mode_name(value: SshAgentMode) -> &'static str {
     match value {
         SshAgentMode::Off => "off",
         SshAgentMode::Auto => "auto",
@@ -1106,14 +1106,14 @@ fn ssh_agent_mode_name(value: SshAgentMode) -> &'static str {
     }
 }
 
-fn github_credentials_mode_name(value: GithubCredentialsMode) -> &'static str {
+const fn github_credentials_mode_name(value: GithubCredentialsMode) -> &'static str {
     match value {
         GithubCredentialsMode::Off => "off",
         GithubCredentialsMode::GhTokenFile => "gh-token-file",
     }
 }
 
-fn hook_location_name(value: HookLocation) -> &'static str {
+const fn hook_location_name(value: HookLocation) -> &'static str {
     match value {
         HookLocation::Host => "host",
         HookLocation::Container => "container",
@@ -1746,13 +1746,13 @@ shell = false
     fn compose_published_ports_policy_does_not_change_hash_yet() {
         let disabled = resolved_config("version = 1\n");
         let enabled = resolved_config(
-            r#"
+            r"
 version = 1
 
 [compose.published_ports]
 relocation = true
 warn_on_relocation = true
-"#,
+",
         );
 
         assert_eq!(hash_for(&disabled), hash_for(&enabled));
@@ -2285,20 +2285,20 @@ warn_on_relocation = true
     #[test]
     fn credentials_change_changes_hash() {
         let enabled = resolved_config(
-            r#"
+            r"
 version = 1
 
 [credentials.git]
 enabled = true
-"#,
+",
         );
         let disabled = resolved_config(
-            r#"
+            r"
 version = 1
 
 [credentials.git]
 enabled = false
-"#,
+",
         );
 
         assert_ne!(hash_for(&enabled), hash_for(&disabled));

@@ -40,6 +40,10 @@ cargo = {level = "deny", priority = -1}
 
 pedantic = {level = "deny", priority = -1}
 
+# Explicit pedantic overrides.
+single_char_pattern = "allow"
+unreadable_literal  = "allow"
+
 nursery = {level = "warn", priority = -1}
 
 # Explicit nursery overrides.

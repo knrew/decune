@@ -117,14 +117,14 @@ pub(super) fn static_uid_gid_sync_hash_input(
     })
 }
 
-fn uid_gid_sync_target_kind_name(kind: UidGidSyncTargetKind) -> &'static str {
+const fn uid_gid_sync_target_kind_name(kind: UidGidSyncTargetKind) -> &'static str {
     match kind {
         UidGidSyncTargetKind::RemoteUser => "remoteUser",
         UidGidSyncTargetKind::ContainerUser => "containerUser",
     }
 }
 
-fn uid_gid_sync_noop_reason_name(reason: UidGidSyncNoopReason) -> &'static str {
+const fn uid_gid_sync_noop_reason_name(reason: UidGidSyncNoopReason) -> &'static str {
     match reason {
         UidGidSyncNoopReason::Disabled => "disabled",
         UidGidSyncNoopReason::NonLinuxHost => "nonLinuxHost",
@@ -237,11 +237,11 @@ pub(super) fn pre_uid_gid_sync_layer_resources(plan: &UpPlan) -> &DockerResource
         .unwrap_or(&plan.resources)
 }
 
-pub(super) fn plan_requires_uid_gid_sync_layer(plan: &UpPlan) -> bool {
+pub(super) const fn plan_requires_uid_gid_sync_layer(plan: &UpPlan) -> bool {
     uid_gid_sync_plan_requires_layer(&plan.uid_gid_sync_plan)
 }
 
-pub(super) fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> bool {
+pub(super) const fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> bool {
     matches!(plan, UidGidSyncPlan::Sync { .. })
 }
 
@@ -253,7 +253,7 @@ pub(super) fn effective_users_depend_on_image_config_user(plan: &UpPlan) -> bool
         && input.image_metadata_container_user.is_none()
 }
 
-fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
+const fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {
     plan.feature_install.is_some()
         || !plan.config.features.is_empty()
         || !plan.config.devcontainer.entrypoints.is_empty()

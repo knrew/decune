@@ -37,7 +37,7 @@ pub(crate) struct GitCredentialRuntime {
 }
 
 impl GitCredentialRuntime {
-    pub(crate) fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self {
             mounts: Vec::new(),
             cleanup_paths: Vec::new(),
@@ -65,7 +65,7 @@ pub(crate) struct GithubCliRuntime {
 }
 
 impl GithubCliRuntime {
-    pub(crate) fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self {
             mounts: Vec::new(),
             container_env: BTreeMap::new(),
@@ -77,7 +77,7 @@ impl GithubCliRuntime {
         &self.mounts
     }
 
-    pub(crate) fn container_env(&self) -> &BTreeMap<String, String> {
+    pub(crate) const fn container_env(&self) -> &BTreeMap<String, String> {
         &self.container_env
     }
 
@@ -131,7 +131,7 @@ pub(crate) struct SshAgentRuntime {
 }
 
 impl SshAgentRuntime {
-    pub(crate) fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self {
             mounts: Vec::new(),
             container_env: BTreeMap::new(),
@@ -142,7 +142,7 @@ impl SshAgentRuntime {
         &self.mounts
     }
 
-    pub(crate) fn container_env(&self) -> &BTreeMap<String, String> {
+    pub(crate) const fn container_env(&self) -> &BTreeMap<String, String> {
         &self.container_env
     }
 }

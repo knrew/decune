@@ -485,7 +485,7 @@ mod tests {
     #[test]
     fn ports_auto_is_extracted_from_spec_example_shape() {
         let config: RawDecuneConfig = toml::from_str(
-            r#"
+            r"
 version = 1
 
 [[ports]]
@@ -494,7 +494,7 @@ container = 3000
 [ports.auto]
 enabled = true
 min = 1024
-"#,
+",
         )
         .unwrap();
 
@@ -599,13 +599,13 @@ on_auto_forward = "{input}"
     #[test]
     fn compose_published_ports_config_is_supported() {
         let config: RawDecuneConfig = toml::from_str(
-            r#"
+            r"
 version = 1
 
 [compose.published_ports]
 relocation = true
 warn_on_relocation = true
-"#,
+",
         )
         .expect("test config should parse");
 

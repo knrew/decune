@@ -113,7 +113,7 @@ pub(crate) struct LifecycleState {
 
 impl LifecycleState {
     #[cfg(test)]
-    pub(crate) fn all_completed() -> Self {
+    pub(crate) const fn all_completed() -> Self {
         Self {
             on_create_completed: true,
             after_on_create_completed: true,
@@ -124,7 +124,7 @@ impl LifecycleState {
         }
     }
 
-    pub(crate) fn is_command_completed(self, completion: LifecycleCompletion) -> bool {
+    pub(crate) const fn is_command_completed(self, completion: LifecycleCompletion) -> bool {
         match completion {
             LifecycleCompletion::OnCreate => self.on_create_completed,
             LifecycleCompletion::UpdateContent => self.update_content_completed,
@@ -132,7 +132,7 @@ impl LifecycleState {
         }
     }
 
-    pub(crate) fn is_after_hook_completed(self, completion: LifecycleCompletion) -> bool {
+    pub(crate) const fn is_after_hook_completed(self, completion: LifecycleCompletion) -> bool {
         match completion {
             LifecycleCompletion::OnCreate => self.after_on_create_completed,
             LifecycleCompletion::UpdateContent => self.after_update_content_completed,
@@ -140,11 +140,11 @@ impl LifecycleState {
         }
     }
 
-    pub(crate) fn is_completed(self, completion: LifecycleCompletion) -> bool {
+    pub(crate) const fn is_completed(self, completion: LifecycleCompletion) -> bool {
         self.is_command_completed(completion) && self.is_after_hook_completed(completion)
     }
 
-    pub(crate) fn mark_command_completed(&mut self, completion: LifecycleCompletion) {
+    pub(crate) const fn mark_command_completed(&mut self, completion: LifecycleCompletion) {
         match completion {
             LifecycleCompletion::OnCreate => self.on_create_completed = true,
             LifecycleCompletion::UpdateContent => self.update_content_completed = true,
@@ -152,7 +152,7 @@ impl LifecycleState {
         }
     }
 
-    pub(crate) fn mark_after_hook_completed(&mut self, completion: LifecycleCompletion) {
+    pub(crate) const fn mark_after_hook_completed(&mut self, completion: LifecycleCompletion) {
         match completion {
             LifecycleCompletion::OnCreate => self.after_on_create_completed = true,
             LifecycleCompletion::UpdateContent => self.after_update_content_completed = true,

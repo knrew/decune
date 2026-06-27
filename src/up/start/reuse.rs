@@ -6,7 +6,7 @@ pub(super) struct ExistingContainerReusePolicy {
     pub(super) service_forward_requires_recreate: bool,
 }
 
-pub(super) fn should_reuse_existing_container(
+pub(super) const fn should_reuse_existing_container(
     decision: &ExistingContainerDecision,
     policy: ExistingContainerReusePolicy,
 ) -> bool {
@@ -432,11 +432,11 @@ mod tests {
             fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
             fs::write(
                 workspace.root().join(".devcontainer/Dockerfile"),
-                r#"
+                r"
                 FROM alpine:3.20
                 RUN adduser -D vscode
                 USER vscode
-                "#,
+                ",
             )
             .unwrap();
             write_devcontainer(

@@ -36,7 +36,7 @@ pub(crate) enum MountBindPropagation {
 }
 
 impl MountBindPropagation {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::RPrivate => "rprivate",
             Self::Private => "private",
@@ -167,16 +167,14 @@ fn resolved_mount_spec(
             let source = mount
                 .source
                 .as_deref()
-                .ok_or_else(|| anyhow!("Bind mount source is required for target: {}", target))?;
+                .ok_or_else(|| anyhow!("Bind mount source is required for target: {target}"))?;
             let source = resolve_bind_source(
                 source,
                 HostPathOptions::new(mount.origin, workspace_root, variables)
                     .with_create(path_create(mount.create, host_path_create))
                     .with_symlink_resolution(symlink_resolution(mount.resolve_symlink)),
             )
-            .with_context(|| {
-                format!("Failed to resolve bind mount source for target: {}", target)
-            })?;
+            .with_context(|| format!("Failed to resolve bind mount source for target: {target}"))?;
 
             Ok(DockerMountSpec {
                 source: Some(source),
@@ -208,7 +206,7 @@ fn resolved_mount_spec(
                 volume_options: None,
             })
         }
-        MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {}", target),
+        MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {target}"),
     }
 }
 
@@ -226,7 +224,7 @@ pub(crate) fn devcontainer_mount_spec_with_host_path_create(
             let source = parsed
                 .source
                 .as_deref()
-                .ok_or_else(|| anyhow!("Bind mount source is required for target: {}", target))?;
+                .ok_or_else(|| anyhow!("Bind mount source is required for target: {target}"))?;
             let source = resolve_expanded_bind_source(
                 source,
                 HostPathOptions::new(
@@ -240,10 +238,7 @@ pub(crate) fn devcontainer_mount_spec_with_host_path_create(
                 )),
             )
             .with_context(|| {
-                format!(
-                    "Failed to resolve devcontainer bind mount source for target: {}",
-                    target
-                )
+                format!("Failed to resolve devcontainer bind mount source for target: {target}")
             })?;
 
             Ok(DockerMountSpec {
@@ -265,7 +260,7 @@ pub(crate) fn devcontainer_mount_spec_with_host_path_create(
             bind_options: None,
             volume_options: parsed.volume_options,
         }),
-        MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {}", target),
+        MountType::Tmpfs => bail!("tmpfs mounts are not supported yet: {target}"),
     }
 }
 
@@ -588,7 +583,10 @@ fn resolve_expanded_bind_source(source: &str, options: HostPathOptions<'_>) -> R
         .to_string())
 }
 
-fn path_create(create: Option<MountCreate>, host_path_create: HostPathCreateMode) -> PathCreate {
+const fn path_create(
+    create: Option<MountCreate>,
+    host_path_create: HostPathCreateMode,
+) -> PathCreate {
     match (create, host_path_create) {
         (Some(MountCreate::Directory), HostPathCreateMode::Materialize) => PathCreate::Directory,
         (Some(MountCreate::Directory), HostPathCreateMode::ReadOnly) => {
@@ -612,7 +610,7 @@ fn bind_path_create(
     }
 }
 
-fn symlink_resolution(resolve_symlink: bool) -> SymlinkResolution {
+const fn symlink_resolution(resolve_symlink: bool) -> SymlinkResolution {
     if resolve_symlink {
         SymlinkResolution::Resolve
     } else {

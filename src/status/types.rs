@@ -63,7 +63,7 @@ pub(crate) enum RuntimeRunState {
 }
 
 impl WorkspaceMode {
-    pub(super) fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Image => "image",
             Self::Dockerfile => "dockerfile",
@@ -74,7 +74,7 @@ impl WorkspaceMode {
 }
 
 impl EnvironmentStatus {
-    pub(super) fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
             Self::Stopped => "stopped",
@@ -87,7 +87,7 @@ impl EnvironmentStatus {
 }
 
 impl ConfigStatus {
-    pub(super) fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Current => "current",
             Self::NeedsRebuild => "needs-rebuild",
@@ -99,7 +99,7 @@ impl ConfigStatus {
 }
 
 impl HealthStatus {
-    pub(super) fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Healthy => "healthy",
             Self::Unhealthy => "unhealthy",
@@ -112,7 +112,7 @@ impl HealthStatus {
 }
 
 impl RuntimeRunState {
-    pub(super) fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Running => "running",
             Self::Stopped => "stopped",
@@ -122,7 +122,7 @@ impl RuntimeRunState {
 }
 
 impl StatusIssueSeverity {
-    pub(super) fn as_str(self) -> &'static str {
+    pub(super) const fn as_str(self) -> &'static str {
         match self {
             Self::Info => "info",
             Self::Warning => "warning",

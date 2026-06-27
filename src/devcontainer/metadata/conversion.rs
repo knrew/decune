@@ -228,7 +228,7 @@ fn json_to_toml(value: &Value) -> Result<toml::Value> {
     }
 }
 
-fn user_env_probe_to_layer(value: &UserEnvProbe) -> LayerUserEnvProbe {
+const fn user_env_probe_to_layer(value: &UserEnvProbe) -> LayerUserEnvProbe {
     match value {
         UserEnvProbe::None => LayerUserEnvProbe::None,
         UserEnvProbe::LoginShell => LayerUserEnvProbe::LoginShell,
@@ -237,7 +237,7 @@ fn user_env_probe_to_layer(value: &UserEnvProbe) -> LayerUserEnvProbe {
     }
 }
 
-fn shutdown_action_to_layer(value: &DevcontainerShutdownAction) -> LayerShutdownAction {
+const fn shutdown_action_to_layer(value: &DevcontainerShutdownAction) -> LayerShutdownAction {
     match value {
         DevcontainerShutdownAction::None => LayerShutdownAction::None,
         DevcontainerShutdownAction::StopContainer => LayerShutdownAction::StopContainer,

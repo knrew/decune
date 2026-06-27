@@ -14,7 +14,7 @@ impl DockerClient {
         })
     }
 
-    pub(crate) fn cli(&self) -> &DockerCli {
+    pub(crate) const fn cli(&self) -> &DockerCli {
         &self.cli
     }
 }

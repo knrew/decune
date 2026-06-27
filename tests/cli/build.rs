@@ -19,10 +19,10 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
     .unwrap();
     fs::write(
         workspace_root.join(".devcontainer/Dockerfile"),
-        r#"
+        r"
         FROM alpine:3.20
         RUN true
-        "#,
+        ",
     )
     .unwrap();
     fs::write(workspace_root.join("resource-name-marker.txt"), "ok\n").unwrap();
@@ -205,10 +205,10 @@ fn dockerfile_up_pull_does_not_pass_pull_to_generated_feature_layer() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN true
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -367,7 +367,7 @@ fn up_detach_rejects_changed_dockerfile_build_context_before_reuse() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
@@ -375,7 +375,7 @@ fn up_detach_rejects_changed_dockerfile_build_context_before_reuse() {
 
             [credentials.github]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -446,11 +446,11 @@ fn up_detach_builds_with_dockerfile_specific_ignore_over_default_ignore() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             COPY . /context
             RUN test -f /context/specific-kept.txt && test ! -e /context/specific-secret.env
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -531,12 +531,12 @@ fn up_dockerfile_metadata_label_is_merged() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.github]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();

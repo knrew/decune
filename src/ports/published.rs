@@ -351,7 +351,7 @@ fn planned_host_ip_kind(state: Option<&PublishedPortRuntimeState>) -> Option<Str
     state.map(|state| endpoint_kind_name(&state.planned).to_owned())
 }
 
-fn endpoint_kind_name(endpoint: &PublishedPortEndpointState) -> &'static str {
+const fn endpoint_kind_name(endpoint: &PublishedPortEndpointState) -> &'static str {
     match endpoint.host_ip_kind {
         crate::state::PublishedPortHostIpKind::Omitted => "omitted",
         crate::state::PublishedPortHostIpKind::Explicit => "explicit",

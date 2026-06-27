@@ -18,7 +18,7 @@ pub(crate) enum ContainerTool {
 }
 
 impl ContainerTool {
-    pub(crate) fn file_name(self) -> &'static str {
+    pub(crate) const fn file_name(self) -> &'static str {
         match self {
             Self::GitCredentialHelper => "git-credential-decune",
             Self::ForwardAgent => "decune-forward-agent",
@@ -34,7 +34,7 @@ pub(crate) enum ContainerToolPlatform {
 }
 
 impl ContainerToolPlatform {
-    pub(crate) fn id(self) -> &'static str {
+    pub(crate) const fn id(self) -> &'static str {
         match self {
             Self::LinuxAmd64 => "linux-amd64",
             Self::LinuxArm64 => "linux-arm64",

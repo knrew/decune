@@ -357,7 +357,7 @@ pub(crate) fn validate_image_name(image: &str) -> Result<()> {
     Ok(())
 }
 
-fn should_pull_image(policy: PullPolicy, presence: LocalImagePresence) -> bool {
+const fn should_pull_image(policy: PullPolicy, presence: LocalImagePresence) -> bool {
     matches!(policy, PullPolicy::Always)
         || matches!(
             (policy, presence),

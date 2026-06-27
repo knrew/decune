@@ -24,15 +24,15 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
-            "#,
+            ",
         )
         .unwrap();
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
@@ -40,7 +40,7 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
 
             [credentials.github]
             install_feature_if_missing = false
-            "#,
+            ",
         )
         .unwrap();
     let gh_path = host_tools
@@ -225,12 +225,12 @@ fn up_detach_does_not_run_remote_profile_as_root_during_github_cli_setup() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let gh_path = host_tools
@@ -354,7 +354,7 @@ fn up_detach_uses_remote_user_login_path_for_github_cli_setup() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
@@ -362,7 +362,7 @@ fn up_detach_uses_remote_user_login_path_for_github_cli_setup() {
 
             [credentials.github]
             install_feature_if_missing = false
-            "#,
+            ",
         )
         .unwrap();
     let gh_path = host_tools
@@ -441,7 +441,7 @@ fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_aut
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
@@ -449,7 +449,7 @@ fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_aut
 
             [credentials.github]
             install_feature_if_missing = false
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -589,12 +589,12 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let gh_path = host_tools
@@ -719,12 +719,12 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let gh_path = host_tools
@@ -813,7 +813,7 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
@@ -821,7 +821,7 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
 
             [credentials.github]
             install_feature_if_missing = false
-            "#,
+            ",
         )
         .unwrap();
     let gh_path = host_tools
@@ -921,12 +921,12 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
@@ -1056,12 +1056,12 @@ fn up_detach_reuses_auto_added_github_cli_feature_container_when_source_tag_is_r
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     write_fake_github_cli_feature_cache(
@@ -1203,12 +1203,12 @@ fn up_detach_reuses_github_cli_source_container_when_source_tag_is_removed() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     write_fake_github_cli_feature_cache(
@@ -1353,12 +1353,12 @@ fn up_detach_detects_github_cli_from_container_env_path_before_auto_adding_featu
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
@@ -1469,12 +1469,12 @@ fn up_detach_expands_container_env_remote_user_home_path_before_github_cli_probe
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
@@ -1580,12 +1580,12 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -1729,12 +1729,12 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.git]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     workspace

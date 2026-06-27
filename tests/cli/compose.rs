@@ -1264,7 +1264,7 @@ fn compose_up_builds_selected_services_with_dependencies() {
     workspace
         .write_file(
             ".devcontainer/compose.yaml",
-            r#"
+            r"
             services:
               base:
                 build:
@@ -1276,7 +1276,7 @@ fn compose_up_builds_selected_services_with_dependencies() {
                   dockerfile: Dockerfile.app
                 depends_on:
                   - base
-            "#,
+            ",
         )
         .unwrap();
     let command_log = host_tools.path().join("commands.log");
