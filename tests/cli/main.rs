@@ -1,8 +1,3 @@
-#![allow(
-    clippy::too_many_lines,
-    reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
-)]
-
 #[cfg(test)]
 #[path = "../support/support.rs"]
 pub(crate) mod support;

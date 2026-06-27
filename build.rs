@@ -1,8 +1,3 @@
-#![allow(
-    clippy::unnecessary_debug_formatting,
-    reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
-)]
-
 use std::{
     collections::BTreeSet,
     env,
@@ -257,15 +252,12 @@ fn write_bundle(path: &Path, entries: &[ValidatedEntry]) -> Result<()> {
         "pub(crate) static EMBEDDED_CONTAINER_TOOLS: &[EmbeddedContainerToolArtifact] = &[\n",
     );
     for entry in entries {
+        let bytes_path = rust_path_literal(&entry.absolute_path)?;
         code.push_str("    EmbeddedContainerToolArtifact {\n");
         writeln!(code, "        name: {:?},", entry.name)?;
         writeln!(code, "        platform: {:?},", entry.platform)?;
         writeln!(code, "        sha256: {:?},", entry.sha256)?;
-        writeln!(
-            code,
-            "        bytes: include_bytes!({:?}),",
-            entry.absolute_path
-        )?;
+        writeln!(code, "        bytes: include_bytes!({bytes_path}),")?;
         code.push_str("    },\n");
     }
     code.push_str("];\n");
@@ -275,6 +267,24 @@ fn write_bundle(path: &Path, entries: &[ValidatedEntry]) -> Result<()> {
             path.display()
         )
     })
+}
+
+fn rust_path_literal(path: &Path) -> Result<String> {
+    let path = path.to_str().with_context(|| {
+        format!(
+            "Container tool artifact path is not valid UTF-8: {}",
+            path.display()
+        )
+    })?;
+    Ok(rust_string_literal(path))
+}
+
+fn rust_string_literal(value: &str) -> String {
+    let mut literal = String::with_capacity(value.len() + 2);
+    literal.push('"');
+    literal.extend(value.escape_debug());
+    literal.push('"');
+    literal
 }
 
 fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
