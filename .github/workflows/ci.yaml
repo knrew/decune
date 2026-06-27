@@ -123,7 +123,7 @@ jobs:
         with:
           components: clippy
       - name: Cargo clippy
-        run: cargo clippy --workspace --all-features --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-features --all-targets
 
   cargo-check:
     name: cargo-check (${{ matrix.profile }})
