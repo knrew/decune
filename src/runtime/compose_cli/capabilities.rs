@@ -124,3 +124,143 @@ fn parse_compose_version(version: &str) -> Option<(u64, u64, u64)> {
     let patch = parts.next()?.parse().ok()?;
     Some((major, minor, patch))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::super::test_support::valid_compose_capabilities;
+    use super::*;
+
+    #[test]
+    fn compose_capability_valid_help_output_detects_required_options() {
+        let capabilities = valid_compose_capabilities();
+
+        assert_eq!(capabilities.version_short.as_deref(), Some("2.40.0"));
+        assert!(capabilities.config_format_json);
+        assert!(capabilities.ps_format_json);
+        assert!(capabilities.build_with_dependencies);
+        assert!(capabilities.pull_policy_always);
+        assert!(capabilities.pull_ignore_buildable);
+        assert!(capabilities.pull_include_deps);
+        assert!(capabilities.up_force_recreate);
+        assert!(capabilities.up_remove_orphans);
+        capabilities.ensure_required().unwrap();
+        capabilities.ensure_compose_override_tag().unwrap();
+    }
+
+    #[test]
+    fn compose_capability_accepts_override_tag_minimum_version() {
+        let capabilities = ComposeCliCapabilities {
+            version_short: Some("v2.24.4".to_owned()),
+            ..valid_compose_capabilities()
+        };
+
+        capabilities.ensure_compose_override_tag().unwrap();
+    }
+
+    #[test]
+    fn compose_capability_rejects_old_override_tag_version() {
+        let capabilities = ComposeCliCapabilities {
+            version_short: Some("2.24.3".to_owned()),
+            ..valid_compose_capabilities()
+        };
+
+        let error = capabilities
+            .ensure_compose_override_tag()
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(
+            "Compose published port relocation requires Docker Compose v2.24.4 or newer"
+        ));
+        assert!(error.contains("detected Docker Compose v2.24.3"));
+    }
+
+    #[test]
+    fn compose_capability_rejects_unknown_override_tag_version() {
+        let capabilities = ComposeCliCapabilities {
+            version_short: None,
+            ..valid_compose_capabilities()
+        };
+
+        let error = capabilities
+            .ensure_compose_override_tag()
+            .unwrap_err()
+            .to_string();
+
+        assert!(error.contains(
+            "Compose published port relocation requires Docker Compose v2.24.4 or newer"
+        ));
+        assert!(error.contains("failed to determine Docker Compose version"));
+    }
+
+    #[test]
+    fn compose_capability_missing_build_with_dependencies_errors_clearly() {
+        let capabilities = ComposeCliCapabilities::from_help_outputs(
+            Some("2.3.0".to_owned()),
+            "--format string",
+            "--format string",
+            "--no-cache --pull",
+            "--policy string --ignore-buildable --include-deps",
+            "--force-recreate --remove-orphans",
+        );
+
+        let error = capabilities.ensure_required().unwrap_err().to_string();
+
+        assert!(error.contains("docker compose build --with-dependencies"));
+        assert!(error.contains("build --help does not list --with-dependencies"));
+        assert!(error.contains("Update Docker Compose v2 plugin"));
+    }
+
+    #[test]
+    fn compose_capability_missing_pull_include_deps_errors_clearly() {
+        let capabilities = ComposeCliCapabilities::from_help_outputs(
+            Some("2.3.0".to_owned()),
+            "--format string",
+            "--format string",
+            "--with-dependencies",
+            "--policy string --ignore-buildable",
+            "--force-recreate --remove-orphans",
+        );
+
+        let error = capabilities.ensure_required().unwrap_err().to_string();
+
+        assert!(error.contains("docker compose pull --include-deps"));
+        assert!(error.contains("pull --help does not list --include-deps"));
+        assert!(error.contains("Update Docker Compose v2 plugin"));
+    }
+
+    #[test]
+    fn compose_capability_missing_config_format_mentions_config_format_json() {
+        let capabilities = ComposeCliCapabilities::from_help_outputs(
+            Some("2.3.0".to_owned()),
+            "--services",
+            "--format string",
+            "--with-dependencies",
+            "--policy string --ignore-buildable --include-deps",
+            "--force-recreate --remove-orphans",
+        );
+
+        let error = capabilities.ensure_required().unwrap_err().to_string();
+
+        assert!(error.contains("docker compose config --format json"));
+        assert!(error.contains("config --help does not list --format"));
+    }
+
+    #[test]
+    fn compose_capability_missing_up_options_prompts_compose_plugin_update() {
+        let capabilities = ComposeCliCapabilities::from_help_outputs(
+            Some("2.3.0".to_owned()),
+            "--format string",
+            "--format string",
+            "--with-dependencies",
+            "--policy string --ignore-buildable --include-deps",
+            "--detach",
+        );
+
+        let error = capabilities.ensure_required().unwrap_err().to_string();
+
+        assert!(error.contains("docker compose up --force-recreate"));
+        assert!(error.contains("docker compose up --remove-orphans"));
+        assert!(error.contains("Update Docker Compose v2 plugin"));
+    }
+}
