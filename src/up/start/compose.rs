@@ -1,7 +1,7 @@
 use anyhow::{Result, bail};
 
 use crate::{
-    config::resolved::ResolvedDevcontainerSource,
+    config::{layer::LayerDevcontainerCompose, resolved::ResolvedDevcontainerSource},
     devcontainer::lifecycle::LifecycleRunPath,
     docker::{
         client::DockerClient,
@@ -10,12 +10,14 @@ use crate::{
     },
     runtime::{
         compose_cli::{
-            ComposeBuildOptions, ComposeConfigOutput, ComposeConfigService, ComposeIntrospector,
-            ComposeLifecyclePlan, ComposePrimaryImageResolver, ComposePullOptions,
-            ComposeServiceValidation, ComposeUpOptions, DockerComposeCli,
+            ComposeBuildOptions, ComposeCliCapabilities, ComposeConfigOutput, ComposeConfigService,
+            ComposeIntrospector, ComposeLifecyclePlan, ComposePrimaryImageResolver,
+            ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation, ComposeUpOptions,
+            DockerComposeCli,
         },
         compose_ports::{
-            ComposePublishedPortPlanningInput, ComposePublishedPortStartupDiagnostics,
+            ComposePublishedPortPlan, ComposePublishedPortPlanningInput,
+            ComposePublishedPortReservation, ComposePublishedPortStartupDiagnostics,
             compose_published_port_plan_has_relocations,
             validate_compose_published_port_diagnostics,
         },
@@ -37,7 +39,7 @@ use crate::{
 };
 
 use super::{
-    ExistingContainerReusePolicy, ImagePreparation, StartedUpContainer,
+    CredentialRuntime, ExistingContainerReusePolicy, ImagePreparation, StartedUpContainer,
     add_credential_runtime_mounts, attach_compose_interpolation_env_to_plan,
     compose_service_forward_requires_recreate, container_tool_platform_for_plan,
     ensure_container_running_after_start, list_compose_primary_containers,
@@ -203,84 +205,64 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     Ok(None)
 }
 
+struct ComposePlanSource<'a> {
+    project: &'a ComposeProjectPlan,
+    compose: &'a LayerDevcontainerCompose,
+}
+
+struct ComposeStartupContext {
+    cli: DockerComposeCli,
+    compose_capabilities: ComposeCliCapabilities,
+    user_lifecycle: ComposeLifecyclePlan,
+    user_config: ComposeConfigOutput,
+    compose_primary_image: String,
+    primary_service_has_build: bool,
+    compose_primary_service_user: Option<String>,
+    compose_primary_service: Option<ComposeConfigService>,
+    published_port_policy_input: ComposePublishedPortPlanningInput,
+    existing_compose_project_containers: Vec<UpContainerSummary>,
+    existing_compose_containers: Vec<UpContainerSummary>,
+    existing_project_published_ports: Vec<ComposePublishedPortReservation>,
+    published_port_relocation_enabled: bool,
+}
+
+impl ComposeStartupContext {
+    fn compose_published_ports(&self) -> Option<ComposePublishedPortFinalization<'_>> {
+        self.published_port_relocation_enabled
+            .then_some(ComposePublishedPortFinalization {
+                input: &self.published_port_policy_input,
+                existing_project_published_ports: &self.existing_project_published_ports,
+            })
+    }
+}
+
+struct FinalizedComposeStart {
+    plan: UpPlan,
+    credentials: CredentialRuntime,
+    published_port_plan: ComposePublishedPortPlan,
+    runtime_lifecycle: ComposeLifecyclePlan,
+    service: String,
+}
+
+struct ComposeReusableStartInput<'a> {
+    client: &'a DockerClient,
+    workspace: &'a Workspace,
+    plan: &'a UpPlan,
+    context: &'a ComposeStartupContext,
+    runtime_lifecycle: &'a ComposeLifecyclePlan,
+    decision: &'a ExistingContainerDecision,
+    should_reuse: bool,
+    published_port_plan: &'a ComposePublishedPortPlan,
+}
+
 pub(super) async fn start_compose_project(
     workspace: Workspace,
     mut plan: UpPlan,
     options: UpOptions,
     forwarding_resolution: ForwardingResolution,
 ) -> Result<StartedUpContainer> {
-    let Some(compose_project) = &plan.compose_project else {
-        bail!("Docker Compose project plan is missing");
-    };
-    let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
-    else {
-        bail!("Docker Compose devcontainer source is missing");
-    };
-    let user_lifecycle = ComposeLifecyclePlan::up(
-        compose_project.command_plan_without_generated_override(),
-        &compose.service,
-        compose.run_services.as_deref(),
-    );
-    let cli = DockerComposeCli::default();
-    let compose_capabilities = cli.ensure_required_capabilities().await?;
-
-    let compose_service_validation = ComposeServiceValidation {
-        primary_service: &compose.service,
-        run_services: compose.run_services.as_deref(),
-        workspace_folder: &plan.workspace_folder,
-        project_name: compose_project.project_name(),
-    };
-    let compose_introspector = ComposeIntrospector::new(cli.clone());
-    let user_config = compose_introspector
-        .user_config(compose_project, &compose_service_validation)
-        .await?;
-    let user_model = &user_config.model;
-    let compose_primary_image = ComposePrimaryImageResolver {
-        project_name: compose_project.project_name(),
-        service: &compose.service,
-    }
-    .resolve(user_model)?;
-    let primary_service_has_build = compose_primary_image.has_build;
-    let compose_primary_image = compose_primary_image.base_image;
-    let compose_primary_service_user = user_model
-        .service(&compose.service)
-        .and_then(|service| service.user.as_deref());
-    let compose_primary_service = user_model.service(&compose.service).cloned();
-    plan.base_image = compose_primary_image.clone();
-    let published_port_policy_input = compose_introspector
-        .user_published_port_planning_input(
-            compose_project,
-            &compose_service_validation,
-            &user_lifecycle.services,
-        )
-        .await?;
-    validate_compose_published_port_diagnostics(&published_port_policy_input)?;
-
     let client = DockerClient::connect_from_env();
-    let existing_compose_project_containers =
-        list_compose_project_containers(&client, workspace.id(), compose_project.project_name())
-            .await?;
-    let existing_compose_containers = list_compose_primary_containers(
-        &client,
-        workspace.id(),
-        compose_project.project_name(),
-        &compose.service,
-    )
-    .await?;
-    let mut existing_project_published_ports = Vec::new();
-    if plan.config.compose.published_ports.relocation
-        && !existing_compose_project_containers.is_empty()
-    {
-        existing_project_published_ports =
-            list_existing_compose_project_published_ports(&client, compose_project.project_name())
-                .await?;
-    }
-    let compose_published_ports = plan.config.compose.published_ports.relocation.then_some(
-        ComposePublishedPortFinalization {
-            input: &published_port_policy_input,
-            existing_project_published_ports: &existing_project_published_ports,
-        },
-    );
+    let context = prepare_compose_startup_context(&client, &workspace, &mut plan).await?;
 
     if let Some(started) = Box::pin(try_reuse_running_compose_container_before_image_prepare(
         &client,
@@ -289,13 +271,13 @@ pub(super) async fn start_compose_project(
             plan: plan.clone(),
             options: &options,
             forwarding_resolution,
-            existing_compose_containers: &existing_compose_containers,
-            compose_primary_image: &compose_primary_image,
-            user_config: &user_config,
-            compose_primary_service_user,
-            compose_primary_service: compose_primary_service.as_ref(),
-            published_port_policy_input: &published_port_policy_input,
-            compose_published_ports,
+            existing_compose_containers: &context.existing_compose_containers,
+            compose_primary_image: &context.compose_primary_image,
+            user_config: &context.user_config,
+            compose_primary_service_user: context.compose_primary_service_user.as_deref(),
+            compose_primary_service: context.compose_primary_service.as_ref(),
+            published_port_policy_input: &context.published_port_policy_input,
+            compose_published_ports: context.compose_published_ports(),
         },
     ))
     .await?
@@ -303,54 +285,188 @@ pub(super) async fn start_compose_project(
         return Ok(started);
     }
 
-    if options.build.pull {
-        cli.pull(
-            &user_lifecycle.project,
-            ComposePullOptions {
-                always: true,
-                ignore_buildable: true,
-                // When runServices narrows the explicit pull targets, dependency images
-                // are still delegated to Docker Compose instead of parsing depends_on.
-                include_deps: true,
-            },
+    prepare_compose_user_images(&context, &options).await?;
+    let finalized = Box::pin(finalize_compose_start_plan(
+        &client,
+        &workspace,
+        plan,
+        &options,
+        forwarding_resolution,
+        &context,
+    ))
+    .await?;
+
+    Box::pin(start_finalized_compose_project(
+        client, workspace, options, context, finalized,
+    ))
+    .await
+}
+
+fn compose_plan_source<'a>(
+    plan: &'a UpPlan,
+    project_missing: &'static str,
+    source_missing: &'static str,
+) -> Result<ComposePlanSource<'a>> {
+    let Some(project) = &plan.compose_project else {
+        bail!("{project_missing}");
+    };
+    let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
+    else {
+        bail!("{source_missing}");
+    };
+
+    Ok(ComposePlanSource { project, compose })
+}
+
+async fn prepare_compose_startup_context(
+    client: &DockerClient,
+    workspace: &Workspace,
+    plan: &mut UpPlan,
+) -> Result<ComposeStartupContext> {
+    let source = compose_plan_source(
+        plan,
+        "Docker Compose project plan is missing",
+        "Docker Compose devcontainer source is missing",
+    )?;
+    let project_name = source.project.project_name().to_owned();
+    let service = source.compose.service.clone();
+    let run_services = source.compose.run_services.clone();
+    let user_lifecycle = ComposeLifecyclePlan::up(
+        source.project.command_plan_without_generated_override(),
+        &service,
+        run_services.as_deref(),
+    );
+    let cli = DockerComposeCli::default();
+    let compose_capabilities = cli.ensure_required_capabilities().await?;
+    let compose_service_validation = ComposeServiceValidation {
+        primary_service: &service,
+        run_services: run_services.as_deref(),
+        workspace_folder: &plan.workspace_folder,
+        project_name: &project_name,
+    };
+    let compose_introspector = ComposeIntrospector::new(cli.clone());
+    let user_config = compose_introspector
+        .user_config(source.project, &compose_service_validation)
+        .await?;
+    let user_model = &user_config.model;
+    let compose_primary_image = ComposePrimaryImageResolver {
+        project_name: &project_name,
+        service: &service,
+    }
+    .resolve(user_model)?;
+    let primary_service_has_build = compose_primary_image.has_build;
+    let compose_primary_image = compose_primary_image.base_image;
+    let compose_primary_service = user_model.service(&service).cloned();
+    let compose_primary_service_user = compose_primary_service
+        .as_ref()
+        .and_then(|service| service.user.clone());
+    let published_port_policy_input = compose_introspector
+        .user_published_port_planning_input(
+            source.project,
+            &compose_service_validation,
             &user_lifecycle.services,
         )
         .await?;
+    validate_compose_published_port_diagnostics(&published_port_policy_input)?;
+    compose_primary_image.clone_into(&mut plan.base_image);
+
+    let existing_compose_project_containers =
+        list_compose_project_containers(client, workspace.id(), &project_name).await?;
+    let existing_compose_containers =
+        list_compose_primary_containers(client, workspace.id(), &project_name, &service).await?;
+    let published_port_relocation_enabled = plan.config.compose.published_ports.relocation;
+    let existing_project_published_ports =
+        if published_port_relocation_enabled && !existing_compose_project_containers.is_empty() {
+            list_existing_compose_project_published_ports(client, &project_name).await?
+        } else {
+            Vec::new()
+        };
+
+    Ok(ComposeStartupContext {
+        cli,
+        compose_capabilities,
+        user_lifecycle,
+        user_config,
+        compose_primary_image,
+        primary_service_has_build,
+        compose_primary_service_user,
+        compose_primary_service,
+        published_port_policy_input,
+        existing_compose_project_containers,
+        existing_compose_containers,
+        existing_project_published_ports,
+        published_port_relocation_enabled,
+    })
+}
+
+async fn prepare_compose_user_images(
+    context: &ComposeStartupContext,
+    options: &UpOptions,
+) -> Result<()> {
+    if options.build.pull {
+        context
+            .cli
+            .pull(
+                &context.user_lifecycle.project,
+                ComposePullOptions {
+                    always: true,
+                    ignore_buildable: true,
+                    // When runServices narrows the explicit pull targets, dependency images
+                    // are still delegated to Docker Compose instead of parsing depends_on.
+                    include_deps: true,
+                },
+                &context.user_lifecycle.services,
+            )
+            .await?;
     }
     if options.reuse.rebuild
         || options.build.no_cache
         || options.build.pull
-        || (primary_service_has_build && existing_compose_containers.is_empty())
+        || (context.primary_service_has_build && context.existing_compose_containers.is_empty())
     {
-        cli.build(
-            &user_lifecycle.project,
-            ComposeBuildOptions {
-                with_dependencies: true,
-                no_cache: options.build.no_cache,
-                pull: options.build.pull,
-            },
-            &user_lifecycle.services,
-        )
-        .await?;
+        context
+            .cli
+            .build(
+                &context.user_lifecycle.project,
+                ComposeBuildOptions {
+                    with_dependencies: true,
+                    no_cache: options.build.no_cache,
+                    pull: options.build.pull,
+                },
+                &context.user_lifecycle.services,
+            )
+            .await?;
     }
 
+    Ok(())
+}
+
+async fn finalize_compose_start_plan(
+    client: &DockerClient,
+    workspace: &Workspace,
+    mut plan: UpPlan,
+    options: &UpOptions,
+    forwarding_resolution: ForwardingResolution,
+    context: &ComposeStartupContext,
+) -> Result<FinalizedComposeStart> {
     let existing_remote_user_image = if options.reuse.rebuild {
         None
     } else {
-        existing_compose_containers
+        context
+            .existing_compose_containers
             .first()
             .and_then(existing::existing_container_image_id)
     };
-    if existing_remote_user_image.is_none() && !primary_service_has_build {
-        ensure_image(&client, &plan.base_image, PullPolicy::Missing).await?;
+    if existing_remote_user_image.is_none() && !context.primary_service_has_build {
+        ensure_image(client, &plan.base_image, PullPolicy::Missing).await?;
     }
     plan = prepare_compose_image_metadata(
-        &client,
-        &workspace,
+        client,
+        workspace,
         options.config_path.as_deref(),
         options.cli_layer.clone(),
         plan,
-        &compose_primary_image,
+        &context.compose_primary_image,
         UpPlanResolution::new(
             forwarding_resolution,
             options.build.update_features,
@@ -358,26 +474,27 @@ pub(super) async fn start_compose_project(
         ),
     )
     .await?;
-    plan.base_image = compose_primary_image.clone();
+    plan.base_image.clone_from(&context.compose_primary_image);
     let finalized = Box::pin(finalize_up_plan_mounts(
-        &client,
-        &workspace,
+        client,
+        workspace,
         plan,
         existing_remote_user_image,
-        existing_compose_containers
+        context
+            .existing_compose_containers
             .first()
             .and_then(existing::existing_container_config_hash),
         Some((
-            options.build.pull && !primary_service_has_build,
+            options.build.pull && !context.primary_service_has_build,
             options.build.no_cache,
         )),
         FinalizeUpPlanMountsOptions {
             forwarding: forwarding_resolution,
             update_features: options.build.update_features,
-            compose_canonical_model: Some(&user_config.canonical_model),
-            compose_primary_service_user,
-            compose_primary_service: compose_primary_service.as_ref(),
-            compose_published_ports,
+            compose_canonical_model: Some(&context.user_config.canonical_model),
+            compose_primary_service_user: context.compose_primary_service_user.as_deref(),
+            compose_primary_service: context.compose_primary_service.as_ref(),
+            compose_published_ports: context.compose_published_ports(),
         },
     ))
     .await?;
@@ -386,16 +503,16 @@ pub(super) async fn start_compose_project(
     let published_port_override = finalized.compose_published_port_override;
     let image_prepared = finalized.image_prepared;
     if compose_published_port_plan_has_relocations(&published_port_plan) {
-        compose_capabilities.ensure_compose_override_tag()?;
+        context.compose_capabilities.ensure_compose_override_tag()?;
         warn_on_compose_published_port_relocations(&plan, &published_port_plan);
     }
     if !plan_requires_final_image_layer(&plan) {
-        plan.image = compose_primary_image.clone();
-        plan.base_image = compose_primary_image;
+        plan.image.clone_from(&context.compose_primary_image);
+        plan.base_image.clone_from(&context.compose_primary_image);
     }
     if !image_prepared {
         prepare_image_for_create(
-            &client,
+            client,
             &plan,
             ImagePreparation {
                 pull: false,
@@ -405,43 +522,66 @@ pub(super) async fn start_compose_project(
         )
         .await?;
     }
-    let platform = image_container_tool_platform(&client, &plan.image).await?;
+    let platform = image_container_tool_platform(client, &plan.image).await?;
     let (mut plan, credentials) =
         add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
     attach_compose_interpolation_env_to_plan(&mut plan);
     report_deferred_config_messages(&plan.config);
 
-    let Some(compose_project) = &plan.compose_project else {
-        bail!("Docker Compose project plan is missing after finalization");
-    };
-    let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
-    else {
-        bail!("Docker Compose devcontainer source is missing after finalization");
-    };
-    write_generated_compose_override(
-        &client,
-        compose_project,
-        &compose.service,
+    let source = compose_plan_source(
         &plan,
-        compose_primary_service.as_ref(),
+        "Docker Compose project plan is missing after finalization",
+        "Docker Compose devcontainer source is missing after finalization",
+    )?;
+    write_generated_compose_override(
+        client,
+        source.project,
+        &source.compose.service,
+        &plan,
+        context.compose_primary_service.as_ref(),
         credentials.service_forward(),
         &published_port_override,
     )
     .await?;
     let runtime_lifecycle = ComposeLifecyclePlan::up(
-        compose_project.command_plan_with_generated_override(),
-        &compose.service,
-        compose.run_services.as_deref(),
+        source.project.command_plan_with_generated_override(),
+        &source.compose.service,
+        source.compose.run_services.as_deref(),
     );
+    let service = source.compose.service.clone();
 
-    if existing_compose_project_containers.is_empty() {
+    Ok(FinalizedComposeStart {
+        plan,
+        credentials,
+        published_port_plan,
+        runtime_lifecycle,
+        service,
+    })
+}
+
+async fn start_finalized_compose_project(
+    client: DockerClient,
+    workspace: Workspace,
+    options: UpOptions,
+    context: ComposeStartupContext,
+    finalized: FinalizedComposeStart,
+) -> Result<StartedUpContainer> {
+    let FinalizedComposeStart {
+        plan,
+        credentials,
+        published_port_plan,
+        runtime_lifecycle,
+        service,
+    } = finalized;
+
+    if context.existing_compose_project_containers.is_empty() {
         state::reconcile_state_without_container(workspace.paths().state_dir())?;
     }
-    let stale_compose_project =
-        !existing_compose_project_containers.is_empty() && existing_compose_containers.is_empty();
+    let stale_compose_project = !context.existing_compose_project_containers.is_empty()
+        && context.existing_compose_containers.is_empty();
 
     let decision = decide_existing_container(
-        &existing_compose_containers,
+        &context.existing_compose_containers,
         &plan.resources.config_hash,
         credentials.mount_policy(),
         options.reuse.rebuild,
@@ -449,7 +589,7 @@ pub(super) async fn start_compose_project(
     let service_forward_requires_recreate = compose_service_forward_requires_recreate(
         &client,
         workspace.id(),
-        compose_project.project_name(),
+        &runtime_lifecycle.project.project_name,
         credentials.service_forward(),
     )
     .await?;
@@ -469,104 +609,50 @@ pub(super) async fn start_compose_project(
         || options.reuse.rebuild
         || stale_compose_project
         || service_forward_requires_recreate;
-    match decision {
-        ExistingContainerDecision::ReuseRunning { id, name } if should_reuse => {
-            let outcome = UpOutcome {
-                container_id: id,
-                container_name: name,
-                reused: true,
-            };
-            let state = sync_started_compose_state(
-                &client,
-                &workspace,
-                &plan,
-                &outcome,
-                LifecycleRunPath::Running,
-                &published_port_policy_input,
-                &published_port_plan,
-            )
-            .await?;
-            return Ok(started_up_container_with_state(
-                client,
-                workspace,
-                plan,
-                outcome,
-                LifecycleRunPath::Running,
-                credentials,
-                state,
-            ));
-        }
-        ExistingContainerDecision::StartStopped { id, name } if should_reuse => {
-            materialize_dotfile_skeletons(&plan.dotfile_skeletons)?;
-            cli.up(
-                &runtime_lifecycle.project,
-                ComposeUpOptions {
-                    force_recreate: false,
-                    remove_orphans: false,
-                },
-                &runtime_lifecycle.services,
-                Some(ComposePublishedPortStartupDiagnostics {
-                    input: &published_port_policy_input,
-                    plan: &published_port_plan,
-                    relocation_enabled: plan.config.compose.published_ports.relocation,
-                }),
-            )
-            .await?;
-            ensure_container_running_after_start(
-                &client,
-                &name,
-                startup_verification_for_plan(&plan),
-            )
-            .await?;
-            let outcome = UpOutcome {
-                container_id: id,
-                container_name: name,
-                reused: true,
-            };
-            let state = sync_started_compose_state(
-                &client,
-                &workspace,
-                &plan,
-                &outcome,
-                LifecycleRunPath::Started,
-                &published_port_policy_input,
-                &published_port_plan,
-            )
-            .await?;
-            return Ok(started_up_container_with_state(
-                client,
-                workspace,
-                plan,
-                outcome,
-                LifecycleRunPath::Started,
-                credentials,
-                state,
-            ));
-        }
-        ExistingContainerDecision::Create
-        | ExistingContainerDecision::Recreate { .. }
-        | ExistingContainerDecision::ReuseRunning { .. }
-        | ExistingContainerDecision::StartStopped { .. } => {}
+    if let Some((outcome, lifecycle_path, state)) =
+        try_start_reusable_compose_container(ComposeReusableStartInput {
+            client: &client,
+            workspace: &workspace,
+            plan: &plan,
+            context: &context,
+            runtime_lifecycle: &runtime_lifecycle,
+            decision: &decision,
+            should_reuse,
+            published_port_plan: &published_port_plan,
+        })
+        .await?
+    {
+        return Ok(started_up_container_with_state(
+            client,
+            workspace,
+            plan,
+            outcome,
+            lifecycle_path,
+            credentials,
+            state,
+        ));
     }
 
     materialize_dotfile_skeletons(&plan.dotfile_skeletons)?;
-    cli.up(
-        &runtime_lifecycle.project,
-        ComposeUpOptions {
-            force_recreate,
-            remove_orphans,
-        },
-        &runtime_lifecycle.services,
-        Some(ComposePublishedPortStartupDiagnostics {
-            input: &published_port_policy_input,
-            plan: &published_port_plan,
-            relocation_enabled: plan.config.compose.published_ports.relocation,
-        }),
-    )
-    .await?;
+    context
+        .cli
+        .up(
+            &runtime_lifecycle.project,
+            ComposeUpOptions {
+                force_recreate,
+                remove_orphans,
+            },
+            &runtime_lifecycle.services,
+            Some(compose_startup_diagnostics(
+                &plan,
+                &context.published_port_policy_input,
+                &published_port_plan,
+            )),
+        )
+        .await?;
 
-    let container = ComposeIntrospector::new(cli)
-        .resolve_service_container(&runtime_lifecycle.project, &compose.service)
+    let container = ComposeIntrospector::new(context.cli)
+        .resolve_service_container(&runtime_lifecycle.project, &service)
         .await?;
     let container_name = container.name.unwrap_or_else(|| container.id.clone());
     let outcome = UpOutcome {
@@ -586,7 +672,7 @@ pub(super) async fn start_compose_project(
         &plan,
         &outcome,
         LifecycleRunPath::New,
-        &published_port_policy_input,
+        &context.published_port_policy_input,
         &published_port_plan,
     )
     .await?;
@@ -600,6 +686,95 @@ pub(super) async fn start_compose_project(
         credentials,
         state,
     ))
+}
+
+async fn try_start_reusable_compose_container(
+    input: ComposeReusableStartInput<'_>,
+) -> Result<Option<(UpOutcome, LifecycleRunPath, state::WorkspaceState)>> {
+    let ComposeReusableStartInput {
+        client,
+        workspace,
+        plan,
+        context,
+        runtime_lifecycle,
+        decision,
+        should_reuse,
+        published_port_plan,
+    } = input;
+    if !should_reuse {
+        return Ok(None);
+    }
+
+    match decision {
+        ExistingContainerDecision::ReuseRunning { id, name } => {
+            let outcome = UpOutcome {
+                container_id: id.clone(),
+                container_name: name.clone(),
+                reused: true,
+            };
+            let state = sync_started_compose_state(
+                client,
+                workspace,
+                plan,
+                &outcome,
+                LifecycleRunPath::Running,
+                &context.published_port_policy_input,
+                published_port_plan,
+            )
+            .await?;
+            Ok(Some((outcome, LifecycleRunPath::Running, state)))
+        }
+        ExistingContainerDecision::StartStopped { id, name } => {
+            materialize_dotfile_skeletons(&plan.dotfile_skeletons)?;
+            context
+                .cli
+                .up(
+                    &runtime_lifecycle.project,
+                    ComposeUpOptions {
+                        force_recreate: false,
+                        remove_orphans: false,
+                    },
+                    &runtime_lifecycle.services,
+                    Some(compose_startup_diagnostics(
+                        plan,
+                        &context.published_port_policy_input,
+                        published_port_plan,
+                    )),
+                )
+                .await?;
+            ensure_container_running_after_start(client, name, startup_verification_for_plan(plan))
+                .await?;
+            let outcome = UpOutcome {
+                container_id: id.clone(),
+                container_name: name.clone(),
+                reused: true,
+            };
+            let state = sync_started_compose_state(
+                client,
+                workspace,
+                plan,
+                &outcome,
+                LifecycleRunPath::Started,
+                &context.published_port_policy_input,
+                published_port_plan,
+            )
+            .await?;
+            Ok(Some((outcome, LifecycleRunPath::Started, state)))
+        }
+        ExistingContainerDecision::Create | ExistingContainerDecision::Recreate { .. } => Ok(None),
+    }
+}
+
+const fn compose_startup_diagnostics<'a>(
+    plan: &'a UpPlan,
+    input: &'a ComposePublishedPortPlanningInput,
+    published_port_plan: &'a ComposePublishedPortPlan,
+) -> ComposePublishedPortStartupDiagnostics<'a> {
+    ComposePublishedPortStartupDiagnostics {
+        input,
+        plan: published_port_plan,
+        relocation_enabled: plan.config.compose.published_ports.relocation,
+    }
 }
 
 pub(super) async fn validate_compose_canonical_model(plan: &UpPlan) -> Result<()> {

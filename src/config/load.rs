@@ -58,6 +58,76 @@ mod tests {
         std::env::temp_dir().join(format!("decune-config-load-{name}-{}", std::process::id()))
     }
 
+    const SPEC_EXAMPLE_CONFIG: &str = r#"
+version = 1
+use_global_config = false
+shell = "/bin/zsh"
+
+[features."ghcr.io/devcontainers/features/github-cli:1"]
+version = "latest"
+
+[features."ghcr.io/duduribeiro/devcontainer-features/neovim:1"]
+version = "nightly"
+
+[[dotfiles]]
+source = "~/.config/nvim"
+target = ".config/nvim"
+read_only = true
+resolve_symlink = true
+on_conflict = "replace-symlink"
+
+[[mounts]]
+source = "~/work"
+target = "/workspaces/work"
+type = "bind"
+read_only = false
+resolve_symlink = true
+create = false
+
+[[ports]]
+container = 3000
+host = 3000
+host_ip = "127.0.0.1"
+protocol = "tcp"
+require_local = false
+label = "web"
+
+[ports.auto]
+enabled = true
+min = 1024
+max = 32768
+ignore = [22, 2375, 2376]
+on_auto_forward = "notify"
+
+[compose.published_ports]
+relocation = true
+warn_on_relocation = true
+
+[credentials.git]
+enabled = true
+copy_user = true
+copy_global_config = false
+https = "host-helper"
+ssh_agent = "auto"
+
+[credentials.github]
+enabled = true
+mode = "gh-token-file"
+install_feature_if_missing = true
+
+[[hooks.before_post_create]]
+command = "scripts/before-post-create.sh"
+where = "container"
+user = "remote"
+shell = true
+
+[[hooks.after_post_start]]
+command = ["bash", "scripts/after-start.sh"]
+where = "container"
+user = "remote"
+shell = false
+"#;
+
     #[test]
     fn missing_file_loads_empty_config() {
         let path = config_path("missing");
@@ -134,85 +204,28 @@ mod tests {
     #[test]
     fn spec_example_is_loaded() {
         let path = config_path("spec-example");
-        fs::write(
-            &path,
-            r#"
-version = 1
-use_global_config = false
-shell = "/bin/zsh"
-
-[features."ghcr.io/devcontainers/features/github-cli:1"]
-version = "latest"
-
-[features."ghcr.io/duduribeiro/devcontainer-features/neovim:1"]
-version = "nightly"
-
-[[dotfiles]]
-source = "~/.config/nvim"
-target = ".config/nvim"
-read_only = true
-resolve_symlink = true
-on_conflict = "replace-symlink"
-
-[[mounts]]
-source = "~/work"
-target = "/workspaces/work"
-type = "bind"
-read_only = false
-resolve_symlink = true
-create = false
-
-[[ports]]
-container = 3000
-host = 3000
-host_ip = "127.0.0.1"
-protocol = "tcp"
-require_local = false
-label = "web"
-
-[ports.auto]
-enabled = true
-min = 1024
-max = 32768
-ignore = [22, 2375, 2376]
-on_auto_forward = "notify"
-
-[compose.published_ports]
-relocation = true
-warn_on_relocation = true
-
-[credentials.git]
-enabled = true
-copy_user = true
-copy_global_config = false
-https = "host-helper"
-ssh_agent = "auto"
-
-[credentials.github]
-enabled = true
-mode = "gh-token-file"
-install_feature_if_missing = true
-
-[[hooks.before_post_create]]
-command = "scripts/before-post-create.sh"
-where = "container"
-user = "remote"
-shell = true
-
-[[hooks.after_post_start]]
-command = ["bash", "scripts/after-start.sh"]
-where = "container"
-user = "remote"
-shell = false
-"#,
-        )
-        .unwrap();
+        fs::write(&path, SPEC_EXAMPLE_CONFIG).unwrap();
 
         let config = load_config_file(&path).unwrap();
 
+        assert_spec_example_top_level(&config);
+        assert_spec_example_features(&config);
+        assert_spec_example_dotfiles(&config);
+        assert_spec_example_mounts(&config);
+        assert_spec_example_ports(&config);
+        assert_spec_example_credentials(&config);
+        assert_spec_example_hooks(&config);
+
+        _ = fs::remove_file(path);
+    }
+
+    fn assert_spec_example_top_level(config: &RawDecuneConfig) {
         assert_eq!(config.version, Some(1));
         assert_eq!(config.use_global_config, Some(false));
         assert_eq!(config.shell.as_deref(), Some("/bin/zsh"));
+    }
+
+    fn assert_spec_example_features(config: &RawDecuneConfig) {
         assert_eq!(config.features.len(), 2);
         assert_eq!(
             config.features["ghcr.io/devcontainers/features/github-cli:1"]
@@ -221,72 +234,83 @@ shell = false
                 .and_then(|value| value.as_str()),
             Some("latest")
         );
+    }
+
+    fn assert_spec_example_dotfiles(config: &RawDecuneConfig) {
         assert_eq!(config.dotfiles.len(), 1);
-        assert_eq!(config.dotfiles[0].source.as_deref(), Some("~/.config/nvim"));
-        assert_eq!(config.dotfiles[0].target, ".config/nvim");
-        assert_eq!(config.dotfiles[0].read_only, Some(true));
-        assert_eq!(config.dotfiles[0].resolve_symlink, Some(true));
+        let dotfile = &config.dotfiles[0];
+        assert_eq!(dotfile.source.as_deref(), Some("~/.config/nvim"));
+        assert_eq!(dotfile.target, ".config/nvim");
+        assert_eq!(dotfile.read_only, Some(true));
+        assert_eq!(dotfile.resolve_symlink, Some(true));
         assert_eq!(
-            config.dotfiles[0].on_conflict,
+            dotfile.on_conflict,
             Some(RawDotfileConflict::ReplaceSymlink)
         );
+    }
+
+    fn assert_spec_example_mounts(config: &RawDecuneConfig) {
         assert_eq!(config.mounts.len(), 1);
-        assert_eq!(config.mounts[0].source.as_deref(), Some("~/work"));
-        assert_eq!(config.mounts[0].target, "/workspaces/work");
-        assert_eq!(config.mounts[0].mount_type, Some(RawMountType::Bind));
-        assert_eq!(config.mounts[0].read_only, Some(false));
-        assert_eq!(config.mounts[0].resolve_symlink, Some(true));
-        assert_eq!(config.mounts[0].create, None);
+        let mount = &config.mounts[0];
+        assert_eq!(mount.source.as_deref(), Some("~/work"));
+        assert_eq!(mount.target, "/workspaces/work");
+        assert_eq!(mount.mount_type, Some(RawMountType::Bind));
+        assert_eq!(mount.read_only, Some(false));
+        assert_eq!(mount.resolve_symlink, Some(true));
+        assert_eq!(mount.create, None);
+    }
+
+    fn assert_spec_example_ports(config: &RawDecuneConfig) {
         assert_eq!(config.ports.entries.len(), 1);
-        assert_eq!(config.ports.entries[0].container, 3000);
-        assert_eq!(config.ports.entries[0].host, Some(3000));
-        assert_eq!(
-            config.ports.entries[0].host_ip.as_deref(),
-            Some("127.0.0.1")
-        );
-        assert_eq!(config.ports.entries[0].protocol, Some(RawPortProtocol::Tcp));
-        assert_eq!(config.ports.entries[0].require_local, Some(false));
-        assert_eq!(config.ports.entries[0].label.as_deref(), Some("web"));
-        let auto = config.ports.auto.unwrap();
+        let port = &config.ports.entries[0];
+        assert_eq!(port.container, 3000);
+        assert_eq!(port.host, Some(3000));
+        assert_eq!(port.host_ip.as_deref(), Some("127.0.0.1"));
+        assert_eq!(port.protocol, Some(RawPortProtocol::Tcp));
+        assert_eq!(port.require_local, Some(false));
+        assert_eq!(port.label.as_deref(), Some("web"));
+        let auto = config.ports.auto.as_ref().unwrap();
         assert_eq!(auto.enabled, Some(true));
         assert_eq!(auto.min, Some(1024));
         assert_eq!(auto.max, Some(32768));
-        assert_eq!(auto.ignore, Some(vec![22, 2375, 2376]));
+        assert_eq!(auto.ignore.as_deref(), Some([22, 2375, 2376].as_slice()));
         assert_eq!(auto.on_auto_forward, Some(RawOnAutoForward::Notify));
-        let published_ports = config.compose.published_ports.unwrap();
+        let published_ports = config.compose.published_ports.as_ref().unwrap();
         assert_eq!(published_ports.relocation, Some(true));
         assert_eq!(published_ports.warn_on_relocation, Some(true));
-        let git = config.credentials.git.unwrap();
+    }
+
+    fn assert_spec_example_credentials(config: &RawDecuneConfig) {
+        let git = config.credentials.git.as_ref().unwrap();
         assert_eq!(git.enabled, Some(true));
         assert_eq!(git.copy_user, Some(true));
         assert_eq!(git.copy_global_config, Some(false));
         assert_eq!(git.https, Some(RawGitHttpsMode::HostHelper));
         assert_eq!(git.ssh_agent, Some(RawSshAgentMode::Auto));
-        let github = config.credentials.github.unwrap();
+        let github = config.credentials.github.as_ref().unwrap();
         assert_eq!(github.enabled, Some(true));
         assert_eq!(github.mode, Some(RawGithubCredentialsMode::GhTokenFile));
         assert_eq!(github.install_feature_if_missing, Some(true));
+    }
+
+    fn assert_spec_example_hooks(config: &RawDecuneConfig) {
         assert_eq!(config.hooks.before_post_create.len(), 1);
+        let before_post_create = &config.hooks.before_post_create[0];
         assert_eq!(
-            config.hooks.before_post_create[0].command,
+            before_post_create.command,
             RawCommand::Shell("scripts/before-post-create.sh".to_owned())
         );
         assert_eq!(
-            config.hooks.before_post_create[0].location,
+            before_post_create.location,
             Some(RawHookLocation::Container)
         );
-        assert_eq!(
-            config.hooks.before_post_create[0].user.as_deref(),
-            Some("remote")
-        );
-        assert_eq!(config.hooks.before_post_create[0].shell, Some(true));
+        assert_eq!(before_post_create.user.as_deref(), Some("remote"));
+        assert_eq!(before_post_create.shell, Some(true));
         assert_eq!(config.hooks.after_post_start.len(), 1);
         assert_eq!(
             config.hooks.after_post_start[0].command,
             RawCommand::Args(vec!["bash".to_owned(), "scripts/after-start.sh".to_owned()])
         );
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
