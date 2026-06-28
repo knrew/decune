@@ -579,17 +579,8 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .args(["up", "--detach"])
             .arg(&workspace_root)
@@ -607,8 +598,7 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Reusing running dev container"));
-    })
-    .unwrap();
+    });
 }
 
 fn assert_feature_image_metadata_labels(workspace_root: &Path) {

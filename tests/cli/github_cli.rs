@@ -604,17 +604,8 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
         .unwrap();
     let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .args(["up", "--detach"])
@@ -626,8 +617,7 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
             .stderr(predicate::str::contains("github-test-secret").not());
 
         assert_github_cli_config_env_and_labels(&workspace_root);
-    })
-    .unwrap();
+    });
 }
 
 fn assert_github_cli_config_env_and_labels(workspace_root: &Path) {

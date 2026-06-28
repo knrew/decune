@@ -526,17 +526,8 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("HOME", host_home.path())
             .args(["up", "--detach"])
@@ -547,6 +538,5 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("attacker reached host daemon").not())
             .stderr(predicate::str::contains("test-secret").not());
-    })
-    .unwrap();
+    });
 }
