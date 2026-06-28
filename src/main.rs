@@ -16,8 +16,6 @@
     clippy::panic_in_result_fn,
     clippy::similar_names,
     clippy::string_slice,
-    clippy::struct_excessive_bools,
-    clippy::struct_field_names,
     clippy::suspicious_operation_groupings,
     clippy::too_many_lines,
     clippy::undocumented_unsafe_blocks,

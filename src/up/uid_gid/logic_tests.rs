@@ -71,10 +71,10 @@ fn effective_user_input_from_plan_uses_expanded_user_values() {
 
     let input = effective_user_input_from_plan(&plan);
 
-    assert_eq!(input.devcontainer_remote_user, Some("remoteuser"));
-    assert_eq!(input.devcontainer_container_user, Some("containeruser"));
-    assert_eq!(input.image_metadata_remote_user, None);
-    assert_eq!(input.image_metadata_container_user, None);
+    assert_eq!(input.devcontainer_remote, Some("remoteuser"));
+    assert_eq!(input.devcontainer_container, Some("containeruser"));
+    assert_eq!(input.image_metadata_remote, None);
+    assert_eq!(input.image_metadata_container, None);
 }
 
 #[test]
@@ -100,13 +100,10 @@ fn effective_user_input_from_plan_keeps_metadata_user_origin() {
 
     let input = effective_user_input_from_plan(&plan);
 
-    assert_eq!(input.devcontainer_remote_user, None);
-    assert_eq!(input.devcontainer_container_user, None);
-    assert_eq!(input.image_metadata_remote_user, Some("feature-remote"));
-    assert_eq!(
-        input.image_metadata_container_user,
-        Some("feature-container")
-    );
+    assert_eq!(input.devcontainer_remote, None);
+    assert_eq!(input.devcontainer_container, None);
+    assert_eq!(input.image_metadata_remote, Some("feature-remote"));
+    assert_eq!(input.image_metadata_container, Some("feature-container"));
 }
 
 #[test]

@@ -172,6 +172,54 @@ pub(in crate::devcontainer::lifecycle) fn after_hook_stage(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::{
+        LifecycleState, OnCreateLifecycleState, PostCreateLifecycleState,
+        UpdateContentLifecycleState,
+    };
+
+    #[derive(Debug, Clone, Copy)]
+    enum LifecycleStageFixture {
+        Pending,
+        CommandCompleted,
+        Completed,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct LifecycleStateFixture {
+        on_create: LifecycleStageFixture,
+        update_content: LifecycleStageFixture,
+        post_create: LifecycleStageFixture,
+    }
+
+    use LifecycleStageFixture::{CommandCompleted, Completed, Pending};
+
+    const fn lifecycle_state(fixture: LifecycleStateFixture) -> LifecycleState {
+        LifecycleState {
+            on_create: OnCreateLifecycleState {
+                completed: stage_command_completed(fixture.on_create),
+                after_completed: stage_after_completed(fixture.on_create),
+            },
+            update_content: UpdateContentLifecycleState {
+                completed: stage_command_completed(fixture.update_content),
+                after_completed: stage_after_completed(fixture.update_content),
+            },
+            post_create: PostCreateLifecycleState {
+                completed: stage_command_completed(fixture.post_create),
+                after_completed: stage_after_completed(fixture.post_create),
+            },
+        }
+    }
+
+    const fn stage_command_completed(stage: LifecycleStageFixture) -> bool {
+        matches!(
+            stage,
+            LifecycleStageFixture::CommandCompleted | LifecycleStageFixture::Completed
+        )
+    }
+
+    const fn stage_after_completed(stage: LifecycleStageFixture) -> bool {
+        matches!(stage, LifecycleStageFixture::Completed)
+    }
 
     #[test]
     fn lifecycle_plan_for_new_container_matches_documented_order() {
@@ -303,14 +351,11 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::New,
-                crate::state::LifecycleState {
-                    on_create_completed: true,
-                    after_on_create_completed: true,
-                    update_content_completed: false,
-                    after_update_content_completed: false,
-                    post_create_completed: true,
-                    after_post_create_completed: true,
-                },
+                lifecycle_state(LifecycleStateFixture {
+                    on_create: Completed,
+                    update_content: Pending,
+                    post_create: Completed,
+                }),
             ),
             vec![
                 LifecycleStep::Hooks(HookStage::BeforeInitialize),
@@ -336,14 +381,11 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::Running,
-                crate::state::LifecycleState {
-                    on_create_completed: true,
-                    after_on_create_completed: false,
-                    update_content_completed: false,
-                    after_update_content_completed: false,
-                    post_create_completed: false,
-                    after_post_create_completed: false,
-                },
+                lifecycle_state(LifecycleStateFixture {
+                    on_create: CommandCompleted,
+                    update_content: Pending,
+                    post_create: Pending,
+                }),
             ),
             vec![
                 LifecycleStep::Hooks(HookStage::BeforeInitialize),
@@ -370,14 +412,11 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::Running,
-                crate::state::LifecycleState {
-                    on_create_completed: true,
-                    after_on_create_completed: true,
-                    update_content_completed: false,
-                    after_update_content_completed: false,
-                    post_create_completed: false,
-                    after_post_create_completed: false,
-                },
+                lifecycle_state(LifecycleStateFixture {
+                    on_create: Completed,
+                    update_content: Pending,
+                    post_create: Pending,
+                }),
             ),
             vec![
                 LifecycleStep::Hooks(HookStage::BeforeInitialize),
@@ -403,14 +442,11 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::Started,
-                crate::state::LifecycleState {
-                    on_create_completed: true,
-                    after_on_create_completed: true,
-                    update_content_completed: true,
-                    after_update_content_completed: true,
-                    post_create_completed: false,
-                    after_post_create_completed: false,
-                },
+                lifecycle_state(LifecycleStateFixture {
+                    on_create: Completed,
+                    update_content: Completed,
+                    post_create: Pending,
+                }),
             ),
             vec![
                 LifecycleStep::Hooks(HookStage::BeforeInitialize),

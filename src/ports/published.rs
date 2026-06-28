@@ -199,10 +199,10 @@ fn compose_published_port_runtime_entry(
         planned: Some(inventory_endpoint(&state.planned)),
         actual_bindings: Some(actual_bindings),
         requested_host_ip_kind: Some(endpoint_kind_name(&state.requested).to_owned()),
-        requested_host_ip: state.requested.host_ip_value.clone(),
+        requested_host_ip: state.requested.ip_value.clone(),
         requested_host_port: Some(state.requested.host_port),
         planned_host_ip_kind: Some(endpoint_kind_name(&state.planned).to_owned()),
-        planned_host_ip: state.planned.host_ip_value.clone(),
+        planned_host_ip: state.planned.ip_value.clone(),
         planned_host_port: Some(state.planned.host_port),
         relocated: Some(state.relocated),
         label: None,
@@ -273,7 +273,7 @@ fn published_port_binding_entry(
             planned_host_ip_kind: planned_host_ip_kind(input.runtime_state),
             planned_host_ip: input
                 .runtime_state
-                .and_then(|state| state.planned.host_ip_value.clone()),
+                .and_then(|state| state.planned.ip_value.clone()),
             planned_host_port: input.runtime_state.map(|state| state.planned.host_port),
             relocated: input.runtime_state.map(|state| state.relocated),
             label: None,
@@ -288,8 +288,7 @@ impl PortInventoryEntry {
             return self;
         };
         self.requested_host_ip_kind = Some(endpoint_kind_name(&state.requested).to_owned());
-        self.requested_host_ip
-            .clone_from(&state.requested.host_ip_value);
+        self.requested_host_ip.clone_from(&state.requested.ip_value);
         self.requested_host_port = Some(state.requested.host_port);
         self.port_entry_index = Some(state.port_entry_index);
         self.target = Some(PortInventoryTarget {
@@ -353,17 +352,17 @@ fn planned_host_ip_kind(state: Option<&PublishedPortRuntimeState>) -> Option<Str
 }
 
 const fn endpoint_kind_name(endpoint: &PublishedPortEndpointState) -> &'static str {
-    match endpoint.host_ip_kind {
+    match endpoint.ip_kind {
         crate::state::PublishedPortHostIpKind::Omitted => "omitted",
         crate::state::PublishedPortHostIpKind::Explicit => "explicit",
     }
 }
 
 fn display_host_ip(endpoint: &PublishedPortEndpointState) -> String {
-    match endpoint.host_ip_kind {
+    match endpoint.ip_kind {
         crate::state::PublishedPortHostIpKind::Omitted => "*".to_owned(),
         crate::state::PublishedPortHostIpKind::Explicit => endpoint
-            .host_ip_value
+            .ip_value
             .clone()
             .unwrap_or_else(|| "0.0.0.0".to_owned()),
     }
@@ -371,7 +370,7 @@ fn display_host_ip(endpoint: &PublishedPortEndpointState) -> String {
 
 fn inventory_endpoint(endpoint: &PublishedPortEndpointState) -> PortInventoryEndpoint {
     PortInventoryEndpoint {
-        host_ip: endpoint.host_ip_value.clone(),
+        host_ip: endpoint.ip_value.clone(),
         host_port: endpoint.host_port,
     }
 }
@@ -544,13 +543,13 @@ mod tests {
                 protocol: "tcp".to_owned(),
             },
             requested: PublishedPortEndpointState {
-                host_ip_kind: PublishedPortHostIpKind::Omitted,
-                host_ip_value: None,
+                ip_kind: PublishedPortHostIpKind::Omitted,
+                ip_value: None,
                 host_port: 3000,
             },
             planned: PublishedPortEndpointState {
-                host_ip_kind: PublishedPortHostIpKind::Omitted,
-                host_ip_value: None,
+                ip_kind: PublishedPortHostIpKind::Omitted,
+                ip_value: None,
                 host_port: 3001,
             },
             actual_bindings: vec![PublishedPortActualBinding {

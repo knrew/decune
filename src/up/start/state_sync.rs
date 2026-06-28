@@ -332,11 +332,11 @@ fn published_port_endpoint_state(
     endpoint: &ComposePublishedPortEndpoint,
 ) -> PublishedPortEndpointState {
     PublishedPortEndpointState {
-        host_ip_kind: match endpoint.host_ip_kind {
+        ip_kind: match endpoint.ip_kind {
             ComposePublishedPortHostIpKind::Omitted => PublishedPortHostIpKind::Omitted,
             ComposePublishedPortHostIpKind::Explicit => PublishedPortHostIpKind::Explicit,
         },
-        host_ip_value: endpoint.host_ip_value.clone(),
+        ip_value: endpoint.ip_value.clone(),
         host_port: endpoint.host_port,
     }
 }

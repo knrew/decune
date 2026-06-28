@@ -51,7 +51,10 @@ fn compose_running_reuse_fast_path_enabled(
     options: &UpOptions,
     existing_compose_containers: &[UpContainerSummary],
 ) -> bool {
-    !(options.pull || options.rebuild || options.no_cache || options.update_features)
+    !(options.build.pull
+        || options.reuse.rebuild
+        || options.build.no_cache
+        || options.build.update_features)
         && existing_compose_containers
             .first()
             .is_some_and(|container| container.running)
@@ -106,8 +109,8 @@ async fn try_reuse_running_compose_container_before_image_prepare(
         compose_primary_image,
         UpPlanResolution::new(
             forwarding_resolution,
-            options.update_features,
-            options.skip_global_config,
+            options.build.update_features,
+            options.config.skip_global_config,
         ),
     )
     .await?;
@@ -123,7 +126,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
         Some((false, false)),
         FinalizeUpPlanMountsOptions {
             forwarding: forwarding_resolution,
-            update_features: options.update_features,
+            update_features: options.build.update_features,
             compose_canonical_model: Some(&user_config.canonical_model),
             compose_primary_service_user,
             compose_primary_service,
@@ -151,7 +154,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
         existing_compose_containers,
         &plan.resources.config_hash,
         credentials.mount_policy(),
-        options.rebuild,
+        options.reuse.rebuild,
     )?;
     let service_forward_requires_recreate = compose_service_forward_requires_recreate(
         client,
@@ -163,7 +166,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     let should_reuse = should_reuse_existing_container(
         &decision,
         ExistingContainerReusePolicy {
-            pull: options.pull,
+            pull: options.build.pull,
             service_forward_requires_recreate,
         },
     );
@@ -300,7 +303,7 @@ pub(super) async fn start_compose_project(
         return Ok(started);
     }
 
-    if options.pull {
+    if options.build.pull {
         cli.pull(
             &user_lifecycle.project,
             ComposePullOptions {
@@ -314,24 +317,24 @@ pub(super) async fn start_compose_project(
         )
         .await?;
     }
-    if options.rebuild
-        || options.no_cache
-        || options.pull
+    if options.reuse.rebuild
+        || options.build.no_cache
+        || options.build.pull
         || (primary_service_has_build && existing_compose_containers.is_empty())
     {
         cli.build(
             &user_lifecycle.project,
             ComposeBuildOptions {
                 with_dependencies: true,
-                no_cache: options.no_cache,
-                pull: options.pull,
+                no_cache: options.build.no_cache,
+                pull: options.build.pull,
             },
             &user_lifecycle.services,
         )
         .await?;
     }
 
-    let existing_remote_user_image = if options.rebuild {
+    let existing_remote_user_image = if options.reuse.rebuild {
         None
     } else {
         existing_compose_containers
@@ -350,8 +353,8 @@ pub(super) async fn start_compose_project(
         &compose_primary_image,
         UpPlanResolution::new(
             forwarding_resolution,
-            options.update_features,
-            options.skip_global_config,
+            options.build.update_features,
+            options.config.skip_global_config,
         ),
     )
     .await?;
@@ -364,10 +367,13 @@ pub(super) async fn start_compose_project(
         existing_compose_containers
             .first()
             .and_then(existing::existing_container_config_hash),
-        Some((options.pull && !primary_service_has_build, options.no_cache)),
+        Some((
+            options.build.pull && !primary_service_has_build,
+            options.build.no_cache,
+        )),
         FinalizeUpPlanMountsOptions {
             forwarding: forwarding_resolution,
-            update_features: options.update_features,
+            update_features: options.build.update_features,
             compose_canonical_model: Some(&user_config.canonical_model),
             compose_primary_service_user,
             compose_primary_service: compose_primary_service.as_ref(),
@@ -393,7 +399,7 @@ pub(super) async fn start_compose_project(
             &plan,
             ImagePreparation {
                 pull: false,
-                no_cache: options.no_cache,
+                no_cache: options.build.no_cache,
                 image_prepared: false,
             },
         )
@@ -438,7 +444,7 @@ pub(super) async fn start_compose_project(
         &existing_compose_containers,
         &plan.resources.config_hash,
         credentials.mount_policy(),
-        options.rebuild,
+        options.reuse.rebuild,
     )?;
     let service_forward_requires_recreate = compose_service_forward_requires_recreate(
         &client,
@@ -450,17 +456,17 @@ pub(super) async fn start_compose_project(
     let should_reuse = should_reuse_existing_container(
         &decision,
         ExistingContainerReusePolicy {
-            pull: options.pull,
+            pull: options.build.pull,
             service_forward_requires_recreate,
         },
     );
     let force_recreate = matches!(decision, ExistingContainerDecision::Recreate { .. })
-        || options.rebuild
-        || options.pull
+        || options.reuse.rebuild
+        || options.build.pull
         || stale_compose_project
         || service_forward_requires_recreate;
     let remove_orphans = matches!(decision, ExistingContainerDecision::Recreate { .. })
-        || options.rebuild
+        || options.reuse.rebuild
         || stale_compose_project
         || service_forward_requires_recreate;
     match decision {
@@ -641,25 +647,25 @@ mod tests {
             &[stopped],
         ));
 
-        options.pull = true;
+        options.build.pull = true;
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),
         ));
         options = up_options_for_fast_path();
-        options.rebuild = true;
+        options.reuse.rebuild = true;
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),
         ));
         options = up_options_for_fast_path();
-        options.no_cache = true;
+        options.build.no_cache = true;
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),
         ));
         options = up_options_for_fast_path();
-        options.update_features = true;
+        options.build.update_features = true;
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),

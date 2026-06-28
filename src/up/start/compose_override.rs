@@ -123,11 +123,11 @@ fn compose_published_port_relocation_warning_messages(
 }
 
 fn compose_published_port_endpoint_display(endpoint: &ComposePublishedPortEndpoint) -> String {
-    match endpoint.host_ip_kind {
+    match endpoint.ip_kind {
         ComposePublishedPortHostIpKind::Omitted => endpoint.host_port.to_string(),
         ComposePublishedPortHostIpKind::Explicit => format!(
             "{}:{}",
-            endpoint.host_ip_value.as_deref().unwrap_or(""),
+            endpoint.ip_value.as_deref().unwrap_or(""),
             endpoint.host_port
         ),
     }
@@ -469,11 +469,11 @@ mod tests {
         let mut plan = generated_override_test_plan(Vec::new());
         plan.config.devcontainer.container_user = Some("2001:2001".to_owned());
         plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: None,
-            devcontainer_container_user: Some("2001:2001"),
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: None,
+            devcontainer_remote: None,
+            devcontainer_container: Some("2001:2001"),
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: None,
         })
         .unwrap();
         plan.uid_gid_sync_plan = sync_plan();
@@ -489,11 +489,11 @@ mod tests {
         let mut unchanged = generated_override_test_plan(Vec::new());
         unchanged.effective_users = resolve_effective_users_with_compose_service_user(
             EffectiveUserResolveInput {
-                devcontainer_remote_user: None,
-                devcontainer_container_user: None,
-                image_metadata_remote_user: None,
-                image_metadata_container_user: None,
-                image_config_user: None,
+                devcontainer_remote: None,
+                devcontainer_container: None,
+                image_metadata_remote: None,
+                image_metadata_container: None,
+                image_config: None,
             },
             Some("syncuser"),
         )
@@ -504,11 +504,11 @@ mod tests {
         let mut synced = unchanged;
         synced.effective_users = resolve_effective_users_with_compose_service_user(
             EffectiveUserResolveInput {
-                devcontainer_remote_user: None,
-                devcontainer_container_user: None,
-                image_metadata_remote_user: None,
-                image_metadata_container_user: None,
-                image_config_user: None,
+                devcontainer_remote: None,
+                devcontainer_container: None,
+                image_metadata_remote: None,
+                image_metadata_container: None,
+                image_config: None,
             },
             Some("2001:2001"),
         )
@@ -670,13 +670,13 @@ mod tests {
                 target_port: 3000,
                 protocol: ComposePortProtocol::Tcp,
                 requested: ComposePublishedPortEndpoint {
-                    host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                    ip_value: Some("127.0.0.1".to_owned()),
                     host_port: 3000,
                 },
                 planned: ComposePublishedPortEndpoint {
-                    host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some("127.0.0.1".to_owned()),
+                    ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                    ip_value: Some("127.0.0.1".to_owned()),
                     host_port: 3001,
                 },
                 relocated: true,
@@ -744,13 +744,13 @@ mod tests {
                 target_port: 5432,
                 protocol: ComposePortProtocol::Tcp,
                 requested: ComposePublishedPortEndpoint {
-                    host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 5432,
                 },
                 planned: ComposePublishedPortEndpoint {
-                    host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 5433,
                 },
                 relocated: true,
@@ -788,13 +788,13 @@ mod tests {
                 target_port: 3000,
                 protocol: ComposePortProtocol::Tcp,
                 requested: ComposePublishedPortEndpoint {
-                    host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 3000,
                 },
                 planned: ComposePublishedPortEndpoint {
-                    host_ip_kind: ComposePublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: ComposePublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 3001,
                 },
                 relocated: true,

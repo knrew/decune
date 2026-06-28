@@ -3,14 +3,34 @@ use anyhow::{Result, bail};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposeCliCapabilities {
     pub(crate) version_short: Option<String>,
-    pub(crate) config_format_json: bool,
-    pub(crate) ps_format_json: bool,
-    pub(crate) build_with_dependencies: bool,
-    pub(crate) pull_policy_always: bool,
-    pub(crate) pull_ignore_buildable: bool,
-    pub(crate) pull_include_deps: bool,
-    pub(crate) up_force_recreate: bool,
-    pub(crate) up_remove_orphans: bool,
+    pub(crate) format: ComposeFormatCapabilities,
+    pub(crate) build: ComposeBuildCapabilities,
+    pub(crate) pull: ComposePullCapabilities,
+    pub(crate) up: ComposeUpCapabilities,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComposeFormatCapabilities {
+    pub(crate) config_json: bool,
+    pub(crate) ps_json: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComposeBuildCapabilities {
+    pub(crate) with_dependencies: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComposePullCapabilities {
+    pub(crate) policy_always: bool,
+    pub(crate) ignore_buildable: bool,
+    pub(crate) include_deps: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ComposeUpCapabilities {
+    pub(crate) force_recreate: bool,
+    pub(crate) remove_orphans: bool,
 }
 
 impl ComposeCliCapabilities {
@@ -26,51 +46,59 @@ impl ComposeCliCapabilities {
     ) -> Self {
         Self {
             version_short,
-            config_format_json: help_contains_option(config_help, "--format"),
-            ps_format_json: help_contains_option(ps_help, "--format"),
-            build_with_dependencies: help_contains_option(build_help, "--with-dependencies"),
-            pull_policy_always: help_contains_option(pull_help, "--policy"),
-            pull_ignore_buildable: help_contains_option(pull_help, "--ignore-buildable"),
-            pull_include_deps: help_contains_option(pull_help, "--include-deps"),
-            up_force_recreate: help_contains_option(up_help, "--force-recreate"),
-            up_remove_orphans: help_contains_option(up_help, "--remove-orphans"),
+            format: ComposeFormatCapabilities {
+                config_json: help_contains_option(config_help, "--format"),
+                ps_json: help_contains_option(ps_help, "--format"),
+            },
+            build: ComposeBuildCapabilities {
+                with_dependencies: help_contains_option(build_help, "--with-dependencies"),
+            },
+            pull: ComposePullCapabilities {
+                policy_always: help_contains_option(pull_help, "--policy"),
+                ignore_buildable: help_contains_option(pull_help, "--ignore-buildable"),
+                include_deps: help_contains_option(pull_help, "--include-deps"),
+            },
+            up: ComposeUpCapabilities {
+                force_recreate: help_contains_option(up_help, "--force-recreate"),
+                remove_orphans: help_contains_option(up_help, "--remove-orphans"),
+            },
         }
     }
 
     pub(crate) fn ensure_required(&self) -> Result<()> {
         let mut missing = Vec::new();
-        if !self.config_format_json {
+        if !self.format.config_json {
             missing
                 .push("docker compose config --format json (config --help does not list --format)");
         }
-        if !self.ps_format_json {
+        if !self.format.ps_json {
             missing.push("docker compose ps --format json (ps --help does not list --format)");
         }
-        if !self.build_with_dependencies {
+        if !self.build.with_dependencies {
             missing.push(
                 "docker compose build --with-dependencies (build --help does not list --with-dependencies)",
             );
         }
-        if !self.pull_policy_always {
+        if !self.pull.policy_always {
             missing
                 .push("docker compose pull --policy always (pull --help does not list --policy)");
         }
-        if !self.pull_ignore_buildable {
+        if !self.pull.ignore_buildable {
             missing.push(
                 "docker compose pull --ignore-buildable (pull --help does not list --ignore-buildable)",
             );
         }
-        if !self.pull_include_deps {
+        if !self.pull.include_deps {
             missing.push(
                 "docker compose pull --include-deps (pull --help does not list --include-deps)",
             );
         }
-        if !self.up_force_recreate {
+        if !self.up.force_recreate {
             missing.push(
                 "docker compose up --force-recreate (up --help does not list --force-recreate)",
             );
         }
-        if !self.up_remove_orphans {
+        if !self.up.remove_orphans {
             missing.push(
                 "docker compose up --remove-orphans (up --help does not list --remove-orphans)",
             );
@@ -135,14 +163,14 @@ mod tests {
         let capabilities = valid_compose_capabilities();
 
         assert_eq!(capabilities.version_short.as_deref(), Some("2.40.0"));
-        assert!(capabilities.config_format_json);
-        assert!(capabilities.ps_format_json);
-        assert!(capabilities.build_with_dependencies);
-        assert!(capabilities.pull_policy_always);
-        assert!(capabilities.pull_ignore_buildable);
-        assert!(capabilities.pull_include_deps);
-        assert!(capabilities.up_force_recreate);
-        assert!(capabilities.up_remove_orphans);
+        assert!(capabilities.format.config_json);
+        assert!(capabilities.format.ps_json);
+        assert!(capabilities.build.with_dependencies);
+        assert!(capabilities.pull.policy_always);
+        assert!(capabilities.pull.ignore_buildable);
+        assert!(capabilities.pull.include_deps);
+        assert!(capabilities.up.force_recreate);
+        assert!(capabilities.up.remove_orphans);
         capabilities.ensure_required().unwrap();
         capabilities.ensure_compose_override_tag().unwrap();
     }

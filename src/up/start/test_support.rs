@@ -59,12 +59,10 @@ pub(super) fn up_options_for_fast_path() -> UpOptions {
     UpOptions {
         workspace: PathBuf::from("/workspace"),
         config_path: None,
-        skip_global_config: false,
         cli_layer: ConfigLayer::default(),
-        pull: false,
-        rebuild: false,
-        no_cache: false,
-        update_features: false,
+        config: crate::up::UpConfigOptions::default(),
+        build: crate::up::UpBuildOptions::default(),
+        reuse: crate::up::UpReuseOptions::default(),
     }
 }
 

@@ -15,49 +15,49 @@ pub(super) fn effective_user_input_from_config_layers(
     config_layers: &ConfigMergeInput,
 ) -> EffectiveUserResolveInput<'_> {
     EffectiveUserResolveInput {
-        devcontainer_remote_user: config_layers
+        devcontainer_remote: config_layers
             .devcontainer
             .as_ref()
             .and_then(layer_remote_user),
-        devcontainer_container_user: config_layers
+        devcontainer_container: config_layers
             .devcontainer
             .as_ref()
             .and_then(layer_container_user),
-        image_metadata_remote_user: merged_metadata_remote_user(config_layers),
-        image_metadata_container_user: merged_metadata_container_user(config_layers),
-        image_config_user: None,
+        image_metadata_remote: merged_metadata_remote_user(config_layers),
+        image_metadata_container: merged_metadata_container_user(config_layers),
+        image_config: None,
     }
 }
 
 pub(super) fn effective_user_input_from_plan(plan: &UpPlan) -> EffectiveUserResolveInput<'_> {
     let layer_input = effective_user_input_from_config_layers(&plan.config_layers);
     let devcontainer_remote_user = layer_input
-        .devcontainer_remote_user
+        .devcontainer_remote
         .and(plan.config.devcontainer.remote_user.as_deref());
     let image_metadata_remote_user = if devcontainer_remote_user.is_some() {
         None
     } else {
         layer_input
-            .image_metadata_remote_user
+            .image_metadata_remote
             .and(plan.config.devcontainer.remote_user.as_deref())
     };
     let devcontainer_container_user = layer_input
-        .devcontainer_container_user
+        .devcontainer_container
         .and(plan.config.devcontainer.container_user.as_deref());
     let image_metadata_container_user = if devcontainer_container_user.is_some() {
         None
     } else {
         layer_input
-            .image_metadata_container_user
+            .image_metadata_container
             .and(plan.config.devcontainer.container_user.as_deref())
     };
 
     EffectiveUserResolveInput {
-        devcontainer_remote_user,
-        devcontainer_container_user,
-        image_metadata_remote_user,
-        image_metadata_container_user,
-        image_config_user: None,
+        devcontainer_remote: devcontainer_remote_user,
+        devcontainer_container: devcontainer_container_user,
+        image_metadata_remote: image_metadata_remote_user,
+        image_metadata_container: image_metadata_container_user,
+        image_config: None,
     }
 }
 
@@ -97,10 +97,10 @@ pub(super) fn static_uid_gid_sync_hash_input(
     }
 
     let input = effective_user_input_from_config_layers(config_layers);
-    if input.devcontainer_remote_user.is_some()
-        || input.image_metadata_remote_user.is_some()
-        || input.devcontainer_container_user.is_some()
-        || input.image_metadata_container_user.is_some()
+    if input.devcontainer_remote.is_some()
+        || input.image_metadata_remote.is_some()
+        || input.devcontainer_container.is_some()
+        || input.image_metadata_container.is_some()
     {
         return None;
     }
@@ -247,10 +247,10 @@ pub(super) const fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> b
 
 pub(super) fn effective_users_depend_on_image_config_user(plan: &UpPlan) -> bool {
     let input = effective_user_input_from_config_layers(&plan.config_layers);
-    input.devcontainer_remote_user.is_none()
-        && input.image_metadata_remote_user.is_none()
-        && input.devcontainer_container_user.is_none()
-        && input.image_metadata_container_user.is_none()
+    input.devcontainer_remote.is_none()
+        && input.image_metadata_remote.is_none()
+        && input.devcontainer_container.is_none()
+        && input.image_metadata_container.is_none()
 }
 
 const fn plan_requires_workspace_layer(plan: &UpPlan) -> bool {

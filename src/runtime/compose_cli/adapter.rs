@@ -459,7 +459,7 @@ mod tests {
             .unwrap();
         let commands = runner.commands();
 
-        assert!(capabilities.build_with_dependencies);
+        assert!(capabilities.build.with_dependencies);
         assert_eq!(commands[0].args_vec(), &["compose", "version", "--short"]);
         assert_eq!(commands[1].args_vec(), &["compose", "config", "--help"]);
         assert_eq!(commands[2].args_vec(), &["compose", "ps", "--help"]);

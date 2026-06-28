@@ -74,9 +74,14 @@ pub(crate) struct PublishedPortTarget {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct PublishedPortEndpointState {
-    pub(crate) host_ip_kind: PublishedPortHostIpKind,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) host_ip_value: Option<String>,
+    #[serde(rename = "host_ip_kind")]
+    pub(crate) ip_kind: PublishedPortHostIpKind,
+    #[serde(
+        default,
+        rename = "host_ip_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub(crate) ip_value: Option<String>,
     pub(crate) host_port: u16,
 }
 
@@ -97,46 +102,73 @@ pub(crate) struct PublishedPortActualBinding {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct LifecycleState {
-    #[serde(default)]
-    pub(crate) on_create_completed: bool,
-    #[serde(default)]
-    pub(crate) after_on_create_completed: bool,
-    #[serde(default)]
-    pub(crate) update_content_completed: bool,
-    #[serde(default)]
-    pub(crate) after_update_content_completed: bool,
-    #[serde(default)]
-    pub(crate) post_create_completed: bool,
-    #[serde(default)]
-    pub(crate) after_post_create_completed: bool,
+    #[serde(flatten)]
+    pub(crate) on_create: OnCreateLifecycleState,
+    #[serde(flatten)]
+    pub(crate) update_content: UpdateContentLifecycleState,
+    #[serde(flatten)]
+    pub(crate) post_create: PostCreateLifecycleState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct OnCreateLifecycleState {
+    #[serde(default, rename = "on_create_completed")]
+    pub(crate) completed: bool,
+    #[serde(default, rename = "after_on_create_completed")]
+    pub(crate) after_completed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct UpdateContentLifecycleState {
+    #[serde(default, rename = "update_content_completed")]
+    pub(crate) completed: bool,
+    #[serde(default, rename = "after_update_content_completed")]
+    pub(crate) after_completed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct PostCreateLifecycleState {
+    #[serde(default, rename = "post_create_completed")]
+    pub(crate) completed: bool,
+    #[serde(default, rename = "after_post_create_completed")]
+    pub(crate) after_completed: bool,
 }
 
 impl LifecycleState {
     #[cfg(test)]
     pub(crate) const fn all_completed() -> Self {
         Self {
-            on_create_completed: true,
-            after_on_create_completed: true,
-            update_content_completed: true,
-            after_update_content_completed: true,
-            post_create_completed: true,
-            after_post_create_completed: true,
+            on_create: OnCreateLifecycleState {
+                completed: true,
+                after_completed: true,
+            },
+            update_content: UpdateContentLifecycleState {
+                completed: true,
+                after_completed: true,
+            },
+            post_create: PostCreateLifecycleState {
+                completed: true,
+                after_completed: true,
+            },
         }
     }
 
     pub(crate) const fn is_command_completed(self, completion: LifecycleCompletion) -> bool {
         match completion {
-            LifecycleCompletion::OnCreate => self.on_create_completed,
-            LifecycleCompletion::UpdateContent => self.update_content_completed,
-            LifecycleCompletion::PostCreate => self.post_create_completed,
+            LifecycleCompletion::OnCreate => self.on_create.completed,
+            LifecycleCompletion::UpdateContent => self.update_content.completed,
+            LifecycleCompletion::PostCreate => self.post_create.completed,
         }
     }
 
     pub(crate) const fn is_after_hook_completed(self, completion: LifecycleCompletion) -> bool {
         match completion {
-            LifecycleCompletion::OnCreate => self.after_on_create_completed,
-            LifecycleCompletion::UpdateContent => self.after_update_content_completed,
-            LifecycleCompletion::PostCreate => self.after_post_create_completed,
+            LifecycleCompletion::OnCreate => self.on_create.after_completed,
+            LifecycleCompletion::UpdateContent => self.update_content.after_completed,
+            LifecycleCompletion::PostCreate => self.post_create.after_completed,
         }
     }
 
@@ -146,17 +178,17 @@ impl LifecycleState {
 
     pub(crate) const fn mark_command_completed(&mut self, completion: LifecycleCompletion) {
         match completion {
-            LifecycleCompletion::OnCreate => self.on_create_completed = true,
-            LifecycleCompletion::UpdateContent => self.update_content_completed = true,
-            LifecycleCompletion::PostCreate => self.post_create_completed = true,
+            LifecycleCompletion::OnCreate => self.on_create.completed = true,
+            LifecycleCompletion::UpdateContent => self.update_content.completed = true,
+            LifecycleCompletion::PostCreate => self.post_create.completed = true,
         }
     }
 
     pub(crate) const fn mark_after_hook_completed(&mut self, completion: LifecycleCompletion) {
         match completion {
-            LifecycleCompletion::OnCreate => self.after_on_create_completed = true,
-            LifecycleCompletion::UpdateContent => self.after_update_content_completed = true,
-            LifecycleCompletion::PostCreate => self.after_post_create_completed = true,
+            LifecycleCompletion::OnCreate => self.on_create.after_completed = true,
+            LifecycleCompletion::UpdateContent => self.update_content.after_completed = true,
+            LifecycleCompletion::PostCreate => self.post_create.after_completed = true,
         }
     }
 }
@@ -494,14 +526,55 @@ mod tests {
     use std::{fs, path::Path};
 
     use super::{
-        LifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
-        PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
-        PublishedPortSource, PublishedPortTarget, StateContainerSnapshot, load_state_file,
+        LifecycleState, OnCreateLifecycleState, PostCreateLifecycleState,
+        PublishedPortActualBinding, PublishedPortEndpointState, PublishedPortHostIpKind,
+        PublishedPortRuntimeState, PublishedPortRuntimeType, PublishedPortSource,
+        PublishedPortTarget, StateContainerSnapshot, UpdateContentLifecycleState, load_state_file,
         mark_state_used, reconcile_state_without_container, remove_state_runtime_dirs,
         state_file_path, sync_state_with_container, sync_state_with_container_and_compose_project,
         sync_state_with_container_and_compose_project_and_published_ports,
         write_reused_state_for_container, write_state_file,
     };
+
+    #[derive(Debug, Clone, Copy)]
+    enum LifecycleStageFixture {
+        Pending,
+        Completed,
+    }
+
+    #[derive(Debug, Clone, Copy)]
+    struct LifecycleStateFixture {
+        on_create: LifecycleStageFixture,
+        update_content: LifecycleStageFixture,
+        post_create: LifecycleStageFixture,
+    }
+
+    use LifecycleStageFixture::{Completed, Pending};
+
+    const fn lifecycle_state(fixture: LifecycleStateFixture) -> LifecycleState {
+        LifecycleState {
+            on_create: OnCreateLifecycleState {
+                completed: stage_command_completed(fixture.on_create),
+                after_completed: stage_after_completed(fixture.on_create),
+            },
+            update_content: UpdateContentLifecycleState {
+                completed: stage_command_completed(fixture.update_content),
+                after_completed: stage_after_completed(fixture.update_content),
+            },
+            post_create: PostCreateLifecycleState {
+                completed: stage_command_completed(fixture.post_create),
+                after_completed: stage_after_completed(fixture.post_create),
+            },
+        }
+    }
+
+    const fn stage_command_completed(stage: LifecycleStageFixture) -> bool {
+        matches!(stage, LifecycleStageFixture::Completed)
+    }
+
+    const fn stage_after_completed(stage: LifecycleStageFixture) -> bool {
+        matches!(stage, LifecycleStageFixture::Completed)
+    }
 
     #[test]
     fn state_file_lives_under_workspace_state_directory() {
@@ -611,13 +684,13 @@ mod tests {
                 "app",
                 0,
                 PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: PublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 3000,
                 },
                 PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Omitted,
-                    host_ip_value: None,
+                    ip_kind: PublishedPortHostIpKind::Omitted,
+                    ip_value: None,
                     host_port: 3001,
                 },
                 vec![
@@ -636,13 +709,13 @@ mod tests {
                 "db",
                 1,
                 PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some("0.0.0.0".to_owned()),
+                    ip_kind: PublishedPortHostIpKind::Explicit,
+                    ip_value: Some("0.0.0.0".to_owned()),
                     host_port: 5432,
                 },
                 PublishedPortEndpointState {
-                    host_ip_kind: PublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some("0.0.0.0".to_owned()),
+                    ip_kind: PublishedPortHostIpKind::Explicit,
+                    ip_value: Some("0.0.0.0".to_owned()),
                     host_port: 5432,
                 },
                 Vec::new(),
@@ -729,14 +802,11 @@ last_started_at = "unix:2"
                 config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
             },
             Some("decune-project-abc123".to_owned()),
-            LifecycleState {
-                on_create_completed: true,
-                after_on_create_completed: true,
-                update_content_completed: false,
-                after_update_content_completed: false,
-                post_create_completed: false,
-                after_post_create_completed: false,
-            },
+            lifecycle_state(LifecycleStateFixture {
+                on_create: Completed,
+                update_content: Pending,
+                post_create: Pending,
+            }),
         )
         .unwrap();
         let before = state.clone();
@@ -839,7 +909,7 @@ last_started_at = "unix:2"
 
         assert_eq!(state.container_id, "container-a");
         assert_eq!(state.config_hash, "hash-a");
-        assert!(state.lifecycle.on_create_completed);
+        assert!(state.lifecycle.on_create.completed);
         assert_eq!(load_state_file(&state_dir).unwrap(), Some(state));
     }
 
@@ -856,14 +926,11 @@ last_started_at = "unix:2"
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
             },
-            LifecycleState {
-                on_create_completed: true,
-                after_on_create_completed: true,
-                update_content_completed: true,
-                after_update_content_completed: true,
-                post_create_completed: false,
-                after_post_create_completed: false,
-            },
+            lifecycle_state(LifecycleStateFixture {
+                on_create: Completed,
+                update_content: Completed,
+                post_create: Pending,
+            }),
         )
         .unwrap();
         existing.container_id = "stale-container".to_owned();

@@ -132,12 +132,10 @@ mod tests {
                 let error = run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await
                 .unwrap_err();
@@ -204,12 +202,10 @@ mod tests {
                 let error = run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await
                 .unwrap_err();
@@ -275,12 +271,10 @@ mod tests {
                 run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
 
@@ -363,12 +357,10 @@ mod tests {
                 run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
 
@@ -466,12 +458,10 @@ mod tests {
                 run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
 
@@ -556,12 +546,10 @@ mod tests {
                 run_detached_up(UpOptions {
                     workspace: workspace.root().to_path_buf(),
                     config_path: None,
-                    skip_global_config: false,
                     cli_layer: ConfigLayer::default(),
-                    pull: false,
-                    rebuild: false,
-                    no_cache: false,
-                    update_features: false,
+                    config: crate::up::UpConfigOptions::default(),
+                    build: crate::up::UpBuildOptions::default(),
+                    reuse: crate::up::UpReuseOptions::default(),
                 })
                 .await?;
 

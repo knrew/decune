@@ -145,8 +145,8 @@ fn existing_compose_project_published_ports_from_container(
                 target_port,
                 protocol: protocol.clone(),
                 endpoint: ComposePublishedPortEndpoint {
-                    host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                    host_ip_value: Some(host_ip),
+                    ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                    ip_value: Some(host_ip),
                     host_port,
                 },
             });

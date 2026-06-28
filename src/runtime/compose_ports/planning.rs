@@ -135,8 +135,8 @@ where
             (planned_host_port, allocation_reason)
         };
         let planned = ComposePublishedPortEndpoint {
-            host_ip_kind: requested.host_ip_kind,
-            host_ip_value: requested.host_ip_value.clone(),
+            ip_kind: requested.ip_kind,
+            ip_value: requested.ip_value.clone(),
             host_port: planned_host_port,
         };
         reservations.push(HostPortReservation {
@@ -280,8 +280,8 @@ where
         let reserved =
             host_port_reservations_conflict(reservations, reservation_host_ip, candidate);
         let endpoint = ComposePublishedPortEndpoint {
-            host_ip_kind: requested.host_ip_kind,
-            host_ip_value: requested.host_ip_value.clone(),
+            ip_kind: requested.ip_kind,
+            ip_value: requested.ip_value.clone(),
             host_port: candidate,
         };
         let available = if reserved {
@@ -463,8 +463,8 @@ mod tests {
             target_port: 3000,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint {
-                host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                host_ip_value: Some("127.0.0.1".to_owned()),
+                ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                ip_value: Some("127.0.0.1".to_owned()),
                 host_port: u16::MAX,
             },
         }];
@@ -504,8 +504,8 @@ mod tests {
             target_port: 3000,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint {
-                host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                host_ip_value: Some("127.0.0.1".to_owned()),
+                ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                ip_value: Some("127.0.0.1".to_owned()),
                 host_port: 3000,
             },
         }];
@@ -545,8 +545,8 @@ mod tests {
             target_port: 3000,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint {
-                host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                host_ip_value: Some("127.0.0.1".to_owned()),
+                ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                ip_value: Some("127.0.0.1".to_owned()),
                 host_port: 3001,
             },
         }];
@@ -586,8 +586,8 @@ mod tests {
             target_port: 3000,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint {
-                host_ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                host_ip_value: Some("127.0.0.1".to_owned()),
+                ip_kind: ComposePublishedPortHostIpKind::Explicit,
+                ip_value: Some("127.0.0.1".to_owned()),
                 host_port: u16::MAX,
             },
         }];
@@ -628,22 +628,19 @@ mod tests {
         let plan = plan_with_availability(&input, &[3000, 3001, 3002]);
 
         assert_eq!(
-            plan.entries[0].planned.host_ip_kind,
+            plan.entries[0].planned.ip_kind,
             ComposePublishedPortHostIpKind::Omitted
         );
-        assert_eq!(plan.entries[0].planned.host_ip_value, None);
+        assert_eq!(plan.entries[0].planned.ip_value, None);
         assert_eq!(
-            plan.entries[1].planned.host_ip_kind,
+            plan.entries[1].planned.ip_kind,
             ComposePublishedPortHostIpKind::Explicit
         );
         assert_eq!(
-            plan.entries[1].planned.host_ip_value.as_deref(),
+            plan.entries[1].planned.ip_value.as_deref(),
             Some("127.0.0.1")
         );
-        assert_eq!(
-            plan.entries[2].planned.host_ip_value.as_deref(),
-            Some("0.0.0.0")
-        );
+        assert_eq!(plan.entries[2].planned.ip_value.as_deref(), Some("0.0.0.0"));
     }
 
     #[test]

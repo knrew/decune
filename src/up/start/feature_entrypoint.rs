@@ -281,11 +281,11 @@ mod tests {
         let mut plan = generated_override_test_plan(Vec::new());
         plan.config.devcontainer.entrypoints = vec!["touch /tmp/entrypoint".to_owned()];
         plan.effective_users = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote_user: None,
-            devcontainer_container_user: None,
-            image_metadata_remote_user: None,
-            image_metadata_container_user: None,
-            image_config_user: Some("app"),
+            devcontainer_remote: None,
+            devcontainer_container: None,
+            image_metadata_remote: None,
+            image_metadata_container: None,
+            image_config: Some("app"),
         })
         .unwrap();
 
