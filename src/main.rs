@@ -1,10 +1,3 @@
-#![allow(
-    clippy::cognitive_complexity,
-    clippy::multiple_crate_versions,
-    clippy::too_many_lines,
-    reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
-)]
-
 mod clean;
 mod cli;
 mod config;

@@ -1,8 +1,3 @@
-#![allow(
-    clippy::multiple_crate_versions,
-    reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
-)]
-
 mod cli;
 mod command;
 mod container_tools;
