@@ -17,7 +17,7 @@ pub(crate) fn parse_lifecycle_command(
         Value::String(command) => Ok(LifecycleCommand::Shell(command.clone())),
         Value::Array(values) => parse_args(stage, values),
         Value::Object(entries) => parse_parallel(stage, entries),
-        _ => Err(anyhow!(
+        Value::Null | Value::Bool(_) | Value::Number(_) => Err(anyhow!(
             "{} must be a string, string array, or object command",
             stage.property_name()
         )),
@@ -70,7 +70,9 @@ pub(crate) fn parse_wait_for(value: Option<&Value>) -> Result<WaitFor> {
             "postStartCommand" => Ok(WaitFor::PostStart),
             _ => Err(anyhow!("Unsupported waitFor lifecycle stage: {stage}")),
         },
-        Some(_) => Err(anyhow!("waitFor must be a lifecycle stage string")),
+        Some(
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Array(_) | Value::Object(_),
+        ) => Err(anyhow!("waitFor must be a lifecycle stage string")),
     }
 }
 
@@ -86,7 +88,11 @@ fn parse_args(stage: LifecycleStage, values: &[Value]) -> Result<LifecycleComman
         .iter()
         .map(|value| match value {
             Value::String(arg) => Ok(arg.clone()),
-            _ => Err(anyhow!(
+            Value::Null
+            | Value::Bool(_)
+            | Value::Number(_)
+            | Value::Array(_)
+            | Value::Object(_) => Err(anyhow!(
                 "{} command array entries must be strings",
                 stage.property_name()
             )),
@@ -111,7 +117,7 @@ fn parse_parallel(
     for (name, value) in entries {
         let command = match value {
             Value::String(_) | Value::Array(_) => parse_lifecycle_command(stage, value)?,
-            _ => {
+            Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => {
                 return Err(anyhow!(
                     "{} parallel command entry {name} must be a string or string array",
                     stage.property_name()

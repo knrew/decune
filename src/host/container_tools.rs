@@ -357,7 +357,10 @@ fn validate_manifest_path(path: &Path) -> Result<()> {
     for component in path.components() {
         match component {
             Component::Normal(_) => {}
-            _ => bail!(
+            Component::Prefix(_)
+            | Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir => bail!(
                 "Container tools manifest path must not escape the bundle: {}",
                 path.display()
             ),

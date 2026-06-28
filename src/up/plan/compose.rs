@@ -67,9 +67,9 @@ mod tests {
     fn build_up_plan_adds_compose_project_plan_for_compose_source() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Compose Plan");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let devcontainer_dir = root.join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         fs::write(devcontainer_dir.join("compose.yaml"), "services: {}\n").unwrap();
         fs::write(
             devcontainer_dir.join("devcontainer.json"),
@@ -98,9 +98,9 @@ mod tests {
     fn build_up_plan_config_hash_changes_when_compose_file_changes() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Compose Hash");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let devcontainer_dir = root.join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         let compose_file = devcontainer_dir.join("compose.yaml");
         fs::write(&compose_file, "services: {}\n").unwrap();
         fs::write(

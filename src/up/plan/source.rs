@@ -99,9 +99,9 @@ mod tests {
     fn build_up_plan_uses_image_source_and_default_workspace_mount() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Image Plan!");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let devcontainer_dir = root.join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         fs::write(
             devcontainer_dir.join("devcontainer.json"),
             r#"{"image":"alpine:3.20"}"#,

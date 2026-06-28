@@ -395,7 +395,12 @@ fn devcontainer_mount_object_fields(
                 match value {
                     JsonValue::String(value) => MountFieldValue::String(value.clone()),
                     JsonValue::Bool(value) => MountFieldValue::Bool(*value),
-                    _ => bail!("Mount field must be a string or boolean: {key}"),
+                    JsonValue::Null
+                    | JsonValue::Number(_)
+                    | JsonValue::Array(_)
+                    | JsonValue::Object(_) => {
+                        bail!("Mount field must be a string or boolean: {key}");
+                    }
                 },
             ))
         })

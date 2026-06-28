@@ -127,8 +127,10 @@ pub(super) fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
     let last_slash = path
         .rfind('/')
         .ok_or_else(|| invalid_feature_ref(value, "missing repository or feature id"))?;
-    let repository = &path[..last_slash];
-    let feature_id = &path[last_slash + 1..];
+    let (repository, feature_id) = path.split_at(last_slash);
+    let feature_id = feature_id
+        .strip_prefix('/')
+        .expect("feature path slash was found");
 
     if registry.is_empty()
         || repository.is_empty()
@@ -285,13 +287,19 @@ fn validate_oci_feature_registry(value: &str, registry: &str) -> Result<()> {
 }
 
 fn validate_oci_feature_ipv6_registry(value: &str, registry: &str) -> Result<()> {
-    let Some(bracket_end) = registry.find(']') else {
+    let Some(after_open) = registry.strip_prefix('[') else {
         return Err(invalid_feature_ref(
             value,
             "registry IPv6 host must be enclosed in brackets",
         ));
     };
-    let host = &registry[1..bracket_end];
+    let Some(bracket_end) = after_open.find(']') else {
+        return Err(invalid_feature_ref(
+            value,
+            "registry IPv6 host must be enclosed in brackets",
+        ));
+    };
+    let (host, after_host) = after_open.split_at(bracket_end);
     if host.is_empty() {
         return Err(invalid_feature_ref(value, "registry host is empty"));
     }
@@ -299,7 +307,9 @@ fn validate_oci_feature_ipv6_registry(value: &str, registry: &str) -> Result<()>
         return Err(invalid_feature_ref(value, "registry IPv6 host is invalid"));
     }
 
-    let rest = &registry[bracket_end + 1..];
+    let rest = after_host
+        .strip_prefix(']')
+        .expect("registry IPv6 host closing bracket was found");
     if rest.is_empty() {
         return Ok(());
     }
@@ -414,7 +424,8 @@ pub(super) fn split_tag(value: &str) -> (&str, Option<&str>) {
 
     match (last_slash, last_colon) {
         (_, Some(colon)) if last_slash.is_none_or(|slash| colon > slash) => {
-            (&value[..colon], Some(&value[colon + 1..]))
+            let (base, tag) = value.split_at(colon);
+            (base, tag.strip_prefix(':'))
         }
         _ => (value, None),
     }

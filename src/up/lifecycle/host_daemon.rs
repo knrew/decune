@@ -35,16 +35,16 @@ impl HostDaemonGuard {
 
     fn reused(
         runtime_dir: PathBuf,
-        remote_uid: u32,
-        remote_gid: u32,
+        remote_user_id: u32,
+        remote_group_id: u32,
         git_https_mode: GitHttpsMode,
     ) -> Self {
         Self {
             _daemon: None,
             monitor_task: Some(tokio::spawn(monitor_reused_host_daemon(
                 runtime_dir,
-                remote_uid,
-                remote_gid,
+                remote_user_id,
+                remote_group_id,
                 git_https_mode,
             ))),
         }
@@ -93,14 +93,14 @@ const fn daemon_git_https_mode(credentials: &ResolvedGitCredentials) -> GitHttps
 async fn start_host_daemon_for_remote_user(
     runtime_dir: &Path,
     workspace_id: &str,
-    remote_uid: u32,
-    remote_gid: u32,
+    remote_user_id: u32,
+    remote_group_id: u32,
     git_https_mode: GitHttpsMode,
 ) -> Result<HostDaemonGuard> {
     match HostDaemon::start_for_remote_user_with_git_https_mode(
         runtime_dir,
-        remote_uid,
-        remote_gid,
+        remote_user_id,
+        remote_group_id,
         git_https_mode,
     )
     .await
@@ -110,15 +110,15 @@ async fn start_host_daemon_for_remote_user(
             if HostDaemonStartError::is_socket_already_in_use(&error) {
                 match ensure_host_daemon_access_for_remote_user(
                     runtime_dir,
-                    remote_uid,
-                    remote_gid,
+                    remote_user_id,
+                    remote_group_id,
                     git_https_mode,
                 ) {
                     Ok(true) => {
                         return Ok(HostDaemonGuard::reused(
                             runtime_dir.to_path_buf(),
-                            remote_uid,
-                            remote_gid,
+                            remote_user_id,
+                            remote_group_id,
                             git_https_mode,
                         ));
                     }
@@ -139,8 +139,8 @@ async fn start_host_daemon_for_remote_user(
 
 async fn monitor_reused_host_daemon(
     runtime_dir: PathBuf,
-    remote_uid: u32,
-    remote_gid: u32,
+    remote_user_id: u32,
+    remote_group_id: u32,
     git_https_mode: GitHttpsMode,
 ) {
     let mut _daemon = None;
@@ -152,8 +152,8 @@ async fn monitor_reused_host_daemon(
 
         match ensure_host_daemon_available_for_remote_user(
             &runtime_dir,
-            remote_uid,
-            remote_gid,
+            remote_user_id,
+            remote_group_id,
             git_https_mode,
         )
         .await
@@ -171,8 +171,8 @@ async fn monitor_reused_host_daemon(
 
         match HostDaemon::start_for_remote_user_with_git_https_mode(
             &runtime_dir,
-            remote_uid,
-            remote_gid,
+            remote_user_id,
+            remote_group_id,
             git_https_mode,
         )
         .await
@@ -184,8 +184,8 @@ async fn monitor_reused_host_daemon(
             Err(error) if HostDaemonStartError::is_socket_already_in_use(&error) => {
                 match ensure_host_daemon_access_for_remote_user(
                     &runtime_dir,
-                    remote_uid,
-                    remote_gid,
+                    remote_user_id,
+                    remote_group_id,
                     git_https_mode,
                 ) {
                     Ok(true) => warned_failure = false,
@@ -266,17 +266,18 @@ mod tests {
         let runtime_dir = temp.path().join("runtime");
 
         runtime.block_on(async {
-            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
-            let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
-            let existing = HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, remote_gid)
-                .await
-                .unwrap();
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing =
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, remote_group_id)
+                    .await
+                    .unwrap();
 
             let guard = start_host_daemon_for_remote_user(
                 &runtime_dir,
                 "workspace-test",
-                remote_uid,
-                remote_gid,
+                remote_user_id,
+                remote_group_id,
                 GitHttpsMode::HostHelper,
             )
             .await
@@ -299,17 +300,18 @@ mod tests {
         let runtime_dir = temp.path().join("runtime");
 
         runtime.block_on(async {
-            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
-            let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
-            let existing = HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, remote_gid)
-                .await
-                .unwrap();
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing =
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, remote_group_id)
+                    .await
+                    .unwrap();
 
             let guard = start_host_daemon_for_remote_user(
                 &runtime_dir,
                 "workspace-test",
-                remote_uid,
-                remote_gid,
+                remote_user_id,
+                remote_group_id,
                 GitHttpsMode::HostHelper,
             )
             .await
@@ -335,11 +337,11 @@ mod tests {
         let runtime_dir = temp.path().join("runtime");
 
         runtime.block_on(async {
-            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
             let group_access_gid = current_gid();
             let world_access_gid = if current_gid() == 20001 { 20002 } else { 20001 };
             let existing =
-                HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, group_access_gid)
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, group_access_gid)
                     .await
                     .unwrap();
 
@@ -349,7 +351,7 @@ mod tests {
             let guard = start_host_daemon_for_remote_user(
                 &runtime_dir,
                 "workspace-test",
-                remote_uid,
+                remote_user_id,
                 world_access_gid,
                 GitHttpsMode::HostHelper,
             )
@@ -374,11 +376,11 @@ mod tests {
         let runtime_dir = temp.path().join("runtime");
 
         runtime.block_on(async {
-            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
             let world_access_gid = if current_gid() == 20001 { 20002 } else { 20001 };
             let group_access_gid = current_gid();
             let existing =
-                HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, world_access_gid)
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, world_access_gid)
                     .await
                     .unwrap();
 
@@ -388,7 +390,7 @@ mod tests {
             let guard = start_host_daemon_for_remote_user(
                 &runtime_dir,
                 "workspace-test",
-                remote_uid,
+                remote_user_id,
                 group_access_gid,
                 GitHttpsMode::HostHelper,
             )
@@ -413,17 +415,18 @@ mod tests {
         let runtime_dir = temp.path().join("runtime");
 
         runtime.block_on(async {
-            let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
-            let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
-            let existing = HostDaemon::start_for_remote_user(&runtime_dir, remote_uid, remote_gid)
-                .await
-                .unwrap();
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing =
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, remote_group_id)
+                    .await
+                    .unwrap();
 
             let error = start_host_daemon_for_remote_user(
                 &runtime_dir,
                 "workspace-test",
-                remote_uid,
-                remote_gid,
+                remote_user_id,
+                remote_group_id,
                 GitHttpsMode::HostHelperReadOnly,
             )
             .await
@@ -447,7 +450,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let target_dir = temp.path().join("target-runtime");
         let runtime_dir = temp.path().join("runtime");
-        fs::create_dir(&target_dir).unwrap();
+        fs::create_dir_all(&target_dir).unwrap();
         symlink(&target_dir, &runtime_dir).unwrap();
 
         runtime.block_on(async {
@@ -483,7 +486,7 @@ mod tests {
             .unwrap();
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
-        fs::create_dir(&runtime_dir).unwrap();
+        fs::create_dir_all(&runtime_dir).unwrap();
 
         runtime.block_on(async {
             let _listener = UnixListener::bind(runtime_dir.join("host-daemon.sock")).unwrap();

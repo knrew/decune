@@ -205,10 +205,10 @@ fn is_root_user(user: &str) -> bool {
 
 pub(in crate::devcontainer::lifecycle) fn run_host_process(
     stage_name: &str,
-    argv: &[String],
+    command_argv: &[String],
     workdir: &Path,
 ) -> Result<()> {
-    let (program, args) = argv
+    let (program, args) = command_argv
         .split_first()
         .with_context(|| format!("Lifecycle stage {stage_name} command must not be empty"))?;
     let output = HostCommand::new(program)
@@ -228,7 +228,7 @@ pub(in crate::devcontainer::lifecycle) fn run_host_process(
         stderr: output.stderr,
         exit_code,
     };
-    ensure_lifecycle_success(stage_name, argv, &output, &[])
+    ensure_lifecycle_success(stage_name, command_argv, &output, &[])
 }
 
 pub(crate) fn lifecycle_command_argv(command: &LifecycleCommand) -> Vec<String> {

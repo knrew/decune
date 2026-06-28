@@ -292,10 +292,10 @@ mod tests {
 
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Build Arg Variables");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         let devcontainer_dir = root.join(".devcontainer");
-        fs::create_dir(&devcontainer_dir).unwrap();
+        fs::create_dir_all(&devcontainer_dir).unwrap();
         fs::write(
             devcontainer_dir.join("Dockerfile"),
             "FROM alpine\nARG VARIANT\n",
@@ -377,7 +377,7 @@ mod tests {
     fn build_up_plan_expands_workspace_folder_variables_before_validation() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Workspace Variables");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
 
         write_devcontainer(
@@ -412,7 +412,7 @@ mod tests {
     fn build_up_plan_expands_user_fields_and_run_args_values() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("User Run Args");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(
             &workspace,
@@ -466,7 +466,7 @@ mod tests {
     fn build_up_plan_keeps_runtime_user_dependent_fields_for_runtime_expansion() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Runtime User Fields");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(
             &workspace,
@@ -516,7 +516,7 @@ mod tests {
     fn build_up_plan_rejects_remote_user_home_in_build_fields() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Build Remote User Home");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(
             &workspace,
@@ -545,7 +545,7 @@ mod tests {
     fn build_up_plan_rejects_remote_user_in_build_fields_when_not_static() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Build Remote User");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(
             &workspace,
@@ -574,7 +574,7 @@ mod tests {
     fn build_up_plan_expands_remote_user_in_build_fields_from_container_user() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Build Container User");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(
             &workspace,

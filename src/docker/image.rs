@@ -273,7 +273,11 @@ pub(crate) fn parse_devcontainer_metadata_label_with_forward_ports(
             .enumerate()
             .map(|(index, value)| match value {
                 Value::Object(_) => metadata_value_to_layer(image, value, include_forward_ports),
-                _ => bail!(
+                Value::Null
+                | Value::Bool(_)
+                | Value::Number(_)
+                | Value::String(_)
+                | Value::Array(_) => bail!(
                     "Docker image label {DEVCONTAINER_METADATA_LABEL} for image {image} array entry {index} must be an object"
                 ),
             })
@@ -286,7 +290,7 @@ pub(crate) fn parse_devcontainer_metadata_label_with_forward_ports(
                 has_forward_ports,
             })
         }
-        _ => bail!(
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => bail!(
             "Docker image label {DEVCONTAINER_METADATA_LABEL} for image {image} must be a JSON object or array"
         ),
     }

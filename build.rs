@@ -1,6 +1,5 @@
 #![allow(
     clippy::unnecessary_debug_formatting,
-    clippy::wildcard_enum_match_arm,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 
@@ -395,7 +394,10 @@ fn validate_manifest_path(path: &Path) -> Result<()> {
     for component in path.components() {
         match component {
             Component::Normal(_) => {}
-            _ => bail!(
+            Component::Prefix(_)
+            | Component::RootDir
+            | Component::CurDir
+            | Component::ParentDir => bail!(
                 "Container tools manifest path must not escape the bundle: {}",
                 path.display()
             ),

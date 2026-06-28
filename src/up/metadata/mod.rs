@@ -188,7 +188,7 @@ mod tests {
         }
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Feature Static");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         let devcontainer_dir = root.join(".devcontainer");
         fs::create_dir_all(devcontainer_dir.join("features/noop")).unwrap();

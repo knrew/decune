@@ -191,7 +191,7 @@ fn feature_to_layer(id: &str, value: &Value) -> Result<LayerFeature> {
             feature.enabled = *enabled;
         }
         Value::Null => {}
-        _ => {
+        Value::Number(_) | Value::Array(_) => {
             return Err(anyhow!(
                 "Feature {id} value must be an object, boolean, or null"
             ));

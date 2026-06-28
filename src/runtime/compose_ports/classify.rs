@@ -94,7 +94,12 @@ fn parse_published_host_port(value: Option<&JsonValue>) -> ComposePublishedHostP
         JsonValue::String(value) if value.contains('-') => {
             ComposePublishedHostPort::Range(value.clone())
         }
-        _ => match parse_port_value(value, "published host port") {
+        JsonValue::Null
+        | JsonValue::Bool(_)
+        | JsonValue::Number(_)
+        | JsonValue::String(_)
+        | JsonValue::Array(_)
+        | JsonValue::Object(_) => match parse_port_value(value, "published host port") {
             Ok(port) => ComposePublishedHostPort::Single(port),
             Err(reason) => ComposePublishedHostPort::Invalid(reason),
         },
@@ -146,7 +151,10 @@ fn parse_port_value(value: &JsonValue, field: &str) -> Result<u16, String> {
                 .map_err(|_error| format!("{field} is not a valid port: {value}"))?;
             validate_nonzero_port(port, field)
         }
-        other => Err(format!("{field} must be a number or string: {other}")),
+        other @ (JsonValue::Null
+        | JsonValue::Bool(_)
+        | JsonValue::Array(_)
+        | JsonValue::Object(_)) => Err(format!("{field} must be a number or string: {other}")),
     }
 }
 

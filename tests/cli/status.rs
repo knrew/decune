@@ -188,9 +188,12 @@ fn status_summary_reports_state_workspaces_sorted_by_path() {
     assert!(output.contains("ID"));
     assert!(output.contains("FWD/PUB"));
     assert!(output.contains("LAST_USED"));
-    let workspace_a_position = output.find(WORKSPACE_A_ID).unwrap();
-    let workspace_b_position = output.find(WORKSPACE_B_ID).unwrap();
-    assert!(workspace_a_position < workspace_b_position, "{output}");
+    let first_workspace_position = output.find(WORKSPACE_A_ID).unwrap();
+    let second_workspace_position = output.find(WORKSPACE_B_ID).unwrap();
+    assert!(
+        first_workspace_position < second_workspace_position,
+        "{output}"
+    );
 }
 
 #[test]

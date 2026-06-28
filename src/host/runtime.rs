@@ -135,7 +135,7 @@ mod tests {
         let temp = TempDir::new().unwrap();
         let target = temp.path().join("target");
         let runtime_dir = temp.path().join("runtime");
-        fs::create_dir(&target).unwrap();
+        fs::create_dir_all(&target).unwrap();
         symlink(&target, &runtime_dir).unwrap();
 
         let error = prepare_private_runtime_dir(&runtime_dir, "test").unwrap_err();

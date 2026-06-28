@@ -8,7 +8,7 @@ use super::{capabilities::ComposeCliCapabilities, command_plan::ComposeCommandPl
 pub(super) fn fixture_workspace(name: &str) -> (tempfile::TempDir, Workspace) {
     let temp = tempfile::tempdir().unwrap();
     let root = temp.path().join(name);
-    fs::create_dir(&root).unwrap();
+    fs::create_dir_all(&root).unwrap();
     (temp, Workspace::resolve(&root).unwrap())
 }
 

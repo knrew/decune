@@ -2048,8 +2048,8 @@ mod tests {
         plan: UidGidSyncPlan,
         expected_kind: UidGidSyncTargetKind,
         expected_user: &str,
-        expected_uid: u32,
-        expected_gid: u32,
+        expected_user_id: u32,
+        expected_group_id: u32,
         expected_host: HostUserIds,
     ) {
         match plan {
@@ -2057,8 +2057,8 @@ mod tests {
                 assert_eq!(target.kind, expected_kind);
                 assert_eq!(target.user, expected_user);
                 assert_eq!(target.host, expected_host);
-                assert_eq!(container.uid, expected_uid);
-                assert_eq!(container.gid, expected_gid);
+                assert_eq!(container.uid, expected_user_id);
+                assert_eq!(container.gid, expected_group_id);
             }
             UidGidSyncPlan::Noop { reason } => {
                 panic!("expected sync plan, got no-op: {reason:?}");

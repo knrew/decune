@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, btree_map::Entry},
+    collections::{BTreeMap, BTreeSet, btree_map::Entry},
     fs,
     path::{Component, Path, PathBuf},
 };
@@ -70,7 +70,7 @@ pub(super) fn skeleton_dotfile_mount_plan(
         mounts,
         skeleton_entries: BTreeMap::new(),
         backing_files: BTreeMap::new(),
-        backing_sources: BTreeMap::new(),
+        backing_sources: BTreeSet::new(),
     };
     builder.build_directory(&source, Path::new(""), &mut ancestors, 0)?;
     builder.finalize_backing_mounts()?;
@@ -96,7 +96,7 @@ struct DotfileSkeletonBuilder<'a> {
     mounts: Vec<DockerMountSpec>,
     skeleton_entries: BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
     backing_files: BTreeMap<PathBuf, DotfileBackingFile>,
-    backing_sources: BTreeMap<PathBuf, ()>,
+    backing_sources: BTreeSet<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -170,7 +170,7 @@ impl DotfileSkeletonBuilder<'_> {
                     path.display()
                 );
             }
-        } else if file_type.is_file() {
+        } else if metadata.is_file() {
             let real_path = path.canonicalize().with_context(|| {
                 format!("Failed to canonicalize dotfile file: {}", path.display())
             })?;
@@ -270,7 +270,7 @@ impl DotfileSkeletonBuilder<'_> {
                 relative.display()
             );
         }
-        self.backing_sources.insert(backing_file.source.clone(), ());
+        self.backing_sources.insert(backing_file.source.clone());
         self.backing_files.insert(relative, backing_file);
 
         Ok(())
@@ -278,7 +278,7 @@ impl DotfileSkeletonBuilder<'_> {
 
     fn finalize_backing_mounts(&mut self) -> Result<()> {
         let mut backing_targets = BTreeMap::new();
-        for source in self.backing_sources.keys() {
+        for source in &self.backing_sources {
             let target = format!("{DOTFILE_BACKINGS_MOUNT_ROOT}/{}", backing_targets.len());
             backing_targets.insert(source.clone(), target.clone());
             self.mounts
@@ -373,7 +373,7 @@ fn directory_contains_symlink(source: &Path, ancestors: &[PathBuf], depth: u32) 
             if directory_contains_symlink(&entry.path, &ancestors, depth + 1)? {
                 return Ok(true);
             }
-        } else if !file_type.is_file() {
+        } else if !metadata.is_file() {
             bail!(
                 "Dotfile source entry must be a file, directory, or symlink: {}",
                 entry.path.display()

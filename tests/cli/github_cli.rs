@@ -653,16 +653,16 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
 fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
-    let remote_uid = if current_uid() == 20001 { 20002 } else { 20001 };
-    let remote_gid = if current_gid() == 20001 { 20002 } else { 20001 };
+    let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+    let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
             format!(
                 r#"
             FROM alpine:3.20
-            RUN addgroup -g {remote_gid} decunegrp \
-              && adduser -D -u {remote_uid} -G decunegrp -h /home/decune decune \
+            RUN addgroup -g {remote_group_id} decunegrp \
+              && adduser -D -u {remote_user_id} -G decunegrp -h /home/decune decune \
               && printf '%s\n' \
               '#!/bin/sh' \
               'set -eu' \

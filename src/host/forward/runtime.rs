@@ -295,7 +295,7 @@ mod tests {
             fs::read_dir(&runtime_dir)
                 .unwrap()
                 .filter_map(Result::ok)
-                .filter(|entry| entry.file_type().unwrap().is_file())
+                .filter(|entry| entry.metadata().unwrap().is_file())
                 .count(),
             1
         );

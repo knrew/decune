@@ -481,7 +481,7 @@ mod tests {
         let _guard = set_xdg_config_home(config_home.path());
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Global Config Default");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
 
@@ -496,7 +496,7 @@ mod tests {
         let _guard = set_xdg_config_home(config_home.path());
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Project Global Opt Out");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
         fs::create_dir_all(workspace.root().join(".decune")).unwrap();
@@ -517,7 +517,7 @@ mod tests {
         let _guard = set_xdg_config_home(config_home.path());
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Cli Global Opt Out");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
 
@@ -538,7 +538,7 @@ mod tests {
     fn build_up_plan_treats_default_workspace_folder_as_literal() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Project ${unknown}");
-        fs::create_dir(&root).unwrap();
+        fs::create_dir_all(&root).unwrap();
         let workspace = Workspace::resolve(&root).unwrap();
         write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
 

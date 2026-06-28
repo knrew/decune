@@ -228,8 +228,8 @@ pub(crate) async fn build_named_uid_numeric_gid_user_image(
 pub(crate) async fn build_uid_gid_conflict_user_image(
     client: &DockerClient,
     image: &str,
-    conflict_uid: u32,
-    conflict_gid: u32,
+    conflict_user_id: u32,
+    conflict_group_id: u32,
 ) -> anyhow::Result<()> {
     let context = tempfile::Builder::new()
         .prefix("decune-up-user-image-")
@@ -239,7 +239,7 @@ pub(crate) async fn build_uid_gid_conflict_user_image(
     fs::write(
         &dockerfile_path,
         format!(
-            "FROM alpine:3.20\nRUN addgroup -g {conflict_gid} conflictuser && adduser -D -u {conflict_uid} -G conflictuser -h /home/conflictuser conflictuser && addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser\nUSER syncuser\n"
+            "FROM alpine:3.20\nRUN addgroup -g {conflict_group_id} conflictuser && adduser -D -u {conflict_user_id} -G conflictuser -h /home/conflictuser conflictuser && addgroup -g 2001 syncuser && adduser -D -u 2001 -G syncuser -h /home/syncuser syncuser\nUSER syncuser\n"
         ),
     )
     .unwrap();
@@ -263,8 +263,8 @@ pub(crate) async fn build_uid_gid_conflict_user_image(
 pub(crate) async fn build_duplicate_matching_host_ids_image(
     client: &DockerClient,
     image: &str,
-    host_uid: u32,
-    host_gid: u32,
+    host_user_id: u32,
+    host_group_id: u32,
 ) -> anyhow::Result<()> {
     let context = tempfile::Builder::new()
         .prefix("decune-up-duplicate-matching-ids-image-")
@@ -274,7 +274,7 @@ pub(crate) async fn build_duplicate_matching_host_ids_image(
     fs::write(
         &dockerfile_path,
         format!(
-            "FROM alpine:3.20\nRUN addgroup -g {host_gid} syncgroup && adduser -D -u {host_uid} -G syncgroup -h /home/syncuser syncuser && echo 'other:x:{host_uid}:{host_gid}::/home/other:/bin/sh' >> /etc/passwd && echo 'othergroup:x:{host_gid}:' >> /etc/group\nUSER syncuser\n"
+            "FROM alpine:3.20\nRUN addgroup -g {host_group_id} syncgroup && adduser -D -u {host_user_id} -G syncgroup -h /home/syncuser syncuser && echo 'other:x:{host_user_id}:{host_group_id}::/home/other:/bin/sh' >> /etc/passwd && echo 'othergroup:x:{host_group_id}:' >> /etc/group\nUSER syncuser\n"
         ),
     )
     .unwrap();

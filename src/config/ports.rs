@@ -52,17 +52,22 @@ pub(crate) fn split_port_spec(value: &str) -> Result<PortSpecSegments<'_>, Strin
 }
 
 fn split_bracketed_host_port_spec(value: &str) -> Result<PortSpecSegments<'_>, String> {
-    let close = value
+    let after_open = value
+        .strip_prefix('[')
+        .expect("bracketed port specification starts with '['");
+    let close = after_open
         .find(']')
         .ok_or_else(|| format!("missing closing ']' in port specification: {value}"))?;
-    let host_ip = &value[1..close];
+    let (host_ip, after_host_ip) = after_open.split_at(close);
     if host_ip.is_empty() {
         return Err(format!(
             "bracketed host IP must not be empty in port specification: {value}"
         ));
     }
 
-    let after_bracket = &value[close + 1..];
+    let after_bracket = after_host_ip
+        .strip_prefix(']')
+        .expect("closing bracket was found");
     let Some(rest) = after_bracket.strip_prefix(':') else {
         return Err(format!(
             "bracketed host IP must be followed by ':' in port specification: {value}"

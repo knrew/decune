@@ -275,10 +275,14 @@ fn parse_docker_compose_file(value: Option<Value>) -> Result<Option<Vec<String>>
             .into_iter()
             .map(|value| match value {
                 Value::String(value) => Ok(value),
-                _ => Err(anyhow!("dockerComposeFile entries must be strings")),
+                Value::Null
+                | Value::Bool(_)
+                | Value::Number(_)
+                | Value::Array(_)
+                | Value::Object(_) => Err(anyhow!("dockerComposeFile entries must be strings")),
             })
             .collect::<Result<Vec<_>>>()?,
-        _ => {
+        Value::Null | Value::Bool(_) | Value::Number(_) | Value::Object(_) => {
             return Err(anyhow!(
                 "dockerComposeFile must be a string or string array"
             ));

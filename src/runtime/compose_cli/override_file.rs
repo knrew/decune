@@ -306,9 +306,12 @@ impl From<DockerMountSpec> for ComposeOverrideMount {
     }
 }
 
-pub(crate) fn write_compose_override(path: &Path, patch: &ComposeOverridePatch) -> Result<()> {
-    let content = patch.to_yaml()?;
-    if let Some(parent) = path.parent() {
+pub(crate) fn write_compose_override(
+    output_path: &Path,
+    override_patch: &ComposeOverridePatch,
+) -> Result<()> {
+    let content = override_patch.to_yaml()?;
+    if let Some(parent) = output_path.parent() {
         fs::create_dir_all(parent).with_context(|| {
             format!(
                 "Failed to create Docker Compose generated override directory: {}",
@@ -316,17 +319,17 @@ pub(crate) fn write_compose_override(path: &Path, patch: &ComposeOverridePatch) 
             )
         })?;
     }
-    let temporary_path = path.with_extension("yaml.tmp");
+    let temporary_path = output_path.with_extension("yaml.tmp");
     fs::write(&temporary_path, content).with_context(|| {
         format!(
             "Failed to write temporary Docker Compose generated override file: {}",
             temporary_path.display()
         )
     })?;
-    fs::rename(&temporary_path, path).with_context(|| {
+    fs::rename(&temporary_path, output_path).with_context(|| {
         format!(
             "Failed to replace Docker Compose generated override file: {}",
-            path.display()
+            output_path.display()
         )
     })
 }

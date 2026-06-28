@@ -282,7 +282,9 @@ fn compose_startup_error_mentions_endpoint(
 
 fn contains_endpoint_token_with_port_boundary(haystack: &str, needle: &str) -> bool {
     haystack.match_indices(needle).any(|(index, _)| {
-        haystack[index + needle.len()..]
+        haystack
+            .split_at(index + needle.len())
+            .1
             .chars()
             .next()
             .is_none_or(|next| !next.is_ascii_digit())

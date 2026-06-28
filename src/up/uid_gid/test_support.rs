@@ -124,8 +124,8 @@ impl UidGidScenario {
 
 #[cfg(unix)]
 pub(super) fn linux_host_ids_without(
-    excluded_uids: &[u32],
-    excluded_gids: &[u32],
+    excluded_user_ids: &[u32],
+    excluded_group_ids: &[u32],
 ) -> Option<HostUserIds> {
     if HostPlatform::current() != HostPlatform::Linux {
         return None;
@@ -134,8 +134,8 @@ pub(super) fn linux_host_ids_without(
     let host = current_host_user_ids();
     if host.uid == 0
         || host.gid == 0
-        || excluded_uids.contains(&host.uid)
-        || excluded_gids.contains(&host.gid)
+        || excluded_user_ids.contains(&host.uid)
+        || excluded_group_ids.contains(&host.gid)
     {
         return None;
     }

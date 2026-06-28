@@ -383,7 +383,12 @@ fn workspace_clean_target(
     };
     let action = match reason {
         CleanReason::StaleWorkspaceData => CleanAction::Remove,
-        _ => CleanAction::Skip,
+        CleanReason::FeatureCacheIncluded
+        | CleanReason::ManagedResource
+        | CleanReason::ActiveRuntime
+        | CleanReason::UnsafePath
+        | CleanReason::DockerUnavailable
+        | CleanReason::Missing => CleanAction::Skip,
     };
 
     Ok(WorkspaceCleanTarget {
@@ -537,7 +542,12 @@ fn socket_is_connectable(path: &Path) -> bool {
 fn looks_like_lock_file(path: &Path) -> bool {
     path.file_name()
         .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "lock" || name.ends_with(".lock"))
+        .is_some_and(|name| {
+            name == "lock"
+                || name
+                    .rsplit_once('.')
+                    .is_some_and(|(_, extension)| extension == "lock")
+        })
 }
 
 fn lock_file_is_active(path: &Path) -> Result<bool> {
@@ -573,7 +583,12 @@ fn feature_cache_clean_target() -> Result<FeatureCacheCleanTarget> {
     };
     let action = match reason {
         CleanReason::FeatureCacheIncluded => CleanAction::Remove,
-        _ => CleanAction::Skip,
+        CleanReason::StaleWorkspaceData
+        | CleanReason::ManagedResource
+        | CleanReason::ActiveRuntime
+        | CleanReason::UnsafePath
+        | CleanReason::DockerUnavailable
+        | CleanReason::Missing => CleanAction::Skip,
     };
     Ok(FeatureCacheCleanTarget {
         action,
@@ -697,7 +712,7 @@ async fn apply_clean_report(report: &mut CleanReport) -> Result<()> {
                 remove_dir_if_exists(&target.removal_path)?;
                 target.removed = true;
             }
-            _ => {}
+            CleanTargetReport::Workspace(_) | CleanTargetReport::FeatureCache(_) => {}
         }
     }
     report.summary = summarize_targets(&report.targets);
@@ -1194,7 +1209,7 @@ mod tests {
                     remove_dir_if_exists(&target.removal_path)?;
                     target.removed = true;
                 }
-                _ => {}
+                CleanTargetReport::Workspace(_) | CleanTargetReport::FeatureCache(_) => {}
             }
         }
         report.summary = summarize_targets(&report.targets);

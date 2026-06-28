@@ -9,16 +9,16 @@ pub(super) async fn write_generated_compose_override(
     service_forward: &[ServiceForwardRuntime],
     published_port_override: &ComposePublishedPortOverride,
 ) -> Result<()> {
-    let path = project.generated_override_path();
+    let output_path = project.generated_override_path();
     let startup = compose_override_startup(client, plan, compose_primary_service).await?;
-    let patch = generated_compose_override_patch(
+    let override_patch = generated_compose_override_patch(
         primary_service,
         plan,
         startup,
         service_forward,
         published_port_override,
     )?;
-    write_compose_override(&path, &patch)
+    write_compose_override(&output_path, &override_patch)
 }
 
 #[cfg(test)]
@@ -818,9 +818,9 @@ mod tests {
         let mut plan = generated_override_test_plan(Vec::new());
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("workspace");
-        std::fs::create_dir(&root).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
         let devcontainer_dir = root.join(".devcontainer");
-        std::fs::create_dir(&devcontainer_dir).unwrap();
+        std::fs::create_dir_all(&devcontainer_dir).unwrap();
         std::fs::write(devcontainer_dir.join("compose.yaml"), "services: {}\n").unwrap();
         let workspace = crate::workspace::Workspace::resolve(&root).unwrap();
         plan.compose_project = Some(

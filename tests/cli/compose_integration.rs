@@ -1469,14 +1469,14 @@ fn copy_dir_contents(source: &Path, destination: &Path) -> io::Result<()> {
         if file_type.is_dir() {
             fs::create_dir_all(&destination_path)?;
             copy_dir_contents(&source_path, &destination_path)?;
-        } else if file_type.is_file() {
+        } else if file_type.is_symlink() {
+            let target = fs::read_link(&source_path)?;
+            std::os::unix::fs::symlink(target, &destination_path)?;
+        } else if fs::metadata(&source_path)?.is_file() {
             if let Some(parent) = destination_path.parent() {
                 fs::create_dir_all(parent)?;
             }
             fs::copy(&source_path, &destination_path)?;
-        } else if file_type.is_symlink() {
-            let target = fs::read_link(&source_path)?;
-            std::os::unix::fs::symlink(target, &destination_path)?;
         }
     }
 
@@ -1827,7 +1827,7 @@ fn compose_config_port_value(port: &Value, key: &str) -> Option<u16> {
     match port.get(key)? {
         Value::Number(number) => number.as_u64().and_then(|value| u16::try_from(value).ok()),
         Value::String(value) => value.parse().ok(),
-        _ => None,
+        Value::Null | Value::Bool(_) | Value::Array(_) | Value::Object(_) => None,
     }
 }
 

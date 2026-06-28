@@ -168,15 +168,21 @@ where
             .into_iter()
             .map(|value| match value {
                 JsonValue::String(value) => Ok(value),
-                other => Err(de::Error::custom(format!(
+                other @ (JsonValue::Null
+                | JsonValue::Bool(_)
+                | JsonValue::Number(_)
+                | JsonValue::Array(_)
+                | JsonValue::Object(_)) => Err(de::Error::custom(format!(
                     "Docker Compose startup value must contain only strings: {other}"
                 ))),
             })
             .collect::<std::result::Result<Vec<_>, _>>()
             .map(Some),
-        other => Err(de::Error::custom(format!(
-            "Docker Compose startup value must be null, string, or string array: {other}"
-        ))),
+        other @ (JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::Object(_)) => {
+            Err(de::Error::custom(format!(
+                "Docker Compose startup value must be null, string, or string array: {other}"
+            )))
+        }
     }
 }
 

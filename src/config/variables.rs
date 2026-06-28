@@ -207,15 +207,19 @@ where
     let mut rest = input;
 
     while let Some(start) = rest.find("${") {
-        output.push_str(&rest[..start]);
-        let variable_start = start + 2;
-        let after_start = &rest[variable_start..];
+        let (prefix, after_prefix) = rest.split_at(start);
+        output.push_str(prefix);
+        let after_start = after_prefix
+            .strip_prefix("${")
+            .expect("variable marker was found");
         let end = after_start
             .find('}')
             .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
-        let expression = &after_start[..end];
+        let (expression, after_expression) = after_start.split_at(end);
         output.push_str(&resolve_expression(expression, context, &mut local_env)?);
-        rest = &after_start[end + 1..];
+        rest = after_expression
+            .strip_prefix('}')
+            .expect("closing variable marker was found");
     }
 
     output.push_str(rest);
@@ -235,17 +239,21 @@ where
     let mut rest = input;
 
     while let Some(start) = rest.find("${") {
-        output.push_str(&rest[..start]);
-        let variable_start = start + 2;
-        let after_start = &rest[variable_start..];
+        let (prefix, after_prefix) = rest.split_at(start);
+        output.push_str(prefix);
+        let after_start = after_prefix
+            .strip_prefix("${")
+            .expect("variable marker was found");
         let end = after_start
             .find('}')
             .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
-        let expression = &after_start[..end];
+        let (expression, after_expression) = after_start.split_at(end);
         let resolved = resolve_expression_tracked(expression, context, &mut local_env)?;
         output.push_str(&resolved.value);
         local_env_fragments.extend(resolved.local_env_fragments);
-        rest = &after_start[end + 1..];
+        rest = after_expression
+            .strip_prefix('}')
+            .expect("closing variable marker was found");
     }
 
     output.push_str(rest);
@@ -401,13 +409,18 @@ fn variable_expressions(input: &str) -> Result<Vec<&str>> {
     let mut rest = input;
 
     while let Some(start) = rest.find("${") {
-        let variable_start = start + 2;
-        let after_start = &rest[variable_start..];
+        let (_, after_prefix) = rest.split_at(start);
+        let after_start = after_prefix
+            .strip_prefix("${")
+            .expect("variable marker was found");
         let end = after_start
             .find('}')
             .ok_or_else(|| anyhow!("Unclosed variable expression in config string: {input}"))?;
-        expressions.push(&after_start[..end]);
-        rest = &after_start[end + 1..];
+        let (expression, after_expression) = after_start.split_at(end);
+        expressions.push(expression);
+        rest = after_expression
+            .strip_prefix('}')
+            .expect("closing variable marker was found");
     }
 
     Ok(expressions)

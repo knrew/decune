@@ -219,7 +219,11 @@ impl<'de> Deserialize<'de> for RawPortsConfig {
                     ))
                 }
             }
-            _ => Err(D::Error::custom(
+            Value::String(_)
+            | Value::Integer(_)
+            | Value::Float(_)
+            | Value::Boolean(_)
+            | Value::Datetime(_) => Err(D::Error::custom(
                 "expected [ports.auto] or [[ports]] entries",
             )),
         }
@@ -399,7 +403,11 @@ impl<'de> Deserialize<'de> for RawCommand {
 
                 Ok(Self::Args(args))
             }
-            _ => Err(D::Error::custom("expected string or string array command")),
+            Value::Integer(_)
+            | Value::Float(_)
+            | Value::Boolean(_)
+            | Value::Datetime(_)
+            | Value::Table(_) => Err(D::Error::custom("expected string or string array command")),
         }
     }
 }
