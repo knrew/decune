@@ -116,15 +116,15 @@ mod tests {
         assert_eq!(startup.command, vec!["service-cmd".to_owned()]);
     }
 
-    #[test]
-    fn feature_metadata_refresh_preserves_static_expansion() {
-        let env_name = "DECUNE_TEST_FEATURE_STATIC_BUILD_ARG";
-        let _guard = EnvVarGuard::capture(env_name);
-        // SAFETY: This test mutates a dedicated test environment variable before exercising
-        // synchronous localEnv expansion and restores it with EnvVarGuard.
+    fn set_static_feature_secret(env_name: &str, value: &str) {
+        // SAFETY: These tests mutate a dedicated test environment variable before exercising
+        // synchronous localEnv expansion and restore it with EnvVarGuard.
         unsafe {
-            std::env::set_var(env_name, "first-secret");
+            std::env::set_var(env_name, value);
         }
+    }
+
+    fn static_feature_workspace(env_name: &str) -> (tempfile::TempDir, Workspace) {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Feature Static");
         fs::create_dir_all(&root).unwrap();
@@ -171,12 +171,11 @@ mod tests {
             "set -eu\n",
         )
         .unwrap();
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .unwrap();
 
-        let first = runtime.block_on(prepared_feature_plan(&workspace));
+        (temp, workspace)
+    }
+
+    fn assert_first_static_feature_plan(first: &UpPlan) {
         assert_eq!(
             first
                 .build_options
@@ -208,14 +207,9 @@ mod tests {
                 LayerRunArg::Dns("dns-Feature Static".to_owned()),
             ]
         );
+    }
 
-        // SAFETY: This test mutates a dedicated test environment variable before exercising
-        // synchronous localEnv expansion and restores it with EnvVarGuard.
-        unsafe {
-            std::env::set_var(env_name, "second-secret");
-        }
-        let second = runtime.block_on(prepared_feature_plan(&workspace));
-
+    fn assert_second_static_feature_plan(first: &UpPlan, second: &UpPlan) {
         assert_eq!(
             second
                 .build_options
@@ -225,9 +219,28 @@ mod tests {
             Some("second-secret")
         );
         assert_ne!(
-            config_hash_for_static_build_args(&first),
-            config_hash_for_static_build_args(&second)
+            config_hash_for_static_build_args(first),
+            config_hash_for_static_build_args(second)
         );
+    }
+
+    #[test]
+    fn feature_metadata_refresh_preserves_static_expansion() {
+        let env_name = "DECUNE_TEST_FEATURE_STATIC_BUILD_ARG";
+        let _guard = EnvVarGuard::capture(env_name);
+        set_static_feature_secret(env_name, "first-secret");
+        let (_temp, workspace) = static_feature_workspace(env_name);
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let first = runtime.block_on(prepared_feature_plan(&workspace));
+        assert_first_static_feature_plan(&first);
+
+        set_static_feature_secret(env_name, "second-secret");
+        let second = runtime.block_on(prepared_feature_plan(&workspace));
+        assert_second_static_feature_plan(&first, &second);
     }
 
     #[test]

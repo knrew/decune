@@ -890,124 +890,142 @@ mod tests {
         assert_eq!(current_host_user_ids(), HostUserIds { uid: 0, gid: 0 });
     }
 
-    #[test]
-    fn resolves_effective_container_and_remote_users_from_all_sources() {
-        let remote_only = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote: Some("remote"),
-            devcontainer_container: None,
-            image_metadata_remote: None,
-            image_metadata_container: None,
-            image_config: None,
-        })
-        .unwrap();
-        assert_eq!(remote_only.container_user.user, "root");
+    fn effective_user_input<'a>(
+        devcontainer_remote: Option<&'a str>,
+        devcontainer_container: Option<&'a str>,
+        image_metadata_remote: Option<&'a str>,
+        image_metadata_container: Option<&'a str>,
+        image_config: Option<&'a str>,
+    ) -> EffectiveUserResolveInput<'a> {
+        EffectiveUserResolveInput {
+            devcontainer_remote,
+            devcontainer_container,
+            image_metadata_remote,
+            image_metadata_container,
+            image_config,
+        }
+    }
+
+    fn resolved_effective_users(input: EffectiveUserResolveInput<'_>) -> EffectiveUsers {
+        resolve_effective_users(input).unwrap()
+    }
+
+    fn assert_effective_remote_only_users() {
+        let users =
+            resolved_effective_users(effective_user_input(Some("remote"), None, None, None, None));
+
+        assert_eq!(users.container_user.user, "root");
+        assert_eq!(users.container_user.source, RemoteUserSource::RootFallback);
+        assert_eq!(users.remote_user.user, "remote");
+        assert_eq!(users.remote_user.source, RemoteUserSource::Explicit);
         assert_eq!(
-            remote_only.container_user.source,
-            RemoteUserSource::RootFallback
-        );
-        assert_eq!(remote_only.remote_user.user, "remote");
-        assert_eq!(remote_only.remote_user.source, RemoteUserSource::Explicit);
-        assert_eq!(
-            remote_only.remote_user.origin,
+            users.remote_user.origin,
             EffectiveRemoteUserOrigin::ExplicitRemote
         );
+    }
 
-        let container_only = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote: None,
-            devcontainer_container: Some("container"),
-            image_metadata_remote: None,
-            image_metadata_container: None,
-            image_config: None,
-        })
-        .unwrap();
-        assert_eq!(container_only.container_user.user, "container");
-        assert_eq!(container_only.remote_user.user, "container");
+    fn assert_effective_container_only_users() {
+        let users = resolved_effective_users(effective_user_input(
+            None,
+            Some("container"),
+            None,
+            None,
+            None,
+        ));
+
+        assert_eq!(users.container_user.user, "container");
+        assert_eq!(users.remote_user.user, "container");
         assert_eq!(
-            container_only.remote_user.origin,
+            users.remote_user.origin,
             EffectiveRemoteUserOrigin::Container
         );
+    }
 
-        let both = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote: Some("remote"),
-            devcontainer_container: Some("container"),
-            image_metadata_remote: None,
-            image_metadata_container: None,
-            image_config: None,
-        })
-        .unwrap();
-        assert_eq!(both.container_user.user, "container");
-        assert_eq!(both.remote_user.user, "remote");
+    fn assert_effective_explicit_remote_and_container_users() {
+        let users = resolved_effective_users(effective_user_input(
+            Some("remote"),
+            Some("container"),
+            None,
+            None,
+            None,
+        ));
 
-        let image_metadata = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote: None,
-            devcontainer_container: None,
-            image_metadata_remote: Some("metadata-remote"),
-            image_metadata_container: Some("metadata-container"),
-            image_config: Some("image-user"),
-        })
-        .unwrap();
-        assert_eq!(image_metadata.container_user.user, "metadata-container");
+        assert_eq!(users.container_user.user, "container");
+        assert_eq!(users.remote_user.user, "remote");
+    }
+
+    fn assert_effective_image_metadata_users() {
+        let users = resolved_effective_users(effective_user_input(
+            None,
+            None,
+            Some("metadata-remote"),
+            Some("metadata-container"),
+            Some("image-user"),
+        ));
+
+        assert_eq!(users.container_user.user, "metadata-container");
+        assert_eq!(users.container_user.source, RemoteUserSource::ImageMetadata);
+        assert_eq!(users.remote_user.user, "metadata-remote");
         assert_eq!(
-            image_metadata.container_user.source,
-            RemoteUserSource::ImageMetadata
-        );
-        assert_eq!(image_metadata.remote_user.user, "metadata-remote");
-        assert_eq!(
-            image_metadata.remote_user.origin,
+            users.remote_user.origin,
             EffectiveRemoteUserOrigin::ImageMetadataRemote
         );
+    }
 
-        let image_config = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote: None,
-            devcontainer_container: None,
-            image_metadata_remote: None,
-            image_metadata_container: None,
-            image_config: Some("1001:1002"),
-        })
-        .unwrap();
-        assert_eq!(image_config.container_user.user, "1001:1002");
+    fn assert_effective_image_config_users() {
+        let users = resolved_effective_users(effective_user_input(
+            None,
+            None,
+            None,
+            None,
+            Some("1001:1002"),
+        ));
+
+        assert_eq!(users.container_user.user, "1001:1002");
+        assert_eq!(users.container_user.source, RemoteUserSource::ImageConfig);
+        assert_eq!(users.remote_user.user, "1001:1002");
         assert_eq!(
-            image_config.container_user.source,
-            RemoteUserSource::ImageConfig
-        );
-        assert_eq!(image_config.remote_user.user, "1001:1002");
-        assert_eq!(
-            image_config.remote_user.origin,
+            users.remote_user.origin,
             EffectiveRemoteUserOrigin::Container
         );
+    }
 
-        let compose_service = resolve_effective_users_with_compose_service_user(
-            EffectiveUserResolveInput {
-                devcontainer_remote: None,
-                devcontainer_container: None,
-                image_metadata_remote: None,
-                image_metadata_container: None,
-                image_config: Some("image-user"),
-            },
+    fn assert_effective_compose_service_users() {
+        let users = resolve_effective_users_with_compose_service_user(
+            effective_user_input(None, None, None, None, Some("image-user")),
             Some("compose-user"),
         )
         .unwrap();
-        assert_eq!(compose_service.container_user.user, "compose-user");
+
+        assert_eq!(users.container_user.user, "compose-user");
         assert_eq!(
-            compose_service.container_user.source,
+            users.container_user.source,
             RemoteUserSource::ComposeService
         );
-        assert_eq!(compose_service.remote_user.user, "compose-user");
+        assert_eq!(users.remote_user.user, "compose-user");
         assert_eq!(
-            compose_service.remote_user.origin,
+            users.remote_user.origin,
             EffectiveRemoteUserOrigin::Container
         );
+    }
 
-        let root = resolve_effective_users(EffectiveUserResolveInput {
-            devcontainer_remote: None,
-            devcontainer_container: None,
-            image_metadata_remote: None,
-            image_metadata_container: None,
-            image_config: Some(""),
-        })
-        .unwrap();
-        assert_eq!(root.container_user.user, "root");
-        assert_eq!(root.remote_user.user, "root");
+    fn assert_effective_empty_image_config_uses_root() {
+        let users =
+            resolved_effective_users(effective_user_input(None, None, None, None, Some("")));
+
+        assert_eq!(users.container_user.user, "root");
+        assert_eq!(users.remote_user.user, "root");
+    }
+
+    #[test]
+    fn resolves_effective_container_and_remote_users_from_all_sources() {
+        assert_effective_remote_only_users();
+        assert_effective_container_only_users();
+        assert_effective_explicit_remote_and_container_users();
+        assert_effective_image_metadata_users();
+        assert_effective_image_config_users();
+        assert_effective_compose_service_users();
+        assert_effective_empty_image_config_uses_root();
     }
 
     #[test]
@@ -1590,6 +1608,46 @@ mod tests {
         });
     }
 
+    struct UidGidSyncUserCase<'a> {
+        input: EffectiveUserResolveInput<'a>,
+        container_user: &'a str,
+        remote_user: &'a str,
+        target_kind: UidGidSyncTargetKind,
+        target_user: &'a str,
+        target_uid: u32,
+        target_gid: u32,
+    }
+
+    async fn assert_uid_gid_sync_user_case(
+        client: &DockerClient,
+        image: &str,
+        host: HostUserIds,
+        case: UidGidSyncUserCase<'_>,
+    ) -> Result<()> {
+        let users = resolve_effective_users_from_image(client, image, case.input).await?;
+
+        assert_eq!(users.container_user.user, case.container_user);
+        assert_eq!(users.remote_user.user, case.remote_user);
+        assert_sync_plan(
+            resolve_uid_gid_sync_plan_from_image(
+                client,
+                image,
+                &users,
+                true,
+                HostPlatform::Linux,
+                host,
+            )
+            .await?,
+            case.target_kind,
+            case.target_user,
+            case.target_uid,
+            case.target_gid,
+            host,
+        );
+
+        Ok(())
+    }
+
     #[test]
     fn creates_uid_gid_sync_plan_for_remote_container_and_different_users() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1605,98 +1663,59 @@ mod tests {
                 build_uid_gid_sync_users_test_image(&client, &image).await?;
                 let host = HostUserIds { uid: 501, gid: 20 };
 
-                let remote_only = resolve_effective_users_from_image(
+                assert_uid_gid_sync_user_case(
                     &client,
                     &image,
-                    EffectiveUserResolveInput {
-                        devcontainer_remote: Some("remote"),
-                        devcontainer_container: None,
-                        image_metadata_remote: None,
-                        image_metadata_container: None,
-                        image_config: None,
+                    host,
+                    UidGidSyncUserCase {
+                        input: effective_user_input(Some("remote"), None, None, None, None),
+                        container_user: "root",
+                        remote_user: "remote",
+                        target_kind: UidGidSyncTargetKind::RemoteUser,
+                        target_user: "remote",
+                        target_uid: 2001,
+                        target_gid: 2001,
                     },
                 )
                 .await?;
-                assert_eq!(remote_only.container_user.user, "root");
-                assert_eq!(remote_only.remote_user.user, "remote");
-                assert_sync_plan(
-                    resolve_uid_gid_sync_plan_from_image(
-                        &client,
-                        &image,
-                        &remote_only,
-                        true,
-                        HostPlatform::Linux,
-                        host,
-                    )
-                    .await?,
-                    UidGidSyncTargetKind::RemoteUser,
-                    "remote",
-                    2001,
-                    2001,
-                    host,
-                );
 
-                let container_only = resolve_effective_users_from_image(
+                assert_uid_gid_sync_user_case(
                     &client,
                     &image,
-                    EffectiveUserResolveInput {
-                        devcontainer_remote: None,
-                        devcontainer_container: Some("container"),
-                        image_metadata_remote: None,
-                        image_metadata_container: None,
-                        image_config: None,
+                    host,
+                    UidGidSyncUserCase {
+                        input: effective_user_input(None, Some("container"), None, None, None),
+                        container_user: "container",
+                        remote_user: "container",
+                        target_kind: UidGidSyncTargetKind::ContainerUser,
+                        target_user: "container",
+                        target_uid: 2002,
+                        target_gid: 2002,
                     },
                 )
                 .await?;
-                assert_eq!(container_only.container_user.user, "container");
-                assert_eq!(container_only.remote_user.user, "container");
-                assert_sync_plan(
-                    resolve_uid_gid_sync_plan_from_image(
-                        &client,
-                        &image,
-                        &container_only,
-                        true,
-                        HostPlatform::Linux,
-                        host,
-                    )
-                    .await?,
-                    UidGidSyncTargetKind::ContainerUser,
-                    "container",
-                    2002,
-                    2002,
-                    host,
-                );
 
-                let both = resolve_effective_users_from_image(
+                assert_uid_gid_sync_user_case(
                     &client,
                     &image,
-                    EffectiveUserResolveInput {
-                        devcontainer_remote: Some("remote"),
-                        devcontainer_container: Some("container"),
-                        image_metadata_remote: None,
-                        image_metadata_container: None,
-                        image_config: None,
+                    host,
+                    UidGidSyncUserCase {
+                        input: effective_user_input(
+                            Some("remote"),
+                            Some("container"),
+                            None,
+                            None,
+                            None,
+                        ),
+                        container_user: "container",
+                        remote_user: "remote",
+                        target_kind: UidGidSyncTargetKind::RemoteUser,
+                        target_user: "remote",
+                        target_uid: 2001,
+                        target_gid: 2001,
                     },
                 )
                 .await?;
-                assert_eq!(both.container_user.user, "container");
-                assert_eq!(both.remote_user.user, "remote");
-                assert_sync_plan(
-                    resolve_uid_gid_sync_plan_from_image(
-                        &client,
-                        &image,
-                        &both,
-                        true,
-                        HostPlatform::Linux,
-                        host,
-                    )
-                    .await?,
-                    UidGidSyncTargetKind::RemoteUser,
-                    "remote",
-                    2001,
-                    2001,
-                    host,
-                );
 
                 Ok(())
             }

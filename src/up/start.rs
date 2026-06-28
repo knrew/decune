@@ -308,19 +308,52 @@ async fn ensure_image_container_started(
         return Ok(started);
     }
 
-    let (plan, image_prepared) = prepare_image_based_metadata(
+    let finalized = Box::pin(finalize_image_start_plan(
         &client,
         &workspace,
+        preliminary_plan,
+        &options,
+        forwarding_resolution,
+        plan_resolution,
+    ))
+    .await?;
+    Box::pin(start_decided_image_container(
+        client,
+        workspace,
+        &options,
+        &containers,
+        finalized,
+    ))
+    .await
+}
+
+struct FinalizedImageStart {
+    plan: UpPlan,
+    credentials: CredentialRuntime,
+    image_prepared: bool,
+}
+
+async fn finalize_image_start_plan(
+    client: &DockerClient,
+    workspace: &Workspace,
+    preliminary_plan: UpPlan,
+    options: &UpOptions,
+    forwarding_resolution: ForwardingResolution,
+    plan_resolution: UpPlanResolution,
+) -> Result<FinalizedImageStart> {
+    let (plan, image_prepared) = prepare_image_based_metadata(
+        client,
+        workspace,
         options.config_path.as_deref(),
-        options.cli_layer,
+        options.cli_layer.clone(),
         preliminary_plan,
         options.build.pull,
         plan_resolution,
     )
     .await?;
     let finalized = Box::pin(finalize_up_plan_mounts(
-        &client,
-        &workspace,
+        client,
+        workspace,
         plan,
         None,
         None,
@@ -341,7 +374,7 @@ async fn ensure_image_container_started(
         mount_image_prepared || (image_prepared && !plan_requires_final_image_layer(&plan));
     if !image_prepared {
         prepare_image_for_create(
-            &client,
+            client,
             &plan,
             ImagePreparation {
                 pull: options.build.pull,
@@ -352,14 +385,33 @@ async fn ensure_image_container_started(
         .await?;
     }
     let image_prepared = true;
-    let platform = image_container_tool_platform(&client, &plan.image).await?;
+    let platform = image_container_tool_platform(client, &plan.image).await?;
     let (mut plan, credentials) =
         add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
     attach_compose_interpolation_env_to_plan(&mut plan);
     report_deferred_config_messages(&plan.config);
 
+    Ok(FinalizedImageStart {
+        plan,
+        credentials,
+        image_prepared,
+    })
+}
+
+async fn start_decided_image_container(
+    client: DockerClient,
+    workspace: Workspace,
+    options: &UpOptions,
+    containers: &[UpContainerSummary],
+    finalized: FinalizedImageStart,
+) -> Result<StartedUpContainer> {
+    let FinalizedImageStart {
+        plan,
+        credentials,
+        image_prepared,
+    } = finalized;
     match decide_existing_container(
-        &containers,
+        containers,
         &plan.resources.config_hash,
         credentials.mount_policy(),
         options.reuse.rebuild,

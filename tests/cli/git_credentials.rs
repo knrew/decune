@@ -81,17 +81,7 @@ fn up_detach_routes_git_credential_helper_actions_through_host_daemon() {
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("HOME", host_home.path())
             .args(["up", "--detach"])
@@ -107,16 +97,6 @@ fn up_detach_routes_git_credential_helper_actions_through_host_daemon() {
             "store\nerase\n"
         );
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -273,17 +253,7 @@ fn up_detach_runs_git_credential_helper_as_nonroot_alpine_remote_user() {
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("HOME", host_home.path())
             .args(["up", "--detach"])
@@ -294,16 +264,6 @@ fn up_detach_runs_git_credential_helper_as_nonroot_alpine_remote_user() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("test-secret").not());
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -382,17 +342,7 @@ fn up_detach_sets_git_credential_home_for_nonroot_remote_user() {
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("HOME", host_home.path())
             .args(["up", "--detach"])
@@ -403,16 +353,6 @@ fn up_detach_sets_git_credential_home_for_nonroot_remote_user() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("test-secret").not());
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -492,17 +432,7 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("HOME", host_home.path())
             .args(["up", "--detach"])
@@ -515,16 +445,6 @@ fn up_detach_denies_host_daemon_socket_to_non_remote_user_when_remote_uid_matche
             .stderr(predicate::str::contains("attacker reached host daemon").not())
             .stderr(predicate::str::contains("test-secret").not());
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -616,7 +536,7 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
         cleanup_workspace_images(&workspace_root).unwrap();
     });
 
-    let result = std::panic::catch_unwind(|| {
+    std::panic::catch_unwind(|| {
         decune()
             .env("HOME", host_home.path())
             .args(["up", "--detach"])
@@ -627,15 +547,6 @@ fn up_detach_runs_git_credential_helper_when_remote_user_uid_differs_from_host_u
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("attacker reached host daemon").not())
             .stderr(predicate::str::contains("test-secret").not());
-    });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+    })
+    .unwrap();
 }

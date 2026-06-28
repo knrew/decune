@@ -45,7 +45,6 @@ pedantic = {level = "deny", priority = -1}
 
 # Explicit pedantic overrides.
 single_char_pattern = "allow"
-too_many_lines      = "warn"
 unreadable_literal  = "allow"
 
 nursery = {level = "warn", priority = -1}

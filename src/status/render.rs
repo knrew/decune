@@ -82,6 +82,20 @@ pub(super) fn render_workspace_detail(
     ports: &[PortInventoryEntry],
 ) -> String {
     let mut output = String::new();
+    write_workspace_header(&mut output, status);
+    write_workspace_summary(&mut output, status);
+    write_workspace_config(&mut output, status);
+    write_workspace_issues(&mut output, status);
+    write_workspace_services(&mut output, status);
+    write_workspace_runtime(&mut output, status);
+    write_workspace_ports(&mut output, ports);
+    write_workspace_resources(&mut output, status);
+    write_workspace_lifecycle(&mut output, status);
+    write_workspace_actions(&mut output, status);
+    output
+}
+
+fn write_workspace_header(output: &mut String, status: &WorkspaceStatus) {
     _ = writeln!(
         output,
         "Workspace: {}",
@@ -90,7 +104,9 @@ pub(super) fn render_workspace_detail(
     _ = writeln!(output, "ID: {}", status.workspace_id);
     _ = writeln!(output, "Mode: {}", status.mode.as_str());
     output.push('\n');
+}
 
+fn write_workspace_summary(output: &mut String, status: &WorkspaceStatus) {
     output.push_str("Summary\n");
     _ = writeln!(output, "  Runtime: {}", status.environment_status.as_str());
     _ = writeln!(output, "  Config: {}", status.config_status.as_str());
@@ -103,7 +119,9 @@ pub(super) fn render_workspace_detail(
         format_timestamp(status.last_used_at.as_deref())
     );
     output.push('\n');
+}
 
+fn write_workspace_config(output: &mut String, status: &WorkspaceStatus) {
     output.push_str("Config\n");
     _ = writeln!(
         output,
@@ -121,7 +139,9 @@ pub(super) fn render_workspace_detail(
         status.last_started_at.as_deref().unwrap_or("-")
     );
     output.push('\n');
+}
 
+fn write_workspace_issues(output: &mut String, status: &WorkspaceStatus) {
     if !status.issues.is_empty() {
         output.push_str("Issues\n");
         for issue in &status.issues {
@@ -135,7 +155,9 @@ pub(super) fn render_workspace_detail(
         }
         output.push('\n');
     }
+}
 
+fn write_workspace_services(output: &mut String, status: &WorkspaceStatus) {
     if status.mode == WorkspaceMode::Compose {
         output.push_str("Services\n");
         let services = compose_services(status);
@@ -148,7 +170,9 @@ pub(super) fn render_workspace_detail(
         }
         output.push('\n');
     }
+}
 
+fn write_workspace_runtime(output: &mut String, status: &WorkspaceStatus) {
     output.push_str("Runtime\n");
     if status.containers.is_empty() {
         output.push_str("  No containers\n");
@@ -171,18 +195,24 @@ pub(super) fn render_workspace_detail(
         }
     }
     output.push('\n');
+}
 
+fn write_workspace_ports(output: &mut String, ports: &[PortInventoryEntry]) {
     output.push_str("Ports\n");
     for line in render_ports_table(ports, false).lines() {
         _ = writeln!(output, "  {line}");
     }
     output.push('\n');
+}
 
+fn write_workspace_resources(output: &mut String, status: &WorkspaceStatus) {
     output.push_str("Resources\n");
     _ = writeln!(output, "  Containers: {}", status.containers.len());
     _ = writeln!(output, "  Volumes: {}", status.volumes.len());
     output.push('\n');
+}
 
+fn write_workspace_lifecycle(output: &mut String, status: &WorkspaceStatus) {
     if status.lifecycle_status == LifecycleStatus::Incomplete {
         output.push_str("Lifecycle\n");
         if let Some(lifecycle) = status.lifecycle {
@@ -215,7 +245,9 @@ pub(super) fn render_workspace_detail(
         }
         output.push('\n');
     }
+}
 
+fn write_workspace_actions(output: &mut String, status: &WorkspaceStatus) {
     let actions = status
         .issues
         .iter()
@@ -227,8 +259,6 @@ pub(super) fn render_workspace_detail(
             _ = writeln!(output, "  {code}: {action}");
         }
     }
-
-    output
 }
 
 fn sort_workspaces_for_display(workspaces: &mut [&WorkspaceStatus]) {

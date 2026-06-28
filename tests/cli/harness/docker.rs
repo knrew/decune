@@ -123,6 +123,44 @@ pub(crate) fn cleanup_workspace_containers(workspace_root: &Path) -> anyhow::Res
     Ok(())
 }
 
+pub(crate) fn with_clean_workspace_containers<F>(workspace_root: &Path, body: F)
+where
+    F: FnOnce() + std::panic::UnwindSafe,
+{
+    with_clean_workspace_resources(workspace_root, false, body);
+}
+
+pub(crate) fn with_clean_workspace_containers_and_images<F>(workspace_root: &Path, body: F)
+where
+    F: FnOnce() + std::panic::UnwindSafe,
+{
+    with_clean_workspace_resources(workspace_root, true, body);
+}
+
+fn with_clean_workspace_resources<F>(workspace_root: &Path, cleanup_images: bool, body: F)
+where
+    F: FnOnce() + std::panic::UnwindSafe,
+{
+    cleanup_workspace_resources(workspace_root, cleanup_images).must();
+
+    let result = std::panic::catch_unwind(body);
+
+    cleanup_workspace_resources(workspace_root, cleanup_images).must();
+
+    if let Err(payload) = result {
+        std::panic::resume_unwind(payload);
+    }
+}
+
+fn cleanup_workspace_resources(workspace_root: &Path, cleanup_images: bool) -> anyhow::Result<()> {
+    cleanup_workspace_containers(workspace_root)?;
+    if cleanup_images {
+        cleanup_workspace_images(workspace_root)?;
+    }
+
+    Ok(())
+}
+
 pub(crate) fn assert_container_is_not_running(container_id: &str) {
     let inspect = inspect_container(container_id).must();
 

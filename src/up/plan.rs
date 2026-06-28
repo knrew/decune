@@ -8,22 +8,24 @@ use anyhow::{Context, Result};
 use crate::{
     config::{
         ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash, load::load_config_file,
-        resolve_config,
+        resolve_config, resolved::ResolvedConfig,
     },
     devcontainer::{json::DevcontainerJson, metadata::parse_metadata},
     docker::{
         build::build_hash_input,
+        mounts::DockerMountSpec,
         ports::resolve_forward_ports,
         resource::DockerResources,
         user::{EffectiveUsers, UidGidSyncPlan},
     },
+    runtime::compose_cli::ComposeProjectPlan,
     workspace::Workspace,
 };
 
 use super::{
     ForwardingResolution, MountResolution, UpPlan, UpPlanResolution, WorkspaceLocationValidation,
-    mount_hash_inputs, static_mount_variable_context, static_uid_gid_sync_hash_input,
-    workspace_mount_plan_from_resolved,
+    mount_hash_inputs, mounts::WorkspaceMountPlan, static_mount_variable_context,
+    static_uid_gid_sync_hash_input, workspace_mount_plan_from_resolved,
 };
 
 mod compose;
@@ -32,6 +34,7 @@ mod hash;
 mod source;
 
 use compose::{compose_project_plan, validate_service_qualified_forward_ports};
+use expand::StaticPlanExpansion;
 pub(super) use expand::{expand_runtime_devcontainer_fields, expand_static_plan_fields};
 pub(super) use hash::{add_internal_hash_versions, feature_lock_hash_inputs};
 pub(super) use source::{base_image_source, config_requires_workspace_layer, final_image_source};
@@ -165,6 +168,110 @@ pub(super) fn build_up_plan_with_image_metadata_and_forwarding_resolution(
     )
 }
 
+const fn workspace_validation_for_mount_resolution(
+    mount_resolution: MountResolution,
+) -> WorkspaceLocationValidation {
+    match mount_resolution {
+        MountResolution::Resolve | MountResolution::ReadOnly => {
+            WorkspaceLocationValidation::ConfigResolved
+        }
+        MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
+    }
+}
+
+fn static_workspace_mount_plan(
+    workspace: &Workspace,
+    config: &ResolvedConfig,
+    static_expansion: &StaticPlanExpansion,
+    mount_resolution: MountResolution,
+) -> Result<WorkspaceMountPlan> {
+    let mount_variables = static_mount_variable_context(
+        workspace,
+        &static_expansion.workspace_location.workspace_folder,
+        config,
+    );
+    workspace_mount_plan_from_resolved(
+        static_expansion.workspace_location.workspace_mount.clone(),
+        workspace.root(),
+        config,
+        &mount_variables,
+        mount_resolution,
+        workspace.paths().state_dir(),
+    )
+}
+
+struct StaticConfigHashInputContext<'a> {
+    workspace: &'a Workspace,
+    devcontainer_file: &'a Path,
+    config: &'a ResolvedConfig,
+    config_layers: &'a ConfigMergeInput,
+    static_expansion: &'a StaticPlanExpansion,
+    compose_project: Option<&'a ComposeProjectPlan>,
+    mounts: &'a [DockerMountSpec],
+    mount_resolution: MountResolution,
+    update_features: bool,
+}
+
+fn static_config_hash_input<'a>(
+    context: &StaticConfigHashInputContext<'a>,
+) -> Result<ConfigHashInput<'a>> {
+    let workspace = context.workspace;
+    let devcontainer_file = context.devcontainer_file;
+    let config = context.config;
+    let config_layers = context.config_layers;
+    let static_expansion = context.static_expansion;
+    let compose_project = context.compose_project;
+    let mounts = context.mounts;
+    let mount_resolution = context.mount_resolution;
+    let update_features = context.update_features;
+    let mut hash_input = ConfigHashInput::new(config);
+    if let Some(context) = &static_expansion.build_context {
+        hash_input.build = Some(build_hash_input(context)?);
+    }
+    hash_input.sensitive_build_arg_keys = static_expansion
+        .sensitive_build_args
+        .iter()
+        .map(|(key, _)| key.clone())
+        .collect();
+    if let Some(compose_project) = compose_project {
+        hash_input.compose_files = compose_project.config_hash_files().to_vec();
+    }
+    hash_input.feature_locks =
+        feature_lock_hash_inputs(workspace, devcontainer_file, config, update_features)?;
+    if mount_resolution.resolves_config_mounts() {
+        hash_input.resolved_mounts = mount_hash_inputs(mounts);
+    }
+    add_internal_hash_versions(&mut hash_input, config);
+    hash_input.uid_gid_sync =
+        static_uid_gid_sync_hash_input(config_layers, config.devcontainer.update_remote_user_uid);
+    Ok(hash_input)
+}
+
+struct StaticPlanResources {
+    resources: DockerResources,
+    base_image: String,
+    image: String,
+}
+
+fn static_plan_resources(
+    workspace: &Workspace,
+    devcontainer_file: &Path,
+    config: &ResolvedConfig,
+    hash_input: &ConfigHashInput<'_>,
+) -> Result<StaticPlanResources> {
+    let hash = config_hash(hash_input);
+    let resources =
+        DockerResources::from_workspace(workspace, hash, devcontainer_file.display().to_string());
+    let base_image = base_image_source(config, &resources, &UidGidSyncPlan::default())?;
+    let image = final_image_source(config, &resources, &UidGidSyncPlan::default())?;
+
+    Ok(StaticPlanResources {
+        resources,
+        base_image,
+        image,
+    })
+}
+
 pub(super) fn rebuild_up_plan_with_image_metadata_layers(
     workspace: &Workspace,
     mut plan: UpPlan,
@@ -182,12 +289,7 @@ pub(super) fn rebuild_up_plan_with_image_metadata_layers(
     plan.config_layers.image_metadata = image_metadata;
     plan.config_layers.feature_metadata.clear();
     let config_layers = plan.config_layers.clone();
-    let workspace_validation = match mount_resolution {
-        MountResolution::Resolve | MountResolution::ReadOnly => {
-            WorkspaceLocationValidation::ConfigResolved
-        }
-        MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
-    };
+    let workspace_validation = workspace_validation_for_mount_resolution(mount_resolution);
     let mut config = resolve_config(config_layers.clone());
     let static_expansion = expand_static_plan_fields(
         workspace,
@@ -196,50 +298,23 @@ pub(super) fn rebuild_up_plan_with_image_metadata_layers(
         workspace_validation,
         mount_resolution,
     )?;
-    let mount_variables = static_mount_variable_context(
-        workspace,
-        &static_expansion.workspace_location.workspace_folder,
-        &config,
-    );
     let compose_project = compose_project_plan(workspace, &devcontainer_file, &config)?;
-    let mount_plan = workspace_mount_plan_from_resolved(
-        static_expansion.workspace_location.workspace_mount.clone(),
-        workspace.root(),
-        &config,
-        &mount_variables,
-        mount_resolution,
-        workspace.paths().state_dir(),
-    )?;
+    let mount_plan =
+        static_workspace_mount_plan(workspace, &config, &static_expansion, mount_resolution)?;
     let mounts = mount_plan.mounts;
-    let mut hash_input = ConfigHashInput::new(&config);
-    if let Some(context) = &static_expansion.build_context {
-        hash_input.build = Some(build_hash_input(context)?);
-    }
-    hash_input.sensitive_build_arg_keys = static_expansion
-        .sensitive_build_args
-        .iter()
-        .map(|(key, _)| key.clone())
-        .collect();
-    if let Some(compose_project) = &compose_project {
-        hash_input.compose_files = compose_project.config_hash_files().to_vec();
-    }
-    hash_input.feature_locks = feature_lock_hash_inputs(
+    let hash_input = static_config_hash_input(&StaticConfigHashInputContext {
         workspace,
-        &devcontainer_file,
-        &config,
-        resolution.update_features,
-    )?;
-    if mount_resolution.resolves_config_mounts() {
-        hash_input.resolved_mounts = mount_hash_inputs(&mounts);
-    }
-    add_internal_hash_versions(&mut hash_input, &config);
-    hash_input.uid_gid_sync =
-        static_uid_gid_sync_hash_input(&config_layers, config.devcontainer.update_remote_user_uid);
-    let hash = config_hash(&hash_input);
-    let resources =
-        DockerResources::from_workspace(workspace, hash, devcontainer_file.display().to_string());
-    let base_image = base_image_source(&config, &resources, &UidGidSyncPlan::default())?;
-    let image = final_image_source(&config, &resources, &UidGidSyncPlan::default())?;
+        devcontainer_file: &devcontainer_file,
+        config: &config,
+        config_layers: &config_layers,
+        static_expansion: &static_expansion,
+        compose_project: compose_project.as_ref(),
+        mounts: &mounts,
+        mount_resolution,
+        update_features: resolution.update_features,
+    })?;
+    let static_resources =
+        static_plan_resources(workspace, &devcontainer_file, &config, &hash_input)?;
     let forward_ports = match resolution.forwarding {
         ForwardingResolution::Resolve => {
             validate_service_qualified_forward_ports(&config)?;
@@ -253,14 +328,14 @@ pub(super) fn rebuild_up_plan_with_image_metadata_layers(
             || !config.ports.entries.is_empty());
 
     Ok(UpPlan {
-        image,
-        base_image,
+        image: static_resources.image,
+        base_image: static_resources.base_image,
         build_context: static_expansion.build_context,
         build_options: static_expansion.build_options,
         feature_install: None,
         feature_build_context_dir: None,
         uid_gid_sync_build_context_dir: None,
-        resources,
+        resources: static_resources.resources,
         pre_uid_gid_sync_resources: None,
         compose_project,
         config_layers,
@@ -317,12 +392,7 @@ fn build_up_plan_inner(
         cli: Some(cli_layer),
         ..ConfigMergeInput::default()
     };
-    let workspace_validation = match mount_resolution {
-        MountResolution::Resolve | MountResolution::ReadOnly => {
-            WorkspaceLocationValidation::ConfigResolved
-        }
-        MountResolution::DeferConfigMounts => WorkspaceLocationValidation::Preliminary,
-    };
+    let workspace_validation = workspace_validation_for_mount_resolution(mount_resolution);
     let mut config = resolve_config(config_layers.clone());
     let static_expansion = expand_static_plan_fields(
         workspace,
@@ -331,53 +401,23 @@ fn build_up_plan_inner(
         workspace_validation,
         mount_resolution,
     )?;
-    let mount_variables = static_mount_variable_context(
-        workspace,
-        &static_expansion.workspace_location.workspace_folder,
-        &config,
-    );
     let compose_project = compose_project_plan(workspace, devcontainer_json.path(), &config)?;
-    let mount_plan = workspace_mount_plan_from_resolved(
-        static_expansion.workspace_location.workspace_mount.clone(),
-        workspace.root(),
-        &config,
-        &mount_variables,
-        mount_resolution,
-        workspace.paths().state_dir(),
-    )?;
+    let mount_plan =
+        static_workspace_mount_plan(workspace, &config, &static_expansion, mount_resolution)?;
     let mounts = mount_plan.mounts;
-    let mut hash_input = ConfigHashInput::new(&config);
-    if let Some(context) = &static_expansion.build_context {
-        hash_input.build = Some(build_hash_input(context)?);
-    }
-    hash_input.sensitive_build_arg_keys = static_expansion
-        .sensitive_build_args
-        .iter()
-        .map(|(key, _)| key.clone())
-        .collect();
-    if let Some(compose_project) = &compose_project {
-        hash_input.compose_files = compose_project.config_hash_files().to_vec();
-    }
-    hash_input.feature_locks = feature_lock_hash_inputs(
+    let hash_input = static_config_hash_input(&StaticConfigHashInputContext {
         workspace,
-        devcontainer_json.path(),
-        &config,
-        resolution.update_features,
-    )?;
-    if mount_resolution.resolves_config_mounts() {
-        hash_input.resolved_mounts = mount_hash_inputs(&mounts);
-    }
-    add_internal_hash_versions(&mut hash_input, &config);
-    hash_input.uid_gid_sync =
-        static_uid_gid_sync_hash_input(&config_layers, config.devcontainer.update_remote_user_uid);
-    let hash = config_hash(&hash_input);
-    let resources = DockerResources::from_workspace(
-        workspace,
-        hash,
-        devcontainer_json.path().display().to_string(),
-    );
-    let base_image = base_image_source(&config, &resources, &UidGidSyncPlan::default())?;
-    let image = final_image_source(&config, &resources, &UidGidSyncPlan::default())?;
+        devcontainer_file: devcontainer_json.path(),
+        config: &config,
+        config_layers: &config_layers,
+        static_expansion: &static_expansion,
+        compose_project: compose_project.as_ref(),
+        mounts: &mounts,
+        mount_resolution,
+        update_features: resolution.update_features,
+    })?;
+    let static_resources =
+        static_plan_resources(workspace, devcontainer_json.path(), &config, &hash_input)?;
     let forward_ports = match resolution.forwarding {
         ForwardingResolution::Resolve => {
             validate_service_qualified_forward_ports(&config)?;
@@ -391,14 +431,14 @@ fn build_up_plan_inner(
             || !config.ports.entries.is_empty());
 
     Ok(UpPlan {
-        image,
-        base_image,
+        image: static_resources.image,
+        base_image: static_resources.base_image,
         build_context: static_expansion.build_context,
         build_options: static_expansion.build_options,
         feature_install: None,
         feature_build_context_dir: None,
         uid_gid_sync_build_context_dir: None,
-        resources,
+        resources: static_resources.resources,
         pre_uid_gid_sync_resources: None,
         compose_project,
         config_layers,

@@ -2,7 +2,7 @@ use std::{
     fs::File,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    process::{Command as ProcessCommand, Stdio},
+    process::{Child, Command as ProcessCommand, Stdio},
     thread,
     time::{Duration, Instant},
 };
@@ -302,31 +302,16 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
     let workspace_root = workspace.path().canonicalize().unwrap();
     let stderr_path = workspace_root.join(".decune-up-stderr");
     let host_port = available_host_port();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
+    cleanup_workspace_containers(&workspace_root).must();
+    cleanup_workspace_images(&workspace_root).must();
 
     let mut child = None;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("decune"));
-        command
-            .args([
-                "up",
-                "--no-auto-forward",
-                "-p",
-                &format!("{host_port}:4321"),
-            ])
-            .arg(&workspace_root)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::null())
-            .stderr(Stdio::from(File::create(&stderr_path).unwrap()));
-        child = Some(command.spawn().unwrap());
+        child = Some(spawn_attached_manual_port_forward(
+            &workspace_root,
+            &stderr_path,
+            host_port,
+        ));
 
         if let Err(error) = wait_for_forwarded_http_response(host_port) {
             let status = child.as_mut().unwrap().try_wait().unwrap();
@@ -363,11 +348,9 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
         _ = child.kill();
         _ = child.wait();
     }
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
+    cleanup_workspace_containers(&workspace_root)
+        .and_then(|()| cleanup_workspace_images(&workspace_root))
+        .must();
 
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
@@ -430,15 +413,8 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
     let workspace_root = workspace.path().canonicalize().unwrap();
     let stderr_path = workspace_root.join(".decune-up-stderr");
     let host_port = available_host_port();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
+    cleanup_workspace_containers(&workspace_root).must();
+    cleanup_workspace_images(&workspace_root).must();
 
     let mut child = None;
     let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
@@ -474,11 +450,9 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
         _ = child.kill();
         _ = child.wait();
     }
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
+    cleanup_workspace_containers(&workspace_root)
+        .and_then(|()| cleanup_workspace_images(&workspace_root))
+        .must();
 
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
@@ -750,6 +724,26 @@ fn up_detach_warns_when_app_port_has_no_host_ip() {
 fn available_host_port() -> u16 {
     let listener = TcpListener::bind(("127.0.0.1", 0)).must();
     listener.local_addr().must().port()
+}
+
+fn spawn_attached_manual_port_forward(
+    workspace_root: &Path,
+    stderr_path: &Path,
+    host_port: u16,
+) -> Child {
+    let mut command = ProcessCommand::new(assert_cmd::cargo::cargo_bin("decune"));
+    command
+        .args([
+            "up",
+            "--no-auto-forward",
+            "-p",
+            &format!("{host_port}:4321"),
+        ])
+        .arg(workspace_root)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(File::create(stderr_path).must()));
+    command.spawn().must()
 }
 
 fn available_host_port_in_range(start: u16, end: u16) -> u16 {

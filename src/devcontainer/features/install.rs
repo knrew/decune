@@ -184,153 +184,285 @@ pub(crate) fn resolve_feature_install_order<F>(
 where
     F: FnMut(&FeatureDependencyRequest<'_>) -> Result<FeatureInstallInput>,
 {
-    let mut nodes = BTreeMap::new();
-    for input in inputs {
-        nodes.entry(input.instance_key.clone()).or_insert(input);
+    let mut graph = FeatureInstallGraph::new(inputs);
+    graph.resolve_dependency_edges(&mut resolve_dependency)?;
+    let dependencies = graph.dependency_requirements()?;
+    let priorities =
+        override_feature_install_priorities(&graph.nodes, override_feature_install_order)?;
+    order_feature_install_plan(&graph.nodes, &dependencies, &priorities)
+}
+
+struct FeatureInstallGraph {
+    nodes: BTreeMap<String, FeatureInstallInput>,
+    dependency_edges: BTreeMap<String, BTreeSet<String>>,
+}
+
+struct FeatureDependencyScan {
+    parent_instance_key: String,
+    parent_canonical_id: String,
+    parent_reference: FeatureRef,
+    dependencies: Vec<PendingFeatureDependency>,
+}
+
+struct PendingFeatureDependency {
+    dependency: String,
+    options: serde_json::Value,
+}
+
+impl FeatureInstallGraph {
+    fn new(inputs: Vec<FeatureInstallInput>) -> Self {
+        let mut nodes = BTreeMap::new();
+        for input in inputs {
+            nodes.entry(input.instance_key.clone()).or_insert(input);
+        }
+        Self {
+            nodes,
+            dependency_edges: BTreeMap::new(),
+        }
     }
 
-    let mut scan_queue = nodes.keys().cloned().collect::<VecDeque<_>>();
-    let mut dependency_edges = BTreeMap::<String, BTreeSet<String>>::new();
-    while let Some(canonical_id) = scan_queue.pop_front() {
-        let Some(input) = nodes.get(&canonical_id) else {
-            bail!("Feature install graph is missing queued Feature: {canonical_id}");
+    fn resolve_dependency_edges<F>(&mut self, resolve_dependency: &mut F) -> Result<()>
+    where
+        F: FnMut(&FeatureDependencyRequest<'_>) -> Result<FeatureInstallInput>,
+    {
+        let mut scan_queue = self.nodes.keys().cloned().collect::<VecDeque<_>>();
+        while let Some(instance_key) = scan_queue.pop_front() {
+            let mut scan = self.dependency_scan(&instance_key)?;
+            let dependencies = std::mem::take(&mut scan.dependencies);
+            for dependency in dependencies {
+                self.resolve_feature_dependency(
+                    &scan,
+                    &dependency,
+                    &mut scan_queue,
+                    resolve_dependency,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn dependency_scan(&self, instance_key: &str) -> Result<FeatureDependencyScan> {
+        let Some(input) = self.nodes.get(instance_key) else {
+            bail!("Feature install graph is missing queued Feature: {instance_key}");
         };
-        let parent_canonical_id = input.feature.canonical_id.clone();
-        let parent_reference = input.reference.clone();
-        let depends_on = input
+        let dependencies = input
             .metadata
             .depends_on
             .iter()
-            .map(|(dependency, options)| (dependency.clone(), options.clone()))
-            .collect::<Vec<_>>();
+            .map(|(dependency, options)| PendingFeatureDependency {
+                dependency: dependency.clone(),
+                options: options.clone(),
+            })
+            .collect();
+        Ok(FeatureDependencyScan {
+            parent_instance_key: instance_key.to_owned(),
+            parent_canonical_id: input.feature.canonical_id.clone(),
+            parent_reference: input.reference.clone(),
+            dependencies,
+        })
+    }
 
-        for (dependency, options) in depends_on {
-            let dependency_target = dependency_feature_target(&parent_reference, &dependency)?;
-            let options = feature_dependency_options(&parent_canonical_id, &dependency, &options)?;
-            if let Some(existing_instance_key) = find_existing_feature_instance(
-                &nodes,
-                &dependency_target.canonical_id,
-                &dependency_target.reference,
-                &options,
-            ) {
-                dependency_edges
-                    .entry(canonical_id.clone())
-                    .or_default()
-                    .insert(existing_instance_key);
-                continue;
-            }
-            let request = FeatureDependencyRequest {
-                parent_canonical_id: &parent_canonical_id,
-                dependency: &dependency,
-                reference: dependency_target.reference,
-                canonical_id: dependency_target.canonical_id.clone(),
-                options,
-            };
-            let mut dependency_input = resolve_dependency(&request).with_context(|| {
-                format!(
-                    "Failed to resolve Feature dependency {} for Feature {}",
-                    request.dependency, request.parent_canonical_id
-                )
-            })?;
-            if dependency_input.feature.canonical_id != request.canonical_id {
-                bail!(
-                    "Feature dependency resolver returned {} for {}, expected {}",
-                    dependency_input.feature.canonical_id,
-                    request.dependency,
-                    request.canonical_id
-                );
-            }
-            if dependency_input.feature.options != request.options {
-                dependency_input.feature.options = request.options.clone();
-                dependency_input.instance_key =
-                    feature_install_input_instance_key(&dependency_input);
-            }
-            let dependency_instance_key = dependency_input.instance_key.clone();
-            dependency_edges
-                .entry(canonical_id.clone())
-                .or_default()
-                .insert(dependency_instance_key.clone());
-            if nodes
-                .insert(dependency_instance_key.clone(), dependency_input)
-                .is_none()
-            {
-                scan_queue.push_back(dependency_instance_key);
+    fn resolve_feature_dependency<F>(
+        &mut self,
+        scan: &FeatureDependencyScan,
+        dependency: &PendingFeatureDependency,
+        scan_queue: &mut VecDeque<String>,
+        resolve_dependency: &mut F,
+    ) -> Result<()>
+    where
+        F: FnMut(&FeatureDependencyRequest<'_>) -> Result<FeatureInstallInput>,
+    {
+        let dependency_target =
+            dependency_feature_target(&scan.parent_reference, &dependency.dependency)?;
+        let options = feature_dependency_options(
+            &scan.parent_canonical_id,
+            &dependency.dependency,
+            &dependency.options,
+        )?;
+        if let Some(existing_instance_key) = find_existing_feature_instance(
+            &self.nodes,
+            &dependency_target.canonical_id,
+            &dependency_target.reference,
+            &options,
+        ) {
+            self.add_dependency_edge(&scan.parent_instance_key, existing_instance_key);
+            return Ok(());
+        }
+
+        let request = FeatureDependencyRequest {
+            parent_canonical_id: &scan.parent_canonical_id,
+            dependency: &dependency.dependency,
+            reference: dependency_target.reference,
+            canonical_id: dependency_target.canonical_id,
+            options,
+        };
+        let dependency_input = resolved_dependency_input(resolve_dependency, &request)?;
+        let dependency_instance_key = dependency_input.instance_key.clone();
+        self.add_dependency_edge(&scan.parent_instance_key, dependency_instance_key.clone());
+        if self
+            .nodes
+            .insert(dependency_instance_key.clone(), dependency_input)
+            .is_none()
+        {
+            scan_queue.push_back(dependency_instance_key);
+        }
+        Ok(())
+    }
+
+    fn add_dependency_edge(&mut self, parent_instance_key: &str, dependency_instance_key: String) {
+        self.dependency_edges
+            .entry(parent_instance_key.to_owned())
+            .or_default()
+            .insert(dependency_instance_key);
+    }
+
+    fn dependency_requirements(&self) -> Result<BTreeMap<String, BTreeSet<String>>> {
+        let mut dependencies = BTreeMap::new();
+        for (instance_key, input) in &self.nodes {
+            let mut required = self
+                .dependency_edges
+                .get(instance_key)
+                .cloned()
+                .unwrap_or_default();
+            add_soft_order_dependencies(&self.nodes, input, &mut required)?;
+            dependencies.insert(instance_key.clone(), required);
+        }
+        Ok(dependencies)
+    }
+}
+
+fn resolved_dependency_input<F>(
+    resolve_dependency: &mut F,
+    request: &FeatureDependencyRequest<'_>,
+) -> Result<FeatureInstallInput>
+where
+    F: FnMut(&FeatureDependencyRequest<'_>) -> Result<FeatureInstallInput>,
+{
+    let mut dependency_input = resolve_dependency(request).with_context(|| {
+        format!(
+            "Failed to resolve Feature dependency {} for Feature {}",
+            request.dependency, request.parent_canonical_id
+        )
+    })?;
+    if dependency_input.feature.canonical_id != request.canonical_id {
+        bail!(
+            "Feature dependency resolver returned {} for {}, expected {}",
+            dependency_input.feature.canonical_id,
+            request.dependency,
+            request.canonical_id
+        );
+    }
+    if dependency_input.feature.options != request.options {
+        dependency_input.feature.options = request.options.clone();
+        dependency_input.instance_key = feature_install_input_instance_key(&dependency_input);
+    }
+    Ok(dependency_input)
+}
+
+fn add_soft_order_dependencies(
+    nodes: &BTreeMap<String, FeatureInstallInput>,
+    input: &FeatureInstallInput,
+    required: &mut BTreeSet<String>,
+) -> Result<()> {
+    for dependency in &input.metadata.installs_after {
+        let dependency_target =
+            soft_order_feature_target(&input.reference, dependency, "installsAfter")?;
+        for (candidate_key, candidate) in nodes {
+            if feature_matches_order_target(candidate, &dependency_target.canonical_id)? {
+                required.insert(candidate_key.clone());
             }
         }
     }
+    Ok(())
+}
 
-    let mut dependencies = BTreeMap::new();
-    for (instance_key, input) in &nodes {
-        let mut required = dependency_edges.remove(instance_key).unwrap_or_default();
-        for dependency in &input.metadata.installs_after {
-            let dependency_target =
-                soft_order_feature_target(&input.reference, dependency, "installsAfter")?;
-            for (candidate_key, candidate) in &nodes {
-                if feature_matches_order_target(candidate, &dependency_target.canonical_id)? {
-                    required.insert(candidate_key.clone());
-                }
-            }
-        }
-        dependencies.insert(instance_key.clone(), required);
-    }
-
-    let priorities = override_feature_install_priorities(&nodes, override_feature_install_order)?;
+fn order_feature_install_plan(
+    nodes: &BTreeMap<String, FeatureInstallInput>,
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+    priorities: &BTreeMap<String, usize>,
+) -> Result<Vec<FeatureInstallPlanEntry>> {
     let mut worklist = nodes.keys().cloned().collect::<BTreeSet<_>>();
     let mut installed = BTreeSet::new();
     let mut ordered = Vec::new();
-
     while !worklist.is_empty() {
-        let ready = worklist
-            .iter()
-            .filter(|canonical_id| {
-                dependencies
-                    .get(*canonical_id)
-                    .is_none_or(|required| required.is_subset(&installed))
-            })
-            .cloned()
-            .collect::<Vec<_>>();
-        if ready.is_empty() {
-            let blocked = worklist.into_iter().collect::<Vec<_>>().join(", ");
-            bail!("Feature install order contains a dependency cycle involving: {blocked}");
-        }
-
-        let mut max_priority = 0;
-        for instance_key in &ready {
-            let Some(input) = nodes.get(instance_key) else {
-                bail!("Feature install graph is missing ready Feature: {instance_key}");
-            };
-            max_priority =
-                max_priority.max(feature_round_priority(&input.instance_key, &priorities));
-        }
-        let mut round = Vec::new();
-        for instance_key in ready {
-            let Some(input) = nodes.get(&instance_key) else {
-                bail!("Feature install graph is missing ready Feature: {instance_key}");
-            };
-            if feature_round_priority(&input.instance_key, &priorities) == max_priority {
-                round.push(instance_key);
-            }
-        }
-        round.sort_by(|left, right| stable_feature_order(nodes.get(left), nodes.get(right)));
-
+        let round =
+            next_feature_install_round(nodes, dependencies, priorities, &worklist, &installed)?;
         for canonical_id in round {
             worklist.remove(&canonical_id);
             installed.insert(canonical_id.clone());
             let Some(input) = nodes.get(&canonical_id) else {
                 bail!("Feature install graph is missing ready Feature: {canonical_id}");
             };
-            let option_env = feature_option_env(&input.feature, &input.metadata)?;
-            ordered.push(FeatureInstallPlanEntry {
-                feature: input.feature.clone(),
-                metadata: input.metadata.clone(),
-                source_key: input.source_key.clone(),
-                instance_key: input.instance_key.clone(),
-                option_env,
-            });
+            ordered.push(feature_install_plan_entry(input)?);
         }
     }
-
     Ok(ordered)
+}
+
+fn next_feature_install_round(
+    nodes: &BTreeMap<String, FeatureInstallInput>,
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+    priorities: &BTreeMap<String, usize>,
+    worklist: &BTreeSet<String>,
+    installed: &BTreeSet<String>,
+) -> Result<Vec<String>> {
+    let ready = ready_feature_instances(dependencies, worklist, installed);
+    if ready.is_empty() {
+        let blocked = worklist.iter().cloned().collect::<Vec<_>>().join(", ");
+        bail!("Feature install order contains a dependency cycle involving: {blocked}");
+    }
+    let max_priority = max_feature_round_priority(nodes, priorities, &ready)?;
+    let mut round = ready
+        .into_iter()
+        .filter(|instance_key| {
+            nodes.get(instance_key).is_some_and(|input| {
+                feature_round_priority(&input.instance_key, priorities) == max_priority
+            })
+        })
+        .collect::<Vec<_>>();
+    round.sort_by(|left, right| stable_feature_order(nodes.get(left), nodes.get(right)));
+    Ok(round)
+}
+
+fn ready_feature_instances(
+    dependencies: &BTreeMap<String, BTreeSet<String>>,
+    worklist: &BTreeSet<String>,
+    installed: &BTreeSet<String>,
+) -> Vec<String> {
+    worklist
+        .iter()
+        .filter(|canonical_id| {
+            dependencies
+                .get(*canonical_id)
+                .is_none_or(|required| required.is_subset(installed))
+        })
+        .cloned()
+        .collect()
+}
+
+fn max_feature_round_priority(
+    nodes: &BTreeMap<String, FeatureInstallInput>,
+    priorities: &BTreeMap<String, usize>,
+    ready: &[String],
+) -> Result<usize> {
+    let mut max_priority = 0;
+    for instance_key in ready {
+        let Some(input) = nodes.get(instance_key) else {
+            bail!("Feature install graph is missing ready Feature: {instance_key}");
+        };
+        max_priority = max_priority.max(feature_round_priority(&input.instance_key, priorities));
+    }
+    Ok(max_priority)
+}
+
+fn feature_install_plan_entry(input: &FeatureInstallInput) -> Result<FeatureInstallPlanEntry> {
+    Ok(FeatureInstallPlanEntry {
+        feature: input.feature.clone(),
+        metadata: input.metadata.clone(),
+        source_key: input.source_key.clone(),
+        instance_key: input.instance_key.clone(),
+        option_env: feature_option_env(&input.feature, &input.metadata)?,
+    })
 }
 
 struct FeatureResolver<'a> {

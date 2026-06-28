@@ -80,67 +80,54 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     workspace: &Workspace,
     input: ComposeRunningReuseInput<'_>,
 ) -> Result<Option<StartedUpContainer>> {
-    let ComposeRunningReuseInput {
-        mut plan,
-        options,
-        forwarding_resolution,
-        existing_compose_containers,
-        compose_primary_image,
-        user_config,
-        compose_primary_service_user,
-        compose_primary_service,
-        published_port_policy_input,
-        compose_published_ports,
-    } = input;
-    if !compose_running_reuse_fast_path_enabled(options, existing_compose_containers) {
+    if !compose_running_reuse_fast_path_enabled(input.options, input.existing_compose_containers) {
         return Ok(None);
     }
-    let Some(existing_container_image) = existing_compose_containers
+    let Some(existing_container_image) = input
+        .existing_compose_containers
         .first()
         .and_then(existing::existing_container_image_id)
     else {
         return Ok(None);
     };
 
-    plan = prepare_compose_image_metadata(
+    let resolution = compose_fast_path_resolution(&input);
+    let mut plan = prepare_compose_image_metadata(
         client,
         workspace,
-        options.config_path.as_deref(),
-        options.cli_layer.clone(),
-        plan,
-        compose_primary_image,
-        UpPlanResolution::new(
-            forwarding_resolution,
-            options.build.update_features,
-            options.config.skip_global_config,
-        ),
+        input.options.config_path.as_deref(),
+        input.options.cli_layer.clone(),
+        input.plan,
+        input.compose_primary_image,
+        resolution,
     )
     .await?;
-    plan.base_image = compose_primary_image.to_owned();
+    plan.base_image = input.compose_primary_image.to_owned();
     let finalized = Box::pin(finalize_up_plan_mounts(
         client,
         workspace,
         plan,
         Some(existing_container_image),
-        existing_compose_containers
+        input
+            .existing_compose_containers
             .first()
             .and_then(existing::existing_container_config_hash),
         Some((false, false)),
         FinalizeUpPlanMountsOptions {
-            forwarding: forwarding_resolution,
-            update_features: options.build.update_features,
-            compose_canonical_model: Some(&user_config.canonical_model),
-            compose_primary_service_user,
-            compose_primary_service,
-            compose_published_ports,
+            forwarding: input.forwarding_resolution,
+            update_features: input.options.build.update_features,
+            compose_canonical_model: Some(&input.user_config.canonical_model),
+            compose_primary_service_user: input.compose_primary_service_user,
+            compose_primary_service: input.compose_primary_service,
+            compose_published_ports: input.compose_published_ports,
         },
     ))
     .await?;
     let mut plan = finalized.plan;
     let published_port_plan = finalized.compose_published_port_plan;
     if !plan_requires_final_image_layer(&plan) {
-        plan.image = compose_primary_image.to_owned();
-        plan.base_image = compose_primary_image.to_owned();
+        plan.image = input.compose_primary_image.to_owned();
+        plan.base_image = input.compose_primary_image.to_owned();
     }
     let platform =
         container_tool_platform_for_plan(client, &plan, Some(existing_container_image)).await?;
@@ -153,10 +140,10 @@ async fn try_reuse_running_compose_container_before_image_prepare(
         bail!("Docker Compose project plan is missing after finalization");
     };
     let decision = decide_existing_container(
-        existing_compose_containers,
+        input.existing_compose_containers,
         &plan.resources.config_hash,
         credentials.mount_policy(),
-        options.reuse.rebuild,
+        input.options.reuse.rebuild,
     )?;
     let service_forward_requires_recreate = compose_service_forward_requires_recreate(
         client,
@@ -168,7 +155,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     let should_reuse = should_reuse_existing_container(
         &decision,
         ExistingContainerReusePolicy {
-            pull: options.build.pull,
+            pull: input.options.build.pull,
             service_forward_requires_recreate,
         },
     );
@@ -176,33 +163,62 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     if let ExistingContainerDecision::ReuseRunning { id, name } = decision
         && should_reuse
     {
-        let outcome = UpOutcome {
-            container_id: id,
-            container_name: name,
-            reused: true,
-        };
-        let state = sync_started_compose_state(
+        return started_fast_path_reused_compose_container(
             client,
             workspace,
-            &plan,
-            &outcome,
-            LifecycleRunPath::Running,
-            published_port_policy_input,
+            plan,
+            credentials,
+            UpOutcome {
+                container_id: id,
+                container_name: name,
+                reused: true,
+            },
+            input.published_port_policy_input,
             &published_port_plan,
         )
-        .await?;
-        return Ok(Some(started_up_container_with_state(
-            client.clone(),
-            workspace.clone(),
-            plan,
-            outcome,
-            LifecycleRunPath::Running,
-            credentials,
-            state,
-        )));
+        .await
+        .map(Some);
     }
 
     Ok(None)
+}
+
+const fn compose_fast_path_resolution(input: &ComposeRunningReuseInput<'_>) -> UpPlanResolution {
+    UpPlanResolution::new(
+        input.forwarding_resolution,
+        input.options.build.update_features,
+        input.options.config.skip_global_config,
+    )
+}
+
+async fn started_fast_path_reused_compose_container(
+    client: &DockerClient,
+    workspace: &Workspace,
+    plan: UpPlan,
+    credentials: CredentialRuntime,
+    outcome: UpOutcome,
+    published_port_policy_input: &ComposePublishedPortPlanningInput,
+    published_port_plan: &ComposePublishedPortPlan,
+) -> Result<StartedUpContainer> {
+    let state = sync_started_compose_state(
+        client,
+        workspace,
+        &plan,
+        &outcome,
+        LifecycleRunPath::Running,
+        published_port_policy_input,
+        published_port_plan,
+    )
+    .await?;
+    Ok(started_up_container_with_state(
+        client.clone(),
+        workspace.clone(),
+        plan,
+        outcome,
+        LifecycleRunPath::Running,
+        credentials,
+        state,
+    ))
 }
 
 struct ComposePlanSource<'a> {
@@ -253,6 +269,13 @@ struct ComposeReusableStartInput<'a> {
     decision: &'a ExistingContainerDecision,
     should_reuse: bool,
     published_port_plan: &'a ComposePublishedPortPlan,
+}
+
+struct ComposeStartRunOptions {
+    decision: ExistingContainerDecision,
+    should_reuse: bool,
+    force_recreate: bool,
+    remove_orphans: bool,
 }
 
 pub(super) async fn start_compose_project(
@@ -502,26 +525,8 @@ async fn finalize_compose_start_plan(
     let published_port_plan = finalized.compose_published_port_plan;
     let published_port_override = finalized.compose_published_port_override;
     let image_prepared = finalized.image_prepared;
-    if compose_published_port_plan_has_relocations(&published_port_plan) {
-        context.compose_capabilities.ensure_compose_override_tag()?;
-        warn_on_compose_published_port_relocations(&plan, &published_port_plan);
-    }
-    if !plan_requires_final_image_layer(&plan) {
-        plan.image.clone_from(&context.compose_primary_image);
-        plan.base_image.clone_from(&context.compose_primary_image);
-    }
-    if !image_prepared {
-        prepare_image_for_create(
-            client,
-            &plan,
-            ImagePreparation {
-                pull: false,
-                no_cache: options.build.no_cache,
-                image_prepared: false,
-            },
-        )
-        .await?;
-    }
+    handle_compose_published_port_relocations(context, &plan, &published_port_plan)?;
+    prepare_finalized_compose_image(client, options, context, &mut plan, image_prepared).await?;
     let platform = image_container_tool_platform(client, &plan.image).await?;
     let (mut plan, credentials) =
         add_credential_runtime_mounts(plan, workspace.paths().runtime_dir(), platform)?;
@@ -559,27 +564,55 @@ async fn finalize_compose_start_plan(
     })
 }
 
-async fn start_finalized_compose_project(
-    client: DockerClient,
-    workspace: Workspace,
-    options: UpOptions,
-    context: ComposeStartupContext,
-    finalized: FinalizedComposeStart,
-) -> Result<StartedUpContainer> {
-    let FinalizedComposeStart {
-        plan,
-        credentials,
-        published_port_plan,
-        runtime_lifecycle,
-        service,
-    } = finalized;
-
-    if context.existing_compose_project_containers.is_empty() {
-        state::reconcile_state_without_container(workspace.paths().state_dir())?;
+fn handle_compose_published_port_relocations(
+    context: &ComposeStartupContext,
+    plan: &UpPlan,
+    published_port_plan: &ComposePublishedPortPlan,
+) -> Result<()> {
+    if compose_published_port_plan_has_relocations(published_port_plan) {
+        context.compose_capabilities.ensure_compose_override_tag()?;
+        warn_on_compose_published_port_relocations(plan, published_port_plan);
     }
+    Ok(())
+}
+
+async fn prepare_finalized_compose_image(
+    client: &DockerClient,
+    options: &UpOptions,
+    context: &ComposeStartupContext,
+    plan: &mut UpPlan,
+    image_prepared: bool,
+) -> Result<()> {
+    if !plan_requires_final_image_layer(plan) {
+        plan.image.clone_from(&context.compose_primary_image);
+        plan.base_image.clone_from(&context.compose_primary_image);
+    }
+    if !image_prepared {
+        prepare_image_for_create(
+            client,
+            plan,
+            ImagePreparation {
+                pull: false,
+                no_cache: options.build.no_cache,
+                image_prepared: false,
+            },
+        )
+        .await?;
+    }
+    Ok(())
+}
+
+async fn compose_start_run_options(
+    client: &DockerClient,
+    workspace: &Workspace,
+    options: &UpOptions,
+    context: &ComposeStartupContext,
+    plan: &UpPlan,
+    credentials: &CredentialRuntime,
+    runtime_lifecycle: &ComposeLifecyclePlan,
+) -> Result<ComposeStartRunOptions> {
     let stale_compose_project = !context.existing_compose_project_containers.is_empty()
         && context.existing_compose_containers.is_empty();
-
     let decision = decide_existing_container(
         &context.existing_compose_containers,
         &plan.resources.config_hash,
@@ -587,7 +620,7 @@ async fn start_finalized_compose_project(
         options.reuse.rebuild,
     )?;
     let service_forward_requires_recreate = compose_service_forward_requires_recreate(
-        &client,
+        client,
         workspace.id(),
         &runtime_lifecycle.project.project_name,
         credentials.service_forward(),
@@ -609,6 +642,42 @@ async fn start_finalized_compose_project(
         || options.reuse.rebuild
         || stale_compose_project
         || service_forward_requires_recreate;
+    Ok(ComposeStartRunOptions {
+        decision,
+        should_reuse,
+        force_recreate,
+        remove_orphans,
+    })
+}
+
+async fn start_finalized_compose_project(
+    client: DockerClient,
+    workspace: Workspace,
+    options: UpOptions,
+    context: ComposeStartupContext,
+    finalized: FinalizedComposeStart,
+) -> Result<StartedUpContainer> {
+    let FinalizedComposeStart {
+        plan,
+        credentials,
+        published_port_plan,
+        runtime_lifecycle,
+        service,
+    } = finalized;
+
+    if context.existing_compose_project_containers.is_empty() {
+        state::reconcile_state_without_container(workspace.paths().state_dir())?;
+    }
+    let run_options = compose_start_run_options(
+        &client,
+        &workspace,
+        &options,
+        &context,
+        &plan,
+        &credentials,
+        &runtime_lifecycle,
+    )
+    .await?;
     if let Some((outcome, lifecycle_path, state)) =
         try_start_reusable_compose_container(ComposeReusableStartInput {
             client: &client,
@@ -616,8 +685,8 @@ async fn start_finalized_compose_project(
             plan: &plan,
             context: &context,
             runtime_lifecycle: &runtime_lifecycle,
-            decision: &decision,
-            should_reuse,
+            decision: &run_options.decision,
+            should_reuse: run_options.should_reuse,
             published_port_plan: &published_port_plan,
         })
         .await?
@@ -639,8 +708,8 @@ async fn start_finalized_compose_project(
         .up(
             &runtime_lifecycle.project,
             ComposeUpOptions {
-                force_recreate,
-                remove_orphans,
+                force_recreate: run_options.force_recreate,
+                remove_orphans: run_options.remove_orphans,
             },
             &runtime_lifecycle.services,
             Some(compose_startup_diagnostics(
