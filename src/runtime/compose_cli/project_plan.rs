@@ -4,7 +4,7 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use anyhow::{Result, anyhow};
+use anyhow::{Result, anyhow, bail};
 
 use crate::{
     config::{canonical::sha256_hex, hash::ComposeFileHashInput},
@@ -32,16 +32,16 @@ impl ComposeProjectPlan {
         compose_files: &[String],
     ) -> Result<Self> {
         if compose_files.is_empty() {
-            return Err(anyhow!("dockerComposeFile must not be empty"));
+            bail!("dockerComposeFile must not be empty");
         }
 
         let files = compose_files
             .iter()
             .map(|file| resolve_compose_file(devcontainer_dir, file))
             .collect::<Result<Vec<_>>>()?;
-        let first_file = files
-            .first()
-            .expect("compose files are checked as non-empty before resolution");
+        let Some(first_file) = files.first() else {
+            bail!("dockerComposeFile must not be empty");
+        };
         let project_directory_path = first_file.resolved_path.parent().ok_or_else(|| {
             anyhow!(
                 "Failed to resolve Docker Compose project directory from file: {}",
@@ -165,9 +165,9 @@ fn resolve_compose_file(devcontainer_dir: &Path, value: &str) -> Result<ComposeF
 
 fn reject_unsupported_compose_file_reference(value: &str) -> Result<()> {
     if value == "-" || value.contains("://") {
-        return Err(anyhow!(
+        bail!(
             "Unsupported dockerComposeFile reference: {value}. Only local file paths are supported"
-        ));
+        );
     }
 
     Ok(())

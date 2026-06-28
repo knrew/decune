@@ -274,9 +274,9 @@ pub(super) fn write_cache_archive(
 
 fn verify_digest(content: &[u8], digest: &str) -> Result<()> {
     validate_oci_digest(digest)?;
-    let expected = digest
-        .strip_prefix("sha256:")
-        .expect("sha256 digest was validated");
+    let Some(expected) = digest.strip_prefix("sha256:") else {
+        bail!("Unsupported OCI digest algorithm: {digest}");
+    };
     let actual = hex_lower(&Sha256::digest(content));
     if actual != expected {
         bail!("Expected {digest}, got sha256:{actual}");
@@ -652,11 +652,11 @@ mod tests {
 
     impl OciRegistryClient for PanicRegistryClient {
         fn fetch_manifest(&self, _reference: &OciFeatureRef) -> Result<OciManifestResponse> {
-            panic!("manifest should not be fetched for cache hit");
+            bail!("manifest should not be fetched for cache hit");
         }
 
         fn fetch_blob(&self, _reference: &OciFeatureRef, _digest: &str) -> Result<Vec<u8>> {
-            panic!("blob should not be fetched for cache hit");
+            bail!("blob should not be fetched for cache hit");
         }
     }
 
@@ -675,7 +675,12 @@ mod tests {
 
         fn fetch_blob(&self, _reference: &OciFeatureRef, digest: &str) -> Result<Vec<u8>> {
             self.blob_calls.set(self.blob_calls.get() + 1);
-            assert_eq!(digest, self.manifest.layers[0].digest);
+            if digest != self.manifest.layers[0].digest {
+                bail!(
+                    "Unexpected OCI layer digest: got {digest}, expected {}",
+                    self.manifest.layers[0].digest
+                );
+            }
             Ok(self.blob.clone())
         }
     }

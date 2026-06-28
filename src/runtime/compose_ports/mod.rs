@@ -25,7 +25,7 @@ pub(crate) use startup_failure::classify_compose_published_port_startup_failure;
 pub(crate) use types::{
     ComposePortEligibility, ComposePortEntry, ComposePortHostIp, ComposePortProtocol,
     ComposePortSyntax, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
-    ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind, ComposePublishedPortPlan,
+    ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
     ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
     ComposePublishedPortPlanSource, ComposePublishedPortPlanningInput,
     ComposePublishedPortReservation, ComposePublishedPortStartupDiagnostics,

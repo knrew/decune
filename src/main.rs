@@ -1,17 +1,13 @@
 #![allow(
     clippy::cognitive_complexity,
-    clippy::expect_used,
     clippy::future_not_send,
-    clippy::get_unwrap,
     clippy::large_futures,
     clippy::large_stack_frames,
     clippy::mod_module_files,
     clippy::multiple_crate_versions,
     clippy::multiple_unsafe_ops_per_block,
-    clippy::panic_in_result_fn,
     clippy::too_many_lines,
     clippy::undocumented_unsafe_blocks,
-    clippy::unwrap_in_result,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 

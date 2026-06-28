@@ -633,7 +633,12 @@ mod tests {
 
     impl GitCredentialExecutor for RecordingGitCredentialExecutor {
         fn run(&self, command: GitCredentialCommand, input: &str) -> Result<String> {
-            self.calls.lock().unwrap().push((command, input.to_owned()));
+            self.calls
+                .lock()
+                .map_err(|error| {
+                    anyhow!("Git credential call recorder mutex was poisoned: {error}")
+                })?
+                .push((command, input.to_owned()));
             Ok(self.output.clone())
         }
     }

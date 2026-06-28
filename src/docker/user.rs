@@ -691,9 +691,9 @@ fn parse_docker_image_config_user(value: Option<&str>) -> Result<Option<DockerIm
     };
 
     let mut fields = raw.split(':');
-    let user = fields
-        .next()
-        .expect("split always returns the first field for a non-empty string");
+    let Some(user) = fields.next() else {
+        return Ok(None);
+    };
     let group = fields.next();
     if fields.next().is_some() {
         bail!("Docker image user must contain at most one group separator: {raw}");

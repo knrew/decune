@@ -3,7 +3,7 @@ use anyhow::{Context, Result};
 use crate::{
     docker::{client::DockerClient, container::ContainerInspect},
     runtime::compose_ports::{
-        ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
+        ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
         ComposePublishedPortReservation,
     },
     up::types::UpContainerSummary,
@@ -145,8 +145,7 @@ fn existing_compose_project_published_ports_from_container(
                 target_port,
                 protocol: protocol.clone(),
                 endpoint: ComposePublishedPortEndpoint {
-                    ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                    ip_value: Some(host_ip),
+                    host_ip: ComposePublishedPortHostIp::Explicit(host_ip),
                     host_port,
                 },
             });

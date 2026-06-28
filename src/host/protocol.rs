@@ -131,7 +131,7 @@ fn handle_credential_request(
 mod tests {
     use std::sync::Mutex;
 
-    use anyhow::Result;
+    use anyhow::{Result, anyhow};
     use serde_json::json;
 
     use super::handle_host_daemon_request;
@@ -162,10 +162,15 @@ mod tests {
 
     impl GitCredentialExecutor for RecordingGitCredentialExecutor {
         fn run(&self, command: GitCredentialCommand, input: &str) -> Result<String> {
-            self.calls.lock().unwrap().push((command, input.to_owned()));
+            self.calls
+                .lock()
+                .map_err(|error| {
+                    anyhow!("Git credential call recorder mutex was poisoned: {error}")
+                })?
+                .push((command, input.to_owned()));
             self.result
                 .lock()
-                .unwrap()
+                .map_err(|error| anyhow!("Git credential result mutex was poisoned: {error}"))?
                 .clone()
                 .map_err(anyhow::Error::msg)
         }

@@ -98,10 +98,11 @@ pub(crate) fn resolve_compose_container(
         0 => Err(anyhow!(
             "Docker Compose project {project_name} service `{service}` has no running container"
         )),
-        1 => Ok(containers
-            .into_iter()
-            .next()
-            .expect("container length checked before extraction")),
+        1 => containers.into_iter().next().ok_or_else(|| {
+            anyhow!(
+                "Docker Compose project {project_name} service `{service}` has no running container"
+            )
+        }),
         count => Err(anyhow!(
             "Docker Compose project {project_name} service `{service}` has {count} containers; expected exactly one"
         )),

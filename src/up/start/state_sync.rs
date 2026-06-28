@@ -7,7 +7,7 @@ use crate::{
     devcontainer::lifecycle::LifecycleRunPath,
     docker::{client::DockerClient, container::ContainerInspect},
     runtime::compose_ports::{
-        ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind, ComposePublishedPortPlan,
+        ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
         ComposePublishedPortPlanningInput, compose_published_port_runtime_plan,
     },
     state::{
@@ -146,7 +146,7 @@ pub(super) async fn sync_started_compose_state(
     let container = state_container_snapshot(plan, outcome.container_id.clone());
     let compose_project_name = state_compose_project_name(plan);
     let published_ports =
-        compose_published_port_runtime_state(client, plan, port_input, port_plan).await;
+        compose_published_port_runtime_state(client, plan, port_input, port_plan).await?;
     match lifecycle_path {
         LifecycleRunPath::New => {
             state::sync_state_with_container_and_compose_project_and_published_ports(
@@ -190,10 +190,11 @@ async fn compose_published_port_runtime_state(
     plan: &UpPlan,
     port_input: &ComposePublishedPortPlanningInput,
     port_plan: &ComposePublishedPortPlan,
-) -> Vec<PublishedPortRuntimeState> {
-    let runtime_plan = compose_published_port_runtime_plan(port_input, port_plan);
+) -> Result<Vec<PublishedPortRuntimeState>> {
+    let runtime_plan = compose_published_port_runtime_plan(port_input, port_plan)
+        .map_err(crate::runtime::compose_ports::ComposePublishedPortDiagnostic::from_plan_error)?;
     if runtime_plan.entries.is_empty() {
-        return Vec::new();
+        return Ok(Vec::new());
     }
     let containers = match plan
         .compose_project
@@ -208,7 +209,7 @@ async fn compose_published_port_runtime_state(
         None => Vec::new(),
     };
 
-    runtime_plan
+    Ok(runtime_plan
         .entries
         .into_iter()
         .map(|entry| {
@@ -233,7 +234,7 @@ async fn compose_published_port_runtime_state(
                 relocated: entry.requested.host_port != planned.host_port,
             }
         })
-        .collect()
+        .collect())
 }
 
 fn planned_endpoint_for_runtime_state(
@@ -250,12 +251,11 @@ fn planned_endpoint_for_runtime_state(
         .iter()
         .map(|binding| binding.host_port)
         .collect::<BTreeSet<_>>();
-    if distinct_ports.len() == 1 {
+    if distinct_ports.len() == 1
+        && let Some(host_port) = distinct_ports.iter().next()
+    {
         let mut planned = entry.planned.clone();
-        planned.host_port = *distinct_ports
-            .iter()
-            .next()
-            .expect("distinct port set is non-empty");
+        planned.host_port = *host_port;
         return planned;
     }
     entry.planned.clone()
@@ -332,11 +332,14 @@ fn published_port_endpoint_state(
     endpoint: &ComposePublishedPortEndpoint,
 ) -> PublishedPortEndpointState {
     PublishedPortEndpointState {
-        ip_kind: match endpoint.ip_kind {
-            ComposePublishedPortHostIpKind::Omitted => PublishedPortHostIpKind::Omitted,
-            ComposePublishedPortHostIpKind::Explicit => PublishedPortHostIpKind::Explicit,
+        ip_kind: match &endpoint.host_ip {
+            ComposePublishedPortHostIp::Omitted => PublishedPortHostIpKind::Omitted,
+            ComposePublishedPortHostIp::Explicit(_) => PublishedPortHostIpKind::Explicit,
         },
-        ip_value: endpoint.ip_value.clone(),
+        ip_value: match &endpoint.host_ip {
+            ComposePublishedPortHostIp::Omitted => None,
+            ComposePublishedPortHostIp::Explicit(value) => Some(value.clone()),
+        },
         host_port: endpoint.host_port,
     }
 }

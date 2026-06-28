@@ -1155,7 +1155,7 @@ mod tests {
 
         let hashed = build_args_for_hash(&args, &["TOKEN".to_owned()]);
 
-        let token = hashed.get("TOKEN").unwrap();
+        let token = &hashed["TOKEN"];
         assert!(token.starts_with("<localEnv-derived-build-arg-sha256:"));
         assert!(!token.contains("secret-token"));
         assert_eq!(hashed.get("VARIANT").map(String::as_str), Some("bookworm"));
@@ -1164,7 +1164,7 @@ mod tests {
             &BTreeMap::from([("TOKEN".to_owned(), "other-secret".to_owned())]),
             &["TOKEN".to_owned()],
         );
-        assert_ne!(token, changed.get("TOKEN").unwrap());
+        assert_ne!(token, &changed["TOKEN"]);
     }
 
     fn legacy_hash_without_compose_files_field(input: &ConfigHashInput<'_>) -> String {

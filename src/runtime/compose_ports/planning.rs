@@ -15,7 +15,7 @@ use crate::{
 
 use super::endpoint::{
     endpoint_for_entry, host_ip_display_value, protocol_order, requested_host_port,
-    reservation_host_ip,
+    reservation_host_ip, target_port_for_entry,
 };
 
 #[derive(Debug)]
@@ -29,6 +29,11 @@ pub(crate) enum ComposePublishedPortPlanError {
         host_ip: String,
         host_port: u16,
         source: anyhow::Error,
+    },
+    InconsistentEntry {
+        service: String,
+        port_entry_index: usize,
+        detail: String,
     },
 }
 
@@ -51,6 +56,14 @@ impl std::fmt::Display for ComposePublishedPortPlanError {
             } => write!(
                 formatter,
                 "Failed to check Compose published port availability for {host_ip}:{host_port}: {source:#}"
+            ),
+            Self::InconsistentEntry {
+                service,
+                port_entry_index,
+                detail,
+            } => write!(
+                formatter,
+                "Internal Compose published port invariant failed for service `{service}` port entry {port_entry_index}: {detail}"
             ),
         }
     }
@@ -92,7 +105,8 @@ where
     let mut plan_entries = Vec::new();
 
     for entry in ordered_eligible_port_entries(input) {
-        let requested = endpoint_for_entry(entry);
+        let requested = endpoint_for_entry(entry)?;
+        let target_port = target_port_for_entry(entry)?;
         let requested_host_ip = reservation_host_ip(&requested);
         let requested_reserved =
             host_port_reservations_conflict(&reservations, requested_host_ip, requested.host_port);
@@ -135,8 +149,7 @@ where
             (planned_host_port, allocation_reason)
         };
         let planned = ComposePublishedPortEndpoint {
-            ip_kind: requested.ip_kind,
-            ip_value: requested.ip_value.clone(),
+            host_ip: requested.host_ip.clone(),
             host_port: planned_host_port,
         };
         reservations.push(HostPortReservation {
@@ -150,9 +163,7 @@ where
             port_entry_index: entry.entry_index,
             source: ComposePublishedPortPlanSource::Compose,
             kind: ComposePublishedPortPlanEntryType::Published,
-            target_port: entry
-                .target_port
-                .expect("eligible Compose published port entry has target port"),
+            target_port,
             protocol: entry.protocol.clone(),
             requested,
             planned,
@@ -173,40 +184,39 @@ pub(crate) fn compose_published_port_plan_has_relocations(plan: &ComposePublishe
 pub(crate) fn compose_published_port_runtime_plan(
     input: &ComposePublishedPortPlanningInput,
     planned: &ComposePublishedPortPlan,
-) -> ComposePublishedPortPlan {
+) -> std::result::Result<ComposePublishedPortPlan, ComposePublishedPortPlanError> {
     let planned_entries = planned
         .entries
         .iter()
         .map(|entry| ((entry.service.as_str(), entry.port_entry_index), entry))
         .collect::<BTreeMap<_, _>>();
-    let entries = input
+    let mut entries = Vec::new();
+    for entry in input
         .port_entries
         .iter()
         .filter(|entry| entry.eligibility == ComposePortEligibility::EligibleFixedTcp)
-        .map(|entry| {
-            if let Some(planned) = planned_entries.get(&(entry.service.as_str(), entry.entry_index))
-            {
-                return (*planned).clone();
-            }
-            let requested = endpoint_for_entry(entry);
-            ComposePublishedPortPlanEntry {
-                service: entry.service.clone(),
-                port_entry_index: entry.entry_index,
-                source: ComposePublishedPortPlanSource::Compose,
-                kind: ComposePublishedPortPlanEntryType::Published,
-                target_port: entry
-                    .target_port
-                    .expect("eligible Compose published port entry has target port"),
-                protocol: entry.protocol.clone(),
-                requested: requested.clone(),
-                planned: requested,
-                relocated: false,
-                allocation_reason: ComposePublishedPortAllocationReason::Available,
-            }
-        })
-        .collect();
+    {
+        let requested = endpoint_for_entry(entry)?;
+        let target_port = target_port_for_entry(entry)?;
+        if let Some(planned) = planned_entries.get(&(entry.service.as_str(), entry.entry_index)) {
+            entries.push((*planned).clone());
+            continue;
+        }
+        entries.push(ComposePublishedPortPlanEntry {
+            service: entry.service.clone(),
+            port_entry_index: entry.entry_index,
+            source: ComposePublishedPortPlanSource::Compose,
+            kind: ComposePublishedPortPlanEntryType::Published,
+            target_port,
+            protocol: entry.protocol.clone(),
+            requested: requested.clone(),
+            planned: requested,
+            relocated: false,
+            allocation_reason: ComposePublishedPortAllocationReason::Available,
+        });
+    }
 
-    ComposePublishedPortPlan { entries }
+    Ok(ComposePublishedPortPlan { entries })
 }
 
 pub(super) fn ordered_eligible_port_entries(
@@ -280,8 +290,7 @@ where
         let reserved =
             host_port_reservations_conflict(reservations, reservation_host_ip, candidate);
         let endpoint = ComposePublishedPortEndpoint {
-            ip_kind: requested.ip_kind,
-            ip_value: requested.ip_value.clone(),
+            host_ip: requested.host_ip.clone(),
             host_port: candidate,
         };
         let available = if reserved {
@@ -327,8 +336,8 @@ mod tests {
 
     use super::*;
     use crate::runtime::compose_ports::{
-        ComposePortProtocol, ComposePublishedPortAllocationReason, ComposePublishedPortEndpoint,
-        ComposePublishedPortHostIpKind, ComposePublishedPortReservation,
+        ComposePortProtocol, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
+        ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortReservation,
         test_support::{forward_port, plan_with_availability, planning_input},
     };
 
@@ -439,8 +448,80 @@ mod tests {
                 assert_eq!(port_entry_index, 0);
                 assert_eq!(requested.host_port, u16::MAX);
             }
-            ComposePublishedPortPlanError::HostPortAvailability { .. } => {
+            ComposePublishedPortPlanError::HostPortAvailability { .. }
+            | ComposePublishedPortPlanError::InconsistentEntry { .. } => {
                 panic!("expected no-candidate error")
+            }
+        }
+    }
+
+    #[test]
+    fn planner_errors_on_inconsistent_eligible_entry() {
+        let mut input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        input.port_entries[0].published_host_port = ComposePublishedHostPort::None;
+
+        let error = plan_compose_published_ports_with(&input, true, &[], &[], |_, _| Ok(true))
+            .expect_err("inconsistent eligible entry must fail");
+
+        match error {
+            ComposePublishedPortPlanError::InconsistentEntry {
+                service,
+                port_entry_index,
+                detail,
+            } => {
+                assert_eq!(service, "app");
+                assert_eq!(port_entry_index, 0);
+                assert!(detail.contains("published host port"));
+            }
+            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            | ComposePublishedPortPlanError::HostPortAvailability { .. }) => {
+                panic!("expected inconsistent entry error, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_plan_errors_on_inconsistent_eligible_entry() {
+        let mut input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        input.port_entries[0].target_port = None;
+
+        let error =
+            compose_published_port_runtime_plan(&input, &ComposePublishedPortPlan::default())
+                .expect_err("inconsistent eligible entry must fail");
+
+        match error {
+            ComposePublishedPortPlanError::InconsistentEntry {
+                service,
+                port_entry_index,
+                detail,
+            } => {
+                assert_eq!(service, "app");
+                assert_eq!(port_entry_index, 0);
+                assert!(detail.contains("target port"));
+            }
+            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            | ComposePublishedPortPlanError::HostPortAvailability { .. }) => {
+                panic!("expected inconsistent entry error, got {other:?}")
             }
         }
     }
@@ -463,8 +544,7 @@ mod tests {
             target_port: 3000,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint {
-                ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                ip_value: Some("127.0.0.1".to_owned()),
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                 host_port: u16::MAX,
             },
         }];
@@ -504,8 +584,7 @@ mod tests {
             target_port: 3000,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint {
-                ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                ip_value: Some("127.0.0.1".to_owned()),
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                 host_port: 3000,
             },
         }];
@@ -545,8 +624,7 @@ mod tests {
             target_port: 3000,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint {
-                ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                ip_value: Some("127.0.0.1".to_owned()),
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                 host_port: 3001,
             },
         }];
@@ -586,8 +664,7 @@ mod tests {
             target_port: 3000,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint {
-                ip_kind: ComposePublishedPortHostIpKind::Explicit,
-                ip_value: Some("127.0.0.1".to_owned()),
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                 host_port: u16::MAX,
             },
         }];
@@ -628,19 +705,17 @@ mod tests {
         let plan = plan_with_availability(&input, &[3000, 3001, 3002]);
 
         assert_eq!(
-            plan.entries[0].planned.ip_kind,
-            ComposePublishedPortHostIpKind::Omitted
-        );
-        assert_eq!(plan.entries[0].planned.ip_value, None);
-        assert_eq!(
-            plan.entries[1].planned.ip_kind,
-            ComposePublishedPortHostIpKind::Explicit
+            plan.entries[0].planned.host_ip,
+            ComposePublishedPortHostIp::Omitted
         );
         assert_eq!(
-            plan.entries[1].planned.ip_value.as_deref(),
-            Some("127.0.0.1")
+            plan.entries[1].planned.host_ip,
+            ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned())
         );
-        assert_eq!(plan.entries[2].planned.ip_value.as_deref(), Some("0.0.0.0"));
+        assert_eq!(
+            plan.entries[2].planned.host_ip,
+            ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned())
+        );
     }
 
     #[test]

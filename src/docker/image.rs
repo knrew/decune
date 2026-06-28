@@ -337,10 +337,10 @@ fn metadata_value_to_layer(
 }
 
 async fn pull_image(client: &DockerClient, image: &str) -> Result<()> {
-    let spinner = ui::spinner(&format!("Pulling Docker image: {image}"));
+    let spinner = ui::spinner(&format!("Pulling Docker image: {image}"))?;
     let output = client.cli().pull(image).await?;
     drop(output);
-    spinner.finish(&format!("Pulled Docker image: {image}"));
+    spinner.finish(&format!("Pulled Docker image: {image}"))?;
     Ok(())
 }
 

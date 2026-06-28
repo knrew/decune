@@ -4,6 +4,7 @@ use std::{
     time::Duration,
 };
 
+use anyhow::{Context, Result};
 use console::{Style, style};
 use indicatif::{ProgressBar, ProgressStyle};
 
@@ -121,15 +122,11 @@ pub(crate) fn finished(message: &str, elapsed: Duration) {
     }
 }
 
-pub(crate) fn spinner(message: &str) -> Spinner {
+pub(crate) fn spinner(message: &str) -> Result<Spinner> {
     if is_tty() {
         let (action, detail) = split_action(message);
         let pb = ProgressBar::new_spinner();
-        pb.set_style(
-            ProgressStyle::default_spinner()
-                .template("{prefix:>12.green.bold}  {msg} {spinner}")
-                .expect("valid spinner template"),
-        );
+        pb.set_style(progress_style("{prefix:>12.green.bold}  {msg} {spinner}")?);
         if action.is_empty() {
             pb.set_prefix("Info");
             pb.set_message(message.to_owned());
@@ -138,14 +135,14 @@ pub(crate) fn spinner(message: &str) -> Spinner {
             pb.set_message(detail.to_owned());
         }
         pb.enable_steady_tick(Duration::from_millis(80));
-        Spinner {
+        Ok(Spinner {
             inner: Some(SpinnerInner::Tty(pb)),
-        }
+        })
     } else {
         write_plain("Info", message);
-        Spinner {
+        Ok(Spinner {
             inner: Some(SpinnerInner::Plain),
-        }
+        })
     }
 }
 
@@ -159,26 +156,18 @@ enum SpinnerInner {
 }
 
 impl Spinner {
-    pub(crate) fn finish(mut self, done_message: &str) {
+    pub(crate) fn finish(mut self, done_message: &str) -> Result<()> {
         match self.inner.take() {
             Some(SpinnerInner::Tty(pb)) => {
                 let (action, detail) = split_action(done_message);
                 if action.is_empty() {
                     let done_line = format!("{done_message}  {}", style("✓").green());
-                    pb.set_style(
-                        ProgressStyle::default_spinner()
-                            .template("{prefix:>12.green.bold}  {msg}")
-                            .expect("valid template"),
-                    );
+                    pb.set_style(progress_style("{prefix:>12.green.bold}  {msg}")?);
                     pb.set_prefix("Done");
                     pb.finish_with_message(done_line);
                 } else {
                     let done_line = format!("{detail}  {}", style("✓").green());
-                    pb.set_style(
-                        ProgressStyle::default_spinner()
-                            .template("{prefix:>12.green.bold}  {msg}")
-                            .expect("valid template"),
-                    );
+                    pb.set_style(progress_style("{prefix:>12.green.bold}  {msg}")?);
                     pb.set_prefix(action.to_owned());
                     pb.finish_with_message(done_line);
                 }
@@ -188,7 +177,14 @@ impl Spinner {
             }
             None => {}
         }
+        Ok(())
     }
+}
+
+fn progress_style(template: &str) -> Result<ProgressStyle> {
+    ProgressStyle::default_spinner()
+        .template(template)
+        .with_context(|| format!("Failed to create progress spinner template: {template}"))
 }
 
 impl Drop for Spinner {
@@ -230,7 +226,7 @@ mod tests {
             inner: Some(SpinnerInner::Tty(pb)),
         };
 
-        spinner.finish("Done building");
+        spinner.finish("Done building").unwrap();
 
         assert!(weak.upgrade().is_none());
     }

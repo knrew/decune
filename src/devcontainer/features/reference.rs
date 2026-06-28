@@ -128,9 +128,12 @@ pub(super) fn parse_oci_feature_ref(value: &str) -> Result<OciFeatureRef> {
         .rfind('/')
         .ok_or_else(|| invalid_feature_ref(value, "missing repository or feature id"))?;
     let (repository, feature_id) = path.split_at(last_slash);
-    let feature_id = feature_id
-        .strip_prefix('/')
-        .expect("feature path slash was found");
+    let Some(feature_id) = feature_id.strip_prefix('/') else {
+        return Err(invalid_feature_ref(
+            value,
+            "missing repository or feature id",
+        ));
+    };
 
     if registry.is_empty()
         || repository.is_empty()
@@ -307,9 +310,12 @@ fn validate_oci_feature_ipv6_registry(value: &str, registry: &str) -> Result<()>
         return Err(invalid_feature_ref(value, "registry IPv6 host is invalid"));
     }
 
-    let rest = after_host
-        .strip_prefix(']')
-        .expect("registry IPv6 host closing bracket was found");
+    let Some(rest) = after_host.strip_prefix(']') else {
+        return Err(invalid_feature_ref(
+            value,
+            "registry IPv6 host must be enclosed in brackets",
+        ));
+    };
     if rest.is_empty() {
         return Ok(());
     }

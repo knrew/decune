@@ -95,9 +95,7 @@ impl DockerignoreRule {
 
         let negated = line.starts_with('!');
         if negated {
-            line = line
-                .strip_prefix('!')
-                .expect("negated dockerignore rule starts with '!'");
+            line = line.strip_prefix('!')?;
             line = line.trim_start();
         }
 
@@ -224,9 +222,9 @@ fn split_tar_name(path: &str) -> Result<(&str, Option<&str>)> {
 
     for index in path.match_indices('/').map(|(index, _)| index).rev() {
         let (prefix, name) = path.split_at(index);
-        let name = name
-            .strip_prefix('/')
-            .expect("tar path separator was found");
+        let Some(name) = name.strip_prefix('/') else {
+            continue;
+        };
         if prefix.len() <= 155 && name.len() <= 100 {
             return Ok((name, Some(prefix)));
         }
