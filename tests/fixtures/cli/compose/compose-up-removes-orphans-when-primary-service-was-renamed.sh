@@ -11,7 +11,7 @@ if [ "${1:-}" = compose ]; then
       exit 0
       ;;
     *" up -d "*)
-      printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+      printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
       exit 0
       ;;
     *" ps --format json app "*)

@@ -4,12 +4,15 @@ if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; the
   # shellcheck disable=SC1090
   . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
 fi
-printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" down "*)
       case " $* " in
-        *" --rmi "*) echo "compose down must not remove user images" >&2; exit 44 ;;
+        *" --rmi "*)
+          echo "compose down must not remove user images" >&2
+          exit 44
+          ;;
       esac
       exit 0
       ;;

@@ -35,12 +35,12 @@ if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
   esac
 fi
 if [ "${1:-}" = stop ]; then
-  printf 'docker %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+  printf 'docker %s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
   exit 0
 fi
 if [ "${1:-}" = rm ]; then
-  printf 'docker %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
-  : > "$DECUNE_FAKE_REMOVED_MARKER"
+  printf 'docker %s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
+  : >"$DECUNE_FAKE_REMOVED_MARKER"
   exit 0
 fi
 if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
@@ -50,7 +50,7 @@ if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
   exit 0
 fi
 if [ "${1:-}" = volume ] && [ "${2:-}" = rm ]; then
-  printf 'docker %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+  printf 'docker %s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
   exit 0
 fi
 if [ "${1:-}" = network ] && [ "${2:-}" = ls ]; then
@@ -60,7 +60,7 @@ if [ "${1:-}" = network ] && [ "${2:-}" = ls ]; then
   exit 0
 fi
 if [ "${1:-}" = network ] && [ "${2:-}" = rm ]; then
-  printf 'docker %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+  printf 'docker %s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
   exit 0
 fi
 echo "unexpected fake docker command: $*" >&2

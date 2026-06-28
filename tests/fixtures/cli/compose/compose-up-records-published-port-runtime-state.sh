@@ -12,7 +12,7 @@ if [ "${1:-}" = compose ]; then
       exit 0
       ;;
     *" up -d "*)
-      : > "$DECUNE_FAKE_UP_MARKER"
+      : >"$DECUNE_FAKE_UP_MARKER"
       exit 0
       ;;
     *" ps --format json app "*)

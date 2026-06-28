@@ -32,7 +32,7 @@ if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
   esac
 fi
 if [ "${1:-}" = stop ]; then
-  printf 'docker %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+  printf 'docker %s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
   exit 0
 fi
 echo "unexpected fake docker command: $*" >&2

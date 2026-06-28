@@ -7,7 +7,7 @@ fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" down "*)
-      printf 'compose down\n' >> "$DECUNE_FAKE_COMMAND_LOG"
+      printf 'compose down\n' >>"$DECUNE_FAKE_COMMAND_LOG"
       exit 0
       ;;
   esac
@@ -18,7 +18,7 @@ if [ "${1:-}" = ps ]; then
     count=$(cat "$DECUNE_FAKE_PS_COUNT")
   fi
   count=$((count + 1))
-  printf '%s' "$count" > "$DECUNE_FAKE_PS_COUNT"
+  printf '%s' "$count" >"$DECUNE_FAKE_PS_COUNT"
   if [ "$count" -eq 1 ]; then
     exit 0
   fi
@@ -30,11 +30,11 @@ if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
   exit 0
 fi
 if [ "${1:-}" = stop ]; then
-  printf 'docker %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+  printf 'docker %s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
   exit 0
 fi
 if [ "${1:-}" = rm ]; then
-  printf 'docker %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+  printf 'docker %s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
   exit 0
 fi
 if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then

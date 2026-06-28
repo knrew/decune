@@ -4,7 +4,7 @@ if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; the
   # shellcheck disable=SC1090
   . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
 fi
-printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)

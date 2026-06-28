@@ -4,7 +4,7 @@ if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; the
   # shellcheck disable=SC1090
   . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
 fi
-printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
@@ -33,7 +33,7 @@ if [ "${1:-}" = compose ]; then
         previous=$argument
       done
       test -n "$generated_override"
-      cat "$generated_override" > "$DECUNE_FAKE_OVERRIDE_LOG"
+      cat "$generated_override" >"$DECUNE_FAKE_OVERRIDE_LOG"
       exit 0
       ;;
     *" ps --format json app "*)
@@ -48,7 +48,10 @@ if [ "${1:-}" = build ]; then
       echo "Generated Feature build must not receive --pull: $*" >&2
       exit 43
       ;;
-    *"--tag decune/"*"--no-cache"*) cat >/dev/null; exit 0 ;;
+    *"--tag decune/"*"--no-cache"*)
+      cat >/dev/null
+      exit 0
+      ;;
   esac
   echo "Feature build did not receive --no-cache: $*" >&2
   exit 43

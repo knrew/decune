@@ -4,7 +4,7 @@ if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; the
   # shellcheck disable=SC1090
   . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
 fi
-printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
@@ -33,7 +33,7 @@ if [ "${1:-}" = exec ]; then
     *" printf post-start"*)
       exit 0
       ;;
-    *" printf post-attach"*|*" /usr/local/bin/decune-shell"*)
+    *" printf post-attach"* | *" /usr/local/bin/decune-shell"*)
       echo "detached up must not run attach lifecycle or shell" >&2
       exit 43
       ;;

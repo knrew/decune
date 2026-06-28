@@ -5,7 +5,7 @@ if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; the
   . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
 fi
 if [ "${1:-}" = compose ]; then
-  printf 'compose %s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
+  printf 'compose %s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
   case " $* " in
     *" config --format json "*)
       printf '{"services":{"app":{"image":"alpine:3.20"}}}\n'

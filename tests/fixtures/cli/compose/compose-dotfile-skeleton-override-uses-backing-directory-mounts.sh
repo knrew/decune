@@ -22,7 +22,7 @@ if [ "${1:-}" = compose ]; then
         previous=$argument
       done
       test -n "$generated_override"
-      cat "$generated_override" > "$DECUNE_FAKE_OVERRIDE_LOG"
+      cat "$generated_override" >"$DECUNE_FAKE_OVERRIDE_LOG"
       exit 0
       ;;
     *" ps --format json app "*)
