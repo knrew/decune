@@ -43,18 +43,7 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
             ",
         )
         .unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
     let workspace_id = workspace_id(&workspace_root);
     let runtime_dir = runtime_home.join("decune").join(&workspace_id);
@@ -164,6 +153,14 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
     }
 }
 
+fn fake_gh_token_path(host_tools: &support::TempWorkspace) -> std::ffi::OsString {
+    fake_gh_path(host_tools, "cli/fake-bin/gh-auth-token.sh")
+}
+
+fn fake_gh_token_file_path(host_tools: &support::TempWorkspace) -> std::ffi::OsString {
+    fake_gh_path(host_tools, "cli/fake-bin/gh-auth-token-file.sh")
+}
+
 #[test]
 fn up_detach_does_not_run_remote_profile_as_root_during_github_cli_setup() {
     let workspace = support::TempWorkspace::new().unwrap();
@@ -230,18 +227,7 @@ fn up_detach_does_not_run_remote_profile_as_root_during_github_cli_setup() {
             ",
         )
         .unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -361,18 +347,7 @@ fn up_detach_uses_remote_user_login_path_for_github_cli_setup() {
             ",
         )
         .unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -451,18 +426,7 @@ fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_aut
     workspace
         .write_file(".devcontainer/build-state", "ok\n")
         .unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -590,18 +554,7 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
             ",
         )
         .unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -718,18 +671,7 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
             ",
         )
         .unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -813,17 +755,11 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
             ",
         )
         .unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
+    let fake_path = fake_gh_token_path(&host_tools);
+    let gh_bin = host_tools.path().join("bin");
     let empty_path = empty_tools.create_dir("bin").unwrap();
-    symlink_host_executable_into_path("docker", gh_path.parent().unwrap());
+    symlink_host_executable_into_path("docker", &gh_bin);
     symlink_host_executable_into_path("docker", &empty_path);
-    let fake_path = gh_path.parent().unwrap().display().to_string();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -942,18 +878,7 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
         chmod +x /usr/local/bin/gh
         "#,
     );
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1073,18 +998,7 @@ fn up_detach_reuses_auto_added_github_cli_feature_container_when_source_tag_is_r
         chmod +x /usr/local/bin/gh
         "#,
     );
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1193,18 +1107,7 @@ fn up_detach_reuses_github_cli_source_container_when_source_tag_is_removed() {
         "sha256:4444444444444444444444444444444444444444444444444444444444444444",
         "#!/bin/sh\nset -eu\necho 'github-cli Feature should not be installed' >&2\nexit 72\n",
     );
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1340,18 +1243,7 @@ fn up_detach_detects_github_cli_from_container_env_path_before_auto_adding_featu
         "sha256:2222222222222222222222222222222222222222222222222222222222222222",
         "#!/bin/sh\nset -eu\necho 'github-cli Feature should not be installed' >&2\nexit 72\n",
     );
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1456,18 +1348,7 @@ fn up_detach_expands_container_env_remote_user_home_path_before_github_cli_probe
         "sha256:3333333333333333333333333333333333333333333333333333333333333333",
         "#!/bin/sh\nset -eu\necho 'github-cli Feature should not be installed' >&2\nexit 72\n",
     );
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then printf 'github-test-secret\\n'; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_path(&host_tools);
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
@@ -1564,18 +1445,7 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
         .write_file("expected-token", "first-secret\n")
         .unwrap();
     let host_token_path = host_tools.write_file("token", "first-secret\n").unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then cat \"$DECUNE_TEST_GH_TOKEN_FILE\"; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_file_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -1710,18 +1580,7 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
         .write_file("expected-token", "first-secret\n")
         .unwrap();
     let host_token_path = host_tools.write_file("token", "first-secret\n").unwrap();
-    let gh_path = host_tools
-        .write_file(
-            "bin/gh",
-            "#!/bin/sh\nif [ \"$1\" = auth ] && [ \"$2\" = token ]; then cat \"$DECUNE_TEST_GH_TOKEN_FILE\"; exit 0; fi\nexit 91\n",
-        )
-        .unwrap();
-    fs::set_permissions(&gh_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        gh_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_gh_token_file_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

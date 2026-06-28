@@ -62,18 +62,7 @@ fn up_detach_copies_host_git_user_config_when_https_is_off() {
             "#,
         )
         .unwrap();
-    let git_path = host_tools
-        .write_file(
-            "bin/git",
-            "#!/bin/sh\nif [ \"$1\" = config ] && [ \"$2\" = --global ] && [ \"$3\" = --get ]; then case \"$4\" in user.name) printf 'Octo User\\n'; exit 0 ;; user.email) printf 'octo@example.test\\n'; exit 0 ;; esac; fi\nexit 1\n",
-        )
-        .unwrap();
-    fs::set_permissions(&git_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        git_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_git_path(&host_tools, "cli/fake-bin/git-global-user.sh");
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -175,18 +164,7 @@ fn up_detach_copies_host_git_user_config_when_helper_setup_fails() {
             ",
         )
         .unwrap();
-    let git_path = host_tools
-        .write_file(
-            "bin/git",
-            "#!/bin/sh\nif [ \"$1\" = config ] && [ \"$2\" = --global ] && [ \"$3\" = --get ]; then case \"$4\" in user.name) printf 'Octo User\\n'; exit 0 ;; user.email) printf 'octo@example.test\\n'; exit 0 ;; esac; fi\nexit 1\n",
-        )
-        .unwrap();
-    fs::set_permissions(&git_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        git_path.parent().unwrap().display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_git_path(&host_tools, "cli/fake-bin/git-global-user.sh");
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()

@@ -1,4 +1,4 @@
-use std::{fs, io, net::TcpListener, path::Path, process::Command, thread, time::Duration};
+use std::{fs, net::TcpListener, path::Path, process::Command, thread, time::Duration};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -75,28 +75,6 @@ impl Drop for ComposeRegistryFixture {
     }
 }
 
-fn fake_container_tools_bundle(workspace: &ComposeFixtureWorkspace) -> PathBuf {
-    workspace
-        .workspace
-        .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")
-        .must();
-    workspace
-        .workspace
-        .write_file(
-            "container-tools/linux-amd64/git-credential-decune",
-            b"helper",
-        )
-        .must();
-    workspace
-        .workspace
-        .write_file(
-            "container-tools/manifest.json",
-            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
-        )
-        .must();
-    workspace.path().join("container-tools")
-}
-
 #[test]
 fn compose_integration_plugin_detection_runs_when_tools_are_available() {
     assert_eq!(
@@ -170,7 +148,7 @@ fn compose_integration_reuses_running_compose_project_with_published_port_reloca
     drop(listener);
 
     let workspace = compose_published_primary_workspace(u16::MAX);
-    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
         .args(["up", "--detach", "--published-port-relocation"])
@@ -219,8 +197,8 @@ fn compose_integration_default_published_port_collision_fails_without_relocation
     drop(requested_listener);
     let first = compose_published_primary_workspace(requested_port);
     let second = compose_published_primary_workspace(requested_port);
-    let first_container_tools_dir = fake_container_tools_bundle(&first);
-    let second_container_tools_dir = fake_container_tools_bundle(&second);
+    let first_container_tools_dir = fake_container_tools_bundle(&first.workspace);
+    let second_container_tools_dir = fake_container_tools_bundle(&second.workspace);
 
     decune()
         .args(["up", "--detach"])
@@ -261,8 +239,8 @@ fn compose_integration_published_port_relocation_starts_second_workspace_and_rep
     drop(requested_listener);
     let first = compose_published_primary_workspace(requested_port);
     let second = compose_published_primary_workspace(requested_port);
-    let first_container_tools_dir = fake_container_tools_bundle(&first);
-    let second_container_tools_dir = fake_container_tools_bundle(&second);
+    let first_container_tools_dir = fake_container_tools_bundle(&first.workspace);
+    let second_container_tools_dir = fake_container_tools_bundle(&second.workspace);
 
     decune()
         .args(["up", "--detach"])
@@ -364,7 +342,7 @@ fn compose_integration_published_port_relocation_replaces_original_binding() {
     let devcontainer_file = workspace.path().join(".devcontainer/devcontainer.json");
     let original_compose = fs::read_to_string(&compose_file).unwrap();
     let original_devcontainer = fs::read_to_string(&devcontainer_file).unwrap();
-    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
         .args(["up", "--detach", "--published-port-relocation"])
@@ -407,7 +385,7 @@ fn compose_integration_published_port_relocation_preserves_host_ip_and_long_synt
     let devcontainer_file = workspace.path().join(".devcontainer/devcontainer.json");
     let original_compose = fs::read_to_string(&compose_file).unwrap();
     let original_devcontainer = fs::read_to_string(&devcontainer_file).unwrap();
-    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
         .args(["up", "--detach", "--published-port-relocation"])
@@ -461,7 +439,7 @@ fn compose_integration_sidecar_published_port_relocation_uses_docker_binding() {
     };
     let requested_port = requested_listener.local_addr().unwrap().port();
     let workspace = compose_published_sidecar_workspace(requested_port);
-    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
         .args(["up", "--detach", "--published-port-relocation"])
@@ -505,7 +483,7 @@ fn compose_integration_dependency_published_port_relocation_uses_compose_active_
     };
     let requested_port = requested_listener.local_addr().unwrap().port();
     let workspace = compose_published_dependency_workspace(requested_port);
-    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
         .args(["up", "--detach", "--published-port-relocation"])
@@ -550,8 +528,8 @@ fn compose_integration_profile_published_port_relocation_follows_active_service_
     let requested_port = requested_listener.local_addr().unwrap().port();
     let inactive = compose_profile_published_workspace(requested_port, false);
     let active = compose_profile_published_workspace(requested_port, true);
-    let inactive_container_tools_dir = fake_container_tools_bundle(&inactive);
-    let active_container_tools_dir = fake_container_tools_bundle(&active);
+    let inactive_container_tools_dir = fake_container_tools_bundle(&inactive.workspace);
+    let active_container_tools_dir = fake_container_tools_bundle(&active.workspace);
 
     decune()
         .args(["up", "--detach", "--published-port-relocation"])
@@ -871,7 +849,7 @@ fn compose_integration_rejects_reuse_when_compose_env_interpolation_changes() {
     let workspace = compose_fixture_workspace("env-interpolation");
     let state_home = support::TempWorkspace::new().unwrap();
     let state_home_value = state_home.path().to_string_lossy().into_owned();
-    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     let first = decune()
         .args(["up", "--detach"])
@@ -1172,7 +1150,9 @@ fn compose_fixture_workspace(name: &str) -> ComposeFixtureWorkspace {
     }
 
     let workspace = support::TempWorkspace::new().must();
-    copy_dir_contents(&compose_fixture_path(name), workspace.path()).must();
+    workspace
+        .copy_fixture_dir(Path::new("compose").join(name))
+        .must();
     ComposeFixtureWorkspace { workspace }
 }
 
@@ -1459,30 +1439,6 @@ fn reserved_localhost_port_block_with_room(
     })
 }
 
-fn copy_dir_contents(source: &Path, destination: &Path) -> io::Result<()> {
-    for entry in fs::read_dir(source)? {
-        let entry = entry?;
-        let source_path = entry.path();
-        let destination_path = destination.join(entry.file_name());
-        let file_type = entry.file_type()?;
-
-        if file_type.is_dir() {
-            fs::create_dir_all(&destination_path)?;
-            copy_dir_contents(&source_path, &destination_path)?;
-        } else if file_type.is_symlink() {
-            let target = fs::read_link(&source_path)?;
-            std::os::unix::fs::symlink(target, &destination_path)?;
-        } else if fs::metadata(&source_path)?.is_file() {
-            if let Some(parent) = destination_path.parent() {
-                fs::create_dir_all(parent)?;
-            }
-            fs::copy(&source_path, &destination_path)?;
-        }
-    }
-
-    Ok(())
-}
-
 fn compose_pull_registry_workspace() -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
@@ -1557,12 +1513,6 @@ fn compose_pull_dependency_registry_workspace() -> ComposeFixtureWorkspace {
     rewrite_compose_dependency_images(workspace.path(), &app_image, &db_image);
 
     ComposeFixtureWorkspace { workspace }
-}
-
-fn compose_fixture_path(name: &str) -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("tests/fixtures/compose")
-        .join(name)
 }
 
 fn compose_integration_readiness() -> ComposeIntegrationDecision {
