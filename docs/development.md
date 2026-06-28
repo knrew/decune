@@ -42,7 +42,6 @@ Git 情報を取得できない source build では `+source` suffix を付け�
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-features --all-targets
-bash .github/scripts/lint_sh_bash.sh
 NPM_CONFIG_CACHE=/tmp/decune-npm-cache npx -y markdownlint-cli2@0.22.1 --config .markdownlint.yaml README.md AGENTS.md docs/*.md
 ```
 
@@ -53,6 +52,27 @@ Shell script formatting は `.editorconfig` の shell 用設定を `shfmt` が�
 ```sh
 cargo test -p decune <module_or_test_name>
 ```
+
+## テスト fixture 管理
+
+テストで使う長い shell script、TOML、JSON、YAML、Dockerfile は、原則として `tests/fixtures` 配下に置き、test 実行時に読み込みます。新規の test fixture に `include_str!` / `include_bytes!` は使いません。
+
+配置は用途別に揃えます。
+
+- `tests/fixtures` 配下の shell fixture の directory/file 名は `kebab-case` に揃える。
+- Docker Compose integration 用 workspace fixture は `tests/fixtures/compose/` に置く。
+- CLI harness 共通 fixture は `tests/fixtures/cli/harness/` に置く。
+- 複数 test で使う fake `docker` / `gh` / `git` / `curl` などは `tests/fixtures/cli/fake-bin/` に置く。
+- module 固有の長い fake command は `tests/fixtures/cli/<module>/<case>.sh` に置く。
+- 複数 file で構成される CLI workspace fixture は `tests/fixtures/cli/workspaces/<module>/<case>/` に置く。
+
+test から fixture を読む場合は `tests/support/support.rs` の helper を使います。fixture path と temporary workspace path は absolute path と `..` を拒否します。temporary workspace へ fixture を置く場合は `TempWorkspace::copy_fixture_dir`、`TempWorkspace::write_fixture_file`、`TempWorkspace::write_fixture_template`、`TempWorkspace::write_executable_fixture` を使ってください。
+
+CLI test で fake host command を `PATH` に置く場合は、module-local helper を増やさず `tests/cli/harness.rs` の `fake_command_path`、`fake_docker_path`、`fake_path_with_commands` などを使います。
+
+Runtime 値が必要な fixture では `__HOST_PORT__` のような placeholder を置き、`write_fixture_template` で展開します。placeholder を指定したのに fixture 内に存在しない場合は test helper が失敗します。数行だけの異常系入力、assert の近くにある方が意図を読みやすい marker/config は inline のままでも構いません。
+
+動的に `source` する必要がある箇所だけ、該当行の直前に `# shellcheck disable=SC1090` を付けます。Git 上の shell fixture は通常 `100644` のままにし、実行が必要な test では `TempWorkspace::write_executable_fixture` で temporary workspace 側に `0755` として書き出します。
 
 ## Docker を使う検証
 

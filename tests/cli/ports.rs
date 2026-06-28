@@ -38,7 +38,7 @@ fn ports_json_reports_no_active_host_ports() {
 #[test]
 fn ports_all_reports_no_active_host_ports() {
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-ports.sh");
     let roots = ports_roots(&temp);
 
     decune()
@@ -57,7 +57,7 @@ fn ports_all_reports_no_active_host_ports() {
 #[test]
 fn ports_all_json_reports_no_active_host_ports() {
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-ports.sh");
     let roots = ports_roots(&temp);
 
     decune()
@@ -81,12 +81,14 @@ fn ports_reports_relocated_compose_published_port() {
     let workspace_id = workspace_id(&workspace_root);
     let roots = ports_roots(&temp);
     write_relocated_compose_state(&roots, &workspace_id, &workspace_root, 3000, 3001);
-    let fake_path = fake_compose_published_port_docker_path(&temp, &workspace_id, 3001);
+    let fake_path = fake_docker_path(&temp, "cli/ports/compose-published-port.sh");
 
     decune()
         .args(["ports"])
         .arg(&workspace_root)
         .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_WORKSPACE_ID", &workspace_id)
+        .env("DECUNE_FAKE_PLANNED_PORT", "3001")
         .env("XDG_STATE_HOME", &roots.state)
         .env("XDG_CACHE_HOME", &roots.cache)
         .env("XDG_CONFIG_HOME", &roots.config)
@@ -114,12 +116,14 @@ fn ports_json_reports_relocated_compose_published_port_metadata() {
     let workspace_id = workspace_id(&workspace_root);
     let roots = ports_roots(&temp);
     write_relocated_compose_state(&roots, &workspace_id, &workspace_root, 3000, 3001);
-    let fake_path = fake_compose_published_port_docker_path(&temp, &workspace_id, 3001);
+    let fake_path = fake_docker_path(&temp, "cli/ports/compose-published-port.sh");
 
     decune()
         .args(["ports", "--json"])
         .arg(&workspace_root)
         .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_WORKSPACE_ID", &workspace_id)
+        .env("DECUNE_FAKE_PLANNED_PORT", "3001")
         .env("XDG_STATE_HOME", &roots.state)
         .env("XDG_CACHE_HOME", &roots.cache)
         .env("XDG_CONFIG_HOME", &roots.config)
@@ -171,28 +175,6 @@ fn ports_roots(temp: &support::TempWorkspace) -> PortsRoots {
         config: temp.create_dir("config").must(),
         runtime: temp.create_dir("runtime").must(),
     }
-}
-
-fn fake_empty_docker_path(temp: &support::TempWorkspace) -> String {
-    let bin_dir = temp.create_dir("bin").must();
-    let docker_path = bin_dir.join("docker");
-    fs::write(
-        &docker_path,
-        r#"#!/bin/sh
-case "$*" in
-  "ps --all --filter label=decune.managed=true --format json") exit 0 ;;
-esac
-echo "unexpected fake docker command: $*" >&2
-exit 64
-"#,
-    )
-    .must();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).must();
-    format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
 }
 
 fn write_relocated_compose_state(
@@ -247,46 +229,6 @@ host_port = {planned_port}
         ),
     )
     .must();
-}
-
-fn fake_compose_published_port_docker_path(
-    temp: &support::TempWorkspace,
-    workspace_id: &str,
-    planned_port: u16,
-) -> String {
-    let bin_dir = temp.create_dir("bin").must();
-    let docker_path = bin_dir.join("docker");
-    fs::write(
-        &docker_path,
-        format!(
-            r#"#!/bin/sh
-set -eu
-project="decune-test-{workspace_id}"
-case "$*" in
-  *"ps --all"*"label=decune.managed=true"*"label=decune.workspace_id={workspace_id}"*"--format json"*)
-    exit 0
-    ;;
-  *"ps --all"*"label=com.docker.compose.project=$project"*"--format json"*)
-    printf '{{"ID":"compose-web-id"}}\n'
-    exit 0
-    ;;
-  "container inspect compose-web-id")
-    printf '[{{"Id":"compose-web-id","Name":"/compose-web-1","Config":{{"Labels":{{"com.docker.compose.project":"%s","com.docker.compose.service":"web"}}}},"State":{{"Running":true}},"NetworkSettings":{{"Ports":{{"3000/tcp":[{{"HostIp":"0.0.0.0","HostPort":"%s"}},{{"HostIp":"::","HostPort":"%s"}}]}}}}}}]\n' "$project" "{planned_port}" "{planned_port}"
-    exit 0
-    ;;
-esac
-echo "unexpected fake docker command: $*" >&2
-exit 64
-"#
-        ),
-    )
-    .must();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).must();
-    format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
 }
 
 #[test]

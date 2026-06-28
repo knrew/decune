@@ -10,7 +10,7 @@ const WORKSPACE_B_ID: &str = "bbbbbbbbbbbb";
 #[test]
 fn status_reports_no_managed_workspace_environments() {
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
 
     decune()
@@ -36,7 +36,7 @@ fn status_workspace_reports_not_created() {
         )
         .unwrap();
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
 
     decune()
@@ -85,7 +85,7 @@ create = "directory"
         .unwrap();
     let source = workspace.path().join("generated/cache");
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
 
     let output = decune()
@@ -130,7 +130,7 @@ fn status_workspace_detail_reports_issue_codes_severities_and_all_actions() {
         )
         .unwrap();
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
 
     let output = decune()
@@ -162,7 +162,7 @@ fn status_workspace_detail_reports_issue_codes_severities_and_all_actions() {
 #[test]
 fn status_summary_reports_state_workspaces_sorted_by_path() {
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
     let workspace_b = temp.create_dir("workspace-b").unwrap();
     let workspace_a = temp.create_dir("workspace-a").unwrap();
@@ -199,7 +199,7 @@ fn status_summary_reports_state_workspaces_sorted_by_path() {
 #[test]
 fn status_summary_does_not_fallback_last_used_to_created_or_started() {
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
     let workspace = temp.create_dir("workspace").unwrap();
     write_state(&roots, WORKSPACE_A_ID, &workspace, None);
@@ -228,7 +228,7 @@ fn status_summary_does_not_fallback_last_used_to_created_or_started() {
 #[test]
 fn status_summary_reports_corrupt_state_without_removing_it() {
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
     let state_dir = roots.state.join("decune").join(WORKSPACE_A_ID);
     fs::create_dir_all(&state_dir).unwrap();
@@ -263,7 +263,7 @@ fn status_summary_reports_corrupt_state_without_removing_it() {
 #[test]
 fn status_summary_reports_active_forwarded_port_count() {
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
     let workspace = temp.create_dir("workspace").unwrap();
     write_state(&roots, WORKSPACE_A_ID, &workspace, None);
@@ -293,7 +293,7 @@ fn status_summary_reports_active_forwarded_port_count() {
 fn status_workspace_without_devcontainer_metadata_is_an_error() {
     let workspace = support::TempWorkspace::new().unwrap();
     let temp = support::TempWorkspace::new().unwrap();
-    let fake_path = fake_empty_docker_path(&temp);
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-status.sh");
     let roots = status_roots(&temp);
 
     decune()
@@ -391,29 +391,4 @@ fn fake_forward_status_server(roots: &StatusRoots, workspace_id: &str) -> thread
             )
             .must();
     })
-}
-
-fn fake_empty_docker_path(temp: &support::TempWorkspace) -> String {
-    let bin_dir = temp.create_dir("bin").must();
-    let docker_path = bin_dir.join("docker");
-    fs::write(
-        &docker_path,
-        r#"#!/bin/sh
-case "$*" in
-  "ps --all --filter label=decune.managed=true --format json") exit 0 ;;
-  "ps --all --filter label=decune.managed=true --filter label=decune.workspace_id="*" --format json") exit 0 ;;
-  "volume ls --filter label=decune.managed=true --format {{.Name}}") exit 0 ;;
-  "volume ls --filter label=decune.managed=true --filter label=decune.workspace_id="*" --format {{.Name}}") exit 0 ;;
-esac
-echo "unexpected fake docker command: $*" >&2
-exit 64
-"#,
-    )
-    .must();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).must();
-    format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
 }

@@ -1,24 +1,5 @@
 use crate::harness::*;
 
-fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {
-    workspace
-        .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")
-        .must();
-    workspace
-        .write_file(
-            "container-tools/linux-amd64/git-credential-decune",
-            b"helper",
-        )
-        .must();
-    workspace
-        .write_file(
-            "container-tools/manifest.json",
-            r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
-        )
-        .must();
-    workspace.path().join("container-tools")
-}
-
 #[test]
 fn down_and_remove_manage_image_container() {
     let workspace = support::TempWorkspace::new().unwrap();
@@ -513,36 +494,12 @@ fn remove_images_removes_workspace_images_only_when_requested() {
 #[test]
 fn remove_all_workspaces_no_targets_succeeds_without_confirmation() {
     let temp = support::TempWorkspace::new().unwrap();
-    let bin_dir = temp.path().join("bin");
     let state_home = temp.path().join("state");
     let runtime_home = temp.path().join("runtime");
     let command_log = temp.path().join("docker.log");
-    fs::create_dir_all(&bin_dir).unwrap();
     fs::create_dir_all(&state_home).unwrap();
     fs::create_dir_all(&runtime_home).unwrap();
-    let docker_path = bin_dir.join("docker");
-    fs::write(
-        &docker_path,
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
-if [ "${1:-}" = ps ]; then
-  exit 0
-fi
-if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
-  exit 0
-fi
-echo "unexpected fake docker command: $*" >&2
-exit 91
-"#,
-    )
-    .unwrap();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_docker_path(&temp, "cli/remove/all-workspaces-no-targets.sh");
 
     decune()
         .env("PATH", &fake_path)
@@ -561,78 +518,16 @@ exit 91
 #[test]
 fn remove_all_workspaces_ignores_invalid_workspace_id_labels() {
     let temp = support::TempWorkspace::new().unwrap();
-    let bin_dir = temp.path().join("bin");
     let state_home = temp.path().join("state");
     let runtime_home = temp.path().join("runtime");
     let victim_state_dir = state_home.join("victim");
     let victim_runtime_dir = runtime_home.join("victim");
     let command_log = temp.path().join("docker.log");
-    fs::create_dir_all(&bin_dir).unwrap();
     fs::create_dir_all(&victim_state_dir).unwrap();
     fs::create_dir_all(&victim_runtime_dir).unwrap();
     fs::write(victim_state_dir.join("marker"), "keep\n").unwrap();
     fs::write(victim_runtime_dir.join("marker"), "keep\n").unwrap();
-    let docker_path = bin_dir.join("docker");
-    fs::write(
-        &docker_path,
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
-
-if [ "${1:-}" = ps ]; then
-  case "$*" in
-    *"label=decune.managed=true"*)
-      printf '{"ID":"invalid-container"}\n'
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
-  shift 2
-  case "$*" in
-    "invalid-container")
-      printf '[{"Id":"invalid-container","Name":"/invalid","Config":{"Labels":{"decune.managed":"true","decune.workspace_id":"../victim","decune.workspace":"/work/invalid"}},"State":{"Running":true}}]\n'
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
-  case "$*" in
-    *"label=decune.managed=true"*)
-      printf 'invalid-volume\n'
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ]; then
-  printf '[{"Name":"invalid-volume","Labels":{"decune.managed":"true","decune.workspace_id":"../victim"}}]\n'
-  exit 0
-fi
-
-if [ "${1:-}" = stop ]; then
-  exit 0
-fi
-if [ "${1:-}" = rm ]; then
-  exit 0
-fi
-if [ "${1:-}" = volume ] && [ "${2:-}" = rm ]; then
-  exit 0
-fi
-
-echo "unexpected fake docker command: $*" >&2
-exit 91
-"#,
-    )
-    .unwrap();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_docker_path(&temp, "cli/remove/invalid-workspace-id-labels.sh");
 
     decune()
         .env("PATH", &fake_path)
@@ -663,7 +558,6 @@ exit 91
 #[test]
 fn remove_all_workspaces_ignores_invalid_state_directory_workspace_ids() {
     let temp = support::TempWorkspace::new().unwrap();
-    let bin_dir = temp.path().join("bin");
     let state_home = temp.path().join("state");
     let runtime_home = temp.path().join("runtime");
     let invalid_workspace_id = "not-a-workspace";
@@ -671,7 +565,6 @@ fn remove_all_workspaces_ignores_invalid_state_directory_workspace_ids() {
     let invalid_runtime_dir = runtime_home.join("decune").join(invalid_workspace_id);
     let state_workspace = temp.path().join("state-workspace");
     let command_log = temp.path().join("docker.log");
-    fs::create_dir_all(&bin_dir).unwrap();
     fs::create_dir_all(&invalid_state_dir).unwrap();
     fs::create_dir_all(&invalid_runtime_dir).unwrap();
     fs::create_dir_all(&state_workspace).unwrap();
@@ -693,54 +586,7 @@ last_started_at = "unix:1"
         ),
     )
     .unwrap();
-    let docker_path = bin_dir.join("docker");
-    fs::write(
-        &docker_path,
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
-
-if [ "${1:-}" = ps ]; then
-  case "$*" in
-    *"label=decune.managed=true"*)
-      exit 0
-      ;;
-    *"label=com.docker.compose.project=user-owned"*)
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
-  case "$*" in
-    *"label=decune.managed=true"*)
-      exit 0
-      ;;
-    *"label=com.docker.compose.project=user-owned"*)
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = network ] && [ "${2:-}" = ls ]; then
-  case "$*" in
-    *"label=com.docker.compose.project=user-owned"*)
-      exit 0
-      ;;
-  esac
-fi
-
-echo "unexpected fake docker command: $*" >&2
-exit 91
-"#,
-    )
-    .unwrap();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_docker_path(&temp, "cli/remove/invalid-state-directory-workspace-ids.sh");
 
     decune()
         .env("PATH", &fake_path)
@@ -770,7 +616,6 @@ exit 91
 #[test]
 fn remove_all_workspaces_no_confirm_removes_owned_resources_and_images() {
     let temp = support::TempWorkspace::new().unwrap();
-    let bin_dir = temp.path().join("bin");
     let state_home = temp.path().join("state");
     let runtime_home = temp.path().join("runtime");
     let command_log = temp.path().join("docker.log");
@@ -778,7 +623,6 @@ fn remove_all_workspaces_no_confirm_removes_owned_resources_and_images() {
     let state_workspace_id = "123456abcdef";
     let state_dir = state_home.join("decune").join(state_workspace_id);
     let runtime_dir = runtime_home.join("decune").join(state_workspace_id);
-    fs::create_dir_all(&bin_dir).unwrap();
     fs::create_dir_all(&state_dir).unwrap();
     fs::create_dir_all(&runtime_dir).unwrap();
     fs::create_dir_all(&state_workspace).unwrap();
@@ -798,124 +642,7 @@ last_started_at = "unix:1"
         ),
     )
     .unwrap();
-    let docker_path = bin_dir.join("docker");
-    fs::write(
-        &docker_path,
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-printf '%s\n' "$*" >> "$DECUNE_FAKE_COMMAND_LOG"
-
-if [ "${1:-}" = ps ]; then
-  case "$*" in
-    *"label=decune.managed=true"*)
-      printf '{"ID":"standalone-id"}\n'
-      printf '{"ID":"compose-primary-id"}\n'
-      exit 0
-      ;;
-    *"label=com.docker.compose.project=compose-owned"*)
-      printf '{"ID":"compose-primary-id"}\n'
-      printf '{"ID":"compose-sidecar-id"}\n'
-      exit 0
-      ;;
-    *"label=com.docker.compose.project=state-owned"*)
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
-  shift 2
-  case "$*" in
-    "standalone-id compose-primary-id")
-      printf '[{"Id":"standalone-id","Name":"/standalone","Config":{"Labels":{"decune.managed":"true","decune.workspace_id":"aaaaaaaaaaaa","decune.workspace":"/work/standalone-one"}},"State":{"Running":true}},{"Id":"compose-primary-id","Name":"/compose-owned-app-1","Config":{"Labels":{"decune.managed":"true","decune.workspace_id":"bbbbbbbbbbbb","decune.workspace":"/work/compose-one","com.docker.compose.project":"compose-owned","com.docker.compose.service":"app"}},"State":{"Running":true}}]\n'
-      exit 0
-      ;;
-    "compose-primary-id compose-sidecar-id")
-      printf '[{"Id":"compose-primary-id","Name":"/compose-owned-app-1","Config":{"Labels":{"decune.managed":"true","decune.workspace_id":"bbbbbbbbbbbb","com.docker.compose.project":"compose-owned"}},"State":{"Running":true}},{"Id":"compose-sidecar-id","Name":"/compose-owned-db-1","Config":{"Labels":{"com.docker.compose.project":"compose-owned","com.docker.compose.service":"db"}},"State":{"Running":false}}]\n'
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
-  case "$*" in
-    *"label=decune.managed=true"*)
-      printf 'standalone-volume\n'
-      exit 0
-      ;;
-    *"label=com.docker.compose.project=compose-owned"*)
-      printf 'compose-volume\n'
-      exit 0
-      ;;
-    *"label=com.docker.compose.project=state-owned"*)
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ]; then
-  printf '[{"Name":"standalone-volume","Labels":{"decune.managed":"true","decune.workspace_id":"aaaaaaaaaaaa"}}]\n'
-  exit 0
-fi
-
-if [ "${1:-}" = network ] && [ "${2:-}" = ls ]; then
-  case "$*" in
-    *"label=com.docker.compose.project=compose-owned"*)
-      printf 'compose-network\n'
-      exit 0
-      ;;
-    *"label=com.docker.compose.project=state-owned"*)
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${1:-}" = image ] && [ "${2:-}" = ls ]; then
-  reference="${@: -1}"
-  case "$reference" in
-    decune/standalone-one-aaaaaaaaaaaa:*)
-      printf '{"Repository":"decune/standalone-one-aaaaaaaaaaaa","Tag":"hash1"}\n'
-      exit 0
-      ;;
-    decune/compose-one-bbbbbbbbbbbb:*)
-      printf '{"Repository":"decune/compose-one-bbbbbbbbbbbb","Tag":"hash2"}\n'
-      exit 0
-      ;;
-    decune/state-workspace-123456abcdef:*)
-      printf '{"Repository":"decune/state-workspace-123456abcdef","Tag":"statehash"}\n'
-      exit 0
-      ;;
-  esac
-  exit 0
-fi
-
-if [ "${1:-}" = stop ]; then
-  exit 0
-fi
-if [ "${1:-}" = rm ]; then
-  exit 0
-fi
-if [ "${1:-}" = volume ] && [ "${2:-}" = rm ]; then
-  exit 0
-fi
-if [ "${1:-}" = network ] && [ "${2:-}" = rm ]; then
-  exit 0
-fi
-if [ "${1:-}" = image ] && [ "${2:-}" = rm ]; then
-  exit 0
-fi
-
-echo "unexpected fake docker command: $*" >&2
-exit 91
-"#,
-    )
-    .unwrap();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
-    let fake_path = format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
+    let fake_path = fake_docker_path(&temp, "cli/remove/owned-resources-and-images.sh");
 
     decune()
         .env("PATH", &fake_path)

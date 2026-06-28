@@ -10,7 +10,7 @@ fn clean_dry_run_json_reports_stale_workspace_without_removing_it() {
     let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
     paths.create_workspace_data();
     paths.create_feature_cache();
-    let fake_path = fake_docker_path(&temp, fake_docker_no_managed());
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-clean.sh");
 
     let output = decune()
         .env("PATH", &fake_path)
@@ -46,7 +46,7 @@ fn clean_no_confirm_removes_stale_workspace_and_keeps_feature_cache_by_default()
     let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
     paths.create_workspace_data();
     paths.create_feature_cache();
-    let fake_path = fake_docker_path(&temp, fake_docker_no_managed());
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-clean.sh");
 
     decune()
         .env("PATH", &fake_path)
@@ -73,7 +73,7 @@ fn clean_include_feature_cache_adds_shared_feature_cache_target() {
     let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
     paths.create_workspace_data();
     paths.create_feature_cache();
-    let fake_path = fake_docker_path(&temp, fake_docker_no_managed());
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-clean.sh");
 
     decune()
         .env("PATH", &fake_path)
@@ -99,7 +99,7 @@ fn clean_without_no_confirm_fails_non_interactive_before_removal() {
     let temp = support::TempWorkspace::new().unwrap();
     let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
     paths.create_workspace_data();
-    let fake_path = fake_docker_path(&temp, fake_docker_no_managed());
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-clean.sh");
 
     decune()
         .env("PATH", &fake_path)
@@ -124,10 +124,11 @@ fn clean_skips_workspace_with_reusable_managed_resource() {
     let temp = support::TempWorkspace::new().unwrap();
     let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
     paths.create_workspace_data();
-    let fake_path = fake_docker_path(&temp, fake_docker_with_managed_container(WORKSPACE_ID));
+    let fake_path = fake_docker_path(&temp, "cli/clean/managed-container.sh");
 
     decune()
         .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_WORKSPACE_ID", WORKSPACE_ID)
         .env("XDG_CACHE_HOME", &paths.cache_home)
         .env("XDG_STATE_HOME", &paths.state_home)
         .env("XDG_RUNTIME_DIR", &paths.runtime_home)
@@ -147,16 +148,13 @@ fn clean_revalidates_managed_resource_before_removal() {
     let temp = support::TempWorkspace::new().unwrap();
     let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
     paths.create_workspace_data();
-    let fake_path = fake_docker_path(
-        &temp,
-        fake_docker_becomes_managed_on_second_discovery(
-            WORKSPACE_ID,
-            &temp.path().join("ps-count"),
-        ),
-    );
+    let count_file = temp.path().join("ps-count");
+    let fake_path = fake_docker_path(&temp, "cli/clean/becomes-managed-on-second-discovery.sh");
 
     let output = decune()
         .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_WORKSPACE_ID", WORKSPACE_ID)
+        .env("DECUNE_FAKE_COUNT_FILE", &count_file)
         .env("XDG_CACHE_HOME", &paths.cache_home)
         .env("XDG_STATE_HOME", &paths.state_home)
         .env("XDG_RUNTIME_DIR", &paths.runtime_home)
@@ -184,7 +182,7 @@ fn clean_dry_run_human_output_keeps_workspace_data() {
     let temp = support::TempWorkspace::new().unwrap();
     let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
     paths.create_workspace_data();
-    let fake_path = fake_docker_path(&temp, fake_docker_no_managed());
+    let fake_path = fake_docker_path(&temp, "cli/fake-bin/docker-empty-clean.sh");
 
     decune()
         .env("PATH", &fake_path)
@@ -245,102 +243,4 @@ impl CleanTestPaths {
         fs::create_dir_all(&self.feature_cache_dir).must();
         fs::write(self.feature_cache_dir.join("archive.tgz"), "archive\n").must();
     }
-}
-
-fn fake_docker_path(temp: &support::TempWorkspace, content: String) -> String {
-    let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&bin_dir).must();
-    let docker_path = bin_dir.join("docker");
-    fs::write(&docker_path, content).must();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).must();
-    format!(
-        "{}:{}",
-        bin_dir.display(),
-        std::env::var("PATH").unwrap_or_default()
-    )
-}
-
-fn fake_docker_no_managed() -> String {
-    r#"#!/usr/bin/env bash
-set -euo pipefail
-
-if [ "${1:-}" = ps ]; then
-  exit 0
-fi
-if [ "${1:-}" = volume ] && [ "${2:-}" = ls ]; then
-  exit 0
-fi
-
-echo "unexpected fake docker command: $*" >&2
-exit 91
-"#
-    .to_owned()
-}
-
-fn fake_docker_with_managed_container(workspace_id: &str) -> String {
-    format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-
-if [ "${{1:-}}" = ps ]; then
-  case "$*" in
-    *"label=decune.managed=true"*)
-      printf '{{"ID":"managed-container"}}\n'
-      exit 0
-      ;;
-  esac
-fi
-
-if [ "${{1:-}}" = container ] && [ "${{2:-}}" = inspect ]; then
-  printf '[{{"Id":"managed-container","Name":"/managed","Config":{{"Labels":{{"decune.managed":"true","decune.workspace_id":"{workspace_id}"}}}},"State":{{"Running":true}}}}]\n'
-  exit 0
-fi
-
-if [ "${{1:-}}" = volume ] && [ "${{2:-}}" = ls ]; then
-  exit 0
-fi
-
-echo "unexpected fake docker command: $*" >&2
-exit 91
-"#
-    )
-}
-
-fn fake_docker_becomes_managed_on_second_discovery(
-    workspace_id: &str,
-    count_file: &std::path::Path,
-) -> String {
-    format!(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-
-count_file='{count_file}'
-
-if [ "${{1:-}}" = ps ]; then
-  count=0
-  if [ -f "$count_file" ]; then
-    count="$(cat "$count_file")"
-  fi
-  count=$((count + 1))
-  printf '%s\n' "$count" > "$count_file"
-  if [ "$count" -ge 2 ]; then
-    printf '{{"ID":"managed-container"}}\n'
-  fi
-  exit 0
-fi
-
-if [ "${{1:-}}" = container ] && [ "${{2:-}}" = inspect ]; then
-  printf '[{{"Id":"managed-container","Name":"/managed","Config":{{"Labels":{{"decune.managed":"true","decune.workspace_id":"{workspace_id}"}}}},"State":{{"Running":true}}}}]\n'
-  exit 0
-fi
-
-if [ "${{1:-}}" = volume ] && [ "${{2:-}}" = ls ]; then
-  exit 0
-fi
-
-echo "unexpected fake docker command: $*" >&2
-exit 91
-"#,
-        count_file = count_file.display()
-    )
 }
