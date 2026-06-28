@@ -166,15 +166,15 @@ struct PortsRoots {
 
 fn ports_roots(temp: &support::TempWorkspace) -> PortsRoots {
     PortsRoots {
-        state: temp.create_dir("state").unwrap(),
-        cache: temp.create_dir("cache").unwrap(),
-        config: temp.create_dir("config").unwrap(),
-        runtime: temp.create_dir("runtime").unwrap(),
+        state: temp.create_dir("state").must(),
+        cache: temp.create_dir("cache").must(),
+        config: temp.create_dir("config").must(),
+        runtime: temp.create_dir("runtime").must(),
     }
 }
 
 fn fake_empty_docker_path(temp: &support::TempWorkspace) -> String {
-    let bin_dir = temp.create_dir("bin").unwrap();
+    let bin_dir = temp.create_dir("bin").must();
     let docker_path = bin_dir.join("docker");
     fs::write(
         &docker_path,
@@ -186,8 +186,8 @@ echo "unexpected fake docker command: $*" >&2
 exit 64
 "#,
     )
-    .unwrap();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    .must();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).must();
     format!(
         "{}:{}",
         bin_dir.display(),
@@ -203,7 +203,7 @@ fn write_relocated_compose_state(
     planned_port: u16,
 ) {
     let state_dir = roots.state.join("decune").join(workspace_id);
-    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(&state_dir).must();
     fs::write(
         state_dir.join("state.toml"),
         format!(
@@ -246,7 +246,7 @@ host_port = {planned_port}
             workspace_root.display()
         ),
     )
-    .unwrap();
+    .must();
 }
 
 fn fake_compose_published_port_docker_path(
@@ -254,7 +254,7 @@ fn fake_compose_published_port_docker_path(
     workspace_id: &str,
     planned_port: u16,
 ) -> String {
-    let bin_dir = temp.create_dir("bin").unwrap();
+    let bin_dir = temp.create_dir("bin").must();
     let docker_path = bin_dir.join("docker");
     fs::write(
         &docker_path,
@@ -280,8 +280,8 @@ exit 64
 "#
         ),
     )
-    .unwrap();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    .must();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).must();
     format!(
         "{}:{}",
         bin_dir.display(),
@@ -806,8 +806,8 @@ fn up_detach_warns_when_app_port_has_no_host_ip() {
 }
 
 fn available_host_port() -> u16 {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    listener.local_addr().unwrap().port()
+    let listener = TcpListener::bind(("127.0.0.1", 0)).must();
+    listener.local_addr().must().port()
 }
 
 fn available_host_port_in_range(start: u16, end: u16) -> u16 {
@@ -817,7 +817,9 @@ fn available_host_port_in_range(start: u16, end: u16) -> u16 {
             return port;
         }
     }
-    panic!("no available host port in range {start}..{end}");
+    test_fail(format_args!(
+        "no available host port in range {start}..{end}"
+    ));
 }
 
 fn wait_for_forwarded_http_response(host_port: u16) -> Result<(), String> {

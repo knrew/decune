@@ -1,80 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-    sync::atomic::{AtomicU64, Ordering},
-};
-
-use anyhow::{Context, Result};
-use serde_json::Value as JsonValue;
-
-use crate::{
-    config::{
-        ComposeGeneratedOverrideHashInput, ConfigHashInput, ConfigLayer, StartupCommandHashInput,
-        canonical::{CanonicalWriter, sha256_hex},
-        config_hash,
-        layer::LayerFeature,
-        resolve_config,
-        resolved::{ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes},
-        types::{GitHttpsMode, GithubCredentialsMode, MountType, SshAgentMode},
-        variables::expand_container_env_tracked,
-    },
-    devcontainer::features::{prepare_feature_install_plan, remove_feature_lock_file},
-    docker::{
-        build::build_hash_input,
-        client::DockerClient,
-        container::{ContainerCreateSpec, ContainerHostConfig, create_container, start_container},
-        image::{
-            ImageStartupCommand, LocalImagePresence, PullPolicy, ensure_image,
-            image_devcontainer_metadata_layers_if_present_with_forward_ports,
-            image_devcontainer_metadata_layers_with_forward_ports, image_startup_command,
-            local_image_presence, remove_image, tag_image,
-        },
-        mounts::{DockerMountSpec, devcontainer_mount_type},
-        resource::DockerResources,
-        user::{
-            EffectiveUserResolveInput, HostPlatform, current_host_user_ids, image_config_user,
-            resolve_effective_users_from_image, resolve_effective_users_with_compose_service_user,
-            resolve_remote_user_from_image, resolve_uid_gid_sync_plan_from_image,
-        },
-    },
-    host::credentials::host_github_auth_token_available,
-    runtime::{
-        compose_cli::ComposeConfigService,
-        compose_ports::{
-            ComposePublishedPortDiagnostic, ComposePublishedPortOverride, ComposePublishedPortPlan,
-            ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
-            compose_published_port_override, plan_compose_published_ports_with_existing_project,
-        },
-    },
-    ui,
-    up::{
-        build::{
-            build_feature_layer_image, build_workspace_image_layers,
-            plan_requires_final_image_layer, plan_requires_workspace_layer,
-            prepare_base_image_for_plan,
-        },
-        mounts::{
-            WorkspaceLocationValidation, mount_variable_context, resolve_workspace_location,
-            workspace_mount_plan_from_resolved,
-        },
-        plan::{
-            add_internal_hash_versions, base_image_source,
-            build_up_plan_with_forwarding_resolution,
-            build_up_plan_with_image_metadata_and_forwarding_resolution,
-            expand_runtime_devcontainer_fields, expand_static_plan_fields,
-            feature_lock_hash_inputs, final_image_source,
-            rebuild_up_plan_with_image_metadata_layers,
-        },
-        start::wait_for_container_exit_code,
-        types::{ForwardingResolution, MountResolution, UpPlan, UpPlanResolution},
-        uid_gid::{
-            effective_user_input_from_plan, effective_users_depend_on_image_config_user,
-            plan_requires_uid_gid_sync_layer, uid_gid_sync_hash_input,
-            uid_gid_sync_plan_requires_layer, uid_gid_sync_warning,
-        },
-    },
-    workspace::Workspace,
-};
+use std::sync::atomic::AtomicU64;
 
 const GITHUB_CLI_FEATURE_REF: &str = "ghcr.io/devcontainers/features/github-cli:1";
 const GITHUB_CLI_FEATURE_CANONICAL_ID: &str = "ghcr.io/devcontainers/features/github-cli";
@@ -110,25 +34,30 @@ use startup_command::startup_command_hash_input;
 
 #[cfg(test)]
 mod tests {
-    use std::fs;
+    use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use super::*;
     use crate::{
         config::{
             ConfigHashInput, ConfigLayer, ConfigMergeInput, config_hash,
             layer::{LayerDevcontainerCompose, LayerRunArg},
+            resolved::{ResolvedConfig, ResolvedDevcontainerSource},
             types::PortProtocol,
         },
         docker::{
             build::DockerBuildOptions,
+            image::ImageStartupCommand,
             ports::ResolvedForwardPort,
             resource::DockerResources,
             user::{EffectiveUsers, UidGidSyncPlan},
         },
+        runtime::compose_cli::ComposeConfigService,
         runtime::compose_ports::{
-            classify_compose_published_ports, compose_published_port_planning_input,
+            ComposePublishedPortOverride, classify_compose_published_ports,
+            compose_published_port_planning_input,
         },
         up::{plan::build_up_plan, types::UpPlan},
+        workspace::Workspace,
     };
 
     struct EnvVarGuard {

@@ -233,26 +233,26 @@ impl CleanTestPaths {
     }
 
     fn create_workspace_data(&self) {
-        fs::create_dir_all(&self.cache_dir).unwrap();
-        fs::create_dir_all(&self.state_dir).unwrap();
-        fs::create_dir_all(&self.runtime_dir).unwrap();
-        fs::write(self.cache_dir.join("cache-marker"), "cache\n").unwrap();
-        fs::write(self.state_dir.join("state-marker"), "state\n").unwrap();
-        fs::write(self.runtime_dir.join("runtime-marker"), "runtime\n").unwrap();
+        fs::create_dir_all(&self.cache_dir).must();
+        fs::create_dir_all(&self.state_dir).must();
+        fs::create_dir_all(&self.runtime_dir).must();
+        fs::write(self.cache_dir.join("cache-marker"), "cache\n").must();
+        fs::write(self.state_dir.join("state-marker"), "state\n").must();
+        fs::write(self.runtime_dir.join("runtime-marker"), "runtime\n").must();
     }
 
     fn create_feature_cache(&self) {
-        fs::create_dir_all(&self.feature_cache_dir).unwrap();
-        fs::write(self.feature_cache_dir.join("archive.tgz"), "archive\n").unwrap();
+        fs::create_dir_all(&self.feature_cache_dir).must();
+        fs::write(self.feature_cache_dir.join("archive.tgz"), "archive\n").must();
     }
 }
 
 fn fake_docker_path(temp: &support::TempWorkspace, content: String) -> String {
     let bin_dir = temp.path().join("bin");
-    fs::create_dir_all(&bin_dir).unwrap();
+    fs::create_dir_all(&bin_dir).must();
     let docker_path = bin_dir.join("docker");
-    fs::write(&docker_path, content).unwrap();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(&docker_path, content).must();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).must();
     format!(
         "{}:{}",
         bin_dir.display(),

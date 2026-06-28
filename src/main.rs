@@ -1,8 +1,5 @@
 #![allow(
     clippy::cognitive_complexity,
-    clippy::future_not_send,
-    clippy::large_futures,
-    clippy::large_stack_frames,
     clippy::mod_module_files,
     clippy::multiple_crate_versions,
     clippy::multiple_unsafe_ops_per_block,

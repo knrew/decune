@@ -321,10 +321,10 @@ struct StatusRoots {
 
 fn status_roots(temp: &support::TempWorkspace) -> StatusRoots {
     StatusRoots {
-        state: temp.create_dir("state").unwrap(),
-        cache: temp.create_dir("cache").unwrap(),
-        config: temp.create_dir("config").unwrap(),
-        runtime: temp.create_dir("runtime").unwrap(),
+        state: temp.create_dir("state").must(),
+        cache: temp.create_dir("cache").must(),
+        config: temp.create_dir("config").must(),
+        runtime: temp.create_dir("runtime").must(),
     }
 }
 
@@ -335,7 +335,7 @@ fn write_state(
     last_used_at: Option<&str>,
 ) {
     let state_dir = roots.state.join("decune").join(workspace_id);
-    fs::create_dir_all(&state_dir).unwrap();
+    fs::create_dir_all(&state_dir).must();
     let last_used = last_used_at
         .map(|value| format!("last_used_at = \"{value}\"\n"))
         .unwrap_or_default();
@@ -354,14 +354,16 @@ last_started_at = "unix:1"
             workspace.display()
         ),
     )
-    .unwrap();
+    .must();
 }
 
 fn status_row<'a>(output: &'a str, workspace_id: &str) -> &'a str {
     output
         .lines()
         .find(|line| line.starts_with(workspace_id))
-        .unwrap_or_else(|| panic!("missing status row for {workspace_id} in:\n{output}"))
+        .must_msg(format_args!(
+            "missing status row for {workspace_id} in:\n{output}"
+        ))
 }
 
 fn fake_forward_status_server(roots: &StatusRoots, workspace_id: &str) -> thread::JoinHandle<()> {
@@ -369,30 +371,30 @@ fn fake_forward_status_server(roots: &StatusRoots, workspace_id: &str) -> thread
         .runtime
         .join("decune")
         .join(format!("{workspace_id}-ports"));
-    fs::create_dir_all(&status_dir).unwrap();
+    fs::create_dir_all(&status_dir).must();
     let socket_name = "forward-status-test.sock";
     let socket_path = status_dir.join(socket_name);
-    let listener = UnixListener::bind(&socket_path).unwrap();
+    let listener = UnixListener::bind(&socket_path).must();
     fs::write(
         status_dir.join("forward-status-test.json"),
         format!(r#"{{"version":1,"session_id":"test","socket_name":"{socket_name}","pid":1}}"#),
     )
-    .unwrap();
+    .must();
 
     thread::spawn(move || {
-        let (mut stream, _) = listener.accept().unwrap();
+        let (mut stream, _) = listener.accept().must();
         let mut request = Vec::new();
-        stream.read_to_end(&mut request).unwrap();
+        stream.read_to_end(&mut request).must();
         stream
             .write_all(
                 br#"{"version":1,"ports":[{"host_ip":"127.0.0.1","host_port":3100,"requested_host_port":3000,"service":null,"container_port":3000,"protocol":"tcp","source":"configured","label":"web"}]}"#,
             )
-            .unwrap();
+            .must();
     })
 }
 
 fn fake_empty_docker_path(temp: &support::TempWorkspace) -> String {
-    let bin_dir = temp.create_dir("bin").unwrap();
+    let bin_dir = temp.create_dir("bin").must();
     let docker_path = bin_dir.join("docker");
     fs::write(
         &docker_path,
@@ -407,8 +409,8 @@ echo "unexpected fake docker command: $*" >&2
 exit 64
 "#,
     )
-    .unwrap();
-    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).unwrap();
+    .must();
+    fs::set_permissions(&docker_path, fs::Permissions::from_mode(0o755)).must();
     format!(
         "{}:{}",
         bin_dir.display(),

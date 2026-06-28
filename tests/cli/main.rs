@@ -1,10 +1,7 @@
 #![allow(
-    clippy::expect_used,
-    clippy::panic,
     clippy::tests_outside_test_module,
     clippy::too_many_lines,
     clippy::undocumented_unsafe_blocks,
-    clippy::unwrap_used,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 

@@ -1,8 +1,5 @@
 use std::{cell::RefCell, collections::BTreeSet};
 
-use anyhow::{Result, bail};
-use futures_util::FutureExt;
-
 use crate::{
     devcontainer::lifecycle::LifecycleRunPath,
     docker::{client::DockerClient, container::ContainerInspect},
@@ -18,6 +15,7 @@ use crate::{
     up::types::{UpOutcome, UpPlan},
     workspace::Workspace,
 };
+use anyhow::{Result, bail};
 
 use super::{CredentialRuntime, compose_port_protocol_name};
 

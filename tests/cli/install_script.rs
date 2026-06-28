@@ -5,7 +5,7 @@ use std::{
     process::Command,
 };
 
-use crate::support::TempWorkspace;
+use crate::{harness::TestUnwrap as _, support::TempWorkspace};
 
 #[test]
 fn install_script_uses_portable_mktemp_template_on_darwin() {
@@ -150,10 +150,10 @@ fn readme_documents_writable_install_directory_for_script_install() {
 }
 
 fn write_executable(path: &Path, contents: &str) {
-    fs::write(path, contents).unwrap();
-    let mut permissions = fs::metadata(path).unwrap().permissions();
+    fs::write(path, contents).must();
+    let mut permissions = fs::metadata(path).must().permissions();
     permissions.set_mode(0o755);
-    fs::set_permissions(path, permissions).unwrap();
+    fs::set_permissions(path, permissions).must();
 }
 
 fn workspace_file(path: &str) -> PathBuf {

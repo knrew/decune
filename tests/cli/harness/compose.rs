@@ -1,5 +1,7 @@
 use std::{fs, path::PathBuf, sync::OnceLock};
 
+use super::TestUnwrap as _;
+
 static FAKE_COMPOSE_CAPABILITIES_SCRIPT_PATH: OnceLock<PathBuf> = OnceLock::new();
 
 const FAKE_COMPOSE_CAPABILITIES_SCRIPT: &str = r#"case " $* " in
@@ -41,9 +43,9 @@ pub(crate) fn fake_compose_capabilities_script_path() -> PathBuf {
                 "decune-cli-test-compose-capabilities-{}",
                 std::process::id()
             ));
-            fs::create_dir_all(&root).unwrap();
+            fs::create_dir_all(&root).must();
             let path = root.join("compose-capabilities.sh");
-            fs::write(&path, FAKE_COMPOSE_CAPABILITIES_SCRIPT).unwrap();
+            fs::write(&path, FAKE_COMPOSE_CAPABILITIES_SCRIPT).must();
             path
         })
         .clone()

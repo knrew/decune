@@ -79,21 +79,21 @@ fn fake_container_tools_bundle(workspace: &ComposeFixtureWorkspace) -> PathBuf {
     workspace
         .workspace
         .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")
-        .unwrap();
+        .must();
     workspace
         .workspace
         .write_file(
             "container-tools/linux-amd64/git-credential-decune",
             b"helper",
         )
-        .unwrap();
+        .must();
     workspace
         .workspace
         .write_file(
             "container-tools/manifest.json",
             r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#,
         )
-        .unwrap();
+        .must();
     workspace.path().join("container-tools")
 }
 
@@ -1168,22 +1168,22 @@ fn compose_integration_up_pull_updates_dependency_service_image() {
 fn compose_fixture_workspace(name: &str) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
     }
 
-    let workspace = support::TempWorkspace::new().unwrap();
-    copy_dir_contents(&compose_fixture_path(name), workspace.path()).unwrap();
+    let workspace = support::TempWorkspace::new().must();
+    copy_dir_contents(&compose_fixture_path(name), workspace.path()).must();
     ComposeFixtureWorkspace { workspace }
 }
 
 fn compose_published_sidecar_workspace(host_port: u16) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
     }
 
-    let workspace = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
+    let workspace = support::TempWorkspace::new().must();
+    workspace.create_dir(".devcontainer").must();
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
@@ -1198,7 +1198,7 @@ fn compose_published_sidecar_workspace(host_port: u16) -> ComposeFixtureWorkspac
             }
             "#,
         )
-        .unwrap();
+        .must();
     workspace
         .write_file(
             ".devcontainer/compose.yaml",
@@ -1218,7 +1218,7 @@ fn compose_published_sidecar_workspace(host_port: u16) -> ComposeFixtureWorkspac
             "#
             ),
         )
-        .unwrap();
+        .must();
 
     ComposeFixtureWorkspace { workspace }
 }
@@ -1226,11 +1226,11 @@ fn compose_published_sidecar_workspace(host_port: u16) -> ComposeFixtureWorkspac
 fn compose_published_dependency_workspace(host_port: u16) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
     }
 
-    let workspace = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
+    let workspace = support::TempWorkspace::new().must();
+    workspace.create_dir(".devcontainer").must();
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
@@ -1244,7 +1244,7 @@ fn compose_published_dependency_workspace(host_port: u16) -> ComposeFixtureWorks
             }
             "#,
         )
-        .unwrap();
+        .must();
     workspace
         .write_file(
             ".devcontainer/compose.yaml",
@@ -1266,7 +1266,7 @@ fn compose_published_dependency_workspace(host_port: u16) -> ComposeFixtureWorks
             "#
             ),
         )
-        .unwrap();
+        .must();
 
     ComposeFixtureWorkspace { workspace }
 }
@@ -1274,11 +1274,11 @@ fn compose_published_dependency_workspace(host_port: u16) -> ComposeFixtureWorks
 fn compose_published_primary_workspace(host_port: u16) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
     }
 
-    let workspace = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
+    let workspace = support::TempWorkspace::new().must();
+    workspace.create_dir(".devcontainer").must();
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
@@ -1292,7 +1292,7 @@ fn compose_published_primary_workspace(host_port: u16) -> ComposeFixtureWorkspac
             }
             "#,
         )
-        .unwrap();
+        .must();
     workspace
         .write_file(
             ".devcontainer/compose.yaml",
@@ -1309,7 +1309,7 @@ fn compose_published_primary_workspace(host_port: u16) -> ComposeFixtureWorkspac
             "#
             ),
         )
-        .unwrap();
+        .must();
 
     ComposeFixtureWorkspace { workspace }
 }
@@ -1317,11 +1317,11 @@ fn compose_published_primary_workspace(host_port: u16) -> ComposeFixtureWorkspac
 fn compose_published_host_ip_workspace(base_host_port: u16) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
     }
 
-    let workspace = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
+    let workspace = support::TempWorkspace::new().must();
+    workspace.create_dir(".devcontainer").must();
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
@@ -1335,7 +1335,7 @@ fn compose_published_host_ip_workspace(base_host_port: u16) -> ComposeFixtureWor
             }
             "#,
         )
-        .unwrap();
+        .must();
     workspace
         .write_file(
             ".devcontainer/compose.yaml",
@@ -1364,7 +1364,7 @@ fn compose_published_host_ip_workspace(base_host_port: u16) -> ComposeFixtureWor
                 base_host_port + 2,
             ),
         )
-        .unwrap();
+        .must();
 
     ComposeFixtureWorkspace { workspace }
 }
@@ -1372,11 +1372,11 @@ fn compose_published_host_ip_workspace(base_host_port: u16) -> ComposeFixtureWor
 fn compose_profile_published_workspace(host_port: u16, run_debug: bool) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
     }
 
-    let workspace = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
+    let workspace = support::TempWorkspace::new().must();
+    workspace.create_dir(".devcontainer").must();
     let devcontainer_json = if run_debug {
         r#"
         {
@@ -1401,7 +1401,7 @@ fn compose_profile_published_workspace(host_port: u16, run_debug: bool) -> Compo
     };
     workspace
         .write_file(".devcontainer/devcontainer.json", devcontainer_json)
-        .unwrap();
+        .must();
     workspace
         .write_file(
             ".devcontainer/compose.yaml",
@@ -1423,14 +1423,14 @@ fn compose_profile_published_workspace(host_port: u16, run_debug: bool) -> Compo
             "#
             ),
         )
-        .unwrap();
+        .must();
 
     ComposeFixtureWorkspace { workspace }
 }
 
 fn available_localhost_port() -> u16 {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
-    listener.local_addr().unwrap().port()
+    let listener = TcpListener::bind(("127.0.0.1", 0)).must();
+    listener.local_addr().must().port()
 }
 
 fn reserved_localhost_port_with_room_for_relocation() -> Option<TcpListener> {
@@ -1486,11 +1486,11 @@ fn copy_dir_contents(source: &Path, destination: &Path) -> io::Result<()> {
 fn compose_pull_registry_workspace() -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
     }
 
-    let workspace = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
+    let workspace = support::TempWorkspace::new().must();
+    workspace.create_dir(".devcontainer").must();
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
@@ -1503,7 +1503,7 @@ fn compose_pull_registry_workspace() -> ComposeFixtureWorkspace {
             }
             "#,
         )
-        .unwrap();
+        .must();
     let image = format!(
         "127.0.0.1:5000/decune-placeholder-{}:latest",
         workspace_id(workspace.path())
@@ -1519,7 +1519,7 @@ fn compose_pull_registry_workspace() -> ComposeFixtureWorkspace {
             "#
             ),
         )
-        .unwrap();
+        .must();
 
     ComposeFixtureWorkspace { workspace }
 }
@@ -1527,11 +1527,11 @@ fn compose_pull_registry_workspace() -> ComposeFixtureWorkspace {
 fn compose_pull_dependency_registry_workspace() -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
-        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
     }
 
-    let workspace = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
+    let workspace = support::TempWorkspace::new().must();
+    workspace.create_dir(".devcontainer").must();
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
@@ -1545,7 +1545,7 @@ fn compose_pull_dependency_registry_workspace() -> ComposeFixtureWorkspace {
             }
             "#,
         )
-        .unwrap();
+        .must();
     let app_image = format!(
         "127.0.0.1:5000/decune-placeholder-app-{}:latest",
         workspace_id(workspace.path())
@@ -1697,19 +1697,20 @@ fn compose_service_container_output<const N: usize>(
     service: &str,
     command: [&str; N],
 ) -> String {
-    let containers = compose_project_containers(workspace).unwrap();
+    let containers = compose_project_containers(workspace).must();
     let container_id = containers
         .iter()
         .find(|container| {
             compose_label(&container.labels, "com.docker.compose.service") == Some(service)
         })
-        .map_or_else(
-            || panic!("Compose service container was not found: {service}"),
-            |container| container.id.as_str(),
-        );
+        .must_msg(format_args!(
+            "Compose service container was not found: {service}"
+        ))
+        .id
+        .as_str();
     let mut args = vec!["exec", container_id];
     args.extend(command);
-    docker_output(args).unwrap()
+    docker_output(args).must()
 }
 
 fn compose_service_published_host_ports(
@@ -1717,31 +1718,34 @@ fn compose_service_published_host_ports(
     service: &str,
     container_port_key: &str,
 ) -> Vec<u16> {
-    let containers = compose_project_containers(workspace).unwrap();
+    let containers = compose_project_containers(workspace).must();
     let container_id = containers
         .iter()
         .find(|container| {
             compose_label(&container.labels, "com.docker.compose.service") == Some(service)
         })
-        .map_or_else(
-            || panic!("Compose service container was not found: {service}"),
-            |container| container.id.as_str(),
-        );
-    let output = docker_output(["container", "inspect", container_id]).unwrap();
-    let inspect = serde_json::from_str::<Vec<Value>>(&output).unwrap();
+        .must_msg(format_args!(
+            "Compose service container was not found: {service}"
+        ))
+        .id
+        .as_str();
+    let output = docker_output(["container", "inspect", container_id]).must();
+    let inspect = serde_json::from_str::<Vec<Value>>(&output).must();
     let ports = inspect
         .first()
         .and_then(|container| container.pointer("/NetworkSettings/Ports"))
         .and_then(Value::as_object)
         .and_then(|ports| ports.get(container_port_key))
         .and_then(Value::as_array)
-        .unwrap_or_else(|| panic!("published port binding was not found: {container_port_key}"));
+        .must_msg(format_args!(
+            "published port binding was not found: {container_port_key}"
+        ));
 
     let mut host_ports = ports
         .iter()
         .filter_map(|binding| binding.get("HostPort"))
         .filter_map(Value::as_str)
-        .map(|port| port.parse::<u16>().unwrap())
+        .map(|port| port.parse::<u16>().must())
         .collect::<Vec<_>>();
     host_ports.sort_unstable();
     host_ports.dedup();
@@ -1771,7 +1775,7 @@ fn decune_ports_json_from_command(mut command: assert_cmd::Command) -> Vec<Value
         .get_output()
         .stdout
         .clone();
-    serde_json::from_slice::<Vec<Value>>(&output).unwrap()
+    serde_json::from_slice::<Vec<Value>>(&output).must()
 }
 
 fn final_compose_config_json(workspace: &Path, state_home: &Path) -> Value {
@@ -1800,27 +1804,27 @@ fn final_compose_config_json(workspace: &Path, state_home: &Path) -> Value {
         "--format".to_owned(),
         "json".to_owned(),
     ])
-    .unwrap();
-    serde_json::from_str(&output).unwrap()
+    .must();
+    serde_json::from_str(&output).must()
 }
 
 fn compose_config_service_ports<'a>(config: &'a Value, service: &str) -> &'a [Value] {
     config
         .pointer(&format!("/services/{service}/ports"))
         .and_then(Value::as_array)
-        .map_or_else(
-            || panic!("Compose config did not contain service ports: {config:#?}"),
-            Vec::as_slice,
-        )
+        .map(Vec::as_slice)
+        .must_msg(format_args!(
+            "Compose config did not contain service ports: {config:#?}"
+        ))
 }
 
 fn compose_config_port_for_target(ports: &[Value], target: u16) -> &Value {
     ports
         .iter()
         .find(|port| compose_config_port_value(port, "target") == Some(target))
-        .unwrap_or_else(|| {
-            panic!("Compose config did not contain target port {target}: {ports:#?}")
-        })
+        .must_msg(format_args!(
+            "Compose config did not contain target port {target}: {ports:#?}"
+        ))
 }
 
 fn compose_config_port_value(port: &Value, key: &str) -> Option<u16> {
@@ -1891,7 +1895,7 @@ fn cleanup_compose_workspace(workspace: &Path) {
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
-        .unwrap();
+        .must();
     runtime.block_on(async {
         _ = cleanup_workspace_images(workspace);
     });
@@ -1950,7 +1954,7 @@ fn start_compose_registry(workspace: &Path) -> (String, String) {
     _ = docker_status(["rm", "--force", "--volumes", &container_name]);
     docker_status(["image", "inspect", "registry:2"])
         .or_else(|_| docker_status(["pull", "registry:2"]))
-        .unwrap();
+        .must();
     docker_status([
         "run",
         "--detach",
@@ -1960,13 +1964,13 @@ fn start_compose_registry(workspace: &Path) -> (String, String) {
         "127.0.0.1::5000",
         "registry:2",
     ])
-    .unwrap();
-    let port = docker_output(["port", &container_name, "5000/tcp"]).unwrap();
+    .must();
+    let port = docker_output(["port", &container_name, "5000/tcp"]).must();
     let port = port
         .trim()
         .rsplit(':')
         .next()
-        .expect("registry port output was empty")
+        .must_msg("registry port output was empty")
         .to_owned();
     (container_name, port)
 }
@@ -1982,7 +1986,7 @@ services:
 "#
         ),
     )
-    .unwrap();
+    .must();
 }
 
 fn rewrite_compose_dependency_images(workspace: &Path, app_image: &str, db_image: &str) {
@@ -2001,11 +2005,11 @@ services:
 "#
         ),
     )
-    .unwrap();
+    .must();
 }
 
 fn build_and_push_compose_registry_image(image: &str, version: &str) {
-    let context = tempfile::tempdir().unwrap();
+    let context = tempfile::tempdir().must();
     fs::write(
         context.path().join("Dockerfile"),
         format!(
@@ -2014,16 +2018,16 @@ RUN printf '%s\n' '{version}' >/decune-version
 "
         ),
     )
-    .unwrap();
+    .must();
     docker_status([
         "build",
         "--tag",
         image,
         context.path().to_string_lossy().as_ref(),
     ])
-    .unwrap();
+    .must();
     push_image_with_retry(image);
-    docker_status(["image", "rm", "--force", "--no-prune", image]).unwrap();
+    docker_status(["image", "rm", "--force", "--no-prune", image]).must();
 }
 
 fn push_image_with_retry(image: &str) {
@@ -2038,10 +2042,10 @@ fn push_image_with_retry(image: &str) {
         }
     }
 
-    panic!(
+    test_fail(format_args!(
         "failed to push test image to local registry: {}",
-        last_error.unwrap()
-    );
+        last_error.must()
+    ));
 }
 
 fn create_unrelated_compose_fixture(workspace: &Path) -> UnrelatedComposeFixture {
@@ -2057,8 +2061,8 @@ fn create_unrelated_compose_fixture(workspace: &Path) -> UnrelatedComposeFixture
 
     docker_status(["image", "inspect", "alpine:3.20"])
         .or_else(|_| docker_status(["pull", "alpine:3.20"]))
-        .unwrap();
-    docker_status(["image", "tag", "alpine:3.20", &image]).unwrap();
+        .must();
+    docker_status(["image", "tag", "alpine:3.20", &image]).must();
     docker_status([
         "run",
         "--detach",
@@ -2072,7 +2076,7 @@ fn create_unrelated_compose_fixture(workspace: &Path) -> UnrelatedComposeFixture
         "sleep",
         "infinity",
     ])
-    .unwrap();
+    .must();
 
     UnrelatedComposeFixture {
         container_name,
