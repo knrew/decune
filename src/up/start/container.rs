@@ -36,22 +36,18 @@ pub(in crate::up) async fn create_and_start_container(
     client: &DockerClient,
     workspace: &Workspace,
     plan: &UpPlan,
-    pull: bool,
-    no_cache: bool,
-    image_prepared: bool,
+    image_preparation: ImagePreparation,
 ) -> Result<UpOutcome> {
-    create_and_start_container_inner(client, workspace, plan, pull, no_cache, image_prepared).await
+    create_and_start_container_inner(client, workspace, plan, image_preparation).await
 }
 
 async fn create_and_start_container_inner(
     client: &DockerClient,
     workspace: &Workspace,
     plan: &UpPlan,
-    pull: bool,
-    no_cache: bool,
-    image_prepared: bool,
+    image_preparation: ImagePreparation,
 ) -> Result<UpOutcome> {
-    prepare_image_for_create(client, plan, pull, no_cache, image_prepared).await?;
+    prepare_image_for_create(client, plan, image_preparation).await?;
 
     let has_feature_entrypoints = !plan.config.devcontainer.entrypoints.is_empty();
     let (entrypoint, command) = if has_feature_entrypoints {
@@ -125,20 +121,24 @@ async fn create_and_start_container_inner(
 pub(super) async fn prepare_image_for_create(
     client: &DockerClient,
     plan: &UpPlan,
-    pull: bool,
-    no_cache: bool,
-    image_prepared: bool,
+    image_preparation: ImagePreparation,
 ) -> Result<()> {
     if plan_requires_final_image_layer(plan) {
-        if !image_prepared {
-            prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
-            build_workspace_image_layers(client, plan, no_cache).await?;
+        if !image_preparation.image_prepared {
+            prepare_base_image_for_plan(
+                client,
+                plan,
+                image_preparation.pull,
+                image_preparation.no_cache,
+            )
+            .await?;
+            build_workspace_image_layers(client, plan, image_preparation.no_cache).await?;
         }
     } else if let Some(context) = plan.build_context.clone() {
-        if !image_prepared {
+        if !image_preparation.image_prepared {
             let mut build_options = plan.build_options.clone();
-            build_options.pull = pull;
-            build_options.no_cache = no_cache;
+            build_options.pull = image_preparation.pull;
+            build_options.no_cache = image_preparation.no_cache;
             build_image(
                 client,
                 DockerBuildInput {
@@ -150,11 +150,11 @@ pub(super) async fn prepare_image_for_create(
             )
             .await?;
         }
-    } else if !image_prepared {
+    } else if !image_preparation.image_prepared {
         ensure_image(
             client,
             &plan.base_image,
-            if pull {
+            if image_preparation.pull {
                 PullPolicy::Always
             } else {
                 PullPolicy::Missing
@@ -163,6 +163,13 @@ pub(super) async fn prepare_image_for_create(
         .await?;
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub(in crate::up) struct ImagePreparation {
+    pub(in crate::up) pull: bool,
+    pub(in crate::up) no_cache: bool,
+    pub(in crate::up) image_prepared: bool,
 }
 
 fn persist_initial_container_state(
@@ -373,7 +380,17 @@ mod tests {
             let result: anyhow::Result<()> = async {
                 remove_container(&client, &container_name, true, true).await?;
                 let workspace = test_workspace("docker-up-effective-container-user-state");
-                create_and_start_container(&client, &workspace, &plan, false, false, false).await?;
+                create_and_start_container(
+                    &client,
+                    &workspace,
+                    &plan,
+                    ImagePreparation {
+                        pull: false,
+                        no_cache: false,
+                        image_prepared: false,
+                    },
+                )
+                .await?;
 
                 let inspect = client.cli().inspect_container(&container_name).await?;
                 assert_eq!(

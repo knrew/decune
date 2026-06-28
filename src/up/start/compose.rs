@@ -37,12 +37,12 @@ use crate::{
 };
 
 use super::{
-    ExistingContainerReusePolicy, StartedUpContainer, add_credential_runtime_mounts,
-    attach_compose_interpolation_env_to_plan, compose_service_forward_requires_recreate,
-    container_tool_platform_for_plan, ensure_container_running_after_start,
-    list_compose_primary_containers, list_compose_project_containers,
-    list_existing_compose_project_published_ports, prepare_image_for_create,
-    should_reuse_existing_container, started_up_container_with_state,
+    ExistingContainerReusePolicy, ImagePreparation, StartedUpContainer,
+    add_credential_runtime_mounts, attach_compose_interpolation_env_to_plan,
+    compose_service_forward_requires_recreate, container_tool_platform_for_plan,
+    ensure_container_running_after_start, list_compose_primary_containers,
+    list_compose_project_containers, list_existing_compose_project_published_ports,
+    prepare_image_for_create, should_reuse_existing_container, started_up_container_with_state,
     startup_verification_for_plan, sync_started_compose_state,
     warn_on_compose_published_port_relocations, write_generated_compose_override,
 };
@@ -388,7 +388,16 @@ pub(super) async fn start_compose_project(
         plan.base_image = compose_primary_image;
     }
     if !image_prepared {
-        prepare_image_for_create(&client, &plan, false, options.no_cache, false).await?;
+        prepare_image_for_create(
+            &client,
+            &plan,
+            ImagePreparation {
+                pull: false,
+                no_cache: options.no_cache,
+                image_prepared: false,
+            },
+        )
+        .await?;
     }
     let platform = image_container_tool_platform(&client, &plan.image).await?;
     let (mut plan, credentials) =

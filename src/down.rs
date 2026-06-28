@@ -146,7 +146,14 @@ pub(crate) async fn run_remove(options: RemoveOptions) -> Result<()> {
 
 async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool) -> Result<()> {
     let stdin_is_terminal = io::stdin().is_terminal();
-    ensure_remove_confirmed(no_confirm, stdin_is_terminal, true, confirm_remove)?;
+    ensure_remove_confirmed(
+        RemoveConfirmation {
+            no_confirm,
+            stdin_is_terminal,
+            has_targets: true,
+        },
+        confirm_remove,
+    )?;
 
     let workspace = Workspace::resolve(&workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
@@ -242,7 +249,14 @@ async fn run_remove_all_workspaces(images: bool, no_confirm: bool) -> Result<()>
 
     print_remove_all_summary(&plans, images);
     let stdin_is_terminal = io::stdin().is_terminal();
-    ensure_remove_confirmed(no_confirm, stdin_is_terminal, true, confirm_remove_all)?;
+    ensure_remove_confirmed(
+        RemoveConfirmation {
+            no_confirm,
+            stdin_is_terminal,
+            has_targets: true,
+        },
+        confirm_remove_all,
+    )?;
 
     for plan in plans {
         remove_workspace_plan(&client, plan).await?;
@@ -396,21 +410,28 @@ pub(crate) const fn remove_rejects_non_interactive(
     !no_confirm && !stdin_is_terminal
 }
 
-fn ensure_remove_confirmed(
+#[derive(Debug, Clone, Copy)]
+struct RemoveConfirmation {
     no_confirm: bool,
     stdin_is_terminal: bool,
     has_targets: bool,
+}
+
+fn ensure_remove_confirmed(
+    confirmation: RemoveConfirmation,
     confirm: impl FnOnce() -> Result<bool>,
 ) -> Result<()> {
-    if !has_targets {
+    if !confirmation.has_targets {
         return Ok(());
     }
-    if remove_rejects_non_interactive(no_confirm, stdin_is_terminal) {
+    if remove_rejects_non_interactive(confirmation.no_confirm, confirmation.stdin_is_terminal) {
         bail!(
             "Cannot confirm remove in a non-interactive terminal; rerun with --no-confirm to remove resources"
         );
     }
-    if remove_requires_confirmation(no_confirm, stdin_is_terminal) && !confirm()? {
+    if remove_requires_confirmation(confirmation.no_confirm, confirmation.stdin_is_terminal)
+        && !confirm()?
+    {
         bail!("Remove cancelled");
     }
 
@@ -894,15 +915,41 @@ mod tests {
 
     #[test]
     fn remove_confirmation_gate_handles_interactive_accept_and_reject() {
-        assert!(super::ensure_remove_confirmed(false, true, true, || Ok(true)).is_ok());
+        assert!(
+            super::ensure_remove_confirmed(
+                super::RemoveConfirmation {
+                    no_confirm: false,
+                    stdin_is_terminal: true,
+                    has_targets: true,
+                },
+                || Ok(true),
+            )
+            .is_ok()
+        );
 
-        let error = super::ensure_remove_confirmed(false, true, true, || Ok(false)).unwrap_err();
+        let error = super::ensure_remove_confirmed(
+            super::RemoveConfirmation {
+                no_confirm: false,
+                stdin_is_terminal: true,
+                has_targets: true,
+            },
+            || Ok(false),
+        )
+        .unwrap_err();
         assert!(error.to_string().contains("Remove cancelled"));
     }
 
     #[test]
     fn remove_confirmation_gate_rejects_non_interactive_and_skips_prompt_for_no_confirm() {
-        let error = super::ensure_remove_confirmed(false, false, true, || Ok(true)).unwrap_err();
+        let error = super::ensure_remove_confirmed(
+            super::RemoveConfirmation {
+                no_confirm: false,
+                stdin_is_terminal: false,
+                has_targets: true,
+            },
+            || Ok(true),
+        )
+        .unwrap_err();
         assert!(
             error
                 .to_string()
@@ -911,10 +958,17 @@ mod tests {
 
         let mut prompted = false;
         assert!(
-            super::ensure_remove_confirmed(true, false, true, || -> Result<bool> {
-                prompted = true;
-                Ok(false)
-            })
+            super::ensure_remove_confirmed(
+                super::RemoveConfirmation {
+                    no_confirm: true,
+                    stdin_is_terminal: false,
+                    has_targets: true,
+                },
+                || -> Result<bool> {
+                    prompted = true;
+                    Ok(false)
+                },
+            )
             .is_ok()
         );
         assert!(!prompted);
@@ -925,10 +979,17 @@ mod tests {
         let mut prompted = false;
 
         assert!(
-            super::ensure_remove_confirmed(false, false, false, || -> Result<bool> {
-                prompted = true;
-                Ok(false)
-            })
+            super::ensure_remove_confirmed(
+                super::RemoveConfirmation {
+                    no_confirm: false,
+                    stdin_is_terminal: false,
+                    has_targets: false,
+                },
+                || -> Result<bool> {
+                    prompted = true;
+                    Ok(false)
+                },
+            )
             .is_ok()
         );
         assert!(!prompted);

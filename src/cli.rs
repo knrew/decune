@@ -242,9 +242,11 @@ async fn run_up(args: UpArgs) -> Result<i32> {
         skip_global_config: no_global_config,
         cli_layer: cli_config_layer(
             ports,
-            no_auto_forward,
-            published_port_relocation,
-            no_published_port_relocation,
+            CliConfigLayerOptions {
+                no_auto_forward,
+                published_port_relocation,
+                no_published_port_relocation,
+            },
         ),
         pull,
         rebuild,
@@ -295,9 +297,11 @@ fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
         skip_global_config: no_global_config,
         cli_layer: cli_config_layer(
             ports,
-            no_auto_forward,
-            published_port_relocation,
-            no_published_port_relocation,
+            CliConfigLayerOptions {
+                no_auto_forward,
+                published_port_relocation,
+                no_published_port_relocation,
+            },
         ),
         pull,
         rebuild: true,
@@ -384,23 +388,26 @@ fn reject_detached_cli_ports(detach: bool, ports: &[ManualPort]) -> Result<()> {
     Ok(())
 }
 
-fn cli_config_layer(
-    ports: Vec<ManualPort>,
+#[derive(Debug, Clone, Copy)]
+struct CliConfigLayerOptions {
     no_auto_forward: bool,
     published_port_relocation: bool,
     no_published_port_relocation: bool,
-) -> ConfigLayer {
+}
+
+fn cli_config_layer(ports: Vec<ManualPort>, options: CliConfigLayerOptions) -> ConfigLayer {
     ConfigLayer {
         ports: ports.into_iter().map(ManualPort::into_layer_port).collect(),
-        auto_ports: no_auto_forward.then(|| LayerAutoPorts {
+        auto_ports: options.no_auto_forward.then(|| LayerAutoPorts {
             enabled: Some(false),
             ..LayerAutoPorts::default()
         }),
         compose: LayerCompose {
             published_ports: LayerComposePublishedPorts {
-                relocation: published_port_relocation
+                relocation: options
+                    .published_port_relocation
                     .then_some(true)
-                    .or_else(|| no_published_port_relocation.then_some(false)),
+                    .or_else(|| options.no_published_port_relocation.then_some(false)),
                 ..LayerComposePublishedPorts::default()
             },
         },
@@ -524,8 +531,8 @@ mod tests {
 
     use super::Cli;
     use super::{
-        Commands, PortProtocol, cli_config_layer, is_standalone_version_request,
-        rebuild_up_options_from_args, reject_detached_cli_ports,
+        CliConfigLayerOptions, Commands, PortProtocol, cli_config_layer,
+        is_standalone_version_request, rebuild_up_options_from_args, reject_detached_cli_ports,
     };
 
     #[test]
@@ -599,9 +606,11 @@ mod tests {
 
         let cli_layer = cli_config_layer(
             args.ports.clone(),
-            args.no_auto_forward,
-            args.published_port_relocation,
-            args.no_published_port_relocation,
+            CliConfigLayerOptions {
+                no_auto_forward: args.no_auto_forward,
+                published_port_relocation: args.published_port_relocation,
+                no_published_port_relocation: args.no_published_port_relocation,
+            },
         );
 
         assert_eq!(cli_layer.auto_ports.unwrap().enabled, Some(false));
@@ -788,9 +797,11 @@ mod tests {
 
         let layer = cli_config_layer(
             Vec::new(),
-            args.no_auto_forward,
-            args.published_port_relocation,
-            args.no_published_port_relocation,
+            CliConfigLayerOptions {
+                no_auto_forward: args.no_auto_forward,
+                published_port_relocation: args.published_port_relocation,
+                no_published_port_relocation: args.no_published_port_relocation,
+            },
         );
 
         assert_eq!(layer.auto_ports.unwrap().enabled, Some(false));

@@ -153,7 +153,7 @@ mod tests {
             existing::decide_existing_container,
             plan::build_up_plan,
             run_detached_up,
-            start::create_and_start_container,
+            start::{ImagePreparation, create_and_start_container},
             test_support::{
                 build_user_image, container_has_mount_target, test_workspace, write_devcontainer,
             },
@@ -401,9 +401,11 @@ mod tests {
                     &client,
                     &workspace,
                     &legacy_plan,
-                    false,
-                    false,
-                    false,
+                    ImagePreparation {
+                        pull: false,
+                        no_cache: false,
+                        image_prepared: false,
+                    },
                 )
                 .await?;
                 let legacy_inspect = client.cli().inspect_container(&container_name).await?;
