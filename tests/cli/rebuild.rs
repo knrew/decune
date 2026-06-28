@@ -126,10 +126,10 @@ fn rebuild_no_cache_reruns_dockerfile_build_steps() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN head -c 16 /dev/urandom | od -An -tx1 | tr -d ' \n' > /build-token
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();

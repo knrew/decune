@@ -60,7 +60,7 @@ pub(crate) enum ForwardStatusSource {
 }
 
 impl ForwardStatusSource {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Configured => "configured",
             Self::Auto => "auto",
@@ -345,7 +345,7 @@ fn handle_forward_status_request(
 }
 
 impl ForwardStatusResponse {
-    fn error(error: String) -> Self {
+    const fn error(error: String) -> Self {
         Self {
             version: FORWARD_STATUS_PROTOCOL_VERSION,
             ports: Vec::new(),
@@ -411,7 +411,7 @@ fn active_forward_port(
     }
 }
 
-fn protocol_name(protocol: PortProtocol) -> &'static str {
+const fn protocol_name(protocol: PortProtocol) -> &'static str {
     match protocol {
         PortProtocol::Tcp => "tcp",
         PortProtocol::Udp => "udp",

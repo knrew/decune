@@ -1,9 +1,5 @@
 #![allow(
-    clippy::all,
-    clippy::cargo,
-    clippy::nursery,
-    clippy::pedantic,
-    clippy::restriction,
+    clippy::map_unwrap_or,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 

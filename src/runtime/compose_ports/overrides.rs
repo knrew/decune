@@ -17,7 +17,7 @@ pub(crate) struct ComposePublishedPortOverride {
 
 impl ComposePublishedPortOverride {
     #[cfg(test)]
-    pub(crate) fn from_service_ports(
+    pub(crate) const fn from_service_ports(
         service_ports: BTreeMap<String, Vec<ComposeOverridePortEntry>>,
     ) -> Self {
         Self { service_ports }

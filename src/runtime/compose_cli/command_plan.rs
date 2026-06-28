@@ -70,7 +70,7 @@ impl ComposeLifecyclePlan {
         }
     }
 
-    pub(crate) fn down(project: ComposeCommandPlan) -> Self {
+    pub(crate) const fn down(project: ComposeCommandPlan) -> Self {
         Self {
             project,
             services: Vec::new(),
@@ -78,7 +78,7 @@ impl ComposeLifecyclePlan {
         }
     }
 
-    pub(crate) fn remove(project: ComposeCommandPlan, images: bool) -> Self {
+    pub(crate) const fn remove(project: ComposeCommandPlan, images: bool) -> Self {
         Self {
             project,
             services: Vec::new(),
@@ -93,7 +93,7 @@ impl ComposeLifecyclePlan {
 }
 
 impl ComposeCleanupPlan {
-    fn keep_all() -> Self {
+    const fn keep_all() -> Self {
         Self {
             remove_project: false,
             remove_volumes: false,

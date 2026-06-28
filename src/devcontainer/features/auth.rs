@@ -286,10 +286,7 @@ fn run_docker_credential_helper_get(
         if docker_credential_helper_credentials_not_found(&message) {
             return Ok(None);
         }
-        bail!(
-            "Docker credential helper failed for {registry}: {}",
-            message
-        );
+        bail!("Docker credential helper failed for {registry}: {message}");
     }
 
     serde_json::from_slice(&output.stdout)

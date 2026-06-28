@@ -41,7 +41,7 @@ impl LifecycleDefinition {
         self.commands.values().any(|commands| !commands.is_empty())
     }
 
-    pub(crate) fn wait_for(&self) -> WaitFor {
+    pub(crate) const fn wait_for(&self) -> WaitFor {
         self.wait_for
     }
 
@@ -74,7 +74,7 @@ pub(crate) struct LayerLifecycleDefinition {
 }
 
 impl LayerLifecycleDefinition {
-    pub(in crate::devcontainer::lifecycle) fn new(
+    pub(in crate::devcontainer::lifecycle) const fn new(
         commands: BTreeMap<LifecycleStage, Vec<LifecycleCommand>>,
         wait_for: Option<WaitFor>,
     ) -> Self {
@@ -101,7 +101,7 @@ pub(crate) enum LifecycleStage {
 
 impl LifecycleStage {
     #[cfg(test)]
-    pub(crate) fn execution_location(self) -> LifecycleExecutionLocation {
+    pub(crate) const fn execution_location(self) -> LifecycleExecutionLocation {
         match self {
             Self::Initialize => LifecycleExecutionLocation::Host,
             Self::OnCreate
@@ -112,7 +112,7 @@ impl LifecycleStage {
         }
     }
 
-    pub(crate) fn property_name(self) -> &'static str {
+    pub(crate) const fn property_name(self) -> &'static str {
         match self {
             Self::Initialize => "initializeCommand",
             Self::OnCreate => "onCreateCommand",
@@ -148,7 +148,7 @@ pub(crate) enum HookStage {
 }
 
 impl HookStage {
-    pub(in crate::devcontainer::lifecycle) fn property_name(self) -> &'static str {
+    pub(in crate::devcontainer::lifecycle) const fn property_name(self) -> &'static str {
         match self {
             Self::BeforeInitialize => "before_initialize",
             Self::AfterInitialize => "after_initialize",
@@ -165,7 +165,7 @@ impl HookStage {
         }
     }
 
-    pub(in crate::devcontainer::lifecycle) fn default_location(self) -> HookLocation {
+    pub(in crate::devcontainer::lifecycle) const fn default_location(self) -> HookLocation {
         match self {
             Self::BeforeInitialize | Self::AfterInitialize => HookLocation::Host,
             Self::BeforeOnCreate

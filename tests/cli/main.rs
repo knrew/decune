@@ -1,9 +1,20 @@
 #![allow(
-    clippy::all,
-    clippy::cargo,
-    clippy::nursery,
-    clippy::pedantic,
-    clippy::restriction,
+    clippy::expect_used,
+    clippy::filetype_is_file,
+    clippy::inconsistent_struct_constructor,
+    clippy::let_underscore_must_use,
+    clippy::let_underscore_untyped,
+    clippy::map_unwrap_or,
+    clippy::panic,
+    clippy::similar_names,
+    clippy::stable_sort_primitive,
+    clippy::tests_outside_test_module,
+    clippy::too_many_lines,
+    clippy::undocumented_unsafe_blocks,
+    clippy::unnecessary_wraps,
+    clippy::unused_async,
+    clippy::unwrap_used,
+    clippy::wildcard_enum_match_arm,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 

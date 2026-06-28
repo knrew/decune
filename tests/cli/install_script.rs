@@ -81,9 +81,9 @@ esac
     );
     write_executable(
         &fake_bin.join("sha256sum"),
-        r#"#!/bin/sh
+        r"#!/bin/sh
 exit 0
-"#,
+",
     );
     write_executable(
         &fake_bin.join("tar"),

@@ -176,12 +176,12 @@ impl ComposeOverrideServicePatch {
         self
     }
 
-    pub(crate) fn init(mut self, init: bool) -> Self {
+    pub(crate) const fn init(mut self, init: bool) -> Self {
         self.init = Some(init);
         self
     }
 
-    pub(crate) fn privileged(mut self, privileged: bool) -> Self {
+    pub(crate) const fn privileged(mut self, privileged: bool) -> Self {
         self.privileged = Some(privileged);
         self
     }

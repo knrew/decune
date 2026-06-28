@@ -71,7 +71,7 @@ fn default_test_lock_path() -> Option<PathBuf> {
 }
 
 #[cfg(not(test))]
-fn default_test_lock_path() -> Option<PathBuf> {
+const fn default_test_lock_path() -> Option<PathBuf> {
     None
 }
 

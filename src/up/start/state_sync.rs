@@ -31,7 +31,7 @@ pub(super) fn started_up_container(
     ))
 }
 
-pub(super) fn started_up_container_with_state(
+pub(super) const fn started_up_container_with_state(
     client: DockerClient,
     workspace: Workspace,
     plan: UpPlan,

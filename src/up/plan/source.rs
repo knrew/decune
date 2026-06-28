@@ -72,11 +72,11 @@ pub(super) fn dockerfile_build_input(
     }
 }
 
-pub(in crate::up) fn config_requires_workspace_layer(config: &ResolvedConfig) -> bool {
+pub(in crate::up) const fn config_requires_workspace_layer(config: &ResolvedConfig) -> bool {
     !config.features.is_empty() || !config.devcontainer.entrypoints.is_empty()
 }
 
-fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> bool {
+const fn uid_gid_sync_plan_requires_layer(plan: &UidGidSyncPlan) -> bool {
     matches!(plan, UidGidSyncPlan::Sync { .. })
 }
 

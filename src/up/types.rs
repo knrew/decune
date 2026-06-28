@@ -27,7 +27,7 @@ pub(crate) enum MountResolution {
 }
 
 impl MountResolution {
-    pub(crate) fn resolves_config_mounts(self) -> bool {
+    pub(crate) const fn resolves_config_mounts(self) -> bool {
         matches!(self, Self::Resolve | Self::ReadOnly)
     }
 }
@@ -53,7 +53,7 @@ pub(crate) struct UpPlanResolution {
 }
 
 impl UpPlanResolution {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         forwarding: ForwardingResolution,
         update_features: bool,
         skip_global_config: bool,

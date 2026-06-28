@@ -61,12 +61,15 @@ impl<'a> HostPathOptions<'a> {
         self
     }
 
-    pub(crate) fn with_create(mut self, create: PathCreate) -> Self {
+    pub(crate) const fn with_create(mut self, create: PathCreate) -> Self {
         self.create = create;
         self
     }
 
-    pub(crate) fn with_symlink_resolution(mut self, symlink_resolution: SymlinkResolution) -> Self {
+    pub(crate) const fn with_symlink_resolution(
+        mut self,
+        symlink_resolution: SymlinkResolution,
+    ) -> Self {
         self.symlink_resolution = symlink_resolution;
         self
     }

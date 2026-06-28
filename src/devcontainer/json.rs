@@ -31,7 +31,7 @@ impl DevcontainerJson {
         &self.path
     }
 
-    pub(crate) fn value(&self) -> &Value {
+    pub(crate) const fn value(&self) -> &Value {
         &self.value
     }
 }
@@ -220,11 +220,11 @@ fn previous_non_whitespace(bytes: &[u8], end: usize) -> Option<u8> {
         .find(|byte| !byte.is_ascii_whitespace())
 }
 
-fn is_json_value_end(byte: u8) -> bool {
+const fn is_json_value_end(byte: u8) -> bool {
     matches!(byte, b'"' | b']' | b'}' | b'0'..=b'9' | b'e' | b'E' | b'l')
 }
 
-fn is_line_ending(byte: u8) -> bool {
+const fn is_line_ending(byte: u8) -> bool {
     matches!(byte, b'\n' | b'\r')
 }
 
@@ -549,7 +549,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(value["path"], json!(r#"C:\tmp\file"#));
+        assert_eq!(value["path"], json!(r"C:\tmp\file"));
         assert_eq!(value["value"], json!(r#"\"//not-comment"#));
     }
 
@@ -657,7 +657,7 @@ mod tests {
 
     #[test]
     fn leading_commas_are_rejected() {
-        for contents in [r#"[,]"#, r#"{,}"#, r#"[/* comment */,]"#] {
+        for contents in [r"[,]", r"{,}", r"[/* comment */,]"] {
             let error = parse_str(contents).unwrap_err();
 
             assert!(!error.to_string().is_empty());
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn invalid_commas_are_rejected() {
-        for contents in [r#"{,}"#, r#"[,]"#, r#"{"a":,}"#, r#"{"a": true,,}"#] {
+        for contents in [r"{,}", r"[,]", r#"{"a":,}"#, r#"{"a": true,,}"#] {
             let error = parse_str(contents).unwrap_err();
 
             assert!(!error.to_string().is_empty());

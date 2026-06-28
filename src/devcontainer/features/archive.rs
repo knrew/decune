@@ -170,7 +170,7 @@ mod tests {
     }
 
     fn write_checksum(field: &mut [u8], value: u64) {
-        let value = format!("{value:06o}\0 ",);
+        let value = format!("{value:06o}\0 ");
         field.copy_from_slice(value.as_bytes());
     }
 }

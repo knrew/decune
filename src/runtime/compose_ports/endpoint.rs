@@ -5,7 +5,7 @@ use crate::runtime::compose_ports::{
 
 const OMITTED_HOST_IP_RESERVATION: &str = "0.0.0.0";
 
-pub(super) fn protocol_order(protocol: &ComposePortProtocol) -> u8 {
+pub(super) const fn protocol_order(protocol: &ComposePortProtocol) -> u8 {
     match protocol {
         ComposePortProtocol::Tcp => 0,
         ComposePortProtocol::Udp => 1,
@@ -37,7 +37,7 @@ pub(crate) fn compose_published_port_endpoint_display(
     }
 }
 
-pub(super) fn requested_host_port(entry: &ComposePortEntry) -> Option<u16> {
+pub(super) const fn requested_host_port(entry: &ComposePortEntry) -> Option<u16> {
     match entry.published_host_port {
         ComposePublishedHostPort::Single(port) => Some(port),
         ComposePublishedHostPort::None

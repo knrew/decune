@@ -39,7 +39,7 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         } else {
             lookup_image = Some(plan.base_image.clone());
         }
-    };
+    }
     let mut lookup_image = lookup_image.expect("lookup image must be set");
     let dockerfile_metadata =
         dockerfile_image_metadata_for_plan(client, &plan, &lookup_image, options.forwarding)

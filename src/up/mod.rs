@@ -245,7 +245,7 @@ mod tests {
             fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
             fs::write(
                 workspace.root().join(".devcontainer/Dockerfile"),
-                r#"
+                r"
                 FROM alpine:3.20
                 RUN printf '%s\n' \
                   '#!/bin/sh' \
@@ -253,7 +253,7 @@ mod tests {
                   'exit 0' \
                   >/usr/local/bin/decune-shell-check \
                   && chmod +x /usr/local/bin/decune-shell-check
-                "#,
+                ",
             )
             .unwrap();
             write_devcontainer(
@@ -319,11 +319,11 @@ mod tests {
             fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
             fs::write(
                 workspace.root().join(".devcontainer/Dockerfile"),
-                r#"
+                r"
                 FROM alpine:3.20
                 RUN printf '%s\n' '#!/bin/sh' 'exit 0' >/usr/local/bin/decune-exit-0 \
                   && chmod +x /usr/local/bin/decune-exit-0
-                "#,
+                ",
             )
             .unwrap();
             write_devcontainer(
@@ -397,11 +397,11 @@ mod tests {
             fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
             fs::write(
                 workspace.root().join(".devcontainer/Dockerfile"),
-                r#"
+                r"
                 FROM alpine:3.20
                 RUN printf '%s\n' '#!/bin/sh' 'exit 0' >/usr/local/bin/decune-exit-0 \
                   && chmod +x /usr/local/bin/decune-exit-0
-                "#,
+                ",
             )
             .unwrap();
             write_devcontainer(
@@ -577,7 +577,7 @@ mod tests {
             fs::create_dir_all(workspace.root().join(".devcontainer")).unwrap();
             fs::write(
                 workspace.root().join(".devcontainer/Dockerfile"),
-                r#"
+                r"
                 FROM alpine:3.20
                 RUN printf '%s\n' \
                   '#!/bin/sh' \
@@ -585,7 +585,7 @@ mod tests {
                   'exit 0' \
                   >/usr/local/bin/decune-shell-check \
                   && chmod +x /usr/local/bin/decune-shell-check
-                "#,
+                ",
             )
             .unwrap();
             write_devcontainer(

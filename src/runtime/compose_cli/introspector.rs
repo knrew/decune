@@ -24,7 +24,7 @@ impl Default for ComposeIntrospector {
 }
 
 impl ComposeIntrospector {
-    pub(crate) fn new(cli: DockerComposeCli) -> Self {
+    pub(crate) const fn new(cli: DockerComposeCli) -> Self {
         Self { cli }
     }
 

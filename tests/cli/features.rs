@@ -28,11 +28,11 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN adduser -D -u 1001 remoteuser
             USER root
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -197,12 +197,12 @@ fn up_detach_uses_dockerfile_metadata_user_for_feature_install_env() {
     workspace
         .write_file(
             ".decune/config.toml",
-            r#"
+            r"
             version = 1
 
             [credentials.github]
             enabled = false
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
@@ -272,9 +272,9 @@ fn up_detach_rejects_feature_metadata_remote_user() {
     workspace
         .write_file(
             ".devcontainer/features/user-tool/install.sh",
-            r#"
+            r"
             set -eu
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
@@ -342,9 +342,9 @@ fn up_detach_rejects_feature_metadata_missing_name() {
     workspace
         .write_file(
             ".devcontainer/features/name-tool/install.sh",
-            r#"
+            r"
             set -eu
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
@@ -406,11 +406,11 @@ fn up_detach_preserves_base_image_user_after_feature_layer() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN adduser -D -u 1001 devuser
             USER devuser
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -611,11 +611,11 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
     workspace
         .write_file(
             ".devcontainer/features/lifecycle-tool/install.sh",
-            r#"
+            r"
             set -eu
             mkdir -p /usr/local/share
             echo installed > /usr/local/share/decune-lifecycle-tool
-            "#,
+            ",
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
@@ -876,11 +876,11 @@ fn up_detach_runs_feature_entrypoint_as_nonroot_image_user() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN adduser -D -u 20001 app
             USER app
-            "#,
+            ",
         )
         .unwrap();
     workspace

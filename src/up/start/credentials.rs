@@ -41,7 +41,7 @@ impl CredentialRuntime {
         }
     }
 
-    pub(in crate::up) fn mount_policy(&self) -> &CredentialRuntimeMountPolicy {
+    pub(in crate::up) const fn mount_policy(&self) -> &CredentialRuntimeMountPolicy {
         &self.mount_policy
     }
 

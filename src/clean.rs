@@ -124,7 +124,7 @@ enum CleanReason {
 }
 
 impl CleanReason {
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::StaleWorkspaceData => "stale_workspace_data",
             Self::FeatureCacheIncluded => "feature_cache_included",

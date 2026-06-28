@@ -285,7 +285,7 @@ fn parse_tar_octal(bytes: &[u8]) -> Option<usize> {
 }
 
 #[cfg(test)]
-fn padded_size(size: usize) -> usize {
+const fn padded_size(size: usize) -> usize {
     size.div_ceil(TAR_BLOCK_SIZE) * TAR_BLOCK_SIZE
 }
 

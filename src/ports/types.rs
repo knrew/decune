@@ -73,7 +73,7 @@ pub(crate) enum PortUsageType {
 }
 
 impl PortUsageType {
-    pub(crate) fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Forwarded => "forwarded",
             Self::Published => "published",

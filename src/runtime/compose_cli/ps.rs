@@ -39,8 +39,7 @@ pub(super) fn parse_compose_ps_json(
             .map(|container| vec![container])
             .map_err(|error| compose_ps_parse_error(project_name, service, error)),
         Ok(other) => Err(anyhow!(
-            "Failed to parse Docker Compose ps JSON for project {} service `{service}`: expected object or array, got {other}",
-            project_name
+            "Failed to parse Docker Compose ps JSON for project {project_name} service `{service}`: expected object or array, got {other}"
         )),
         Err(first_error) => {
             let lines = String::from_utf8_lossy(stdout);
@@ -51,8 +50,7 @@ pub(super) fn parse_compose_ps_json(
                 .collect::<std::result::Result<Vec<_>, _>>();
             containers.map_err(|line_error| {
                 anyhow!(
-                    "Failed to parse Docker Compose ps JSON for project {} service `{service}`: {first_error}; JSON Lines parse failed: {line_error}",
-                    project_name
+                    "Failed to parse Docker Compose ps JSON for project {project_name} service `{service}`: {first_error}; JSON Lines parse failed: {line_error}"
                 )
             })
         }
@@ -65,8 +63,7 @@ fn compose_ps_parse_error(
     error: serde_json::Error,
 ) -> anyhow::Error {
     anyhow!(
-        "Failed to parse Docker Compose ps JSON for project {} service `{service}`: {error}",
-        project_name
+        "Failed to parse Docker Compose ps JSON for project {project_name} service `{service}`: {error}"
     )
 }
 

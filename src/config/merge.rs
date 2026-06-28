@@ -141,7 +141,7 @@ struct MergedPort {
 }
 
 impl MergedPort {
-    fn plain(port: LayerPort, source_priority: PortSourcePriority) -> Self {
+    const fn plain(port: LayerPort, source_priority: PortSourcePriority) -> Self {
         Self {
             port,
             forward_attribute_keys: Vec::new(),
@@ -268,7 +268,7 @@ impl MergeAccumulator {
         }
     }
 
-    fn merge_compose(&mut self, compose: crate::config::layer::LayerCompose) {
+    const fn merge_compose(&mut self, compose: crate::config::layer::LayerCompose) {
         if let Some(relocation) = compose.published_ports.relocation {
             self.compose.published_ports.relocation = relocation;
         }
@@ -344,7 +344,7 @@ impl MergeAccumulator {
         }
     }
 
-    fn merge_credentials(&mut self, credentials: LayerCredentials) {
+    const fn merge_credentials(&mut self, credentials: LayerCredentials) {
         if let Some(enabled) = credentials.git.enabled {
             self.credentials.git.enabled = enabled;
         }
@@ -1424,13 +1424,13 @@ label = "global"
 "#,
             )),
             project: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [[ports]]
 container = 3000
 enabled = false
-"#,
+",
             )),
             ..ConfigMergeInput::default()
         });
@@ -1810,23 +1810,23 @@ label = "db"
 
         let config = resolve_config(ConfigMergeInput {
             global: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [[ports]]
 container = 3000
 host = 8080
-"#,
+",
             )),
             devcontainer: Some(devcontainer),
             project: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [[ports]]
 container = 3001
 host = 8080
-"#,
+",
             )),
             cli: Some(ConfigLayer {
                 ports: vec![LayerPort {
@@ -1864,20 +1864,20 @@ host = 8080
     fn auto_ports_ignore_is_preserved_when_upper_layer_omits_it() {
         let config = resolve_config(ConfigMergeInput {
             global: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [ports.auto]
 ignore = [22]
-"#,
+",
             )),
             project: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [ports.auto]
 enabled = false
-"#,
+",
             )),
             ..ConfigMergeInput::default()
         });
@@ -1907,13 +1907,13 @@ on_auto_forward = "openBrowser"
     fn compose_published_ports_config_resolves() {
         let config = resolve_config(ConfigMergeInput {
             project: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [compose.published_ports]
 relocation = true
 warn_on_relocation = true
-"#,
+",
             )),
             ..ConfigMergeInput::default()
         });
@@ -1926,21 +1926,21 @@ warn_on_relocation = true
     fn compose_published_ports_policy_uses_layer_precedence() {
         let config = resolve_config(ConfigMergeInput {
             global: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [compose.published_ports]
 relocation = true
 warn_on_relocation = true
-"#,
+",
             )),
             project: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [compose.published_ports]
 relocation = false
-"#,
+",
             )),
             cli: Some(ConfigLayer {
                 compose: crate::config::layer::LayerCompose {
@@ -1962,12 +1962,12 @@ relocation = false
     fn no_auto_forward_layer_does_not_disable_compose_published_port_relocation() {
         let config = resolve_config(ConfigMergeInput {
             project: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [compose.published_ports]
 relocation = true
-"#,
+",
             )),
             cli: Some(ConfigLayer {
                 auto_ports: Some(LayerAutoPorts {
@@ -1984,12 +1984,12 @@ relocation = true
 
         let disabled_by_cli = resolve_config(ConfigMergeInput {
             project: Some(raw_layer(
-                r#"
+                r"
 version = 1
 
 [compose.published_ports]
 relocation = true
-"#,
+",
             )),
             cli: Some(ConfigLayer {
                 compose: crate::config::layer::LayerCompose {

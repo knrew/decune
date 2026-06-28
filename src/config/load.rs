@@ -417,12 +417,12 @@ read_olny = true
         let path = config_path("nested-credentials-typo");
         fs::write(
             &path,
-            r#"
+            r"
 version = 1
 
 [credentials.git]
 copy_usr = true
-"#,
+",
         )
         .unwrap();
 

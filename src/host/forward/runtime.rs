@@ -48,7 +48,7 @@ impl ServiceForwardRuntime {
         &self.service
     }
 
-    pub(crate) fn mount(&self) -> &crate::docker::mounts::DockerMountSpec {
+    pub(crate) const fn mount(&self) -> &crate::docker::mounts::DockerMountSpec {
         &self.mount
     }
 

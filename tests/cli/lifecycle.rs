@@ -854,11 +854,11 @@ fn up_attaches_configured_shell_and_returns_shell_exit_code() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN printf '#!/bin/sh\nexit 7\n' >/usr/local/bin/decune-exit-7 \
               && chmod +x /usr/local/bin/decune-exit-7
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -1086,10 +1086,10 @@ fn up_detach_expands_remote_env_from_actual_container_env() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             ENV DECUNE_FROM_IMAGE=from-image
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -1259,7 +1259,7 @@ fn up_attached_defaults_to_stopping_image_container_after_shell_exit() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN printf '%s\n' \
               '#!/bin/sh' \
@@ -1267,7 +1267,7 @@ fn up_attached_defaults_to_stopping_image_container_after_shell_exit() {
               'exit 0' \
               >/usr/local/bin/decune-record-attached-shutdown \
               && chmod +x /usr/local/bin/decune-record-attached-shutdown
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -1385,10 +1385,10 @@ fn up_detach_warns_and_continues_when_user_env_probe_fails() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN adduser -D -s /bin/false decune
-            "#,
+            ",
         )
         .unwrap();
     workspace

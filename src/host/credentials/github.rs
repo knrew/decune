@@ -463,7 +463,7 @@ pub(crate) fn host_github_auth_token_available() -> Result<bool> {
 }
 
 #[cfg(test)]
-pub(crate) fn host_github_auth_token_available() -> Result<bool> {
+pub(crate) const fn host_github_auth_token_available() -> Result<bool> {
     Ok(false)
 }
 

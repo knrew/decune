@@ -464,11 +464,11 @@ pub(super) fn state_container_is_present(
     })
 }
 
-pub(super) fn has_docker_evidence(evidence: &WorkspaceEvidence) -> bool {
+pub(super) const fn has_docker_evidence(evidence: &WorkspaceEvidence) -> bool {
     !evidence.containers.is_empty() || !evidence.volumes.is_empty()
 }
 
-fn mode_from_source(source: Option<&ResolvedDevcontainerSource>) -> WorkspaceMode {
+const fn mode_from_source(source: Option<&ResolvedDevcontainerSource>) -> WorkspaceMode {
     match source {
         Some(ResolvedDevcontainerSource::Image(_)) => WorkspaceMode::Image,
         Some(ResolvedDevcontainerSource::Dockerfile(_)) => WorkspaceMode::Dockerfile,

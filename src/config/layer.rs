@@ -110,7 +110,7 @@ pub(crate) struct LayerComposePublishedPorts {
 }
 
 impl LayerComposePublishedPorts {
-    fn from_raw(raw: RawComposePublishedPortsConfig) -> Self {
+    const fn from_raw(raw: RawComposePublishedPortsConfig) -> Self {
         Self {
             relocation: raw.relocation,
             warn_on_relocation: raw.warn_on_relocation,

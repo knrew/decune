@@ -64,7 +64,7 @@ impl Workspace {
         &self.id
     }
 
-    pub(crate) fn paths(&self) -> &WorkspacePaths {
+    pub(crate) const fn paths(&self) -> &WorkspacePaths {
         &self.paths
     }
 }

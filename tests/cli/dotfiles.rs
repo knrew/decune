@@ -728,10 +728,10 @@ fn up_detach_replaces_existing_dotfile_symlink() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN ln -s /tmp/old-gitconfig /root/.gitconfig
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -801,10 +801,10 @@ fn up_detach_fails_dotfile_setup_when_conflict_policy_is_fail() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN printf '[user]\nname = original\n' > /root/.gitconfig
-            "#,
+            ",
         )
         .unwrap();
     workspace
@@ -876,10 +876,10 @@ fn up_detach_backs_up_existing_dotfile_target_when_requested() {
     workspace
         .write_file(
             ".devcontainer/Dockerfile",
-            r#"
+            r"
             FROM alpine:3.20
             RUN printf '[user]\nname = original\n' > /root/.gitconfig
-            "#,
+            ",
         )
         .unwrap();
     workspace

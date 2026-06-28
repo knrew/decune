@@ -19,7 +19,7 @@ pub(crate) struct FeatureLockFile {
 }
 
 impl FeatureLockFile {
-    pub(crate) fn empty() -> Self {
+    pub(crate) const fn empty() -> Self {
         Self {
             version: FEATURE_LOCK_VERSION,
             features: Vec::new(),

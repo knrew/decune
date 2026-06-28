@@ -41,7 +41,7 @@ pub(crate) enum GitCredentialCommand {
 }
 
 impl GitCredentialCommand {
-    fn as_git_arg(self) -> &'static str {
+    const fn as_git_arg(self) -> &'static str {
         match self {
             Self::Fill => "fill",
             Self::Approve => "approve",
@@ -49,7 +49,7 @@ impl GitCredentialCommand {
         }
     }
 
-    pub(crate) fn from_action(action: GitCredentialAction) -> Self {
+    pub(crate) const fn from_action(action: GitCredentialAction) -> Self {
         match action {
             GitCredentialAction::Get => Self::Fill,
             GitCredentialAction::Store => Self::Approve,
@@ -57,7 +57,7 @@ impl GitCredentialCommand {
         }
     }
 
-    fn is_mutating(self) -> bool {
+    const fn is_mutating(self) -> bool {
         matches!(self, Self::Approve | Self::Reject)
     }
 }
@@ -448,7 +448,7 @@ pub(crate) fn run_git_credential_helper() -> Result<()> {
     Ok(())
 }
 
-fn git_host_helper_enabled(credentials: &ResolvedGitCredentials) -> bool {
+const fn git_host_helper_enabled(credentials: &ResolvedGitCredentials) -> bool {
     credentials.enabled
         && matches!(
             credentials.https,
@@ -456,11 +456,11 @@ fn git_host_helper_enabled(credentials: &ResolvedGitCredentials) -> bool {
         )
 }
 
-fn git_credentials_setup_enabled(credentials: &ResolvedGitCredentials) -> bool {
+const fn git_credentials_setup_enabled(credentials: &ResolvedGitCredentials) -> bool {
     credentials.enabled && (git_host_helper_enabled(credentials) || credentials.copy_user)
 }
 
-fn git_user_config_copy_enabled(credentials: &ResolvedGitCredentials) -> bool {
+const fn git_user_config_copy_enabled(credentials: &ResolvedGitCredentials) -> bool {
     credentials.enabled && credentials.copy_user
 }
 

@@ -321,7 +321,7 @@ pub(super) fn compose_services(status: &WorkspaceStatus) -> Vec<String> {
     services
 }
 
-fn completion(command: bool, after_hook: bool) -> &'static str {
+const fn completion(command: bool, after_hook: bool) -> &'static str {
     match (command, after_hook) {
         (true, true) => "complete",
         (true, false) => "after-hook-pending",

@@ -32,7 +32,7 @@ pub(in crate::up) enum WorkspaceLocationValidation {
 }
 
 impl WorkspaceLocationValidation {
-    fn require_explicit_workspace_folder(self) -> bool {
+    const fn require_explicit_workspace_folder(self) -> bool {
         matches!(
             self,
             WorkspaceLocationValidation::ConfigResolved
@@ -40,7 +40,7 @@ impl WorkspaceLocationValidation {
         )
     }
 
-    fn validate_workspace_folder_under_mount(self) -> bool {
+    const fn validate_workspace_folder_under_mount(self) -> bool {
         matches!(self, WorkspaceLocationValidation::RuntimeResolved)
     }
 }
@@ -226,7 +226,7 @@ fn workspace_mount_spec(
     })
 }
 
-fn host_path_create_mode(mount_resolution: MountResolution) -> HostPathCreateMode {
+const fn host_path_create_mode(mount_resolution: MountResolution) -> HostPathCreateMode {
     match mount_resolution {
         MountResolution::ReadOnly => HostPathCreateMode::ReadOnly,
         MountResolution::Resolve | MountResolution::DeferConfigMounts => {

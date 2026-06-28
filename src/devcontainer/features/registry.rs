@@ -279,7 +279,7 @@ fn registry_endpoint_host(registry: &str) -> &str {
     }
 }
 
-fn registry_accept_header() -> HeaderValue {
+const fn registry_accept_header() -> HeaderValue {
     HeaderValue::from_static(
         "application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json, application/octet-stream, */*",
     )

@@ -2003,9 +2003,9 @@ fn build_and_push_compose_registry_image(image: &str, version: &str) {
     fs::write(
         context.path().join("Dockerfile"),
         format!(
-            r#"FROM alpine:3.20
+            r"FROM alpine:3.20
 RUN printf '%s\n' '{version}' >/decune-version
-"#
+"
         ),
     )
     .unwrap();

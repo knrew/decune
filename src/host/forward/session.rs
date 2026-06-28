@@ -42,7 +42,7 @@ impl Drop for ForwardListener {
 }
 
 impl ForwardListener {
-    pub(super) fn port(&self) -> &ResolvedForwardPort {
+    pub(super) const fn port(&self) -> &ResolvedForwardPort {
         &self.port
     }
 }
@@ -309,7 +309,7 @@ mod tests {
                         ForwardAgentAccess::new([target_port], "test-secret".to_owned()),
                     )
                     .await
-                    .unwrap()
+                    .unwrap();
                 }
             });
             wait_for_socket(&agent_socket).await;
@@ -354,7 +354,7 @@ mod tests {
                         ForwardAgentAccess::new([9], "test-secret".to_owned()),
                     )
                     .await
-                    .unwrap()
+                    .unwrap();
                 }
             });
             wait_for_socket(&agent_socket).await;
@@ -395,7 +395,7 @@ mod tests {
                         ForwardAgentAccess::new([9], "test-secret".to_owned()),
                     )
                     .await
-                    .unwrap()
+                    .unwrap();
                 }
             });
             wait_for_socket(&agent_socket).await;
@@ -440,7 +440,7 @@ mod tests {
                         ForwardAgentAccess::new([9], "test-secret".to_owned()),
                     )
                     .await
-                    .unwrap()
+                    .unwrap();
                 }
             });
             wait_for_socket(&agent_socket).await;
