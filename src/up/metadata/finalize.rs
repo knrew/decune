@@ -274,7 +274,7 @@ mod tests {
                 "#,
             );
             let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
 
             ensure_image(&client, "alpine:3.20", PullPolicy::Missing)
                 .await
@@ -343,7 +343,7 @@ mod tests {
             );
             let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
             let container_name = plan.resources.container_name.clone();
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
 
             let result: anyhow::Result<()> = async {
                 remove_container(&client, &container_name, true, true).await?;
@@ -427,7 +427,7 @@ mod tests {
             );
             let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
             let container_name = plan.resources.container_name.clone();
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
 
             let result: anyhow::Result<()> = async {
                 remove_container(&client, &container_name, true, true).await?;

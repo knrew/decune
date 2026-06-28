@@ -60,14 +60,20 @@ impl Drop for DockerResourceLock {
 }
 
 fn docker_resource_lock_path() -> Option<PathBuf> {
-    env::var_os(DECUNE_DOCKER_RESOURCE_LOCK_ENV)
-        .map(PathBuf::from)
-        .or_else(default_test_lock_path)
+    let configured_path = env::var_os(DECUNE_DOCKER_RESOURCE_LOCK_ENV).map(PathBuf::from);
+    #[cfg(test)]
+    {
+        configured_path.or_else(|| Some(default_test_lock_path()))
+    }
+    #[cfg(not(test))]
+    {
+        configured_path.or_else(default_test_lock_path)
+    }
 }
 
 #[cfg(test)]
-fn default_test_lock_path() -> Option<PathBuf> {
-    Some(env::temp_dir().join("decune-test-docker-resource.lock"))
+fn default_test_lock_path() -> PathBuf {
+    env::temp_dir().join("decune-test-docker-resource.lock")
 }
 
 #[cfg(not(test))]

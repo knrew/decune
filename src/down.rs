@@ -83,7 +83,7 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
     let workspace = Workspace::resolve(&options.workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
-    let client = DockerClient::connect_from_env()?;
+    let client = DockerClient::connect_from_env();
     let mut compose_project_names = compose_fallback_project_names(&workspace, &client).await?;
     let mut stopped_compose_project = false;
     match compose_lifecycle_plan(&workspace, ComposeLifecycleCommand::Down, &client).await {
@@ -151,7 +151,7 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
     let workspace = Workspace::resolve(&workspace)?;
     cleanup_github_cli_token_file(workspace.paths().runtime_dir());
     cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
-    let client = DockerClient::connect_from_env()?;
+    let client = DockerClient::connect_from_env();
     let mut compose_project_names = compose_fallback_project_names(&workspace, &client).await?;
     let mut remove_generated_images = images;
     let mut compose_projects_removed_by_compose = Vec::new();
@@ -233,7 +233,7 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
 }
 
 async fn run_remove_all_workspaces(images: bool, no_confirm: bool) -> Result<()> {
-    let client = DockerClient::connect_from_env()?;
+    let client = DockerClient::connect_from_env();
     let plans = discover_all_workspace_removal_plans(&client, images).await?;
     if plans.is_empty() {
         ui::done("No decune-managed workspace environments found");
@@ -328,7 +328,7 @@ async fn discover_all_workspace_removal_plans(
 
     for plan in entries.values_mut() {
         plan.state_dir = state_dir_for_workspace_id(&plan.workspace_id)?;
-        plan.runtime_dir = runtime_dir_for_workspace_id(&plan.workspace_id)?;
+        plan.runtime_dir = runtime_dir_for_workspace_id(&plan.workspace_id);
         plan.has_state |= plan.state_dir.exists();
         plan.has_runtime = plan.runtime_dir.exists();
         plan.has_forward_status = forward_status_dir(&plan.runtime_dir).exists();
@@ -1038,7 +1038,7 @@ mod tests {
 
         let plan = runtime
             .block_on(async {
-                let client = DockerClient::connect_from_env().unwrap();
+                let client = DockerClient::connect_from_env();
                 super::compose_lifecycle_plan(
                     &workspace,
                     super::ComposeLifecycleCommand::Down,
@@ -1115,7 +1115,7 @@ mod tests {
 
         let plan = runtime
             .block_on(async {
-                let client = DockerClient::connect_from_env().unwrap();
+                let client = DockerClient::connect_from_env();
                 super::compose_lifecycle_plan(
                     &workspace,
                     super::ComposeLifecycleCommand::Down,

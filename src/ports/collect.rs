@@ -55,27 +55,27 @@ pub(crate) async fn collect_workspace_ports(
         Ok(None) | Err(_) => {}
     }
 
-    match DockerClient::connect_from_env() {
-        Ok(client) => match client
-            .cli()
-            .list_workspace_container_inspects(workspace.id())
-            .await
-        {
-            Ok(discovered) => {
-                for container in discovered {
-                    add_compose_project_context(
-                        &mut compose_projects,
-                        compose_project_name_from_container(&container).as_deref(),
-                        &context,
-                    );
-                    containers.push(PublishedContainerInspect {
-                        container,
-                        context: Some(context.clone()),
-                    });
-                }
+    let client = DockerClient::connect_from_env();
+    match client
+        .cli()
+        .list_workspace_container_inspects(workspace.id())
+        .await
+    {
+        Ok(discovered) => {
+            for container in discovered {
+                add_compose_project_context(
+                    &mut compose_projects,
+                    compose_project_name_from_container(&container).as_deref(),
+                    &context,
+                );
+                containers.push(PublishedContainerInspect {
+                    container,
+                    context: Some(context.clone()),
+                });
+            }
 
-                for (project_name, project_context) in compose_projects {
-                    match client
+            for (project_name, project_context) in compose_projects {
+                match client
                         .cli()
                         .list_compose_project_container_inspects_by_project(&project_name)
                         .await
@@ -93,14 +93,8 @@ pub(crate) async fn collect_workspace_ports(
                             project_context.workspace_id, project_name
                         )),
                     }
-                }
             }
-            Err(error) if state_exists => inventory.warnings.push(format!(
-                "Failed to read Docker published ports for workspace {}: {error:#}",
-                workspace.id()
-            )),
-            Err(_) => {}
-        },
+        }
         Err(error) if state_exists => inventory.warnings.push(format!(
             "Failed to read Docker published ports for workspace {}: {error:#}",
             workspace.id()
@@ -145,34 +139,33 @@ pub(crate) async fn collect_all_ports() -> Result<PortInventory> {
         }
     }
 
-    match DockerClient::connect_from_env() {
-        Ok(client) => match client.cli().list_all_managed_container_inspects().await {
-            Ok(discovered) => {
-                for container in discovered {
-                    let Some((workspace_id, labels)) =
-                        managed_workspace_id_from_container(&container)
-                    else {
-                        continue;
-                    };
-                    let context = contexts
-                        .entry(workspace_id.clone())
-                        .or_insert_with(|| context_for_workspace_id(&workspace_id));
-                    if let Some(workspace_path) = workspace_path_from_labels(labels) {
-                        context.workspace_path.get_or_insert(workspace_path);
-                    }
-                    add_compose_project_context(
-                        &mut compose_projects,
-                        compose_project_name_from_container(&container).as_deref(),
-                        context,
-                    );
-                    containers.push(PublishedContainerInspect {
-                        container,
-                        context: Some(context.clone()),
-                    });
+    let client = DockerClient::connect_from_env();
+    match client.cli().list_all_managed_container_inspects().await {
+        Ok(discovered) => {
+            for container in discovered {
+                let Some((workspace_id, labels)) = managed_workspace_id_from_container(&container)
+                else {
+                    continue;
+                };
+                let context = contexts
+                    .entry(workspace_id.clone())
+                    .or_insert_with(|| context_for_workspace_id(&workspace_id));
+                if let Some(workspace_path) = workspace_path_from_labels(labels) {
+                    context.workspace_path.get_or_insert(workspace_path);
                 }
+                add_compose_project_context(
+                    &mut compose_projects,
+                    compose_project_name_from_container(&container).as_deref(),
+                    context,
+                );
+                containers.push(PublishedContainerInspect {
+                    container,
+                    context: Some(context.clone()),
+                });
+            }
 
-                for (project_name, project_context) in compose_projects.clone() {
-                    match client
+            for (project_name, project_context) in compose_projects.clone() {
+                match client
                         .cli()
                         .list_compose_project_container_inspects_by_project(&project_name)
                         .await
@@ -190,14 +183,10 @@ pub(crate) async fn collect_all_ports() -> Result<PortInventory> {
                             project_context.workspace_id, project_name
                         )),
                     }
-                }
             }
-            Err(error) => warnings.push(format!(
-                "Failed to read decune-managed Docker containers while listing ports: {error:#}"
-            )),
-        },
+        }
         Err(error) => warnings.push(format!(
-            "Failed to connect to Docker while listing published ports: {error:#}"
+            "Failed to read decune-managed Docker containers while listing ports: {error:#}"
         )),
     }
 

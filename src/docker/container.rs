@@ -439,7 +439,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let name = format!("decune-test-container-{}", std::process::id());
             let result: anyhow::Result<()> = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
@@ -492,7 +492,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let name = format!("decune-test-stop-nonzero-{}", std::process::id());
             let result: anyhow::Result<()> = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
@@ -539,7 +539,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let suffix = std::process::id();
             let matching = format!("decune-test-label-matching-{suffix}");
             let other_workspace = format!("decune-test-label-other-{suffix}");
@@ -628,7 +628,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let name = format!("decune-test-create-spec-{}", std::process::id());
             let host_directory = tempfile::tempdir().unwrap();
             let host_file = host_directory.path().join("message.txt");

@@ -48,24 +48,22 @@ struct CommandProbeImage {
     uses_existing_image: bool,
 }
 
-async fn prepare_command_probe_image_for_plan(
+fn prepare_command_probe_image_for_plan(
     _client: &DockerClient,
     _plan: &UpPlan,
     remote_user_image: Option<&str>,
     _build_for_lookup: Option<(bool, bool)>,
-) -> Result<Option<CommandProbeImage>> {
-    let Some(remote_user_image) = remote_user_image else {
-        return Ok(None);
-    };
+) -> Option<CommandProbeImage> {
+    let remote_user_image = remote_user_image?;
 
     // Existing-container reconciliation should probe the image that the
     // container is actually using. Building current inputs here would make a
     // metadata probe observe changes before the explicit config-hash/rebuild
     // decision below.
-    Ok(Some(CommandProbeImage {
+    Some(CommandProbeImage {
         image: remote_user_image.to_owned(),
         uses_existing_image: true,
-    }))
+    })
 }
 
 pub(super) async fn maybe_auto_add_github_cli_feature_to_plan(
@@ -80,7 +78,7 @@ pub(super) async fn maybe_auto_add_github_cli_feature_to_plan(
         return Ok(plan);
     }
 
-    let host_token_available = host_github_auth_token_available()?;
+    let host_token_available = host_github_auth_token_available();
     if !should_auto_add_github_cli_feature(&plan.config, host_token_available, false) {
         return Ok(plan);
     }
@@ -91,7 +89,6 @@ pub(super) async fn maybe_auto_add_github_cli_feature_to_plan(
         lookup.remote_user_image,
         lookup.command_probe_build_options,
     )
-    .await?
     .unwrap_or_else(|| CommandProbeImage {
         image: (*lookup.image).clone(),
         uses_existing_image: false,

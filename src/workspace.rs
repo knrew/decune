@@ -78,7 +78,7 @@ pub(crate) struct WorkspacePaths {
 
 impl WorkspacePaths {
     pub(crate) fn resolve(workspace_root: &Path, workspace_id: &str) -> Result<Self> {
-        Self::from_roots(workspace_root, workspace_id, &PathRoots::from_env()?)
+        Self::from_roots(workspace_root, workspace_id, &PathRoots::from_env())
     }
 
     fn from_roots(workspace_root: &Path, workspace_id: &str, roots: &PathRoots) -> Result<Self> {
@@ -118,15 +118,15 @@ impl WorkspacePaths {
 }
 
 pub(crate) fn decune_state_root() -> Result<PathBuf> {
-    Ok(PathRoots::from_env()?.state_root()?.join("decune"))
+    Ok(PathRoots::from_env().state_root()?.join("decune"))
 }
 
 pub(crate) fn decune_cache_root() -> Result<PathBuf> {
-    Ok(PathRoots::from_env()?.cache_root()?.join("decune"))
+    Ok(PathRoots::from_env().cache_root()?.join("decune"))
 }
 
-pub(crate) fn decune_runtime_root() -> Result<PathBuf> {
-    Ok(PathRoots::from_env()?.runtime_root())
+pub(crate) fn decune_runtime_root() -> PathBuf {
+    PathRoots::from_env().runtime_root()
 }
 
 pub(crate) fn state_dir_for_workspace_id(workspace_id: &str) -> Result<PathBuf> {
@@ -137,8 +137,8 @@ pub(crate) fn cache_dir_for_workspace_id(workspace_id: &str) -> Result<PathBuf> 
     Ok(decune_cache_root()?.join(workspace_id))
 }
 
-pub(crate) fn runtime_dir_for_workspace_id(workspace_id: &str) -> Result<PathBuf> {
-    Ok(PathRoots::from_env()?.runtime_dir(workspace_id))
+pub(crate) fn runtime_dir_for_workspace_id(workspace_id: &str) -> PathBuf {
+    PathRoots::from_env().runtime_dir(workspace_id)
 }
 
 pub(crate) fn feature_archive_cache_dir() -> Result<PathBuf> {
@@ -167,15 +167,15 @@ struct PathRoots {
 }
 
 impl PathRoots {
-    fn from_env() -> Result<Self> {
-        Ok(Self {
+    fn from_env() -> Self {
+        Self {
             home: env_path("HOME"),
             xdg_config_home: env_path("XDG_CONFIG_HOME"),
             xdg_state_home: env_path("XDG_STATE_HOME"),
             xdg_cache_home: env_path("XDG_CACHE_HOME"),
             xdg_runtime_dir: env_path("XDG_RUNTIME_DIR"),
             uid: current_uid(),
-        })
+        }
     }
 
     fn config_root(&self) -> Result<PathBuf> {

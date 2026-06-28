@@ -253,7 +253,7 @@ pub(super) async fn start_compose_project(
         .await?;
     validate_compose_published_port_diagnostics(&published_port_policy_input)?;
 
-    let client = DockerClient::connect_from_env()?;
+    let client = DockerClient::connect_from_env();
     let existing_compose_project_containers =
         list_compose_project_containers(&client, workspace.id(), compose_project.project_name())
             .await?;

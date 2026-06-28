@@ -120,15 +120,7 @@ pub(crate) async fn resolve_exec_env(
             return Ok(remote_env.clone());
         }
     };
-    let probe_env = match parse_env_probe_output(&stdout) {
-        Ok(probe_env) => probe_env,
-        Err(error) => {
-            ui::warn(&format!(
-                "User environment probe output could not be parsed in container {container}; continuing without probed environment: {error:#}"
-            ));
-            return Ok(remote_env.clone());
-        }
-    };
+    let probe_env = parse_env_probe_output(&stdout);
 
     Ok(merge_probe_env(probe_env, remote_env))
 }
@@ -201,7 +193,7 @@ pub(crate) fn user_env_probe_command(
     Some(vec![shell.to_owned(), flags.to_owned(), "env".to_owned()])
 }
 
-pub(crate) fn parse_env_probe_output(output: &str) -> Result<BTreeMap<String, String>> {
+pub(crate) fn parse_env_probe_output(output: &str) -> BTreeMap<String, String> {
     let mut env = BTreeMap::new();
 
     for line in output.lines() {
@@ -214,7 +206,7 @@ pub(crate) fn parse_env_probe_output(output: &str) -> Result<BTreeMap<String, St
         env.insert(key.to_owned(), value.to_owned());
     }
 
-    Ok(env)
+    env
 }
 
 pub(crate) fn merge_probe_env(
@@ -274,7 +266,7 @@ mod tests {
 
     #[test]
     fn parse_env_probe_output_keeps_values_with_equals() {
-        let env = parse_env_probe_output("PATH=/usr/bin\nTOKEN=a=b\nINVALID\n").unwrap();
+        let env = parse_env_probe_output("PATH=/usr/bin\nTOKEN=a=b\nINVALID\n");
 
         assert_eq!(env.get("PATH").map(String::as_str), Some("/usr/bin"));
         assert_eq!(env.get("TOKEN").map(String::as_str), Some("a=b"));

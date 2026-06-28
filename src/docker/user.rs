@@ -1297,7 +1297,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let image = test_image_tag("remote-user-numeric-without-passwd");
             let result = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
@@ -1340,7 +1340,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let name = test_container_name("remote-user-root");
             let result = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
@@ -1377,7 +1377,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let image = test_image_tag("remote-user-nonroot");
             let name = test_container_name("remote-user-nonroot");
             let result = async {
@@ -1428,7 +1428,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let image = test_image_tag("remote-user-grouped");
             let name = test_container_name("remote-user-grouped");
             let result = async {
@@ -1479,7 +1479,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let name = test_container_name("remote-user-missing");
             let result = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
@@ -1522,7 +1522,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let image = test_image_tag("remote-user-missing-image");
             let name = test_container_name("remote-user-missing-image");
             let result = async {
@@ -1587,7 +1587,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let image = test_image_tag("uid-gid-sync-users");
             let result = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
@@ -1704,7 +1704,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let named_image = test_image_tag("uid-gid-sync-image-user-only");
             let numeric_image = test_image_tag("uid-gid-sync-numeric-user");
             let result = async {
@@ -1791,7 +1791,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let image = test_image_tag("uid-gid-sync-numeric-without-passwd");
             let result = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
@@ -1842,7 +1842,7 @@ mod tests {
             .unwrap();
 
         runtime.block_on(async {
-            let client = DockerClient::connect_from_env().unwrap();
+            let client = DockerClient::connect_from_env();
             let result = async {
                 ensure_image(&client, "alpine:3.20", PullPolicy::Missing).await?;
                 let users = resolve_effective_users_from_image(

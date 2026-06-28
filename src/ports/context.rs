@@ -74,8 +74,7 @@ pub(super) fn context_for_workspace_id(workspace_id: &str) -> WorkspacePortConte
     WorkspacePortContext {
         workspace_id: workspace_id.to_owned(),
         workspace_path: None,
-        runtime_dir: runtime_dir_for_workspace_id(workspace_id)
-            .unwrap_or_else(|_| PathBuf::from(workspace_id)),
+        runtime_dir: runtime_dir_for_workspace_id(workspace_id),
         published_ports: Vec::new(),
     }
 }

@@ -25,12 +25,10 @@ use types::{StatusInventory, WorkspaceStatus};
 
 pub(crate) async fn discover_status_inventory() -> Result<StatusInventory> {
     let state_entries = load_status_states(&decune_state_root()?)?;
-    let docker_evidence = match DockerClient::connect_from_env() {
-        Ok(client) => collect_docker_evidence(client.cli(), &state_entries)
-            .await
-            .map_err(|error| format!("Failed to read decune-managed Docker resources: {error:#}")),
-        Err(error) => Err(format!("Failed to connect to Docker: {error:#}")),
-    };
+    let client = DockerClient::connect_from_env();
+    let docker_evidence = collect_docker_evidence(client.cli(), &state_entries)
+        .await
+        .map_err(|error| format!("Failed to read decune-managed Docker resources: {error:#}"));
 
     Ok(build_status_inventory(state_entries, docker_evidence))
 }
@@ -71,17 +69,12 @@ async fn discover_workspace_status(
         Ok(None) => None,
         Err(error) => Some(Err(format!("{error:#}"))),
     };
-    let docker_evidence = match DockerClient::connect_from_env() {
-        Ok(client) => {
-            let state_ref = state.as_ref().and_then(|state| state.as_ref().ok());
-            collect_workspace_docker_evidence(client.cli(), workspace.id(), state_ref)
-                .await
-                .map_err(|error| {
-                    format!("Failed to read decune-managed Docker resources: {error:#}")
-                })
-        }
-        Err(error) => Err(format!("Failed to connect to Docker: {error:#}")),
-    };
+    let client = DockerClient::connect_from_env();
+    let state_ref = state.as_ref().and_then(|state| state.as_ref().ok());
+    let docker_evidence =
+        collect_workspace_docker_evidence(client.cli(), workspace.id(), state_ref)
+            .await
+            .map_err(|error| format!("Failed to read decune-managed Docker resources: {error:#}"));
     let docker_unavailable = docker_evidence.is_err();
     let docker_evidence = docker_evidence.unwrap_or_default();
 

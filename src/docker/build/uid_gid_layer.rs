@@ -46,7 +46,7 @@ pub(crate) fn prepare_uid_gid_sync_layer_build_context(
         )
     })?;
     let script_path = input.context_dir.join(UID_GID_SYNC_SCRIPT_FILE);
-    fs::write(&script_path, uid_gid_sync_script(input)?).with_context(|| {
+    fs::write(&script_path, uid_gid_sync_script(input)).with_context(|| {
         format!(
             "Failed to write UID/GID sync script: {}",
             script_path.display()
@@ -70,9 +70,9 @@ fn uid_gid_sync_layer_dockerfile(input: &UidGidSyncLayerBuildInput) -> Result<St
     ))
 }
 
-fn uid_gid_sync_script(input: &UidGidSyncLayerBuildInput) -> Result<String> {
+fn uid_gid_sync_script(input: &UidGidSyncLayerBuildInput) -> String {
     let target_user = shell_quote(&input.target_user);
-    Ok(format!(
+    format!(
         r#"set -eu
 target_user={target_user}
 old_uid={old_uid}
@@ -143,7 +143,7 @@ fi
         old_gid = input.old_gid,
         new_uid = input.new_uid,
         new_gid = input.new_gid,
-    ))
+    )
 }
 
 #[cfg(test)]
