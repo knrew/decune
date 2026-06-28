@@ -77,12 +77,20 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             match &self.previous {
-                Some(value) => unsafe {
-                    std::env::set_var(self.name, value);
-                },
-                None => unsafe {
-                    std::env::remove_var(self.name);
-                },
+                Some(value) => {
+                    // SAFETY: These tests mutate a dedicated test environment variable
+                    // synchronously and restore it before the guard is dropped.
+                    unsafe {
+                        std::env::set_var(self.name, value);
+                    }
+                }
+                None => {
+                    // SAFETY: These tests mutate a dedicated test environment variable
+                    // synchronously and restore it before the guard is dropped.
+                    unsafe {
+                        std::env::remove_var(self.name);
+                    }
+                }
             }
         }
     }
@@ -112,6 +120,8 @@ mod tests {
     fn feature_metadata_refresh_preserves_static_expansion() {
         let env_name = "DECUNE_TEST_FEATURE_STATIC_BUILD_ARG";
         let _guard = EnvVarGuard::capture(env_name);
+        // SAFETY: This test mutates a dedicated test environment variable before exercising
+        // synchronous localEnv expansion and restores it with EnvVarGuard.
         unsafe {
             std::env::set_var(env_name, "first-secret");
         }
@@ -199,6 +209,8 @@ mod tests {
             ]
         );
 
+        // SAFETY: This test mutates a dedicated test environment variable before exercising
+        // synchronous localEnv expansion and restores it with EnvVarGuard.
         unsafe {
             std::env::set_var(env_name, "second-secret");
         }

@@ -302,6 +302,7 @@ fn prepare_runtime_dir(runtime_dir: &Path, access: HostDaemonAccess) -> Result<(
 
 #[cfg(unix)]
 fn current_uid() -> u32 {
+    // SAFETY: getuid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getuid() }
 }
 
@@ -312,6 +313,7 @@ fn current_uid() -> u32 {
 
 #[cfg(unix)]
 fn current_gid() -> u32 {
+    // SAFETY: getgid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getgid() }
 }
 

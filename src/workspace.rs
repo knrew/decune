@@ -343,7 +343,7 @@ fn env_path(name: &str) -> Option<PathBuf> {
 
 #[cfg(unix)]
 fn current_uid() -> u32 {
-    // fallback runtime path の一部として使うだけなので，失敗しない libc 呼び出しに閉じる．
+    // SAFETY: getuid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getuid() }
 }
 

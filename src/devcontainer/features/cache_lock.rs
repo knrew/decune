@@ -87,6 +87,8 @@ fn open_lock_file(path: &Path) -> Result<File> {
 
 fn flock(fd: i32, operation: i32) -> io::Result<()> {
     loop {
+        // SAFETY: flock operates on the supplied file descriptor only; callers pass an fd
+        // obtained from an open lock file, and OS errors are reported through errno.
         let status = unsafe { libc::flock(fd, operation) };
         if status == 0 {
             return Ok(());

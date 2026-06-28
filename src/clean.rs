@@ -794,6 +794,8 @@ fn display_path(path: &Path) -> String {
 
 fn flock(fd: i32, operation: i32) -> io::Result<()> {
     loop {
+        // SAFETY: flock operates on the supplied file descriptor only; callers pass an fd
+        // obtained from an open lock file, and OS errors are reported through errno.
         let status = unsafe { libc::flock(fd, operation) };
         if status == 0 {
             return Ok(());
@@ -1156,10 +1158,20 @@ mod tests {
     impl Drop for EnvGuard {
         fn drop(&mut self) {
             for (key, value) in &self.original {
-                unsafe {
-                    match value {
-                        Some(value) => std::env::set_var(key, value),
-                        None => std::env::remove_var(key),
+                match value {
+                    Some(value) => {
+                        // SAFETY: EnvGuard holds env_mutex while restoring the test process
+                        // environment, so these tests serialize their environment mutations.
+                        unsafe {
+                            std::env::set_var(key, value);
+                        }
+                    }
+                    None => {
+                        // SAFETY: EnvGuard holds env_mutex while restoring the test process
+                        // environment, so these tests serialize their environment mutations.
+                        unsafe {
+                            std::env::remove_var(key);
+                        }
                     }
                 }
             }
@@ -1188,6 +1200,8 @@ mod tests {
     }
 
     fn set_env(key: &str, value: &Path) {
+        // SAFETY: apply_env holds env_mutex while setting and later restoring these test
+        // environment variables.
         unsafe {
             std::env::set_var(key, value);
         }

@@ -1,10 +1,7 @@
 #![allow(
     clippy::cognitive_complexity,
-    clippy::mod_module_files,
     clippy::multiple_crate_versions,
-    clippy::multiple_unsafe_ops_per_block,
     clippy::too_many_lines,
-    clippy::undocumented_unsafe_blocks,
     reason = "Temporary allow while strict clippy policy is introduced; code fixes will follow separately."
 )]
 

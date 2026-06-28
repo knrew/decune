@@ -797,6 +797,8 @@ mod tests {
 
     #[cfg(unix)]
     fn process_exists(pid: libc::pid_t) -> bool {
+        // SAFETY: kill with signal 0 only asks the kernel to validate the pid and does not
+        // dereference process memory.
         unsafe { libc::kill(pid, 0) == 0 }
     }
 }

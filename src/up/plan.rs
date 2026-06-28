@@ -451,12 +451,20 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             match &self.previous {
-                Some(value) => unsafe {
-                    std::env::set_var(self.name, value);
-                },
-                None => unsafe {
-                    std::env::remove_var(self.name);
-                },
+                Some(value) => {
+                    // SAFETY: These tests mutate process environment synchronously and restore
+                    // the captured value before the guard is dropped.
+                    unsafe {
+                        std::env::set_var(self.name, value);
+                    }
+                }
+                None => {
+                    // SAFETY: These tests mutate process environment synchronously and restore
+                    // the captured value before the guard is dropped.
+                    unsafe {
+                        std::env::remove_var(self.name);
+                    }
+                }
             }
         }
     }
@@ -469,6 +477,8 @@ mod tests {
 
     fn set_xdg_config_home(path: &std::path::Path) -> EnvVarGuard {
         let guard = EnvVarGuard::capture("XDG_CONFIG_HOME");
+        // SAFETY: This test helper mutates process environment synchronously and returns an
+        // EnvVarGuard that restores the captured value.
         unsafe {
             std::env::set_var("XDG_CONFIG_HOME", path);
         }

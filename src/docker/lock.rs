@@ -83,6 +83,8 @@ const fn default_test_lock_path() -> Option<PathBuf> {
 
 fn flock(fd: i32, operation: i32) -> io::Result<()> {
     loop {
+        // SAFETY: flock operates on the supplied file descriptor only; callers pass an fd
+        // obtained from an open lock file, and OS errors are reported through errno.
         let status = unsafe { libc::flock(fd, operation) };
         if status == 0 {
             return Ok(());

@@ -79,9 +79,11 @@ pub(super) fn hex_lower(bytes: &[u8]) -> String {
 }
 
 pub(crate) fn current_uid() -> u32 {
+    // SAFETY: getuid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getuid() }
 }
 
 pub(crate) fn current_gid() -> u32 {
+    // SAFETY: getgid has no preconditions, takes no pointers, and cannot fail.
     unsafe { libc::getgid() }
 }
