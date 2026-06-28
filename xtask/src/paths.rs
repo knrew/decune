@@ -37,10 +37,10 @@ pub(crate) fn target_dir_from_env_value(workspace: &Path, value: Option<PathBuf>
 }
 
 pub(crate) fn resolve_dist_dir(workspace: &Path, path: Option<&Path>) -> PathBuf {
-    match path {
-        Some(path) => workspace_relative(workspace, path),
-        None => target_dir(workspace).join("dist"),
-    }
+    path.map_or_else(
+        || target_dir(workspace).join("dist"),
+        |path| workspace_relative(workspace, path),
+    )
 }
 
 #[cfg(test)]

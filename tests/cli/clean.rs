@@ -217,14 +217,18 @@ impl CleanTestPaths {
         let cache_home = temp.path().join("cache-home");
         let state_home = temp.path().join("state-home");
         let runtime_home = temp.path().join("runtime-home");
+        let cache_dir = cache_home.join("decune").join(workspace_id);
+        let state_dir = state_home.join("decune").join(workspace_id);
+        let runtime_dir = runtime_home.join("decune").join(workspace_id);
+        let feature_cache_dir = cache_home.join("decune/features");
         Self {
-            cache_dir: cache_home.join("decune").join(workspace_id),
-            state_dir: state_home.join("decune").join(workspace_id),
-            runtime_dir: runtime_home.join("decune").join(workspace_id),
-            feature_cache_dir: cache_home.join("decune/features"),
             cache_home,
             state_home,
             runtime_home,
+            cache_dir,
+            state_dir,
+            runtime_dir,
+            feature_cache_dir,
         }
     }
 

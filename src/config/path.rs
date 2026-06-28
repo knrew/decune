@@ -134,12 +134,11 @@ fn resolve_read_only_directory_path(
                 if !metadata.is_dir() {
                     if missing_components.is_empty() {
                         bail!("Host path is not a directory: {}", current.display());
-                    } else {
-                        bail!(
-                            "Host path ancestor is not a directory: {}",
-                            current.display()
-                        );
                     }
+                    bail!(
+                        "Host path ancestor is not a directory: {}",
+                        current.display()
+                    );
                 }
                 if missing_components.is_empty() {
                     return resolve_existing_host_path(absolute_path, symlink_resolution);

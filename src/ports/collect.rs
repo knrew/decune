@@ -48,12 +48,11 @@ pub(crate) async fn collect_workspace_ports(
                 &context,
             );
         }
-        Ok(None) => {}
         Err(error) if state_exists => inventory.warnings.push(format!(
             "Failed to read decune state file while listing ports for workspace {}: {error:#}",
             workspace.id()
         )),
-        Err(_) => {}
+        Ok(None) | Err(_) => {}
     }
 
     match DockerClient::connect_from_env() {

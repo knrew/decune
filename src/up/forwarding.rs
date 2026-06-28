@@ -320,11 +320,7 @@ pub(in crate::up) fn published_port_publish_ports_for_service(
     published_ports
         .iter()
         .filter(|port| {
-            port.target.protocol == "tcp"
-                && match service {
-                    Some(service) => port.service == service,
-                    None => true,
-                }
+            port.target.protocol == "tcp" && service.is_none_or(|service| port.service == service)
         })
         .map(|port| ResolvedPublishPort {
             container: port.target.port,

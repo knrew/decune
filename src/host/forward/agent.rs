@@ -350,19 +350,18 @@ fn forward_agent_start_error(
 ) -> Result<Option<String>> {
     let diagnostic = read_forward_agent_diagnostic(runtime_dir)?;
     if let ForwardAgentStatus::Exited { exit_code } = status {
-        let exit_code = exit_code
-            .map(|code| format!(" with exit code {code}"))
-            .unwrap_or_default();
-        return Ok(Some(match diagnostic {
-            Some(diagnostic) => format!(
-                "Port forwarding agent exited before its socket became available{exit_code}. diagnostic: {diagnostic}"
-            ),
-            None => {
+        let exit_code =
+            exit_code.map_or_else(String::new, |code| format!(" with exit code {code}"));
+        return Ok(Some(diagnostic.map_or_else(
+            || {
+                format!("Port forwarding agent exited before its socket became available{exit_code}")
+            },
+            |diagnostic| {
                 format!(
-                    "Port forwarding agent exited before its socket became available{exit_code}"
+                    "Port forwarding agent exited before its socket became available{exit_code}. diagnostic: {diagnostic}"
                 )
-            }
-        }));
+            },
+        )));
     }
 
     Ok(diagnostic.map(|diagnostic| format!("Port forwarding agent failed to start: {diagnostic}")))

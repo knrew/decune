@@ -512,8 +512,14 @@ fn feature_instance_key(
         .map(|(key, value)| format!("{key}={value}"))
         .collect::<Vec<_>>()
         .join("\x1f");
-    match local_instance {
-        Some(instance) => {
+    local_instance.map_or_else(
+        || {
+            format!(
+                "oci\x1e{}\x1e{}\x1e{options}",
+                feature.canonical_id, source.digest
+            )
+        },
+        |instance| {
             let canonical_id = match reference {
                 FeatureRef::Local(reference) => &reference.canonical_id,
                 FeatureRef::Oci(_) => &feature.canonical_id,
@@ -522,12 +528,8 @@ fn feature_instance_key(
                 "local\x1e{}\x1e{}\x1e{options}\x1e{instance}",
                 canonical_id, source.digest
             )
-        }
-        None => format!(
-            "oci\x1e{}\x1e{}\x1e{options}",
-            feature.canonical_id, source.digest
-        ),
-    }
+        },
+    )
 }
 
 fn feature_install_input_instance_key(input: &FeatureInstallInput) -> String {
@@ -818,9 +820,10 @@ fn feature_tag_parts(tag: &str) -> Vec<FeatureTagPart> {
     tag.split(['.', '-', '_'])
         .filter(|part| !part.is_empty())
         .map(|part| {
-            part.parse::<u64>()
-                .map(FeatureTagPart::Number)
-                .unwrap_or_else(|_| FeatureTagPart::Text(part.to_ascii_lowercase()))
+            part.parse::<u64>().map_or_else(
+                |_| FeatureTagPart::Text(part.to_ascii_lowercase()),
+                FeatureTagPart::Number,
+            )
         })
         .collect()
 }
@@ -847,7 +850,7 @@ mod tests {
     use crate::devcontainer::features::cache::{
         FeatureCacheMetadata, feature_cache_archive_path, write_cache_archive,
     };
-    use crate::devcontainer::features::hex_lower;
+    use crate::hex::hex_lower;
 
     #[test]
     fn local_feature_metadata_id_must_match_directory_name() {

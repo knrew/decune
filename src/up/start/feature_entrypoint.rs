@@ -1,4 +1,5 @@
 use super::*;
+use crate::hex::hex_lower;
 
 pub(super) fn prepare_feature_entrypoint_sentinel_runtime(
     plan: &UpPlan,
@@ -140,16 +141,6 @@ fn random_hex(bytes_len: usize, context: &str) -> Result<String> {
     Ok(hex_lower(&bytes))
 }
 
-fn hex_lower(bytes: &[u8]) -> String {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-    let mut output = String::with_capacity(bytes.len() * 2);
-    for byte in bytes {
-        output.push(HEX[(byte >> 4) as usize] as char);
-        output.push(HEX[(byte & 0x0f) as usize] as char);
-    }
-    output
-}
-
 pub(super) async fn ensure_feature_entrypoints_completed(
     client: &DockerClient,
     container_name: &str,
@@ -192,7 +183,7 @@ async fn feature_entrypoint_sentinel_is_current(
     container_name: &str,
 ) -> Result<bool> {
     let script = feature_entrypoint_sentinel_check_script();
-    let output = match exec_capture_output(
+    let Ok(output) = exec_capture_output(
         client,
         container_name,
         &ExecCommandSpec {
@@ -205,9 +196,8 @@ async fn feature_entrypoint_sentinel_is_current(
         },
     )
     .await
-    {
-        Ok(output) => output,
-        Err(_) => return Ok(false),
+    else {
+        return Ok(false);
     };
 
     Ok(output.exit_code == 0)

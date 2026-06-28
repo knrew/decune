@@ -228,9 +228,9 @@ async fn compose_published_port_runtime_state(
                     protocol: compose_port_protocol_name(&entry.protocol).to_owned(),
                 },
                 requested: published_port_endpoint_state(&entry.requested),
-                relocated: entry.requested.host_port != planned.host_port,
                 planned: published_port_endpoint_state(&planned),
                 actual_bindings,
+                relocated: entry.requested.host_port != planned.host_port,
             }
         })
         .collect()

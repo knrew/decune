@@ -207,16 +207,16 @@ digest = "sha256:locked"
         );
         let image_layer = ConfigLayer {
             devcontainer: Some(crate::config::layer::LayerDevcontainerMetadata {
-                remote_user: Some("image-user".to_owned()),
                 remote_env: [("FROM_IMAGE".to_owned(), "1".to_owned())].into(),
+                remote_user: Some("image-user".to_owned()),
                 ..crate::config::layer::LayerDevcontainerMetadata::default()
             }),
             ..ConfigLayer::default()
         };
         let changed_image_layer = ConfigLayer {
             devcontainer: Some(crate::config::layer::LayerDevcontainerMetadata {
-                remote_user: Some("image-user".to_owned()),
                 remote_env: [("FROM_IMAGE".to_owned(), "2".to_owned())].into(),
+                remote_user: Some("image-user".to_owned()),
                 ..crate::config::layer::LayerDevcontainerMetadata::default()
             }),
             ..ConfigLayer::default()

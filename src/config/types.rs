@@ -87,10 +87,9 @@ pub(crate) enum OnAutoForward {
 impl From<RawOnAutoForward> for OnAutoForward {
     fn from(value: RawOnAutoForward) -> Self {
         match value {
-            RawOnAutoForward::Notify => Self::Notify,
+            RawOnAutoForward::Notify | RawOnAutoForward::OpenBrowser => Self::Notify,
             RawOnAutoForward::Silent => Self::Silent,
             RawOnAutoForward::Ignore => Self::Ignore,
-            RawOnAutoForward::OpenBrowser => Self::Notify,
         }
     }
 }

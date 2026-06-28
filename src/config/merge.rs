@@ -732,8 +732,8 @@ command = "cli.sh"
                 },
                 ConfigLayer {
                     devcontainer: Some(LayerDevcontainerMetadata {
-                        remote_user: Some("second-image-user".to_owned()),
                         remote_env: [("FROM_IMAGE".to_owned(), "1".to_owned())].into(),
+                        remote_user: Some("second-image-user".to_owned()),
                         ..LayerDevcontainerMetadata::default()
                     }),
                     ..ConfigLayer::default()

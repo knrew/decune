@@ -7,7 +7,7 @@ use std::{
 use anyhow::{Result, anyhow};
 use sha2::{Digest, Sha256};
 
-use crate::error::ResultExt;
+use crate::{error::ResultExt, hex::push_hex_byte};
 
 const FALLBACK_WORKSPACE_BASENAME: &str = "workspace";
 const SAFE_WORKSPACE_SLUG_MAX_LEN: usize = 48;
@@ -27,10 +27,7 @@ impl Workspace {
         let path = absolute_path(path.as_ref())?;
         ensure_existing_directory(&path)?;
 
-        let root = match git_repository_root(&path) {
-            Some(root) => root,
-            None => path,
-        };
+        let root = git_repository_root(&path).map_or(path, |root| root);
         let root = root
             .canonicalize()
             .with_path_context("canonicalize workspace root", &root)?;
@@ -211,10 +208,10 @@ impl PathRoots {
     }
 
     fn runtime_root(&self) -> PathBuf {
-        match &self.xdg_runtime_dir {
-            Some(runtime_root) => runtime_root.join("decune"),
-            None => PathBuf::from("/tmp").join(format!("decune-{}", self.uid)),
-        }
+        self.xdg_runtime_dir.as_ref().map_or_else(
+            || PathBuf::from("/tmp").join(format!("decune-{}", self.uid)),
+            |runtime_root| runtime_root.join("decune"),
+        )
     }
 }
 
@@ -336,13 +333,6 @@ fn workspace_id(root: &Path) -> String {
     }
 
     id
-}
-
-fn push_hex_byte(output: &mut String, byte: u8) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-
-    output.push(HEX[(byte >> 4) as usize] as char);
-    output.push(HEX[(byte & 0x0f) as usize] as char);
 }
 
 fn env_path(name: &str) -> Option<PathBuf> {

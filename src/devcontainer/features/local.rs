@@ -3,7 +3,7 @@ use std::{fs, os::unix::fs::PermissionsExt, path::Path};
 use anyhow::{Context, Result, anyhow, bail};
 use sha2::{Digest, Sha256};
 
-use super::hex_lower;
+use crate::hex::hex_lower;
 
 pub(super) fn ensure_feature_files(source_dir: &Path, feature_ref: &str) -> Result<()> {
     let install_script = source_dir.join("install.sh");

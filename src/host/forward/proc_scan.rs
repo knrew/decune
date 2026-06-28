@@ -25,10 +25,8 @@ fn detect_listen_ports_from_proc_paths(
 ) -> Result<Vec<u16>> {
     let tcp = read_required_proc_file(tcp_path)?;
     let tcp6 = read_proc_file(tcp6_path)?.unwrap_or_default();
-    let tcp6_dual_stack = match read_ipv6_bindv6only(bindv6only_path)? {
-        Some(bindv6only) => !bindv6only,
-        None => false,
-    };
+    let tcp6_dual_stack =
+        read_ipv6_bindv6only(bindv6only_path)?.is_some_and(|bindv6only| !bindv6only);
     listen_ports_from_proc_contents(
         tcp.as_str(),
         tcp6.as_str(),

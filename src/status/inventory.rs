@@ -108,8 +108,7 @@ pub(super) fn workspace_status_with_config(
     let lifecycle_status = lifecycle_status(state, state_unreadable);
     let mode = current_config
         .as_ref()
-        .map(|config| config.mode)
-        .unwrap_or(WorkspaceMode::Unknown);
+        .map_or(WorkspaceMode::Unknown, |config| config.mode);
     let config_file = current_config
         .as_ref()
         .and_then(|config| config.config_file.clone())

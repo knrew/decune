@@ -427,9 +427,8 @@ where
     let mut auto = None;
 
     for value in values {
-        let mut table = match value {
-            Value::Table(table) => table,
-            _ => return Err(E::custom("expected table entry in [[ports]]")),
+        let Value::Table(mut table) = value else {
+            return Err(E::custom("expected table entry in [[ports]]"));
         };
 
         if let Some(auto_value) = table.remove("auto") {

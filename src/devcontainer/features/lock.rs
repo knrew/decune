@@ -124,13 +124,10 @@ pub(crate) fn resolve_locked_feature_ref(
     }
 
     match feature {
-        FeatureRef::Oci(reference) => {
-            if let Some(digest) = lock.digest_for_reference(reference) {
-                format!("{}@{}", reference.canonical_id, digest)
-            } else {
-                reference.original.clone()
-            }
-        }
+        FeatureRef::Oci(reference) => lock.digest_for_reference(reference).map_or_else(
+            || reference.original.clone(),
+            |digest| format!("{}@{}", reference.canonical_id, digest),
+        ),
         FeatureRef::Local(reference) => reference.path.display().to_string(),
     }
 }
@@ -144,15 +141,16 @@ fn feature_lock_reference_matches(locked: &str, requested: &OciFeatureRef) -> bo
 }
 
 fn oci_feature_ref_lock_key(reference: &OciFeatureRef) -> String {
-    if let Some(digest) = &reference.digest {
-        format!("{}@{digest}", reference.canonical_id)
-    } else {
-        format!(
-            "{}:{}",
-            reference.canonical_id,
-            reference.tag.as_deref().unwrap_or("latest")
-        )
-    }
+    reference.digest.as_ref().map_or_else(
+        || {
+            format!(
+                "{}:{}",
+                reference.canonical_id,
+                reference.tag.as_deref().unwrap_or("latest")
+            )
+        },
+        |digest| format!("{}@{digest}", reference.canonical_id),
+    )
 }
 
 fn create_temp_lock_file(path: &Path, content: &[u8]) -> Result<PathBuf> {

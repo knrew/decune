@@ -1703,8 +1703,10 @@ fn compose_service_container_output<const N: usize>(
         .find(|container| {
             compose_label(&container.labels, "com.docker.compose.service") == Some(service)
         })
-        .map(|container| container.id.as_str())
-        .unwrap_or_else(|| panic!("Compose service container was not found: {service}"));
+        .map_or_else(
+            || panic!("Compose service container was not found: {service}"),
+            |container| container.id.as_str(),
+        );
     let mut args = vec!["exec", container_id];
     args.extend(command);
     docker_output(args).unwrap()
@@ -1721,8 +1723,10 @@ fn compose_service_published_host_ports(
         .find(|container| {
             compose_label(&container.labels, "com.docker.compose.service") == Some(service)
         })
-        .map(|container| container.id.as_str())
-        .unwrap_or_else(|| panic!("Compose service container was not found: {service}"));
+        .map_or_else(
+            || panic!("Compose service container was not found: {service}"),
+            |container| container.id.as_str(),
+        );
     let output = docker_output(["container", "inspect", container_id]).unwrap();
     let inspect = serde_json::from_str::<Vec<Value>>(&output).unwrap();
     let ports = inspect
@@ -1804,8 +1808,10 @@ fn compose_config_service_ports<'a>(config: &'a Value, service: &str) -> &'a [Va
     config
         .pointer(&format!("/services/{service}/ports"))
         .and_then(Value::as_array)
-        .map(Vec::as_slice)
-        .unwrap_or_else(|| panic!("Compose config did not contain service ports: {config:#?}"))
+        .map_or_else(
+            || panic!("Compose config did not contain service ports: {config:#?}"),
+            Vec::as_slice,
+        )
 }
 
 fn compose_config_port_for_target(ports: &[Value], target: u16) -> &Value {

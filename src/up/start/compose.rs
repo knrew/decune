@@ -528,9 +528,9 @@ pub(super) async fn start_compose_project(
                 state,
             ));
         }
-        ExistingContainerDecision::Create => {}
-        ExistingContainerDecision::Recreate { .. } => {}
-        ExistingContainerDecision::ReuseRunning { .. }
+        ExistingContainerDecision::Create
+        | ExistingContainerDecision::Recreate { .. }
+        | ExistingContainerDecision::ReuseRunning { .. }
         | ExistingContainerDecision::StartStopped { .. } => {}
     }
 
@@ -553,9 +553,10 @@ pub(super) async fn start_compose_project(
     let container = ComposeIntrospector::new(cli)
         .resolve_service_container(&runtime_lifecycle.project, &compose.service)
         .await?;
+    let container_name = container.name.unwrap_or_else(|| container.id.clone());
     let outcome = UpOutcome {
-        container_name: container.name.unwrap_or_else(|| container.id.clone()),
         container_id: container.id,
+        container_name,
         reused: false,
     };
     ensure_container_running_after_start(

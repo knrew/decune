@@ -1,6 +1,8 @@
 use std::{
     collections::BTreeMap,
-    env, fs, io,
+    env,
+    fmt::Write as _,
+    fs, io,
     io::{Read, Write},
     os::unix::{fs::PermissionsExt, net::UnixStream},
     path::{Path, PathBuf},
@@ -98,10 +100,10 @@ pub(crate) fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<Strin
         return Ok(response.output.unwrap_or_default());
     }
 
-    let message = response
-        .error
-        .map(|error| error.message)
-        .unwrap_or_else(|| "Host daemon request failed".to_owned());
+    let message = response.error.map_or_else(
+        || "Host daemon request failed".to_owned(),
+        |error| error.message,
+    );
     Err(anyhow!(message))
 }
 
@@ -259,7 +261,7 @@ async fn setup_git_credential_helper(
         return Ok(());
     }
 
-    let script = git_credential_helper_setup_script(&config.credentials.git);
+    let script = git_credential_helper_setup_script(&config.credentials.git)?;
     let env = BTreeMap::from([("HOME".to_owned(), remote_home.to_owned())]);
     let setup_result = exec_capture_output(
         client,
@@ -351,21 +353,22 @@ async fn setup_git_user_config(
     Ok(())
 }
 
-fn git_credential_helper_setup_script(credentials: &ResolvedGitCredentials) -> String {
+fn git_credential_helper_setup_script(credentials: &ResolvedGitCredentials) -> Result<String> {
     if !git_host_helper_enabled(credentials) {
-        return String::new();
+        return Ok(String::new());
     }
     let mut script = String::from("set -e\n");
-    script.push_str(&format!(
-        "test -x {} || {{ echo \"Missing Git credential helper container tool: {}\" >&2; exit 1; }}\n",
+    writeln!(
+        script,
+        "test -x {} || {{ echo \"Missing Git credential helper container tool: {}\" >&2; exit 1; }}",
         shell_quote(GIT_CREDENTIAL_HELPER_TARGET),
         GIT_CREDENTIAL_HELPER_TARGET
-    ));
+    )?;
     script.push_str("git config --global --unset-all credential.helper >/dev/null 2>&1 || true\n");
     script.push_str("git config --global --add credential.helper ");
     script.push_str(&shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
     script.push('\n');
-    script
+    Ok(script)
 }
 
 fn git_user_config_setup_script(credentials: &ResolvedGitCredentials) -> Result<String> {
@@ -572,12 +575,9 @@ fn host_git_config_value_from(command: &Path, key: &str) -> Result<Option<String
         return Ok(None);
     }
 
-    let value = match String::from_utf8(output.stdout) {
-        Ok(value) => value,
-        Err(_) => {
-            ui::warn(&format!("Host Git config value is not UTF-8: {key}"));
-            return Ok(None);
-        }
+    let Ok(value) = String::from_utf8(output.stdout) else {
+        ui::warn(&format!("Host Git config value is not UTF-8: {key}"));
+        return Ok(None);
     };
     let value = value.trim_end_matches(['\r', '\n']).to_owned();
     if value.is_empty() {
@@ -890,7 +890,7 @@ mod tests {
     fn helper_setup_script_requires_staged_real_binary_before_configuring_helper() {
         let config = ResolvedConfig::default();
 
-        let script = git_credential_helper_setup_script(&config.credentials.git);
+        let script = git_credential_helper_setup_script(&config.credentials.git).unwrap();
 
         let helper_guard_command = format!("test -x {}", shell_quote(GIT_CREDENTIAL_HELPER_TARGET));
         let helper_guard = script.find(&helper_guard_command).unwrap();
@@ -910,7 +910,7 @@ mod tests {
     fn user_config_setup_script_is_independent_from_helper_architecture_guard() {
         let config = ResolvedConfig::default();
 
-        let helper_script = git_credential_helper_setup_script(&config.credentials.git);
+        let helper_script = git_credential_helper_setup_script(&config.credentials.git).unwrap();
         let user_script = git_user_config_setup_script_from_values(
             &config.credentials.git,
             Some("Octo User"),
@@ -991,7 +991,7 @@ mod tests {
         config.credentials.git.copy_user = false;
         config.credentials.git.copy_global_config = true;
 
-        let script = git_credential_helper_setup_script(&config.credentials.git);
+        let script = git_credential_helper_setup_script(&config.credentials.git).unwrap();
 
         assert!(script.is_empty());
         assert!(!script.contains("credential.helper"));

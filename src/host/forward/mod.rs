@@ -41,20 +41,22 @@ const FORWARD_AGENT_START_DELAY: std::time::Duration = std::time::Duration::from
 const FORWARD_AGENT_DIAGNOSTIC_TAIL_BYTES: usize = 4096;
 
 pub(crate) fn forward_agent_socket_name(service: Option<&str>) -> String {
-    match service {
-        Some(service) => format!("forward-agent-{}.sock", service_socket_key(service)),
-        None => FORWARD_AGENT_SOCKET_NAME.to_owned(),
-    }
+    service.map_or_else(
+        || FORWARD_AGENT_SOCKET_NAME.to_owned(),
+        |service| format!("forward-agent-{}.sock", service_socket_key(service)),
+    )
 }
 
 pub(crate) fn forward_agent_session_socket_name(service: Option<&str>, session_id: &str) -> String {
-    match service {
-        Some(service) => format!(
-            "forward-agent-{}-{session_id}.sock",
-            service_socket_key(service)
-        ),
-        None => format!("forward-agent-{session_id}.sock"),
-    }
+    service.map_or_else(
+        || format!("forward-agent-{session_id}.sock"),
+        |service| {
+            format!(
+                "forward-agent-{}-{session_id}.sock",
+                service_socket_key(service)
+            )
+        },
+    )
 }
 
 pub(crate) fn forward_agent_socket_target_from_name(socket_name: &str) -> String {
@@ -62,8 +64,7 @@ pub(crate) fn forward_agent_socket_target_from_name(socket_name: &str) -> String
         "{}/{}",
         FORWARD_AGENT_SOCKET_TARGET
             .rsplit_once('/')
-            .map(|(parent, _)| parent)
-            .unwrap_or("/run/decune"),
+            .map_or("/run/decune", |(parent, _)| parent),
         socket_name
     )
 }

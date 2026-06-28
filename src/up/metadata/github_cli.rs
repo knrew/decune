@@ -92,7 +92,7 @@ pub(super) async fn maybe_auto_add_github_cli_feature_to_plan(
         lookup.command_probe_build_options,
     )
     .await?
-    .unwrap_or(CommandProbeImage {
+    .unwrap_or_else(|| CommandProbeImage {
         image: (*lookup.image).clone(),
         uses_existing_image: false,
     });

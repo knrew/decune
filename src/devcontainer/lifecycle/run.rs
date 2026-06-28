@@ -34,16 +34,7 @@ pub(crate) async fn run_container_start_lifecycle(
 ) -> Result<()> {
     let pending_creation = has_pending_creation_lifecycle(*state);
     match path {
-        LifecycleRunPath::New => {
-            run_pending_creation_lifecycle(context, state, &mut save_state).await?;
-            run_container_stage(
-                context,
-                HookStage::BeforePostStart,
-                LifecycleStage::PostStart,
-            )
-            .await?;
-        }
-        LifecycleRunPath::Started => {
+        LifecycleRunPath::New | LifecycleRunPath::Started => {
             run_pending_creation_lifecycle(context, state, &mut save_state).await?;
             run_container_stage(
                 context,

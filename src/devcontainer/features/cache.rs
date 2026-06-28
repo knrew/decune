@@ -7,10 +7,11 @@ use anyhow::{Context, Result, anyhow, bail};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::hex::hex_lower;
+
 use super::{
     archive::{extract_feature_archive, find_required_feature_file},
     cache_lock::FeatureCacheLock,
-    hex_lower,
     reference::{OciFeatureRef, validate_oci_digest},
     registry::{OciLayerDescriptor, OciManifestResponse, OciRegistryClient},
 };

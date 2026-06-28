@@ -320,12 +320,14 @@ fn resolve_container_env(expression: &str, context: &VariableContext) -> Result<
         return Err(anyhow!("containerEnv variable name must not be empty"));
     }
 
-    match context.container_env.get(name) {
-        Some(value) => Ok(value.clone()),
-        None => default
-            .map(str::to_owned)
-            .ok_or_else(|| anyhow!("Container environment variable is not set: {name}")),
-    }
+    context.container_env.get(name).map_or_else(
+        || {
+            default
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("Container environment variable is not set: {name}"))
+        },
+        |value| Ok(value.clone()),
+    )
 }
 
 fn resolve_local_env_tracked<F>(expression: &str, local_env: &mut F) -> Result<ExpandedString>
@@ -340,18 +342,22 @@ where
         return Err(anyhow!("localEnv variable name must not be empty"));
     }
 
-    match local_env(name)? {
-        Some(value) => Ok(ExpandedString {
-            value: value.clone(),
-            local_env_fragments: vec![value],
-        }),
-        None => default
-            .map(|value| ExpandedString {
-                value: value.to_owned(),
-                local_env_fragments: Vec::new(),
+    local_env(name)?.map_or_else(
+        || {
+            default
+                .map(|value| ExpandedString {
+                    value: value.to_owned(),
+                    local_env_fragments: Vec::new(),
+                })
+                .ok_or_else(|| anyhow!("Local environment variable is not set: {name}"))
+        },
+        |value| {
+            Ok(ExpandedString {
+                value: value.clone(),
+                local_env_fragments: vec![value],
             })
-            .ok_or_else(|| anyhow!("Local environment variable is not set: {name}")),
-    }
+        },
+    )
 }
 
 fn resolve_local_env<F>(expression: &str, local_env: &mut F) -> Result<String>
@@ -366,12 +372,14 @@ where
         return Err(anyhow!("localEnv variable name must not be empty"));
     }
 
-    match local_env(name)? {
-        Some(value) => Ok(value),
-        None => default
-            .map(str::to_owned)
-            .ok_or_else(|| anyhow!("Local environment variable is not set: {name}")),
-    }
+    local_env(name)?.map_or_else(
+        || {
+            default
+                .map(str::to_owned)
+                .ok_or_else(|| anyhow!("Local environment variable is not set: {name}"))
+        },
+        Ok,
+    )
 }
 
 fn reject_container_env_references(values: &BTreeMap<String, String>) -> Result<()> {

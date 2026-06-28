@@ -69,10 +69,10 @@ impl Drop for FeatureCacheLock {
 }
 
 fn feature_cache_lock_path(cache_root: &Path) -> PathBuf {
-    cache_root
-        .parent()
-        .map(|parent| parent.join("features.lock"))
-        .unwrap_or_else(|| PathBuf::from("features.lock"))
+    cache_root.parent().map_or_else(
+        || PathBuf::from("features.lock"),
+        |parent| parent.join("features.lock"),
+    )
 }
 
 fn open_lock_file(path: &Path) -> Result<File> {

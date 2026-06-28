@@ -156,10 +156,7 @@ fn has_extra_bind_mounts(config: &ResolvedConfig) -> bool {
 fn devcontainer_mount_is_bind_or_unknown(
     mount: &crate::config::layer::LayerDevcontainerMount,
 ) -> bool {
-    match devcontainer_mount_type(mount) {
-        Ok(mount_type) => mount_type == MountType::Bind,
-        Err(_) => true,
-    }
+    devcontainer_mount_type(mount).map_or(true, |mount_type| mount_type == MountType::Bind)
 }
 
 fn unsupported_port_attribute_warnings(config: &ResolvedConfig) -> Vec<String> {

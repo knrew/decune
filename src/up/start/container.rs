@@ -301,15 +301,12 @@ async fn wait_for_container_exit_within(
     container_name: &str,
     duration: Duration,
 ) -> Result<Option<i64>> {
-    match tokio::time::timeout(
+    tokio::time::timeout(
         duration,
         wait_for_container_exit_code(client, container_name),
     )
     .await
-    {
-        Ok(exit_code) => exit_code.map(Some),
-        Err(_) => Ok(None),
-    }
+    .map_or_else(|_| Ok(None), |exit_code| exit_code.map(Some))
 }
 
 pub(super) fn container_exited_during_startup_error(

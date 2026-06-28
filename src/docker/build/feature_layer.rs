@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -138,12 +139,13 @@ fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
     for (index, feature) in input.features.iter().enumerate() {
         dockerfile.push_str(&feature_container_env_dockerfile(feature)?);
         let name = feature_context_name(index, &feature.id);
-        dockerfile.push_str(&format!(
-            "RUN /bin/sh /tmp/decune-features/install-features.sh install {name}\n"
-        ));
+        writeln!(
+            dockerfile,
+            "RUN /bin/sh /tmp/decune-features/install-features.sh install {name}"
+        )?;
     }
     dockerfile.push_str("RUN /bin/sh /tmp/decune-features/install-features.sh finish\n");
-    dockerfile.push_str(&format!("USER {final_user}\n"));
+    writeln!(dockerfile, "USER {final_user}")?;
     Ok(dockerfile)
 }
 
@@ -214,26 +216,22 @@ decune_install_feature() {
     let remote_user = input
         .install_env
         .get("_REMOTE_USER")
-        .map(String::as_str)
-        .unwrap_or("");
+        .map_or("", String::as_str);
     let container_user = input
         .install_env
         .get("_CONTAINER_USER")
-        .map(String::as_str)
-        .unwrap_or("");
-    if !remote_user.is_empty() {
-        script.push_str(&format!(
-            "DECUNE_REMOTE_USER={}\n",
-            shell_quote(remote_user)
-        ));
-    } else {
+        .map_or("", String::as_str);
+    if remote_user.is_empty() {
         script.push_str("DECUNE_REMOTE_USER=''\n");
+    } else {
+        writeln!(script, "DECUNE_REMOTE_USER={}", shell_quote(remote_user))?;
     }
     if !container_user.is_empty() && container_user != remote_user {
-        script.push_str(&format!(
-            "DECUNE_CONTAINER_USER={}\n",
+        writeln!(
+            script,
+            "DECUNE_CONTAINER_USER={}",
             shell_quote(container_user)
-        ));
+        )?;
     } else {
         script.push_str("DECUNE_CONTAINER_USER=''\n");
     }
@@ -265,10 +263,11 @@ fn feature_container_env_dockerfile(feature: &FeatureLayerBuildFeature) -> Resul
     let mut output = String::new();
     for (key, value) in &feature.container_env {
         validate_feature_env_key(&feature.id, key)?;
-        output.push_str(&format!(
-            "ENV {key}=\"{}\"\n",
+        writeln!(
+            output,
+            "ENV {key}=\"{}\"",
             dockerfile_env_value(&feature.id, key, value)?
-        ));
+        )?;
     }
 
     Ok(output)
@@ -356,7 +355,7 @@ fn feature_env_file(
     let mut output = String::new();
     for (key, value) in env {
         validate_feature_env_key(&feature.id, &key)?;
-        output.push_str(&format!("{key}={}\n", shell_quote(&value)));
+        writeln!(output, "{key}={}", shell_quote(&value))?;
     }
 
     Ok(output)

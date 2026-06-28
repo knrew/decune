@@ -2,6 +2,8 @@ use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
 use toml::Value;
 
+use crate::hex::push_hex_byte;
+
 #[derive(Debug, Default)]
 pub(crate) struct CanonicalWriter {
     output: String,
@@ -178,11 +180,4 @@ fn push_hex_u64(output: &mut String, value: u64) {
     for byte in value.to_be_bytes() {
         push_hex_byte(output, byte);
     }
-}
-
-fn push_hex_byte(output: &mut String, byte: u8) {
-    const HEX: &[u8; 16] = b"0123456789abcdef";
-
-    output.push(HEX[(byte >> 4) as usize] as char);
-    output.push(HEX[(byte & 0x0f) as usize] as char);
 }

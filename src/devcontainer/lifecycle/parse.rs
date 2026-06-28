@@ -27,10 +27,10 @@ pub(crate) fn parse_lifecycle_command(
 pub(crate) fn parse_lifecycle_definition(
     values: &BTreeMap<LifecycleProperty, Value>,
 ) -> Result<LifecycleDefinition> {
-    Ok(match parse_lifecycle_layer_definition(values)? {
-        Some(layer) => layer.into_resolved(),
-        None => LifecycleDefinition::empty(),
-    })
+    Ok(parse_lifecycle_layer_definition(values)?.map_or_else(
+        LifecycleDefinition::empty,
+        LayerLifecycleDefinition::into_resolved,
+    ))
 }
 
 pub(crate) fn parse_lifecycle_layer_definition(

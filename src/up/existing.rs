@@ -149,19 +149,19 @@ fn mount_matches_required(existing: &UpMountSummary, required: &UpMountSummary) 
         return false;
     }
 
-    match required.source.as_deref() {
-        Some(required_source) => existing.source.as_deref() == Some(required_source),
-        None => true,
-    }
+    required
+        .source
+        .as_deref()
+        .is_none_or(|required_source| existing.source.as_deref() == Some(required_source))
 }
 
 #[cfg(test)]
 pub(crate) fn container_summary(container: ContainerInspect) -> Option<UpContainerSummary> {
     let id = container.id?;
-    let name = container
-        .name
-        .map(|name| name.trim_start_matches('/').to_owned())
-        .unwrap_or_else(|| id.clone());
+    let name = container.name.map_or_else(
+        || id.clone(),
+        |name| name.trim_start_matches('/').to_owned(),
+    );
     let config_hash = None;
     let config_file = container
         .config

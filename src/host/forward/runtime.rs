@@ -10,6 +10,7 @@ use anyhow::{Context, Result};
 use crate::{
     config::types::MountType,
     docker::ports::ResolvedForwardPort,
+    hex::hex_lower,
     host::{
         container_tools::{ContainerTool, ContainerToolPlatform, stage_container_tool},
         credentials::DECUNE_RUNTIME_TARGET,
@@ -241,7 +242,7 @@ fn random_hex(bytes_len: usize, context: &str) -> Result<String> {
         .with_context(|| format!("Failed to open /dev/urandom for {context}"))?
         .read_exact(bytes)
         .with_context(|| format!("Failed to read {context}"))?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(hex_lower(bytes))
 }
 
 fn allowed_ports_env(forward_ports: &[ResolvedForwardPort]) -> String {
