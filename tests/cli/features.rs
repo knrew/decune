@@ -82,17 +82,7 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .args(["up", "--detach"])
             .arg(&workspace_root)
@@ -102,36 +92,28 @@ fn up_detach_applies_local_feature_layer_and_container_env() {
             .stderr(predicate::str::contains("Building Docker image"))
             .stderr(predicate::str::contains("Started dev container"));
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            let config = inspect.config.unwrap_or_default();
-            let env = config.env.unwrap_or_default();
-            assert!(env.iter().any(|entry| entry == "FROM_FEATURE=yes"));
-            let path = env
-                .iter()
-                .find_map(|entry| entry.strip_prefix("PATH="))
-                .expect("container env should include PATH from Feature image");
-            assert!(path.contains("/opt/env-tool/bin"), "{path}");
-            assert!(path.contains("/bin"), "{path}");
-            assert!(!path.contains("${PATH}"), "{path}");
-            assert!(
-                config
-                    .image
-                    .as_deref()
-                    .is_some_and(|image| image.starts_with("decune/"))
-            );
-        });
+        assert_local_feature_layer_container_env(&workspace_root);
     });
+}
 
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+fn assert_local_feature_layer_container_env(workspace_root: &Path) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    let config = inspect.config.unwrap_or_default();
+    let env = config.env.unwrap_or_default();
+    assert!(env.iter().any(|entry| entry == "FROM_FEATURE=yes"));
+    let path = env
+        .iter()
+        .find_map(|entry| entry.strip_prefix("PATH="))
+        .must_msg("container env should include PATH from Feature image");
+    assert!(path.contains("/opt/env-tool/bin"), "{path}");
+    assert!(path.contains("/bin"), "{path}");
+    assert!(!path.contains("${PATH}"), "{path}");
+    assert!(
+        config
+            .image
+            .as_deref()
+            .is_some_and(|image| image.starts_with("decune/"))
+    );
 }
 
 #[test]
@@ -204,17 +186,7 @@ fn up_detach_uses_dockerfile_metadata_user_for_feature_install_env() {
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .args(["up", "--detach"])
             .arg(&workspace_root)
@@ -223,16 +195,6 @@ fn up_detach_uses_dockerfile_metadata_user_for_feature_install_env() {
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"));
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -617,17 +579,8 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .args(["up", "--detach"])
             .arg(&workspace_root)
@@ -636,39 +589,7 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"));
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .unwrap();
-            let container_labels = inspect
-                .config
-                .as_ref()
-                .and_then(|config| config.labels.as_ref())
-                .expect("container labels should exist");
-            let container_config_hash = container_labels
-                .get("decune.config_hash")
-                .expect("container should include decune config hash label")
-                .clone();
-            let image = inspect
-                .config
-                .as_ref()
-                .and_then(|config| config.image.clone())
-                .expect("container image should exist");
-            let image = inspect_image(&image).unwrap();
-            let labels = image.config.and_then(|config| config.labels);
-            assert!(
-                !labels
-                    .as_ref()
-                    .is_some_and(|labels| labels.contains_key("devcontainer.metadata")),
-                "final Feature image must not store decune-applied Feature metadata in devcontainer.metadata"
-            );
-            assert_eq!(
-                labels
-                    .as_ref()
-                    .and_then(|labels| labels.get("decune.config_hash")),
-                Some(&container_config_hash),
-                "final Feature image label must match the container config hash"
-            );
-        });
+        assert_feature_image_metadata_labels(&workspace_root);
 
         decune()
             .args(["up", "--detach"])
@@ -678,16 +599,39 @@ fn up_detach_reuses_existing_container_without_reapplying_feature_metadata_label
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Reusing running dev container"));
     });
+}
 
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+fn assert_feature_image_metadata_labels(workspace_root: &Path) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    let container_labels = inspect
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .must_msg("container labels should exist");
+    let container_config_hash = container_labels
+        .get("decune.config_hash")
+        .must_msg("container should include decune config hash label")
+        .clone();
+    let image = inspect
+        .config
+        .as_ref()
+        .and_then(|config| config.image.clone())
+        .must_msg("container image should exist");
+    let image = inspect_image(&image).must();
+    let labels = image.config.and_then(|config| config.labels);
+    assert!(
+        !labels
+            .as_ref()
+            .is_some_and(|labels| labels.contains_key("devcontainer.metadata")),
+        "final Feature image must not store decune-applied Feature metadata in devcontainer.metadata"
+    );
+    assert_eq!(
+        labels
+            .as_ref()
+            .and_then(|labels| labels.get("decune.config_hash")),
+        Some(&container_config_hash),
+        "final Feature image label must match the container config hash"
+    );
 }
 
 #[test]

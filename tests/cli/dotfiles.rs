@@ -231,16 +231,7 @@ read_only = true
         .join(".config")
         .join("lazygit");
     let expected_config = workspace_root.join("dotfiles-real").canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers(&workspace_root, || {
         decune()
             .args(["up", "--detach"])
             .arg(&workspace_root)
@@ -249,52 +240,53 @@ read_only = true
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"));
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            let host_config = inspect
-                .host_config
-                .expect("container host config should exist");
-            let mounts = host_config.mounts.unwrap_or_default();
-            let root_mount = mounts
-                .iter()
-                .find(|mount| {
-                    mount.target.as_deref() == Some("/opt/decune/dotfiles/.config/lazygit")
-                })
-                .expect("expected dotfile skeleton mount");
-            let backing_mount = mounts
-                .iter()
-                .find(|mount| {
-                    mount
-                        .target
-                        .as_deref()
-                        .is_some_and(|target| target.starts_with("/opt/decune/dotfile-backings/"))
-                })
-                .expect("expected dotfile backing mount");
-
-            assert_eq!(root_mount.source.as_deref(), expected_skeleton.to_str());
-            assert_eq!(root_mount.read_only, Some(true));
-            assert_eq!(backing_mount.source.as_deref(), expected_config.to_str());
-            assert_eq!(backing_mount.read_only, Some(true));
-            assert!(!mounts.iter().any(|mount| {
-                mount.target.as_deref() == Some("/opt/decune/dotfiles/.config/lazygit/config.yml")
-            }));
-            assert_eq!(
-                std::fs::read_link(expected_skeleton.join("config.yml")).unwrap(),
-                PathBuf::from(format!(
-                    "{}/config.yml",
-                    backing_mount.target.as_deref().unwrap()
-                ))
-            );
-        });
+        assert_lazygit_dotfile_symlink_mounts(
+            &workspace_root,
+            &expected_skeleton,
+            &expected_config,
+        );
     });
+}
 
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-    });
+fn assert_lazygit_dotfile_symlink_mounts(
+    workspace_root: &Path,
+    expected_skeleton: &Path,
+    expected_config: &Path,
+) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    let host_config = inspect
+        .host_config
+        .must_msg("container host config should exist");
+    let mounts = host_config.mounts.unwrap_or_default();
+    let root_mount = mounts
+        .iter()
+        .find(|mount| mount.target.as_deref() == Some("/opt/decune/dotfiles/.config/lazygit"))
+        .must_msg("expected dotfile skeleton mount");
+    let backing_mount = mounts
+        .iter()
+        .find(|mount| {
+            mount
+                .target
+                .as_deref()
+                .is_some_and(|target| target.starts_with("/opt/decune/dotfile-backings/"))
+        })
+        .must_msg("expected dotfile backing mount");
+    let backing_target = backing_mount
+        .target
+        .as_deref()
+        .must_msg("backing mount should include target");
 
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+    assert_eq!(root_mount.source.as_deref(), expected_skeleton.to_str());
+    assert_eq!(root_mount.read_only, Some(true));
+    assert_eq!(backing_mount.source.as_deref(), expected_config.to_str());
+    assert_eq!(backing_mount.read_only, Some(true));
+    assert!(!mounts.iter().any(|mount| {
+        mount.target.as_deref() == Some("/opt/decune/dotfiles/.config/lazygit/config.yml")
+    }));
+    assert_eq!(
+        std::fs::read_link(expected_skeleton.join("config.yml")).must(),
+        PathBuf::from(format!("{backing_target}/config.yml"))
+    );
 }
 
 #[cfg(unix)]

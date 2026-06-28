@@ -152,8 +152,16 @@ fn feature_layer_dockerfile(input: &FeatureLayerBuildInput) -> Result<String> {
 fn feature_layer_install_script(input: &FeatureLayerBuildInput) -> Result<String> {
     let mut script = String::new();
     script.push_str("set -eu\n");
+    script.push_str(FEATURE_INSTALL_SCRIPT_FUNCTIONS);
     script.push_str(
-        r#"decune_feature_user_home() {
+        "DECUNE_WRAPPER_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\n",
+    );
+    write_feature_install_script_users(&mut script, input)?;
+    script.push_str(FEATURE_INSTALL_SCRIPT_DISPATCH);
+    Ok(script)
+}
+
+const FEATURE_INSTALL_SCRIPT_FUNCTIONS: &str = r#"decune_feature_user_home() {
     user="${1:-}"
     user="${user%%:*}"
     if [ -z "$user" ]; then
@@ -208,11 +216,32 @@ decune_install_feature() {
     ./install.sh
     )
 }
-"#,
-    );
-    script.push_str(
-        "DECUNE_WRAPPER_PATH='/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin'\n",
-    );
+"#;
+
+const FEATURE_INSTALL_SCRIPT_DISPATCH: &str = r#"case "${1:-}" in
+    install)
+        decune_install_feature "${2:-}"
+        ;;
+    finish)
+        if [ -n "$DECUNE_REMOTE_USER" ]; then
+            decune_fix_feature_ownership "$DECUNE_REMOTE_USER"
+        fi
+        if [ -n "$DECUNE_CONTAINER_USER" ]; then
+            decune_fix_feature_ownership "$DECUNE_CONTAINER_USER"
+        fi
+        PATH="$DECUNE_WRAPPER_PATH" rm -rf /tmp/decune-features
+        ;;
+    *)
+        echo "unsupported decune Feature install command: ${1:-}" >&2
+        exit 2
+        ;;
+esac
+"#;
+
+fn write_feature_install_script_users(
+    script: &mut String,
+    input: &FeatureLayerBuildInput,
+) -> Result<()> {
     let remote_user = input
         .install_env
         .get("_REMOTE_USER")
@@ -235,28 +264,7 @@ decune_install_feature() {
     } else {
         script.push_str("DECUNE_CONTAINER_USER=''\n");
     }
-    script.push_str(
-        r#"case "${1:-}" in
-    install)
-        decune_install_feature "${2:-}"
-        ;;
-    finish)
-        if [ -n "$DECUNE_REMOTE_USER" ]; then
-            decune_fix_feature_ownership "$DECUNE_REMOTE_USER"
-        fi
-        if [ -n "$DECUNE_CONTAINER_USER" ]; then
-            decune_fix_feature_ownership "$DECUNE_CONTAINER_USER"
-        fi
-        PATH="$DECUNE_WRAPPER_PATH" rm -rf /tmp/decune-features
-        ;;
-    *)
-        echo "unsupported decune Feature install command: ${1:-}" >&2
-        exit 2
-        ;;
-esac
-"#,
-    );
-    Ok(script)
+    Ok(())
 }
 
 fn feature_container_env_dockerfile(feature: &FeatureLayerBuildFeature) -> Result<String> {

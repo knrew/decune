@@ -4,17 +4,19 @@ use anyhow::Result;
 
 use crate::{
     config::{
-        ConfigHashInput, config_hash, resolved::ResolvedDevcontainerSource,
-        variables::expand_container_env_tracked,
+        ConfigHashInput, StartupCommandHashInput, config_hash,
+        resolved::ResolvedDevcontainerSource, variables::expand_container_env_tracked,
     },
     docker::{
         build::build_hash_input,
         client::DockerClient,
+        mounts::DockerMountSpec,
         resource::DockerResources,
         user::{
-            EffectiveUserResolveInput, HostPlatform, current_host_user_ids, image_config_user,
-            resolve_effective_users_from_image, resolve_effective_users_with_compose_service_user,
-            resolve_remote_user_from_image, resolve_uid_gid_sync_plan_from_image,
+            EffectiveUserResolveInput, HostPlatform, UidGidSyncPlan, current_host_user_ids,
+            image_config_user, resolve_effective_users_from_image,
+            resolve_effective_users_with_compose_service_user, resolve_remote_user_from_image,
+            resolve_uid_gid_sync_plan_from_image,
         },
     },
     runtime::compose_ports::{
@@ -24,8 +26,8 @@ use crate::{
     ui,
     up::{
         mounts::{
-            WorkspaceLocationValidation, mount_variable_context, resolve_workspace_location,
-            workspace_mount_plan_from_resolved,
+            WorkspaceLocationValidation, WorkspaceMountPlan, mount_variable_context,
+            resolve_workspace_location, workspace_mount_plan_from_resolved,
         },
         plan::{
             add_internal_hash_versions, base_image_source, expand_runtime_devcontainer_fields,
@@ -83,8 +85,71 @@ pub(super) async fn finalize_mounts_and_resources_for_plan(
     ) {
         ui::warn(&warning);
     }
-    let remote_user_name = remote_user.user.clone();
-    let remote_user_home = remote_user.home.clone();
+    let runtime_mounts =
+        finalized_runtime_mounts(workspace, &mut plan, remote_user.user, remote_user.home)?;
+    plan.forward_ports = match options.forwarding {
+        ForwardingResolution::Resolve => {
+            crate::docker::ports::resolve_forward_ports(&plan.config.ports.entries)?
+        }
+        ForwardingResolution::IgnoreDetached => Vec::new(),
+    };
+    let (compose_published_port_plan, compose_published_port_override) =
+        finalized_compose_published_ports(&plan, options.compose_published_ports)?;
+    let startup_command =
+        startup_command_hash_input(client, &plan, lookup_image, options.compose_primary_service)
+            .await?;
+    let hash_input = finalized_config_hash_input(
+        workspace,
+        &plan,
+        &runtime_mounts.mount_plan.mounts,
+        &options,
+        startup_command,
+        &compose_published_port_override,
+    )?;
+    let finalized_resources = finalized_resources(
+        workspace,
+        &plan,
+        hash_input,
+        &uid_gid_sync_plan,
+        compose_base_image,
+    )?;
+
+    plan.image = finalized_resources.image;
+    plan.base_image = finalized_resources.base_image;
+    plan.resources = finalized_resources.resources;
+    plan.pre_uid_gid_sync_resources = finalized_resources.pre_uid_gid_sync_resources;
+    plan.effective_users = effective_users;
+    plan.uid_gid_sync_plan = uid_gid_sync_plan;
+    if plan_requires_uid_gid_sync_layer(&plan) {
+        plan.uid_gid_sync_build_context_dir = Some(
+            workspace
+                .paths()
+                .cache_dir()
+                .join("uid-gid-sync-build-context"),
+        );
+    }
+    plan.workspace_folder = runtime_mounts.workspace_folder;
+    plan.mounts = runtime_mounts.mount_plan.mounts;
+    plan.dotfile_skeletons = runtime_mounts.mount_plan.dotfile_skeletons;
+
+    Ok(FinalizeMountsAndResourcesResult {
+        plan,
+        compose_published_port_plan,
+        compose_published_port_override,
+    })
+}
+
+struct FinalizedRuntimeMounts {
+    workspace_folder: String,
+    mount_plan: WorkspaceMountPlan,
+}
+
+fn finalized_runtime_mounts(
+    workspace: &Workspace,
+    plan: &mut UpPlan,
+    remote_user_name: String,
+    remote_user_home: Option<String>,
+) -> Result<FinalizedRuntimeMounts> {
     let workspace_location = resolve_workspace_location(
         workspace,
         &plan.config,
@@ -119,15 +184,21 @@ pub(super) async fn finalize_mounts_and_resources_for_plan(
         MountResolution::Resolve,
         workspace.paths().state_dir(),
     )?;
-    let mounts = mount_plan.mounts;
-    plan.forward_ports = match options.forwarding {
-        ForwardingResolution::Resolve => {
-            crate::docker::ports::resolve_forward_ports(&plan.config.ports.entries)?
-        }
-        ForwardingResolution::IgnoreDetached => Vec::new(),
-    };
-    let (compose_published_port_plan, compose_published_port_override) =
-        finalized_compose_published_ports(&plan, options.compose_published_ports)?;
+
+    Ok(FinalizedRuntimeMounts {
+        workspace_folder: workspace_location.workspace_folder,
+        mount_plan,
+    })
+}
+
+fn finalized_config_hash_input<'a>(
+    workspace: &Workspace,
+    plan: &'a UpPlan,
+    mounts: &[DockerMountSpec],
+    options: &FinalizeUpPlanMountsOptions<'_>,
+    startup_command: Option<StartupCommandHashInput>,
+    compose_published_port_override: &ComposePublishedPortOverride,
+) -> Result<ConfigHashInput<'a>> {
     let mut hash_input = ConfigHashInput::new(&plan.config);
     if let Some(context) = &plan.build_context {
         hash_input.build = Some(build_hash_input(context)?);
@@ -156,20 +227,35 @@ pub(super) async fn finalize_mounts_and_resources_for_plan(
             options.update_features,
         )?,
     };
-    hash_input.resolved_mounts = crate::up::mount_hash_inputs(&mounts);
-    hash_input.startup_command =
-        startup_command_hash_input(client, &plan, lookup_image, options.compose_primary_service)
-            .await?;
+    hash_input.resolved_mounts = crate::up::mount_hash_inputs(mounts);
+    hash_input.startup_command = startup_command;
     if let Some(compose_project) = &plan.compose_project {
         hash_input.compose_generated_override = compose_generated_override_hash_input(
             &compose_project.generated_override_path(),
-            &plan,
-            &mounts,
+            plan,
+            mounts,
             hash_input.startup_command.as_ref(),
-            &compose_published_port_override,
+            compose_published_port_override,
         );
     }
     add_internal_hash_versions(&mut hash_input, &plan.config);
+    Ok(hash_input)
+}
+
+struct FinalizedResources {
+    resources: DockerResources,
+    pre_uid_gid_sync_resources: Option<DockerResources>,
+    image: String,
+    base_image: String,
+}
+
+fn finalized_resources(
+    workspace: &Workspace,
+    plan: &UpPlan,
+    mut hash_input: ConfigHashInput<'_>,
+    uid_gid_sync_plan: &UidGidSyncPlan,
+    compose_base_image: Option<String>,
+) -> Result<FinalizedResources> {
     let config_file = plan
         .resources
         .labels
@@ -177,7 +263,7 @@ pub(super) async fn finalize_mounts_and_resources_for_plan(
         .cloned()
         .unwrap_or_default();
     let pre_uid_gid_sync_resources =
-        uid_gid_sync_plan_requires_layer(&uid_gid_sync_plan).then(|| {
+        uid_gid_sync_plan_requires_layer(uid_gid_sync_plan).then(|| {
             DockerResources::from_workspace(
                 workspace,
                 config_hash(&hash_input),
@@ -185,42 +271,24 @@ pub(super) async fn finalize_mounts_and_resources_for_plan(
             )
         });
     hash_input.uid_gid_sync = uid_gid_sync_hash_input(
-        &uid_gid_sync_plan,
+        uid_gid_sync_plan,
         plan.config.devcontainer.update_remote_user_uid,
         HostPlatform::current(),
     );
-    let hash = config_hash(&hash_input);
-    let resources = DockerResources::from_workspace(workspace, hash, config_file);
-    let image = final_image_source(&plan.config, &resources, &uid_gid_sync_plan)?;
+    let resources =
+        DockerResources::from_workspace(workspace, config_hash(&hash_input), config_file);
+    let image = final_image_source(&plan.config, &resources, uid_gid_sync_plan)?;
     let base_image_resources = pre_uid_gid_sync_resources.as_ref().unwrap_or(&resources);
-    let base_image = if let Some(compose_base_image) = compose_base_image {
-        Ok(compose_base_image)
-    } else {
-        base_image_source(&plan.config, base_image_resources, &uid_gid_sync_plan)
-    }?;
+    let base_image = match compose_base_image {
+        Some(compose_base_image) => compose_base_image,
+        None => base_image_source(&plan.config, base_image_resources, uid_gid_sync_plan)?,
+    };
 
-    plan.image = image;
-    plan.base_image = base_image;
-    plan.resources = resources;
-    plan.pre_uid_gid_sync_resources = pre_uid_gid_sync_resources;
-    plan.effective_users = effective_users;
-    plan.uid_gid_sync_plan = uid_gid_sync_plan;
-    if plan_requires_uid_gid_sync_layer(&plan) {
-        plan.uid_gid_sync_build_context_dir = Some(
-            workspace
-                .paths()
-                .cache_dir()
-                .join("uid-gid-sync-build-context"),
-        );
-    }
-    plan.workspace_folder = workspace_location.workspace_folder;
-    plan.mounts = mounts;
-    plan.dotfile_skeletons = mount_plan.dotfile_skeletons;
-
-    Ok(FinalizeMountsAndResourcesResult {
-        plan,
-        compose_published_port_plan,
-        compose_published_port_override,
+    Ok(FinalizedResources {
+        resources,
+        pre_uid_gid_sync_resources,
+        image,
+        base_image,
     })
 }
 

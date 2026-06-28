@@ -256,17 +256,7 @@ fn up_detach_copies_host_global_gitconfig_when_https_is_off_without_leaking_secr
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("HOME", host_home.path())
             .args(["up", "--detach"])
@@ -277,29 +267,21 @@ fn up_detach_copies_host_global_gitconfig_when_https_is_off_without_leaking_secr
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("global-secret").not());
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            let config = inspect.config.unwrap_or_default();
-            let env = config.env.unwrap_or_default();
-            assert!(env.iter().all(|entry| !entry.contains("global-secret")));
-            let labels = config.labels.unwrap_or_default();
-            assert!(
-                labels
-                    .values()
-                    .all(|value| !value.contains("global-secret"))
-            );
-        });
+        assert_global_secret_not_exposed(&workspace_root);
     });
+}
 
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+fn assert_global_secret_not_exposed(workspace_root: &Path) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    let config = inspect.config.unwrap_or_default();
+    let env = config.env.unwrap_or_default();
+    assert!(env.iter().all(|entry| !entry.contains("global-secret")));
+    let labels = config.labels.unwrap_or_default();
+    assert!(
+        labels
+            .values()
+            .all(|value| !value.contains("global-secret"))
+    );
 }
 
 #[test]
@@ -383,17 +365,8 @@ fn up_detach_keeps_copied_host_gitconfig_after_dotfile_gitconfig_setup() {
         )
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("HOME", host_home.path())
             .args(["up", "--detach"])
@@ -404,16 +377,6 @@ fn up_detach_keeps_copied_host_gitconfig_after_dotfile_gitconfig_setup() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("global-secret").not());
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]

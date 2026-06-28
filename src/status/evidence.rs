@@ -593,9 +593,9 @@ mod tests {
         assert_eq!(evidence.run_state, ContainerRunState::Running);
         assert_eq!(evidence.health_status, HealthStatus::Healthy);
     }
-    #[test]
-    fn workspace_docker_evidence_includes_compose_sidecar_from_state_project() {
-        let runner = FakeRuntimeCommand::new(vec![
+
+    fn compose_sidecar_runtime() -> FakeRuntimeCommand {
+        FakeRuntimeCommand::new(vec![
             Ok(output(b"")),
             Ok(output(
                 br#"[{
@@ -656,7 +656,63 @@ mod tests {
                 }]"#,
             )),
             Ok(output(br#"{"ID":"primary-id"}"#)),
-        ]);
+        ])
+    }
+
+    fn assert_compose_sidecar_evidence(evidence: &DockerEvidence) {
+        assert_eq!(evidence.containers.len(), 2);
+        let sidecar = evidence
+            .containers
+            .iter()
+            .find(|container| container.id.as_deref() == Some("sidecar-id"))
+            .unwrap();
+        assert_eq!(sidecar.workspace_id, WORKSPACE_ID);
+        assert_eq!(sidecar.workspace_path.as_deref(), Some("/workspace"));
+        assert_eq!(sidecar.service.as_deref(), Some("db"));
+        assert_eq!(sidecar.run_state, ContainerRunState::Stopped);
+        assert_eq!(sidecar.health_status, HealthStatus::Unhealthy);
+    }
+
+    fn assert_compose_sidecar_status(state: WorkspaceState, evidence: DockerEvidence) {
+        let status = workspace_status_with_config(
+            WORKSPACE_ID.to_owned(),
+            &WorkspaceEvidence {
+                state: Some(Ok(state)),
+                containers: evidence.containers,
+                volumes: evidence.volumes,
+            },
+            false,
+            Some(&CurrentWorkspaceConfig {
+                mode: WorkspaceMode::Compose,
+                config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+                config_hash: Some("hash".to_owned()),
+                error: None,
+            }),
+        );
+
+        assert_eq!(status.environment_status, EnvironmentStatus::Partial);
+        assert_eq!(status.health_status, HealthStatus::Mixed);
+        assert_issue(&status, "partial-environment");
+        assert_issue(&status, "unhealthy-container");
+        assert_eq!(
+            compose_services(&status),
+            vec!["app".to_owned(), "db".to_owned()]
+        );
+    }
+
+    fn assert_compose_project_label_filter_used(runner: &FakeRuntimeCommand) {
+        let commands = runner.commands();
+
+        assert!(commands.iter().any(|command| {
+            command
+                .args_vec()
+                .contains(&"label=com.docker.compose.project=project".to_owned())
+        }));
+    }
+
+    #[test]
+    fn workspace_docker_evidence_includes_compose_sidecar_from_state_project() {
+        let runner = compose_sidecar_runtime();
         let cli = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -675,46 +731,9 @@ mod tests {
             ))
             .unwrap();
 
-        assert_eq!(evidence.containers.len(), 2);
-        let sidecar = evidence
-            .containers
-            .iter()
-            .find(|container| container.id.as_deref() == Some("sidecar-id"))
-            .unwrap();
-        assert_eq!(sidecar.workspace_id, WORKSPACE_ID);
-        assert_eq!(sidecar.workspace_path.as_deref(), Some("/workspace"));
-        assert_eq!(sidecar.service.as_deref(), Some("db"));
-        assert_eq!(sidecar.run_state, ContainerRunState::Stopped);
-        assert_eq!(sidecar.health_status, HealthStatus::Unhealthy);
-
-        let status = workspace_status_with_config(
-            WORKSPACE_ID.to_owned(),
-            &WorkspaceEvidence {
-                state: Some(Ok(state)),
-                containers: evidence.containers,
-                volumes: evidence.volumes,
-            },
-            false,
-            Some(&CurrentWorkspaceConfig {
-                mode: WorkspaceMode::Compose,
-                config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
-                config_hash: Some("hash".to_owned()),
-                error: None,
-            }),
-        );
-        assert_eq!(status.environment_status, EnvironmentStatus::Partial);
-        assert_eq!(status.health_status, HealthStatus::Mixed);
-        assert_issue(&status, "partial-environment");
-        assert_issue(&status, "unhealthy-container");
-
-        let services = compose_services(&status);
-        assert_eq!(services, vec!["app".to_owned(), "db".to_owned()]);
-        let commands = runner.commands();
-        assert!(commands.iter().any(|command| {
-            command
-                .args_vec()
-                .contains(&"label=com.docker.compose.project=project".to_owned())
-        }));
+        assert_compose_sidecar_evidence(&evidence);
+        assert_compose_sidecar_status(state, evidence);
+        assert_compose_project_label_filter_used(&runner);
     }
     #[test]
     fn all_docker_evidence_includes_compose_sidecar_from_state_project() {

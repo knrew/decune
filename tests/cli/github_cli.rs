@@ -53,17 +53,7 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
         .join("state.toml");
     let github_token_file = runtime_dir.join("secrets").join("github-token");
     let host_daemon_socket = runtime_dir.join("host-daemon.sock");
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .env("XDG_RUNTIME_DIR", &runtime_home)
@@ -86,70 +76,71 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("github-test-secret").not());
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            let config = inspect.config.unwrap_or_default();
-            let env = config.env.unwrap_or_default();
-            assert!(
-                env.iter()
-                    .all(|entry| !entry.contains("github-test-secret"))
-            );
-            let labels = config.labels.unwrap_or_default();
-            assert!(
-                labels
-                    .values()
-                    .all(|value| !value.contains("github-test-secret"))
-            );
-            assert!(
-                labels
-                    .get("decune.config_hash")
-                    .is_some_and(|hash| !hash.contains("github-test-secret"))
-            );
-            let logs = workspace_container_logs(&workspace_root).unwrap();
-            assert!(!logs.contains("github-test-secret"));
-            let images = workspace_images(&workspace_root).unwrap();
-            assert!(
-                images
-                    .iter()
-                    .all(|image| !image.contains("github-test-secret"))
-            );
-            for image in images {
-                let inspect = inspect_image(&image).unwrap();
-                let labels = inspect.config.and_then(|config| config.labels);
-                assert!(
-                    labels
-                        .unwrap_or_default()
-                        .values()
-                        .all(|value| !value.contains("github-test-secret"))
-                );
-            }
-        });
-
-        assert_eq!(fs::read_to_string(&github_token_file).unwrap(), "");
-        assert_eq!(
-            fs::metadata(&github_token_file)
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777,
-            0o600
+        assert_github_token_not_leaked(
+            &workspace_root,
+            &github_token_file,
+            &host_daemon_socket,
+            &state_file,
         );
-        assert!(!host_daemon_socket.exists());
+    });
+}
+
+fn assert_github_token_not_leaked(
+    workspace_root: &Path,
+    github_token_file: &Path,
+    host_daemon_socket: &Path,
+    state_file: &Path,
+) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    let config = inspect.config.unwrap_or_default();
+    let env = config.env.unwrap_or_default();
+    assert!(
+        env.iter()
+            .all(|entry| !entry.contains("github-test-secret"))
+    );
+    let labels = config.labels.unwrap_or_default();
+    assert!(
+        labels
+            .values()
+            .all(|value| !value.contains("github-test-secret"))
+    );
+    assert!(
+        labels
+            .get("decune.config_hash")
+            .is_some_and(|hash| !hash.contains("github-test-secret"))
+    );
+    let logs = workspace_container_logs(workspace_root).must();
+    assert!(!logs.contains("github-test-secret"));
+    assert_github_token_not_leaked_in_images(workspace_root);
+    assert_eq!(fs::read_to_string(github_token_file).must(), "");
+    assert_eq!(
+        fs::metadata(github_token_file).must().permissions().mode() & 0o777,
+        0o600
+    );
+    assert!(!host_daemon_socket.exists());
+    assert!(
+        !fs::read_to_string(state_file)
+            .must()
+            .contains("github-test-secret")
+    );
+}
+
+fn assert_github_token_not_leaked_in_images(workspace_root: &Path) {
+    let images = workspace_images(workspace_root).must();
+    assert!(
+        images
+            .iter()
+            .all(|image| !image.contains("github-test-secret"))
+    );
+    for image in images {
+        let inspect = inspect_image(&image).must();
+        let labels = inspect.config.and_then(|config| config.labels);
         assert!(
-            !fs::read_to_string(&state_file)
-                .unwrap()
-                .contains("github-test-secret")
+            labels
+                .unwrap_or_default()
+                .values()
+                .all(|value| !value.contains("github-test-secret"))
         );
-    });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
     }
 }
 
@@ -229,17 +220,7 @@ fn up_detach_does_not_run_remote_profile_as_root_during_github_cli_setup() {
         .unwrap();
     let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .args(["up", "--detach"])
@@ -250,24 +231,12 @@ fn up_detach_does_not_run_remote_profile_as_root_during_github_cli_setup() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("github-test-secret").not());
 
-        runtime.block_on(async {
-            exec_single_workspace_container(
-                &workspace_root,
-                ["test", "!", "-f", "/tmp/decune-profile-leak"],
-            )
-            .unwrap();
-        });
+        exec_single_workspace_container(
+            &workspace_root,
+            ["test", "!", "-f", "/tmp/decune-profile-leak"],
+        )
+        .must();
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -349,17 +318,7 @@ fn up_detach_uses_remote_user_login_path_for_github_cli_setup() {
         .unwrap();
     let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .env_remove("SSH_AUTH_SOCK")
@@ -371,16 +330,6 @@ fn up_detach_uses_remote_user_login_path_for_github_cli_setup() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("github-test-secret").not());
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -556,17 +505,7 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
         .unwrap();
     let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .args(["up", "--detach"])
@@ -577,29 +516,21 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("github-test-secret").not());
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            let env = inspect.config.unwrap_or_default().env.unwrap_or_default();
-            assert!(
-                env.iter()
-                    .any(|entry| entry == "GH_CONFIG_DIR=/run/decune/gh")
-            );
-            assert!(
-                env.iter()
-                    .all(|entry| !entry.contains("github-test-secret"))
-            );
-        });
+        assert_github_cli_config_env(&workspace_root);
     });
+}
 
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+fn assert_github_cli_config_env(workspace_root: &Path) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    let env = inspect.config.unwrap_or_default().env.unwrap_or_default();
+    assert!(
+        env.iter()
+            .any(|entry| entry == "GH_CONFIG_DIR=/run/decune/gh")
+    );
+    assert!(
+        env.iter()
+            .all(|entry| !entry.contains("github-test-secret"))
+    );
 }
 
 #[test]
@@ -673,17 +604,8 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
         .unwrap();
     let fake_path = fake_gh_token_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
 
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .args(["up", "--detach"])
@@ -694,36 +616,28 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("github-test-secret").not());
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            let config = inspect.config.unwrap_or_default();
-            let env = config.env.unwrap_or_default();
-            assert!(
-                env.iter()
-                    .any(|entry| entry == "GH_CONFIG_DIR=/run/decune/gh")
-            );
-            assert!(
-                env.iter()
-                    .all(|entry| !entry.contains("github-test-secret"))
-            );
-            let labels = config.labels.unwrap_or_default();
-            assert!(
-                labels
-                    .values()
-                    .all(|value| !value.contains("github-test-secret"))
-            );
-        });
+        assert_github_cli_config_env_and_labels(&workspace_root);
     });
+}
 
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
+fn assert_github_cli_config_env_and_labels(workspace_root: &Path) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    let config = inspect.config.unwrap_or_default();
+    let env = config.env.unwrap_or_default();
+    assert!(
+        env.iter()
+            .any(|entry| entry == "GH_CONFIG_DIR=/run/decune/gh")
+    );
+    assert!(
+        env.iter()
+            .all(|entry| !entry.contains("github-test-secret"))
+    );
+    let labels = config.labels.unwrap_or_default();
+    assert!(
+        labels
+            .values()
+            .all(|value| !value.contains("github-test-secret"))
+    );
 }
 
 #[test]
@@ -879,17 +793,7 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
         "#,
     );
     let fake_path = fake_gh_token_path(&host_tools);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .env("XDG_CACHE_HOME", cache_home.path())
@@ -902,12 +806,7 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("github-test-secret").not());
 
-        let first_id = runtime.block_on(async {
-            inspect_single_workspace_container(&workspace_root)
-                .unwrap()
-                .id
-                .unwrap()
-        });
+        let first_id = workspace_container_id(&workspace_root);
 
         decune()
             .env("PATH", &fake_path)
@@ -921,21 +820,8 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
             .stderr(predicate::str::contains("Reusing running dev container"))
             .stderr(predicate::str::contains("github-test-secret").not());
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
-        });
+        assert_workspace_container_id(&workspace_root, &first_id);
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -999,73 +885,106 @@ fn up_detach_reuses_auto_added_github_cli_feature_container_when_source_tag_is_r
         "#,
     );
     let fake_path = fake_gh_token_path(&host_tools);
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
+    with_clean_workspace_and_source_image(
+        &workspace_root,
+        &source_image,
+        create_image_without_devcontainer_metadata,
+        || {
+            decune()
+                .env("PATH", &fake_path)
+                .env("XDG_CACHE_HOME", cache_home.path())
+                .env_remove("SSH_AUTH_SOCK")
+                .args(["up", "--detach"])
+                .arg(&workspace_root)
+                .assert()
+                .success()
+                .stdout(predicate::str::is_empty())
+                .stderr(predicate::str::contains("Started dev container"))
+                .stderr(predicate::str::contains("github-test-secret").not());
 
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-        remove_image_if_exists(&source_image).unwrap();
-        create_image_without_devcontainer_metadata(&source_image).unwrap();
-    });
+            let first_id = assert_github_cli_env_and_container_id(&workspace_root);
 
-    let result = std::panic::catch_unwind(|| {
-        decune()
-            .env("PATH", &fake_path)
-            .env("XDG_CACHE_HOME", cache_home.path())
-            .env_remove("SSH_AUTH_SOCK")
-            .args(["up", "--detach"])
-            .arg(&workspace_root)
-            .assert()
-            .success()
-            .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("Started dev container"))
-            .stderr(predicate::str::contains("github-test-secret").not());
+            remove_image_if_exists(&source_image).must();
 
-        let first_id = runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
-            inspect.id.unwrap()
-        });
+            decune()
+                .env("PATH", &fake_path)
+                .env("XDG_CACHE_HOME", cache_home.path())
+                .env_remove("SSH_AUTH_SOCK")
+                .args(["up", "--detach"])
+                .arg(&workspace_root)
+                .assert()
+                .success()
+                .stdout(predicate::str::is_empty())
+                .stderr(predicate::str::contains("Reusing running dev container"))
+                .stderr(predicate::str::contains("github-test-secret").not());
 
-        runtime.block_on(async {
-            remove_image_if_exists(&source_image).unwrap();
-        });
+            assert_reused_github_cli_container(&workspace_root, &first_id);
+        },
+    );
+}
 
-        decune()
-            .env("PATH", &fake_path)
-            .env("XDG_CACHE_HOME", cache_home.path())
-            .env_remove("SSH_AUTH_SOCK")
-            .args(["up", "--detach"])
-            .arg(&workspace_root)
-            .assert()
-            .success()
-            .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("Reusing running dev container"))
-            .stderr(predicate::str::contains("github-test-secret").not());
+fn with_clean_workspace_and_source_image<F, C>(
+    workspace_root: &Path,
+    source_image: &str,
+    create_source_image: C,
+    body: F,
+) where
+    F: FnOnce() + std::panic::UnwindSafe,
+    C: FnOnce(&str) -> anyhow::Result<()>,
+{
+    cleanup_workspace_containers(workspace_root).must();
+    cleanup_workspace_images(workspace_root).must();
+    remove_image_if_exists(source_image).must();
+    create_source_image(source_image).must();
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
-            assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
-        });
-    });
+    let result = std::panic::catch_unwind(body);
 
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let workspace_image_cleanup = cleanup_workspace_images(&workspace_root);
-        let source_image_cleanup = remove_image_if_exists(&source_image);
-        container_cleanup
-            .and(workspace_image_cleanup)
-            .and(source_image_cleanup)
-            .unwrap();
-    });
+    cleanup_workspace_containers(workspace_root)
+        .and_then(|()| cleanup_workspace_images(workspace_root))
+        .and_then(|()| remove_image_if_exists(source_image))
+        .must();
 
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
     }
+}
+
+fn assert_github_cli_env_and_container_id(workspace_root: &Path) -> String {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
+    inspect
+        .id
+        .must_msg("workspace container should include an id")
+}
+
+fn workspace_container_id(workspace_root: &Path) -> String {
+    inspect_single_workspace_container(workspace_root)
+        .must()
+        .id
+        .must_msg("workspace container should include an id")
+}
+
+fn assert_workspace_container_id(workspace_root: &Path, expected_id: &str) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    assert_eq!(inspect.id.as_deref(), Some(expected_id));
+}
+
+fn assert_running_container_has_expected_github_token(workspace_root: &Path) {
+    exec_single_workspace_container(
+        workspace_root,
+        [
+            "/bin/sh",
+            "-lc",
+            "test \"${GH_CONFIG_DIR:-}\" = /run/decune/gh && grep -qx \"$(cat /workspace/expected-token)\" \"$GH_CONFIG_DIR/token\"",
+        ],
+    )
+    .must();
+}
+
+fn assert_reused_github_cli_container(workspace_root: &Path, first_id: &str) {
+    let inspect = inspect_single_workspace_container(workspace_root).must();
+    assert_eq!(inspect.id.as_deref(), Some(first_id));
+    assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
 }
 
 #[test]
@@ -1447,17 +1366,7 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
     let host_token_path = host_tools.write_file("token", "first-secret\n").unwrap();
     let fake_path = fake_gh_token_file_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .env("DECUNE_TEST_GH_TOKEN_FILE", &host_token_path)
@@ -1470,12 +1379,7 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("first-secret").not());
 
-        let first_id = runtime.block_on(async {
-            inspect_single_workspace_container(&workspace_root)
-                .unwrap()
-                .id
-                .unwrap()
-        });
+        let first_id = workspace_container_id(&workspace_root);
 
         decune()
             .arg("down")
@@ -1502,21 +1406,8 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
             .stderr(predicate::str::contains("Started existing dev container"))
             .stderr(predicate::str::contains("second-secret").not());
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
-            assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
-        });
+        assert_workspace_container_id(&workspace_root, &first_id);
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]
@@ -1582,17 +1473,7 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
     let host_token_path = host_tools.write_file("token", "first-secret\n").unwrap();
     let fake_path = fake_gh_token_file_path(&host_tools);
     let workspace_root = workspace.path().canonicalize().unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_images(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    with_clean_workspace_containers_and_images(&workspace_root, || {
         decune()
             .env("PATH", &fake_path)
             .env("DECUNE_TEST_GH_TOKEN_FILE", &host_token_path)
@@ -1605,12 +1486,10 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
             .stderr(predicate::str::contains("Started dev container"))
             .stderr(predicate::str::contains("first-secret").not());
 
-        let first_id = runtime.block_on(async {
-            inspect_single_workspace_container(&workspace_root)
-                .unwrap()
-                .id
-                .unwrap()
-        });
+        let first_id = inspect_single_workspace_container(&workspace_root)
+            .must()
+            .id
+            .must_msg("workspace container should include an id");
 
         fs::write(&host_token_path, "second-secret\n").unwrap();
         workspace
@@ -1629,29 +1508,7 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
             .stderr(predicate::str::contains("Reusing running dev container"))
             .stderr(predicate::str::contains("second-secret").not());
 
-        runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .unwrap();
-            assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
-            exec_single_workspace_container(
-                &workspace_root,
-                [
-                    "/bin/sh",
-                    "-lc",
-                    "test \"${GH_CONFIG_DIR:-}\" = /run/decune/gh && grep -qx \"$(cat /workspace/expected-token)\" \"$GH_CONFIG_DIR/token\"",
-                ],
-            )
-            .unwrap();
-        });
+        assert_workspace_container_id(&workspace_root, &first_id);
+        assert_running_container_has_expected_github_token(&workspace_root);
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let image_cleanup = cleanup_workspace_images(&workspace_root);
-        container_cleanup.and(image_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }

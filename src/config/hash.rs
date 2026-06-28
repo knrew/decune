@@ -7,8 +7,9 @@ use crate::config::{
     canonical::{CanonicalWriter, sha256_hex},
     resolved::{
         ResolvedConfig, ResolvedDevcontainer, ResolvedDevcontainerMount,
-        ResolvedDevcontainerSource, ResolvedDotfile, ResolvedDotfileEntry, ResolvedHook,
-        ResolvedPublishPort, ResolvedRunArg, ResolvedShutdownAction, ResolvedUserEnvProbe,
+        ResolvedDevcontainerSource, ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry,
+        ResolvedHook, ResolvedPublishPort, ResolvedRunArg, ResolvedShutdownAction,
+        ResolvedUserEnvProbe,
     },
     types::{
         Command, DotfileConflict, GitHttpsMode, GithubCredentialsMode, HookLocation, MountCreate,
@@ -432,62 +433,9 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
         writer.field("shell", |writer| {
             writer.option_string(config.shell.as_deref());
         });
-        writer.field("features", |writer| {
-            writer.seq(config.features.iter(), |writer, feature| {
-                writer.object("Feature", |writer| {
-                    writer.field("id", |writer| writer.string(&feature.id));
-                    writer.field("canonical_id", |writer| {
-                        writer.string(&feature.canonical_id);
-                    });
-                    writer.field("options", |writer| {
-                        writer.map(feature.options.iter(), |writer, value| {
-                            writer.toml_value(value);
-                        });
-                    });
-                });
-            });
-        });
-        writer.field("dotfiles", |writer| {
-            if config.dotfile_entries.is_empty() {
-                writer.seq(config.dotfiles.iter(), write_enabled_dotfile);
-            } else {
-                writer.seq(config.dotfile_entries.iter(), |writer, entry| match entry {
-                    ResolvedDotfileEntry::Enabled(dotfile) => {
-                        write_enabled_dotfile(writer, dotfile);
-                    }
-                    ResolvedDotfileEntry::Disabled(dotfile) => {
-                        writer.object("Dotfile", |writer| {
-                            writer.field("target", |writer| writer.string(&dotfile.target));
-                            writer.field("enabled", |writer| writer.bool(false));
-                            writer.field("origin", |writer| {
-                                writer.string(config_path_origin_name(dotfile.origin));
-                            });
-                        });
-                    }
-                });
-            }
-        });
-        writer.field("mounts", |writer| {
-            writer.seq(config.mounts.iter(), |writer, mount| {
-                writer.object("Mount", |writer| {
-                    writer.field("source", |writer| {
-                        writer.option_string(mount.source.as_deref());
-                    });
-                    writer.field("target", |writer| writer.string(&mount.target));
-                    writer.field("type", |writer| {
-                        writer.string(mount_type_name(mount.mount_type));
-                    });
-                    writer.field("read_only", |writer| writer.bool(mount.read_only));
-                    writer.field("resolve_symlink", |writer| {
-                        writer.bool(mount.resolve_symlink);
-                    });
-                    writer.field("create", |writer| match mount.create {
-                        Some(create) => writer.string(mount_create_name(create)),
-                        None => writer.none(),
-                    });
-                });
-            });
-        });
+        writer.field("features", |writer| write_config_features(writer, config));
+        writer.field("dotfiles", |writer| write_config_dotfiles(writer, config));
+        writer.field("mounts", |writer| write_config_mounts(writer, config));
         // forwarding は up 実行時の runtime 設定であり，container/image の再作成条件ではない．
         _ = &config.ports;
         writer.field("devcontainer", |writer| {
@@ -500,82 +448,149 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
             );
         });
         writer.field("credentials", |writer| {
-            writer.object("Credentials", |writer| {
-                writer.field("git", |writer| {
-                    writer.object("GitCredentials", |writer| {
-                        writer.field("enabled", |writer| {
-                            writer.bool(config.credentials.git.enabled);
-                        });
-                        writer.field("copy_user", |writer| {
-                            writer.bool(config.credentials.git.copy_user);
-                        });
-                        writer.field("copy_global_config", |writer| {
-                            writer.bool(config.credentials.git.copy_global_config);
-                        });
-                        writer.field("https", |writer| {
-                            writer.string(git_https_mode_name(config.credentials.git.https));
-                        });
-                        writer.field("ssh_agent", |writer| {
-                            writer.string(ssh_agent_mode_name(config.credentials.git.ssh_agent));
-                        });
-                    });
-                });
-                writer.field("github", |writer| {
-                    writer.object("GithubCredentials", |writer| {
-                        writer.field("enabled", |writer| {
-                            writer.bool(config.credentials.github.enabled);
-                        });
-                        writer.field("mode", |writer| {
-                            writer.string(github_credentials_mode_name(
-                                config.credentials.github.mode,
-                            ));
-                        });
-                        writer.field("install_feature_if_missing", |writer| {
-                            writer.bool(config.credentials.github.install_feature_if_missing);
-                        });
-                    });
+            write_config_credentials(writer, config);
+        });
+        writer.field("hooks", |writer| {
+            write_config_hooks(writer, config);
+        });
+    });
+}
+
+fn write_config_features(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
+    writer.seq(config.features.iter(), |writer, feature| {
+        writer.object("Feature", |writer| {
+            writer.field("id", |writer| writer.string(&feature.id));
+            writer.field("canonical_id", |writer| {
+                writer.string(&feature.canonical_id);
+            });
+            writer.field("options", |writer| {
+                writer.map(feature.options.iter(), |writer, value| {
+                    writer.toml_value(value);
                 });
             });
         });
-        writer.field("hooks", |writer| {
-            writer.object("Hooks", |writer| {
-                writer.field("before_initialize", |writer| {
-                    write_hooks(writer, &config.hooks.before_initialize);
+    });
+}
+
+fn write_config_dotfiles(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
+    if config.dotfile_entries.is_empty() {
+        writer.seq(config.dotfiles.iter(), write_enabled_dotfile);
+    } else {
+        writer.seq(config.dotfile_entries.iter(), |writer, entry| match entry {
+            ResolvedDotfileEntry::Enabled(dotfile) => {
+                write_enabled_dotfile(writer, dotfile);
+            }
+            ResolvedDotfileEntry::Disabled(dotfile) => write_disabled_dotfile(writer, dotfile),
+        });
+    }
+}
+
+fn write_disabled_dotfile(writer: &mut CanonicalWriter, dotfile: &ResolvedDotfileDisable) {
+    writer.object("Dotfile", |writer| {
+        writer.field("target", |writer| writer.string(&dotfile.target));
+        writer.field("enabled", |writer| writer.bool(false));
+        writer.field("origin", |writer| {
+            writer.string(config_path_origin_name(dotfile.origin));
+        });
+    });
+}
+
+fn write_config_mounts(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
+    writer.seq(config.mounts.iter(), |writer, mount| {
+        writer.object("Mount", |writer| {
+            writer.field("source", |writer| {
+                writer.option_string(mount.source.as_deref());
+            });
+            writer.field("target", |writer| writer.string(&mount.target));
+            writer.field("type", |writer| {
+                writer.string(mount_type_name(mount.mount_type));
+            });
+            writer.field("read_only", |writer| writer.bool(mount.read_only));
+            writer.field("resolve_symlink", |writer| {
+                writer.bool(mount.resolve_symlink);
+            });
+            writer.field("create", |writer| match mount.create {
+                Some(create) => writer.string(mount_create_name(create)),
+                None => writer.none(),
+            });
+        });
+    });
+}
+
+fn write_config_credentials(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
+    writer.object("Credentials", |writer| {
+        writer.field("git", |writer| {
+            writer.object("GitCredentials", |writer| {
+                writer.field("enabled", |writer| {
+                    writer.bool(config.credentials.git.enabled);
                 });
-                writer.field("after_initialize", |writer| {
-                    write_hooks(writer, &config.hooks.after_initialize);
+                writer.field("copy_user", |writer| {
+                    writer.bool(config.credentials.git.copy_user);
                 });
-                writer.field("before_on_create", |writer| {
-                    write_hooks(writer, &config.hooks.before_on_create);
+                writer.field("copy_global_config", |writer| {
+                    writer.bool(config.credentials.git.copy_global_config);
                 });
-                writer.field("after_on_create", |writer| {
-                    write_hooks(writer, &config.hooks.after_on_create);
+                writer.field("https", |writer| {
+                    writer.string(git_https_mode_name(config.credentials.git.https));
                 });
-                writer.field("before_update_content", |writer| {
-                    write_hooks(writer, &config.hooks.before_update_content);
-                });
-                writer.field("after_update_content", |writer| {
-                    write_hooks(writer, &config.hooks.after_update_content);
-                });
-                writer.field("before_post_create", |writer| {
-                    write_hooks(writer, &config.hooks.before_post_create);
-                });
-                writer.field("after_post_create", |writer| {
-                    write_hooks(writer, &config.hooks.after_post_create);
-                });
-                writer.field("before_post_start", |writer| {
-                    write_hooks(writer, &config.hooks.before_post_start);
-                });
-                writer.field("after_post_start", |writer| {
-                    write_hooks(writer, &config.hooks.after_post_start);
-                });
-                writer.field("before_post_attach", |writer| {
-                    write_hooks(writer, &config.hooks.before_post_attach);
-                });
-                writer.field("after_post_attach", |writer| {
-                    write_hooks(writer, &config.hooks.after_post_attach);
+                writer.field("ssh_agent", |writer| {
+                    writer.string(ssh_agent_mode_name(config.credentials.git.ssh_agent));
                 });
             });
+        });
+        writer.field("github", |writer| {
+            writer.object("GithubCredentials", |writer| {
+                writer.field("enabled", |writer| {
+                    writer.bool(config.credentials.github.enabled);
+                });
+                writer.field("mode", |writer| {
+                    writer.string(github_credentials_mode_name(config.credentials.github.mode));
+                });
+                writer.field("install_feature_if_missing", |writer| {
+                    writer.bool(config.credentials.github.install_feature_if_missing);
+                });
+            });
+        });
+    });
+}
+
+fn write_config_hooks(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
+    writer.object("Hooks", |writer| {
+        writer.field("before_initialize", |writer| {
+            write_hooks(writer, &config.hooks.before_initialize);
+        });
+        writer.field("after_initialize", |writer| {
+            write_hooks(writer, &config.hooks.after_initialize);
+        });
+        writer.field("before_on_create", |writer| {
+            write_hooks(writer, &config.hooks.before_on_create);
+        });
+        writer.field("after_on_create", |writer| {
+            write_hooks(writer, &config.hooks.after_on_create);
+        });
+        writer.field("before_update_content", |writer| {
+            write_hooks(writer, &config.hooks.before_update_content);
+        });
+        writer.field("after_update_content", |writer| {
+            write_hooks(writer, &config.hooks.after_update_content);
+        });
+        writer.field("before_post_create", |writer| {
+            write_hooks(writer, &config.hooks.before_post_create);
+        });
+        writer.field("after_post_create", |writer| {
+            write_hooks(writer, &config.hooks.after_post_create);
+        });
+        writer.field("before_post_start", |writer| {
+            write_hooks(writer, &config.hooks.before_post_start);
+        });
+        writer.field("after_post_start", |writer| {
+            write_hooks(writer, &config.hooks.after_post_start);
+        });
+        writer.field("before_post_attach", |writer| {
+            write_hooks(writer, &config.hooks.before_post_attach);
+        });
+        writer.field("after_post_attach", |writer| {
+            write_hooks(writer, &config.hooks.after_post_attach);
         });
     });
 }
