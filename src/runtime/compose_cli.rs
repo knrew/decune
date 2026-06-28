@@ -8,6 +8,7 @@ mod project_plan;
 mod ps;
 
 pub(crate) use adapter::DockerComposeCli;
+pub(crate) use capabilities::ComposeCliCapabilities;
 pub(crate) use command_plan::{
     ComposeBuildOptions, ComposeDownOptions, ComposeLifecyclePlan, ComposePullOptions,
     ComposeStopOptions, ComposeUpOptions,

@@ -1,4 +1,4 @@
-use anyhow::{Result, bail};
+use anyhow::Result;
 use serde_json::Value as JsonValue;
 
 use crate::{
@@ -42,92 +42,35 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
     options: FinalizeUpPlanMountsOptions<'_>,
 ) -> Result<FinalizeUpPlanResult> {
     let update_features = options.update_features;
-    let using_existing_remote_user_image = remote_user_image.is_some();
-    let mut lookup_image = remote_user_image.map(ToOwned::to_owned);
-    let mut lookup_base_image = None;
-    let mut stale_lookup_images = Vec::new();
-    let mut image_prepared = false;
-    let mut deferred_workspace_layer = false;
     plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
-    if lookup_image.is_none() {
-        if plan.build_context.is_some() {
-            let Some((pull, no_cache)) = build_for_lookup else {
-                return Ok(FinalizeUpPlanResult::new(plan, false));
-            };
-            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
-            lookup_base_image = Some(plan.base_image.clone());
-            lookup_image = Some(plan.base_image.clone());
-            image_prepared = true;
-            deferred_workspace_layer = plan_requires_workspace_layer(&plan);
-        } else if plan_requires_workspace_layer(&plan) {
-            let Some((pull, no_cache)) = build_for_lookup else {
-                return Ok(FinalizeUpPlanResult::new(plan, false));
-            };
-            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
-            lookup_base_image = Some(plan.base_image.clone());
-            build_feature_layer_image(client, &plan, no_cache).await?;
-            lookup_image = Some(plan.image.clone());
-            image_prepared = true;
-        } else {
-            lookup_image = Some(plan.base_image.clone());
-        }
-    }
-    let Some(mut lookup_image) = lookup_image else {
-        bail!("Failed to resolve image for Dockerfile metadata lookup");
+
+    let Some(mut lookup_state) =
+        prepare_initial_lookup_image_state(client, &plan, remote_user_image, build_for_lookup)
+            .await?
+    else {
+        return Ok(FinalizeUpPlanResult::new(plan, false));
     };
-    let dockerfile_metadata =
-        dockerfile_image_metadata_for_plan(client, &plan, &lookup_image, options.forwarding)
-            .await?;
-    if !dockerfile_metadata.layers.is_empty() {
-        let skip_global_config = plan.config_layers.global.is_none();
-        plan = rebuild_up_plan_with_image_metadata_layers(
-            workspace,
-            plan,
-            dockerfile_metadata.layers,
-            options.forwarding == ForwardingResolution::IgnoreDetached
-                && dockerfile_metadata.has_forward_ports,
-            MountResolution::Resolve,
-            UpPlanResolution::new(options.forwarding, update_features, skip_global_config),
-        )?;
-        plan = prepare_feature_metadata_for_plan(workspace, plan, update_features).await?;
-        if plan_requires_workspace_layer(&plan) && !using_existing_remote_user_image {
-            let Some((pull, no_cache)) = build_for_lookup else {
-                return Ok(FinalizeUpPlanResult::new(plan, false));
-            };
-            if lookup_image != plan.base_image {
-                stale_lookup_images.push(lookup_image.clone());
-            }
-            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
-            lookup_base_image = Some(plan.base_image.clone());
-            build_feature_layer_image(client, &plan, no_cache).await?;
-            lookup_image = plan.image.clone();
-            image_prepared = true;
-            deferred_workspace_layer = false;
-        }
-    }
-    if deferred_workspace_layer
-        && plan_requires_workspace_layer(&plan)
-        && !using_existing_remote_user_image
+    let (prepared_plan, prepared_lookup_state) = Box::pin(prepare_lookup_image_after_metadata(
+        client,
+        workspace,
+        plan,
+        lookup_state,
+        build_for_lookup,
+        options,
+    ))
+    .await?;
+    plan = prepared_plan;
+    let Some(prepared_lookup_state) = prepared_lookup_state else {
+        return Ok(FinalizeUpPlanResult::new(plan, false));
+    };
+    lookup_state = prepared_lookup_state;
+    if !prepare_deferred_workspace_lookup_layer(client, &plan, &mut lookup_state, build_for_lookup)
+        .await?
     {
-        let Some((_, no_cache)) = build_for_lookup else {
-            return Ok(FinalizeUpPlanResult::new(plan, false));
-        };
-        build_feature_layer_image(client, &plan, no_cache).await?;
-        lookup_image = plan.image.clone();
-        image_prepared = true;
+        return Ok(FinalizeUpPlanResult::new(plan, false));
     }
-    let lookup = ImageLookupPreparation {
-        image: &mut lookup_image,
-        remote_user_image,
-        base_image: &mut lookup_base_image,
-        image_prepared: &mut image_prepared,
-        build_options: if using_existing_remote_user_image {
-            None
-        } else {
-            build_for_lookup
-        },
-        command_probe_build_options: build_for_lookup,
-    };
+
+    let lookup = lookup_state.lookup_preparation(remote_user_image, build_for_lookup);
     plan = Box::pin(maybe_auto_add_github_cli_feature_to_plan(
         client,
         workspace,
@@ -144,37 +87,14 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         client,
         workspace,
         plan,
-        &lookup_image,
+        &lookup_state.image,
         options,
     ))
     .await?;
     plan = finalized.plan;
 
-    if image_prepared && plan_requires_final_image_layer(&plan) {
-        if let Some((pull, no_cache)) = build_for_lookup {
-            prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
-            build_workspace_image_layers(client, &plan, no_cache).await?;
-        }
-        if plan.image != lookup_image {
-            remove_image(client, &lookup_image, false).await?;
-        }
-        if let Some(lookup_base_image) = lookup_base_image
-            && lookup_base_image != plan.base_image
-        {
-            remove_image(client, &lookup_base_image, false).await?;
-        }
-    } else if image_prepared && plan.image != lookup_image {
-        tag_image(client, &lookup_image, &plan.image).await?;
-        remove_image(client, &lookup_image, false).await?;
-    }
-    for stale_lookup_image in stale_lookup_images {
-        if stale_lookup_image != plan.image
-            && stale_lookup_image != plan.base_image
-            && stale_lookup_image != lookup_image
-        {
-            remove_image(client, &stale_lookup_image, false).await?;
-        }
-    }
+    let image_prepared = lookup_state.image_prepared;
+    cleanup_lookup_images(client, &plan, lookup_state, build_for_lookup).await?;
 
     Ok(FinalizeUpPlanResult {
         plan,
@@ -182,6 +102,251 @@ pub(in crate::up) async fn finalize_up_plan_mounts(
         compose_published_port_plan: finalized.compose_published_port_plan,
         compose_published_port_override: finalized.compose_published_port_override,
     })
+}
+
+struct LookupImageState {
+    image: String,
+    base_image: Option<String>,
+    image_prepared: bool,
+    deferred_workspace_layer: bool,
+    stale_lookup_images: Vec<String>,
+    using_existing_remote_user_image: bool,
+}
+
+impl LookupImageState {
+    fn from_existing_image(image: &str) -> Self {
+        Self {
+            image: image.to_owned(),
+            base_image: None,
+            image_prepared: false,
+            deferred_workspace_layer: false,
+            stale_lookup_images: Vec::new(),
+            using_existing_remote_user_image: true,
+        }
+    }
+
+    fn from_base_image(
+        plan: &UpPlan,
+        image_prepared: bool,
+        deferred_workspace_layer: bool,
+    ) -> Self {
+        Self {
+            image: plan.base_image.clone(),
+            base_image: image_prepared.then(|| plan.base_image.clone()),
+            image_prepared,
+            deferred_workspace_layer,
+            stale_lookup_images: Vec::new(),
+            using_existing_remote_user_image: false,
+        }
+    }
+
+    fn from_feature_layer(plan: &UpPlan) -> Self {
+        Self {
+            image: plan.image.clone(),
+            base_image: Some(plan.base_image.clone()),
+            image_prepared: true,
+            deferred_workspace_layer: false,
+            stale_lookup_images: Vec::new(),
+            using_existing_remote_user_image: false,
+        }
+    }
+
+    const fn lookup_preparation<'a>(
+        &'a mut self,
+        remote_user_image: Option<&'a str>,
+        build_for_lookup: Option<(bool, bool)>,
+    ) -> ImageLookupPreparation<'a> {
+        ImageLookupPreparation {
+            image: &mut self.image,
+            remote_user_image,
+            base_image: &mut self.base_image,
+            image_prepared: &mut self.image_prepared,
+            build_options: if self.using_existing_remote_user_image {
+                None
+            } else {
+                build_for_lookup
+            },
+            command_probe_build_options: build_for_lookup,
+        }
+    }
+}
+
+async fn prepare_initial_lookup_image_state(
+    client: &DockerClient,
+    plan: &UpPlan,
+    remote_user_image: Option<&str>,
+    build_for_lookup: Option<(bool, bool)>,
+) -> Result<Option<LookupImageState>> {
+    if let Some(remote_user_image) = remote_user_image {
+        return Ok(Some(LookupImageState::from_existing_image(
+            remote_user_image,
+        )));
+    }
+
+    if plan.build_context.is_some() {
+        let Some((pull, no_cache)) = build_for_lookup else {
+            return Ok(None);
+        };
+        prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
+        return Ok(Some(LookupImageState::from_base_image(
+            plan,
+            true,
+            plan_requires_workspace_layer(plan),
+        )));
+    }
+
+    if plan_requires_workspace_layer(plan) {
+        let Some((pull, no_cache)) = build_for_lookup else {
+            return Ok(None);
+        };
+        prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
+        build_feature_layer_image(client, plan, no_cache).await?;
+        return Ok(Some(LookupImageState::from_feature_layer(plan)));
+    }
+
+    Ok(Some(LookupImageState::from_base_image(plan, false, false)))
+}
+
+async fn prepare_lookup_image_after_metadata(
+    client: &DockerClient,
+    workspace: &Workspace,
+    mut plan: UpPlan,
+    mut lookup_state: LookupImageState,
+    build_for_lookup: Option<(bool, bool)>,
+    options: FinalizeUpPlanMountsOptions<'_>,
+) -> Result<(UpPlan, Option<LookupImageState>)> {
+    let dockerfile_metadata =
+        dockerfile_image_metadata_for_plan(client, &plan, &lookup_state.image, options.forwarding)
+            .await?;
+    if dockerfile_metadata.layers.is_empty() {
+        return Ok((plan, Some(lookup_state)));
+    }
+
+    let skip_global_config = plan.config_layers.global.is_none();
+    plan = rebuild_up_plan_with_image_metadata_layers(
+        workspace,
+        plan,
+        dockerfile_metadata.layers,
+        options.forwarding == ForwardingResolution::IgnoreDetached
+            && dockerfile_metadata.has_forward_ports,
+        MountResolution::Resolve,
+        UpPlanResolution::new(
+            options.forwarding,
+            options.update_features,
+            skip_global_config,
+        ),
+    )?;
+    plan = prepare_feature_metadata_for_plan(workspace, plan, options.update_features).await?;
+    if !refresh_lookup_image_after_metadata(client, &plan, &mut lookup_state, build_for_lookup)
+        .await?
+    {
+        return Ok((plan, None));
+    }
+
+    Ok((plan, Some(lookup_state)))
+}
+
+async fn refresh_lookup_image_after_metadata(
+    client: &DockerClient,
+    plan: &UpPlan,
+    lookup_state: &mut LookupImageState,
+    build_for_lookup: Option<(bool, bool)>,
+) -> Result<bool> {
+    if !plan_requires_workspace_layer(plan) || lookup_state.using_existing_remote_user_image {
+        return Ok(true);
+    }
+
+    let Some((pull, no_cache)) = build_for_lookup else {
+        return Ok(false);
+    };
+    if lookup_state.image != plan.base_image {
+        lookup_state
+            .stale_lookup_images
+            .push(lookup_state.image.clone());
+    }
+    prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
+    lookup_state.base_image = Some(plan.base_image.clone());
+    build_feature_layer_image(client, plan, no_cache).await?;
+    lookup_state.image.clone_from(&plan.image);
+    lookup_state.image_prepared = true;
+    lookup_state.deferred_workspace_layer = false;
+    Ok(true)
+}
+
+async fn prepare_deferred_workspace_lookup_layer(
+    client: &DockerClient,
+    plan: &UpPlan,
+    lookup_state: &mut LookupImageState,
+    build_for_lookup: Option<(bool, bool)>,
+) -> Result<bool> {
+    if !lookup_state.deferred_workspace_layer
+        || !plan_requires_workspace_layer(plan)
+        || lookup_state.using_existing_remote_user_image
+    {
+        return Ok(true);
+    }
+
+    let Some((_, no_cache)) = build_for_lookup else {
+        return Ok(false);
+    };
+    build_feature_layer_image(client, plan, no_cache).await?;
+    lookup_state.image.clone_from(&plan.image);
+    lookup_state.image_prepared = true;
+    Ok(true)
+}
+
+async fn cleanup_lookup_images(
+    client: &DockerClient,
+    plan: &UpPlan,
+    lookup_state: LookupImageState,
+    build_for_lookup: Option<(bool, bool)>,
+) -> Result<()> {
+    if lookup_state.image_prepared && plan_requires_final_image_layer(plan) {
+        cleanup_lookup_images_after_final_layer(client, plan, &lookup_state, build_for_lookup)
+            .await?;
+    } else if lookup_state.image_prepared && plan.image != lookup_state.image {
+        tag_image(client, &lookup_state.image, &plan.image).await?;
+        remove_image(client, &lookup_state.image, false).await?;
+    }
+
+    remove_stale_lookup_images(client, plan, &lookup_state).await
+}
+
+async fn cleanup_lookup_images_after_final_layer(
+    client: &DockerClient,
+    plan: &UpPlan,
+    lookup_state: &LookupImageState,
+    build_for_lookup: Option<(bool, bool)>,
+) -> Result<()> {
+    if let Some((pull, no_cache)) = build_for_lookup {
+        prepare_base_image_for_plan(client, plan, pull, no_cache).await?;
+        build_workspace_image_layers(client, plan, no_cache).await?;
+    }
+    if plan.image != lookup_state.image {
+        remove_image(client, &lookup_state.image, false).await?;
+    }
+    if let Some(lookup_base_image) = &lookup_state.base_image
+        && lookup_base_image != &plan.base_image
+    {
+        remove_image(client, lookup_base_image, false).await?;
+    }
+    Ok(())
+}
+
+async fn remove_stale_lookup_images(
+    client: &DockerClient,
+    plan: &UpPlan,
+    lookup_state: &LookupImageState,
+) -> Result<()> {
+    for stale_lookup_image in &lookup_state.stale_lookup_images {
+        if stale_lookup_image != &plan.image
+            && stale_lookup_image != &plan.base_image
+            && stale_lookup_image != &lookup_state.image
+        {
+            remove_image(client, stale_lookup_image, false).await?;
+        }
+    }
+    Ok(())
 }
 
 pub(in crate::up) struct FinalizeUpPlanResult {

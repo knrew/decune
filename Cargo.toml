@@ -60,14 +60,14 @@ or_fun_call                = "deny"
 redundant_clone            = "deny"
 use_self                   = "deny"
 
-restriction = {level = "allow", priority = -1} #default
+restriction = {level = "allow", priority = -1}
 
 # Restriction is allow-by-default; only selected lints are explicit here.
 allow_attributes                = "warn"
 allow_attributes_without_reason = "deny"
 arbitrary_source_item_ordering  = "allow"
 clone_on_ref_ptr                = "deny"
-cognitive_complexity            = "warn"
+cognitive_complexity            = "deny"
 create_dir                      = "deny"
 dbg_macro                       = "deny"
 exit                            = "deny"

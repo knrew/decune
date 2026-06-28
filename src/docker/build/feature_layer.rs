@@ -477,6 +477,7 @@ mod tests {
         collections::BTreeMap,
         fs,
         os::unix::fs::{PermissionsExt, symlink},
+        path::Path,
     };
 
     use tempfile::TempDir;
@@ -484,13 +485,40 @@ mod tests {
     use super::{
         FEATURE_ENTRYPOINT_SENTINEL, FEATURE_ENTRYPOINT_TOKEN, FEATURE_ENTRYPOINT_WRAPPER,
         FEATURE_ENTRYPOINT_WRAPPER_FILE, FEATURE_ENTRYPOINTS_FILE, FeatureLayerBuildFeature,
-        FeatureLayerBuildInput, prepare_feature_layer_build_context,
+        FeatureLayerBuildInput, ResolvedBuildContext, prepare_feature_layer_build_context,
     };
     use crate::docker::build::tar::{create_build_context_tar, tar_contains_path};
+
+    const STAGED_TOOL_FEATURE_DIR: &str = "000-ghcr-io-example-features-tool";
+    const EXPECTED_TOOL_ENV_FILE: &str = "VERSION='1.2'\"'\"'$(echo unsafe)'\n_CONTAINER_USER='root'\n_CONTAINER_USER_HOME='/root'\n_REMOTE_USER='vscode'\n_REMOTE_USER_HOME='/home/vscode'\n";
 
     #[test]
     fn feature_layer_build_context_stages_features_env_and_cleanup_dockerfile() {
         let temp = tempdir("feature-layer-build-context");
+        let context = prepare_feature_layer_test_context(&temp);
+
+        let tar = create_build_context_tar(&context).unwrap();
+        let dockerfile = fs::read_to_string(&context.dockerfile_path).unwrap();
+        let install_script =
+            fs::read_to_string(context.context_dir.join("install-features.sh")).unwrap();
+        let entrypoints =
+            fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINTS_FILE)).unwrap();
+        let wrapper =
+            fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINT_WRAPPER_FILE)).unwrap();
+        let staged_install = context
+            .context_dir
+            .join(STAGED_TOOL_FEATURE_DIR)
+            .join("install.sh");
+
+        assert_feature_layer_tar_entries(&tar);
+        assert_feature_layer_dockerfile(&dockerfile);
+        assert_feature_entrypoint_wrapper(&wrapper);
+        assert_feature_install_script(&install_script, &staged_install);
+        assert_eq!(entrypoints, "touch /tmp/feature-workspace-id\n");
+        assert_feature_env_file(&context);
+    }
+
+    fn prepare_feature_layer_test_context(temp: &TempDir) -> ResolvedBuildContext {
         let source = temp.path().join("source");
         fs::create_dir_all(&source).unwrap();
         fs::write(source.join("install.sh"), "#!/bin/sh\n").unwrap();
@@ -499,8 +527,8 @@ mod tests {
             r#"{"id":"tool","version":"1.0.0","name":"Tool"}"#,
         )
         .unwrap();
-        let context_dir = temp.path().join("context");
-        let context = prepare_feature_layer_build_context(&FeatureLayerBuildInput {
+
+        prepare_feature_layer_build_context(&FeatureLayerBuildInput {
             base_image: "alpine:3.20".to_owned(),
             devcontainer_id: "workspace-id".to_owned(),
             final_user: "vscode".to_owned(),
@@ -511,7 +539,7 @@ mod tests {
                 ("_REMOTE_USER".to_owned(), "vscode".to_owned()),
                 ("_REMOTE_USER_HOME".to_owned(), "/home/vscode".to_owned()),
             ]),
-            context_dir,
+            context_dir: temp.path().join("context"),
             features: vec![FeatureLayerBuildFeature {
                 id: "ghcr.io/example/features/tool".to_owned(),
                 source_dir: source,
@@ -528,28 +556,21 @@ mod tests {
                 ]),
             }],
         })
-        .unwrap();
+        .unwrap()
+    }
 
-        let tar = create_build_context_tar(&context).unwrap();
-        let dockerfile = fs::read_to_string(context.dockerfile_path).unwrap();
-        let install_script =
-            fs::read_to_string(context.context_dir.join("install-features.sh")).unwrap();
-        let entrypoints =
-            fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINTS_FILE)).unwrap();
-        let wrapper =
-            fs::read_to_string(context.context_dir.join(FEATURE_ENTRYPOINT_WRAPPER_FILE)).unwrap();
-        let staged_install = context
-            .context_dir
-            .join("000-ghcr-io-example-features-tool/install.sh");
-
+    fn assert_feature_layer_tar_entries(tar: &[u8]) {
         assert!(tar_contains_path(
-            &tar,
-            "000-ghcr-io-example-features-tool/install.sh"
+            tar,
+            &format!("{STAGED_TOOL_FEATURE_DIR}/install.sh")
         ));
         assert!(tar_contains_path(
-            &tar,
-            "000-ghcr-io-example-features-tool/devcontainer-features.env"
+            tar,
+            &format!("{STAGED_TOOL_FEATURE_DIR}/devcontainer-features.env")
         ));
+    }
+
+    fn assert_feature_layer_dockerfile(dockerfile: &str) {
         assert!(dockerfile.contains("FROM alpine:3.20"));
         assert!(dockerfile.contains("ENV PATH=\"/opt/tool/bin:${PATH}\""));
         assert!(dockerfile.contains("ENV TOOL_FLAGS=\"quote\\\" slash\\\\ dollar$\""));
@@ -559,6 +580,9 @@ mod tests {
         assert!(dockerfile.contains("RUN /bin/sh /tmp/decune-features/install-features.sh finish"));
         assert!(dockerfile.contains(FEATURE_ENTRYPOINT_WRAPPER));
         assert!(dockerfile.contains("USER vscode"));
+    }
+
+    fn assert_feature_entrypoint_wrapper(wrapper: &str) {
         assert!(wrapper.contains(FEATURE_ENTRYPOINT_SENTINEL));
         assert!(wrapper.contains(FEATURE_ENTRYPOINT_TOKEN));
         assert!(wrapper.contains("sentinel_startup_id=$(feature_startup_id)"));
@@ -571,6 +595,9 @@ mod tests {
         ));
         assert!(!wrapper.contains("rm -f \"$sentinel\""));
         assert!(!wrapper.contains("mkdir -p /run/decune"));
+    }
+
+    fn assert_feature_install_script(install_script: &str, staged_install: &Path) {
         assert!(install_script.contains("./install.sh"));
         assert!(!install_script.contains("/bin/sh ./install.sh"));
         assert!(install_script.contains("rm -rf /tmp/decune-features"));
@@ -578,24 +605,6 @@ mod tests {
             fs::metadata(staged_install).unwrap().permissions().mode() & 0o111,
             0
         );
-        assert_eq!(entrypoints, "touch /tmp/feature-workspace-id\n");
-        assert_eq!(
-            fs::read_to_string(
-                context
-                    .context_dir
-                    .join("000-ghcr-io-example-features-tool/devcontainer-features.env")
-            )
-            .unwrap(),
-            "VERSION='1.2'\"'\"'$(echo unsafe)'\n_CONTAINER_USER='root'\n_CONTAINER_USER_HOME='/root'\n_REMOTE_USER='vscode'\n_REMOTE_USER_HOME='/home/vscode'\n"
-        );
-        let env_file = fs::read_to_string(
-            context
-                .context_dir
-                .join("000-ghcr-io-example-features-tool/devcontainer-features.env"),
-        )
-        .unwrap();
-        assert!(!env_file.contains("PATH="));
-        assert!(!env_file.contains("TOOL_FLAGS="));
         assert!(install_script.contains("decune_fix_feature_ownership()"));
         assert!(install_script.contains("DECUNE_REMOTE_USER='vscode'"));
         assert!(install_script.contains("DECUNE_CONTAINER_USER='root'"));
@@ -607,6 +616,19 @@ mod tests {
         let cleanup_pos = install_script.find("rm -rf /tmp/decune-features").unwrap();
         assert!(install_pos < fix_pos);
         assert!(fix_pos < cleanup_pos);
+    }
+
+    fn assert_feature_env_file(context: &ResolvedBuildContext) {
+        let env_file = fs::read_to_string(
+            context
+                .context_dir
+                .join(STAGED_TOOL_FEATURE_DIR)
+                .join("devcontainer-features.env"),
+        )
+        .unwrap();
+        assert_eq!(env_file, EXPECTED_TOOL_ENV_FILE);
+        assert!(!env_file.contains("PATH="));
+        assert!(!env_file.contains("TOOL_FLAGS="));
     }
 
     #[test]
