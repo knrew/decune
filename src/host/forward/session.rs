@@ -58,7 +58,7 @@ pub(crate) async fn start_forward_session_with_auto(
     {
         Ok(listeners) => listeners,
         Err(error) => {
-            let _ = send_agent_shutdown(&agent_socket_path, &secret).await;
+            _ = send_agent_shutdown(&agent_socket_path, &secret).await;
             return Err(error);
         }
     };
@@ -210,7 +210,7 @@ impl ForwardSession {
         if let Some(task) = self.auto_task.take() {
             task.abort();
         }
-        let _ = send_agent_shutdown(&self.agent_socket_path, &self.secret).await;
+        _ = send_agent_shutdown(&self.agent_socket_path, &self.secret).await;
     }
 }
 
@@ -235,7 +235,7 @@ async fn run_forward_listener(
         let socket_path = agent_socket_path.clone();
         let secret = secret.clone();
         tokio::spawn(async move {
-            let _ = proxy_client_connection(client, &socket_path, target_port, &secret).await;
+            _ = proxy_client_connection(client, &socket_path, target_port, &secret).await;
         });
     }
 }

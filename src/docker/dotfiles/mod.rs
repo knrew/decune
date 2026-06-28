@@ -124,7 +124,7 @@ fn dotfile_mount_spec(
     let plan = skeleton_dotfile_mount_plan(
         &source,
         &dotfile.target,
-        target,
+        &target,
         state_root,
         dotfile.dotfile.read_only,
     )?;

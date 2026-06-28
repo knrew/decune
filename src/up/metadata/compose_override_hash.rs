@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, path::PathBuf};
+use std::{collections::BTreeMap, path::Path};
 
 use crate::{
     config::{
@@ -13,7 +13,7 @@ use crate::{
 };
 
 pub(super) fn compose_generated_override_hash_input(
-    path: PathBuf,
+    path: &Path,
     plan: &UpPlan,
     mounts: &[DockerMountSpec],
     startup_command: Option<&StartupCommandHashInput>,

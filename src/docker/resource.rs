@@ -167,7 +167,7 @@ mod tests {
             .join(std::process::id().to_string())
             .join(fixture_id.to_string());
         let root = parent.join(name);
-        let _ = fs::remove_dir_all(&root);
+        _ = fs::remove_dir_all(&root);
         fs::create_dir_all(&root).unwrap();
         root
     }

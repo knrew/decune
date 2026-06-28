@@ -266,7 +266,7 @@ impl HostDaemon {
     async fn shutdown(&mut self) -> Result<()> {
         if let Some(task) = self.task.take() {
             task.abort();
-            let _ = task.await;
+            _ = task.await;
         }
         remove_metadata_if_present(&self.metadata_path)?;
         remove_socket_if_present(&self.socket_path)
@@ -629,8 +629,8 @@ async fn handle_connection(
         return;
     };
 
-    let _ = stream.write_all(&response).await;
-    let _ = stream.shutdown().await;
+    _ = stream.write_all(&response).await;
+    _ = stream.shutdown().await;
 }
 
 #[cfg(test)]

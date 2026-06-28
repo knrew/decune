@@ -147,7 +147,7 @@ fn unsupported_requested_endpoint_display_for_startup_failure(
                 .then(|| {
                     compose_published_port_range_endpoint_display(
                         host_ip_kind,
-                        &host_ip_value,
+                        host_ip_value.as_ref(),
                         range,
                     )
                 })
@@ -183,7 +183,7 @@ fn parse_published_host_port_range(range: &str) -> Option<(u16, u16)> {
 
 fn compose_published_port_range_endpoint_display(
     host_ip_kind: ComposePublishedPortHostIpKind,
-    host_ip_value: &Option<String>,
+    host_ip_value: Option<&String>,
     range: &str,
 ) -> String {
     match host_ip_kind {
@@ -191,7 +191,7 @@ fn compose_published_port_range_endpoint_display(
             format!("<host_ip omitted>:{range}")
         }
         ComposePublishedPortHostIpKind::Explicit => {
-            format!("{}:{range}", host_ip_value.as_deref().unwrap_or(""))
+            format!("{}:{range}", host_ip_value.map_or("", String::as_str))
         }
     }
 }

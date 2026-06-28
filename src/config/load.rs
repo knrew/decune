@@ -61,7 +61,7 @@ mod tests {
     #[test]
     fn missing_file_loads_empty_config() {
         let path = config_path("missing");
-        let _ = fs::remove_file(&path);
+        _ = fs::remove_file(&path);
 
         let config = load_config_file(&path).unwrap();
 
@@ -82,7 +82,7 @@ mod tests {
         );
         assert!(error.to_string().contains(&path.display().to_string()));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -99,7 +99,7 @@ mod tests {
         );
         assert!(error.to_string().contains(&path.display().to_string()));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -113,7 +113,7 @@ mod tests {
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains(&path.display().to_string()));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -128,7 +128,7 @@ mod tests {
         assert!(message.contains(&path.display().to_string()));
         assert!(message.contains("shelll"));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -289,7 +289,7 @@ shell = false
             RawCommand::Args(vec!["bash".to_owned(), "scripts/after-start.sh".to_owned()])
         );
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -313,7 +313,7 @@ https = "host-helper-read-only"
             Some(RawGitHttpsMode::HostHelperReadOnly)
         );
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -336,7 +336,7 @@ target = ".config/nvim"
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("source"));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -360,7 +360,7 @@ target = "/work"
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("type"));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -384,7 +384,7 @@ type = "bind"
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("source"));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -409,7 +409,7 @@ read_olny = true
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("read_olny"));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -432,7 +432,7 @@ copy_usr = true
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("copy_usr"));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -456,7 +456,7 @@ wrkdir = "/work"
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("wrkdir"));
 
-        let _ = fs::remove_file(path);
+        _ = fs::remove_file(path);
     }
 
     #[test]
@@ -472,7 +472,7 @@ wrkdir = "/work"
         assert_eq!(global.shell.as_deref(), Some("/bin/bash"));
         assert_eq!(project.shell.as_deref(), Some("/bin/zsh"));
 
-        let _ = fs::remove_file(global_path);
-        let _ = fs::remove_file(project_path);
+        _ = fs::remove_file(global_path);
+        _ = fs::remove_file(project_path);
     }
 }

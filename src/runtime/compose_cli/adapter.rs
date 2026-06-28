@@ -194,7 +194,7 @@ impl DockerComposeCli {
         options: ComposeBuildOptions,
         services: &[String],
     ) -> Result<()> {
-        let command = compose_build_command(project, options, services);
+        let command = compose_build_command(project, &options, services);
         let output = self.runner.run_capture(command.clone()).await?;
         ensure_success(
             "build Docker Compose services",

@@ -54,23 +54,23 @@ struct ComposeRegistryFixture {
 
 impl Drop for UnrelatedComposeFixture {
     fn drop(&mut self) {
-        let _ = docker_status(["rm", "--force", "--volumes", &self.container_name]);
-        let _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
+        _ = docker_status(["rm", "--force", "--volumes", &self.container_name]);
+        _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
     }
 }
 
 impl Drop for ComposeImageCleanup {
     fn drop(&mut self) {
-        let _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
+        _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
     }
 }
 
 impl Drop for ComposeRegistryFixture {
     fn drop(&mut self) {
-        let _ = docker_status(["rm", "--force", "--volumes", &self.container_name]);
-        let _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
+        _ = docker_status(["rm", "--force", "--volumes", &self.container_name]);
+        _ = docker_status(["image", "rm", "--force", "--no-prune", &self.image]);
         for image in &self.extra_images {
-            let _ = docker_status(["image", "rm", "--force", "--no-prune", image]);
+            _ = docker_status(["image", "rm", "--force", "--no-prune", image]);
         }
     }
 }
@@ -972,7 +972,7 @@ fn compose_integration_run_services_builds_dependencies_for_selected_service() {
     let _cleanup = ComposeImageCleanup {
         image: base_image.clone(),
     };
-    let _ = docker_status(["image", "rm", "--force", "--no-prune", &base_image]);
+    _ = docker_status(["image", "rm", "--force", "--no-prune", &base_image]);
 
     run_decune_up_detach(
         workspace.path(),
@@ -1878,14 +1878,14 @@ fn compose_project_name(workspace: &Path) -> String {
 }
 
 fn cleanup_compose_workspace(workspace: &Path) {
-    let _ = decune()
+    _ = decune()
         .args(["remove", "--no-confirm"])
         .arg(workspace)
         .assert();
     let project = compose_project_name(workspace);
     if let Ok(containers) = compose_project_containers(workspace) {
         for container in containers {
-            let _ = docker_status(["rm", "--force", "--volumes", &container.id]);
+            _ = docker_status(["rm", "--force", "--volumes", &container.id]);
         }
     }
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1893,16 +1893,16 @@ fn cleanup_compose_workspace(workspace: &Path) {
         .build()
         .unwrap();
     runtime.block_on(async {
-        let _ = cleanup_workspace_images(workspace).await;
+        _ = cleanup_workspace_images(workspace).await;
     });
-    let _ = docker_status([
+    _ = docker_status([
         "network",
         "prune",
         "--force",
         "--filter",
         &format!("label=com.docker.compose.project={project}"),
     ]);
-    let _ = docker_status([
+    _ = docker_status([
         "volume",
         "prune",
         "--force",
@@ -1947,7 +1947,7 @@ fn create_compose_dependency_registry_fixture(workspace: &Path) -> ComposeRegist
 
 fn start_compose_registry(workspace: &Path) -> (String, String) {
     let container_name = format!("decune-compose-registry-{}", workspace_id(workspace));
-    let _ = docker_status(["rm", "--force", "--volumes", &container_name]);
+    _ = docker_status(["rm", "--force", "--volumes", &container_name]);
     docker_status(["image", "inspect", "registry:2"])
         .or_else(|_| docker_status(["pull", "registry:2"]))
         .unwrap();

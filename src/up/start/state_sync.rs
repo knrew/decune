@@ -90,11 +90,11 @@ fn sync_started_state(
         ),
         LifecycleRunPath::Started => {
             let existing = reusable_lifecycle_state(workspace, &container)?;
-            write_reused_started_state(workspace, container, compose_project_name, existing, true)
+            write_reused_started_state(workspace, container, compose_project_name, &existing, true)
         }
         LifecycleRunPath::Running => {
             let existing = reusable_lifecycle_state(workspace, &container)?;
-            write_reused_started_state(workspace, container, compose_project_name, existing, false)
+            write_reused_started_state(workspace, container, compose_project_name, &existing, false)
         }
     }
 }
@@ -121,7 +121,7 @@ pub(super) fn write_reused_started_state(
     workspace: &Workspace,
     container: StateContainerSnapshot,
     compose_project_name: Option<String>,
-    existing: WorkspaceState,
+    existing: &WorkspaceState,
     refresh_last_started_at: bool,
 ) -> Result<WorkspaceState> {
     state::write_reused_state_for_container(
@@ -129,7 +129,7 @@ pub(super) fn write_reused_started_state(
         workspace.root(),
         container,
         compose_project_name,
-        &existing,
+        existing,
         refresh_last_started_at,
     )
 }

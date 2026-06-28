@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, btree_map::Entry},
     fs,
     path::{Path, PathBuf},
 };
@@ -41,22 +41,20 @@ impl DotfileTree {
         real_path: PathBuf,
         from_symlink: bool,
     ) -> Result<()> {
-        if self
-            .entries
-            .insert(
-                relative.clone(),
-                DotfileTreeEntry {
+        match self.entries.entry(relative) {
+            Entry::Vacant(entry) => {
+                entry.insert(DotfileTreeEntry {
                     kind,
                     real_path,
                     from_symlink,
-                },
-            )
-            .is_some()
-        {
-            bail!(
-                "Dotfile source resolves the same target more than once: {}",
-                relative.display()
-            );
+                });
+            }
+            Entry::Occupied(entry) => {
+                bail!(
+                    "Dotfile source resolves the same target more than once: {}",
+                    entry.key().display()
+                );
+            }
         }
 
         Ok(())

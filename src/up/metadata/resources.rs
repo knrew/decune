@@ -162,7 +162,7 @@ pub(super) async fn finalize_mounts_and_resources_for_plan(
             .await?;
     if let Some(compose_project) = &plan.compose_project {
         hash_input.compose_generated_override = compose_generated_override_hash_input(
-            compose_project.generated_override_path(),
+            &compose_project.generated_override_path(),
             &plan,
             &mounts,
             hash_input.startup_command.as_ref(),

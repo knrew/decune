@@ -60,7 +60,7 @@ pub(super) async fn start_stopped_existing_container(
         workspace,
         container,
         state_compose_project_name(plan),
-        existing_state,
+        &existing_state,
         true,
     )?;
     Ok((
@@ -408,7 +408,7 @@ mod tests {
                 .await?;
                 let legacy_inspect = client.cli().inspect_container(&container_name).await?;
                 assert!(!container_has_mount_target(
-                    &legacy_inspect.mounts,
+                    legacy_inspect.mounts.as_ref(),
                     "/run/decune"
                 ));
 
@@ -428,7 +428,7 @@ mod tests {
 
                 let recreated_inspect = client.cli().inspect_container(&container_name).await?;
                 assert!(container_has_mount_target(
-                    &recreated_inspect.mounts,
+                    recreated_inspect.mounts.as_ref(),
                     "/run/decune"
                 ));
 

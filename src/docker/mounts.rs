@@ -170,7 +170,7 @@ fn resolved_mount_spec(
                 .ok_or_else(|| anyhow!("Bind mount source is required for target: {target}"))?;
             let source = resolve_bind_source(
                 source,
-                HostPathOptions::new(mount.origin, workspace_root, variables)
+                &HostPathOptions::new(mount.origin, workspace_root, variables)
                     .with_create(path_create(mount.create, host_path_create))
                     .with_symlink_resolution(symlink_resolution(mount.resolve_symlink)),
             )
@@ -227,7 +227,7 @@ pub(crate) fn devcontainer_mount_spec_with_host_path_create(
                 .ok_or_else(|| anyhow!("Bind mount source is required for target: {target}"))?;
             let source = resolve_expanded_bind_source(
                 source,
-                HostPathOptions::new(
+                &HostPathOptions::new(
                     crate::config::path::ConfigPathOrigin::Project,
                     workspace_root,
                     variables,
@@ -573,12 +573,12 @@ fn normalize_key(key: &str) -> String {
     }
 }
 
-fn resolve_bind_source(source: &str, options: HostPathOptions<'_>) -> Result<String> {
-    Ok(resolve_host_path(source, &options)?.display().to_string())
+fn resolve_bind_source(source: &str, options: &HostPathOptions<'_>) -> Result<String> {
+    Ok(resolve_host_path(source, options)?.display().to_string())
 }
 
-fn resolve_expanded_bind_source(source: &str, options: HostPathOptions<'_>) -> Result<String> {
-    Ok(resolve_expanded_host_path(source, &options)?
+fn resolve_expanded_bind_source(source: &str, options: &HostPathOptions<'_>) -> Result<String> {
+    Ok(resolve_expanded_host_path(source, options)?
         .display()
         .to_string())
 }

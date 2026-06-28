@@ -92,9 +92,9 @@ async fn discover_workspace_status(
     };
     let mut status = workspace_status_with_config(
         workspace.id().to_owned(),
-        evidence,
+        &evidence,
         docker_unavailable,
-        Some(current_config),
+        Some(&current_config),
     );
     status.workspace_path = Some(workspace.root().display().to_string());
 

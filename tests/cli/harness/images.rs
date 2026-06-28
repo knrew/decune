@@ -149,7 +149,7 @@ EOF
 chmod +x /usr/local/bin/decune-record-shell
 "#;
     let metadata = r#"{"remoteUser":"devuser","remoteEnv":{"FROM_IMAGE":"label","EXPECTED_USER":"devuser"},"postStartCommand":"actual_user=$(id -un); expected_user=${EXPECTED_USER:-}; if [ \"$actual_user\" != \"$expected_user\" ]; then echo \"expected lifecycle user $expected_user, got $actual_user\" >&2; exit 11; fi; if [ \"${FROM_IMAGE:-}\" != \"label\" ]; then echo \"expected FROM_IMAGE=label, got ${FROM_IMAGE:-}\" >&2; exit 12; fi"}"#;
-    let _ = workspace_id(workspace_root);
+    _ = workspace_id(workspace_root);
     build_alpine_configured_image(
         image_tag,
         DockerfileImageConfig {
@@ -166,7 +166,7 @@ pub(crate) async fn create_image_with_nonstandard_home_user(
     workspace_root: &Path,
     image_tag: &str,
 ) -> anyhow::Result<()> {
-    let _ = workspace_id(workspace_root);
+    _ = workspace_id(workspace_root);
     build_alpine_configured_image(
         image_tag,
         DockerfileImageConfig {
@@ -179,7 +179,7 @@ pub(crate) async fn create_image_with_nonstandard_home_user(
 
 pub(crate) async fn remove_image_if_exists(image: &str) -> anyhow::Result<()> {
     let _lock = acquire_exclusive_docker_resource_lock()?;
-    let _ = docker_status(["image", "rm", "--force", "--no-prune", image]);
+    _ = docker_status(["image", "rm", "--force", "--no-prune", image]);
 
     Ok(())
 }

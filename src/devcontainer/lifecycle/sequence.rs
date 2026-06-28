@@ -51,13 +51,13 @@ pub(crate) fn container_start_lifecycle_plan(path: LifecycleRunPath) -> Vec<Life
         LifecycleRunPath::New => LifecycleState::default(),
         LifecycleRunPath::Started | LifecycleRunPath::Running => LifecycleState::all_completed(),
     };
-    container_start_lifecycle_plan_with_state(path, &state)
+    container_start_lifecycle_plan_with_state(path, state)
 }
 
 #[cfg(test)]
 pub(crate) fn container_start_lifecycle_plan_with_state(
     path: LifecycleRunPath,
-    state: &LifecycleState,
+    state: LifecycleState,
 ) -> Vec<LifecycleStep> {
     let mut steps = match path {
         LifecycleRunPath::New => {
@@ -89,8 +89,8 @@ pub(crate) fn container_start_lifecycle_plan_with_state(
         ],
     };
 
-    push_pending_creation_lifecycle_steps(&mut steps, *state);
-    if path != LifecycleRunPath::Running || has_pending_creation_lifecycle(*state) {
+    push_pending_creation_lifecycle_steps(&mut steps, state);
+    if path != LifecycleRunPath::Running || has_pending_creation_lifecycle(state) {
         steps.extend([
             LifecycleStep::Hooks(HookStage::BeforePostStart),
             LifecycleStep::Lifecycle(LifecycleStage::PostStart),
@@ -303,7 +303,7 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::New,
-                &crate::state::LifecycleState {
+                crate::state::LifecycleState {
                     on_create_completed: true,
                     after_on_create_completed: true,
                     update_content_completed: false,
@@ -336,7 +336,7 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::Running,
-                &crate::state::LifecycleState {
+                crate::state::LifecycleState {
                     on_create_completed: true,
                     after_on_create_completed: false,
                     update_content_completed: false,
@@ -370,7 +370,7 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::Running,
-                &crate::state::LifecycleState {
+                crate::state::LifecycleState {
                     on_create_completed: true,
                     after_on_create_completed: true,
                     update_content_completed: false,
@@ -403,7 +403,7 @@ mod tests {
         assert_eq!(
             container_start_lifecycle_plan_with_state(
                 LifecycleRunPath::Started,
-                &crate::state::LifecycleState {
+                crate::state::LifecycleState {
                     on_create_completed: true,
                     after_on_create_completed: true,
                     update_content_completed: true,

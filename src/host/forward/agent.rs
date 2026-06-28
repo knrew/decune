@@ -110,8 +110,7 @@ where
     let socket_path = runtime_dir.join(socket_name);
     for _ in 0..FORWARD_AGENT_START_RETRIES {
         match UnixStream::connect(&socket_path).await {
-            Ok(mut stream) => {
-                stream.shutdown().await.ok();
+            Ok(_) => {
                 return Ok(socket_path);
             }
             Err(error)
@@ -176,13 +175,13 @@ pub(super) async fn run_forward_agent_at_with_access(
         match read_agent_request(stream, &access).await {
             Ok(AgentRequest::Forward { stream, port }) => {
                 tokio::spawn(async move {
-                    let _ = proxy_agent_connection(stream, port).await;
+                    _ = proxy_agent_connection(stream, port).await;
                 });
             }
             Ok(AgentRequest::Scan { mut stream, scan }) => {
                 if let Ok(ports) = detect_listen_ports(&scan) {
                     access.allowed_ports.extend(ports.iter().copied());
-                    let _ = write_agent_scan_response(&mut stream, &ports).await;
+                    _ = write_agent_scan_response(&mut stream, &ports).await;
                 }
             }
             Ok(AgentRequest::Shutdown) => break,
@@ -371,11 +370,11 @@ fn write_forward_agent_failure(socket_path: &Path, error: &anyhow::Error) {
     let Some(runtime_dir) = socket_path.parent() else {
         return;
     };
-    let _ = fs::write(
+    _ = fs::write(
         runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
         format!("{error:#}\n"),
     );
-    let _ = fs::write(runtime_dir.join(FORWARD_AGENT_STATUS_NAME), "exited\n");
+    _ = fs::write(runtime_dir.join(FORWARD_AGENT_STATUS_NAME), "exited\n");
 }
 
 fn read_forward_agent_status(runtime_dir: &Path) -> Result<Option<ForwardAgentStatus>> {
@@ -534,7 +533,7 @@ pub(super) mod tests {
                 }
             });
             let accept_task = tokio::spawn(async move {
-                let _ = listener.accept().await.unwrap();
+                _ = listener.accept().await.unwrap();
             });
 
             let ready = wait_for_forward_agent_with_status(
@@ -564,7 +563,7 @@ pub(super) mod tests {
             let socket_path = temp.path().join(socket_name);
             let listener = UnixListener::bind(&socket_path).unwrap();
             let accept_task = tokio::spawn(async move {
-                let _ = listener.accept().await.unwrap();
+                _ = listener.accept().await.unwrap();
             });
 
             let ready = wait_for_forward_agent_with_status(temp.path(), socket_name, || async {
@@ -652,6 +651,6 @@ pub(super) mod tests {
         stream.write_all(request).await.unwrap();
         stream.write_all(b"\n").await.unwrap();
         let mut response = Vec::new();
-        let _ = stream.read_to_end(&mut response).await;
+        _ = stream.read_to_end(&mut response).await;
     }
 }

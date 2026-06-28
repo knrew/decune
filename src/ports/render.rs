@@ -148,7 +148,7 @@ fn write_row(output: &mut String, columns: &[&str], widths: &[usize]) {
         if index > 0 {
             output.push_str("  ");
         }
-        let _ = write!(output, "{:<width$}", column, width = widths[index]);
+        _ = write!(output, "{:<width$}", column, width = widths[index]);
     }
     output.push('\n');
 }

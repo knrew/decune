@@ -197,13 +197,13 @@ impl MergeAccumulator {
             self.merge_auto_ports(auto_ports);
         }
 
-        self.merge_compose(layer.compose);
+        self.merge_compose(&layer.compose);
 
         if let Some(devcontainer) = layer.devcontainer {
             self.merge_devcontainer(devcontainer);
         }
 
-        self.merge_credentials(layer.credentials);
+        self.merge_credentials(&layer.credentials);
         self.hooks.append(layer.hooks);
     }
 
@@ -268,7 +268,7 @@ impl MergeAccumulator {
         }
     }
 
-    const fn merge_compose(&mut self, compose: crate::config::layer::LayerCompose) {
+    const fn merge_compose(&mut self, compose: &crate::config::layer::LayerCompose) {
         if let Some(relocation) = compose.published_ports.relocation {
             self.compose.published_ports.relocation = relocation;
         }
@@ -344,7 +344,7 @@ impl MergeAccumulator {
         }
     }
 
-    const fn merge_credentials(&mut self, credentials: LayerCredentials) {
+    const fn merge_credentials(&mut self, credentials: &LayerCredentials) {
         if let Some(enabled) = credentials.git.enabled {
             self.credentials.git.enabled = enabled;
         }

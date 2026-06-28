@@ -489,7 +489,7 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
             });
         });
         // forwarding は up 実行時の runtime 設定であり，container/image の再作成条件ではない．
-        let _ = &config.ports;
+        _ = &config.ports;
         writer.field("devcontainer", |writer| {
             write_devcontainer(
                 writer,

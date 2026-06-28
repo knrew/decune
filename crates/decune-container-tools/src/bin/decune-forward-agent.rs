@@ -1,6 +1,4 @@
 #![allow(
-    clippy::let_underscore_must_use,
-    clippy::let_underscore_untyped,
     clippy::similar_names,
     clippy::string_slice,
     clippy::unused_async,
@@ -105,13 +103,13 @@ async fn run_forward_agent_at_with_access(
         match read_agent_request(stream, &access).await {
             Ok(AgentRequest::Forward { stream, port }) => {
                 tokio::spawn(async move {
-                    let _ = proxy_agent_connection(stream, port).await;
+                    _ = proxy_agent_connection(stream, port).await;
                 });
             }
             Ok(AgentRequest::Scan { mut stream, scan }) => {
                 if let Ok(ports) = detect_listen_ports(&scan) {
                     access.allowed_ports.extend(ports.iter().copied());
-                    let _ = write_agent_scan_response(&mut stream, &ports).await;
+                    _ = write_agent_scan_response(&mut stream, &ports).await;
                 }
             }
             Ok(AgentRequest::Shutdown) => break,

@@ -22,11 +22,11 @@ fn split_action(message: &str) -> (&str, &str) {
 
 fn write_styled(action: &str, message: &str, action_style: &Style) {
     let styled_action = action_style.apply_to(format!("{action:>PREFIX_WIDTH$}"));
-    let _ = writeln!(io::stderr().lock(), "{styled_action}  {message}");
+    _ = writeln!(io::stderr().lock(), "{styled_action}  {message}");
 }
 
 fn write_plain(level: &str, message: &str) {
-    let _ = writeln!(io::stderr().lock(), "{level}: {message}");
+    _ = writeln!(io::stderr().lock(), "{level}: {message}");
 }
 
 pub(crate) fn info(message: &str) {

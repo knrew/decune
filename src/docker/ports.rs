@@ -85,7 +85,7 @@ pub(crate) fn resolve_auto_forward_ports_with_host_reservations(
 ) -> Result<Vec<ResolvedAutoForwardPort>> {
     resolve_auto_forward_ports_inner(
         detected_ports,
-        AutoForwardResolveInput {
+        &AutoForwardResolveInput {
             existing_forward_ports,
             publish_ports,
             auto_ports,
@@ -112,7 +112,7 @@ where
 {
     resolve_auto_forward_ports_inner(
         detected_ports,
-        AutoForwardResolveInput {
+        &AutoForwardResolveInput {
             existing_forward_ports,
             publish_ports,
             auto_ports,
@@ -135,20 +135,18 @@ struct AutoForwardResolveInput<'a> {
 
 fn resolve_auto_forward_ports_inner<F>(
     detected_ports: impl IntoIterator<Item = u16>,
-    input: AutoForwardResolveInput<'_>,
+    input: &AutoForwardResolveInput<'_>,
     mut host_port_available: F,
 ) -> Result<Vec<ResolvedAutoForwardPort>>
 where
     F: FnMut(&str, u16) -> Result<bool>,
 {
-    let AutoForwardResolveInput {
-        existing_forward_ports,
-        publish_ports,
-        auto_ports,
-        port_attributes,
-        other_ports_attributes,
-        additional_host_reservations,
-    } = input;
+    let existing_forward_ports = input.existing_forward_ports;
+    let publish_ports = input.publish_ports;
+    let auto_ports = input.auto_ports;
+    let port_attributes = input.port_attributes;
+    let other_ports_attributes = input.other_ports_attributes;
+    let additional_host_reservations = input.additional_host_reservations;
 
     if !auto_ports.enabled {
         return Ok(Vec::new());
@@ -634,7 +632,7 @@ mod tests {
 
         let resolved = resolve_auto_forward_ports_inner(
             [4321],
-            AutoForwardResolveInput {
+            &AutoForwardResolveInput {
                 existing_forward_ports: &[],
                 publish_ports: &[],
                 auto_ports: &auto,
@@ -667,7 +665,7 @@ mod tests {
 
         let resolved = resolve_auto_forward_ports_inner(
             [4321],
-            AutoForwardResolveInput {
+            &AutoForwardResolveInput {
                 existing_forward_ports: &[],
                 publish_ports: &[],
                 auto_ports: &auto,

@@ -145,7 +145,7 @@ pub(super) fn compose_config_command(
 
 pub(super) fn compose_build_command(
     project: &ComposeCommandPlan,
-    options: ComposeBuildOptions,
+    options: &ComposeBuildOptions,
     services: &[String],
 ) -> RuntimeCommand {
     let mut command = project.command(["build"]);
@@ -365,7 +365,7 @@ mod tests {
         let services = vec!["app".to_owned()];
         let command = compose_build_command(
             &lifecycle_command_plan(),
-            ComposeBuildOptions {
+            &ComposeBuildOptions {
                 with_dependencies: true,
                 no_cache: true,
                 pull: true,
@@ -391,7 +391,7 @@ mod tests {
         let plan = ComposeLifecyclePlan::up(lifecycle_command_plan(), "app", Some(&run_services));
         let build = compose_build_command(
             &plan.project,
-            ComposeBuildOptions {
+            &ComposeBuildOptions {
                 with_dependencies: true,
                 no_cache: true,
                 pull: true,

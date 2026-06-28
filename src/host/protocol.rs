@@ -121,7 +121,7 @@ fn handle_credential_request(
         }
     };
 
-    match handle_git_credential_request(request, git_credentials, git_https_mode) {
+    match handle_git_credential_request(&request, git_credentials, git_https_mode) {
         Ok(output) => HostDaemonResponse::ok(output),
         Err(error) => HostDaemonResponse::error("credential_failed", error.to_string()),
     }

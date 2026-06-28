@@ -134,7 +134,7 @@ fn parse_port_value(value: &JsonValue, field: &str) -> Result<u16, String> {
                 return Err(format!("{field} must be an unsigned integer: {number}"));
             };
             let port =
-                u16::try_from(port).map_err(|_| format!("{field} is out of range: {port}"))?;
+                u16::try_from(port).map_err(|_error| format!("{field} is out of range: {port}"))?;
             validate_nonzero_port(port, field)
         }
         JsonValue::String(value) => {
@@ -143,7 +143,7 @@ fn parse_port_value(value: &JsonValue, field: &str) -> Result<u16, String> {
             }
             let port = value
                 .parse::<u16>()
-                .map_err(|_| format!("{field} is not a valid port: {value}"))?;
+                .map_err(|_error| format!("{field} is not a valid port: {value}"))?;
             validate_nonzero_port(port, field)
         }
         other => Err(format!("{field} must be a number or string: {other}")),

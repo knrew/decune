@@ -121,7 +121,7 @@ pub(crate) async fn workspace_containers(
 pub(crate) async fn cleanup_workspace_containers(workspace_root: &Path) -> anyhow::Result<()> {
     for container in workspace_containers(workspace_root).await? {
         if let Some(id) = container.id {
-            let _ = docker_status(["rm", "--force", "--volumes", &id]);
+            _ = docker_status(["rm", "--force", "--volumes", &id]);
         }
     }
 
@@ -211,7 +211,7 @@ pub(crate) async fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<V
 
 pub(crate) async fn cleanup_workspace_volumes(workspace_root: &Path) -> anyhow::Result<()> {
     for volume in workspace_volumes(workspace_root).await? {
-        let _ = docker_status(["volume", "rm", "--force", &volume]);
+        _ = docker_status(["volume", "rm", "--force", &volume]);
     }
 
     Ok(())
@@ -241,7 +241,7 @@ pub(crate) async fn cleanup_workspace_images(workspace_root: &Path) -> anyhow::R
     let _lock = acquire_exclusive_docker_resource_lock()?;
 
     for image in workspace_images(workspace_root).await? {
-        let _ = docker_status(["image", "rm", "--force", "--no-prune", &image]);
+        _ = docker_status(["image", "rm", "--force", "--no-prune", &image]);
     }
 
     Ok(())
@@ -273,7 +273,7 @@ pub(crate) async fn create_term_marker_container(workspace_root: &Path) -> anyho
 
     let workspace_id = workspace_id(workspace_root);
     let name = format!("decune-remove-term-test-{workspace_id}");
-    let _ = docker_status(["rm", "--force", "--volumes", &name]);
+    _ = docker_status(["rm", "--force", "--volumes", &name]);
     docker_status([
         "create",
         "--name",
