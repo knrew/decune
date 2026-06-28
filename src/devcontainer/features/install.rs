@@ -431,7 +431,7 @@ impl FeatureResolver<'_> {
             metadata: document.metadata,
             layer: document.layer,
             container_env,
-            digest: digest.clone(),
+            digest,
             lock_file_entry: None,
         })
     }

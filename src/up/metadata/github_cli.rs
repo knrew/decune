@@ -1,4 +1,38 @@
-use super::*;
+use std::{collections::BTreeMap, sync::atomic::Ordering};
+
+use anyhow::{Context, Result};
+
+use crate::{
+    config::{
+        layer::LayerFeature,
+        resolve_config,
+        resolved::{ResolvedConfig, ResolvedDevcontainerSource},
+        types::GithubCredentialsMode,
+        variables::expand_container_env_tracked,
+    },
+    docker::{
+        client::DockerClient,
+        container::{ContainerCreateSpec, ContainerHostConfig, create_container, start_container},
+        user::resolve_remote_user_from_image,
+    },
+    host::credentials::host_github_auth_token_available,
+    ui,
+    up::{
+        build::{build_feature_layer_image, prepare_base_image_for_plan},
+        mounts::{WorkspaceLocationValidation, mount_variable_context, resolve_workspace_location},
+        plan::{base_image_source, final_image_source},
+        start::wait_for_container_exit_code,
+        types::{MountResolution, UpPlan},
+        uid_gid::effective_user_input_from_plan,
+    },
+    workspace::Workspace,
+};
+
+use super::{
+    FinalizeUpPlanMountsOptions, GITHUB_CLI_FEATURE_CANONICAL_ID, GITHUB_CLI_FEATURE_REF,
+    IMAGE_COMMAND_PROBE_SEQUENCE, finalize_mounts_and_resources_for_plan,
+    prepare_feature_metadata_for_plan, resolve_effective_users_for_image,
+};
 
 pub(super) struct ImageLookupPreparation<'a> {
     pub(super) image: &'a mut String,
@@ -96,7 +130,7 @@ pub(super) async fn maybe_auto_add_github_cli_feature_to_plan(
         prepare_base_image_for_plan(client, &plan, pull, no_cache).await?;
         *lookup.base_image = Some(plan.base_image.clone());
         build_feature_layer_image(client, &plan, no_cache).await?;
-        *lookup.image = plan.image.clone();
+        lookup.image.clone_from(&plan.image);
         *lookup.image_prepared = true;
     }
 

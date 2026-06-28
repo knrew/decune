@@ -365,10 +365,7 @@ fn validate_oci_feature_path_component(value: &str, component: &str, label: &str
             ));
         }
 
-        if !chars
-            .peek()
-            .is_some_and(|next| next.is_ascii_alphanumeric())
-        {
+        if !chars.peek().is_some_and(char::is_ascii_alphanumeric) {
             return Err(invalid_feature_ref(
                 value,
                 &format!("{label} separator must be followed by an alphanumeric character"),

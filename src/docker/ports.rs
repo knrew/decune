@@ -256,9 +256,9 @@ where
     }
 }
 
-pub(crate) fn resolved_forward_port_reservations<'a>(
-    resolved: &'a [ResolvedForwardPort],
-) -> impl Iterator<Item = HostPortReservation> + 'a {
+pub(crate) fn resolved_forward_port_reservations(
+    resolved: &[ResolvedForwardPort],
+) -> impl Iterator<Item = HostPortReservation> + '_ {
     resolved.iter().map(|port| HostPortReservation {
         host_ip: port.host_ip.clone(),
         host: port.host,

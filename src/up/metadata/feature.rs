@@ -1,4 +1,17 @@
-use super::*;
+use std::path::PathBuf;
+
+use anyhow::{Context, Result};
+
+use crate::{
+    config::resolve_config,
+    devcontainer::features::prepare_feature_install_plan,
+    up::{
+        mounts::WorkspaceLocationValidation,
+        plan::expand_static_plan_fields,
+        types::{MountResolution, UpPlan},
+    },
+    workspace::Workspace,
+};
 
 pub(super) async fn prepare_feature_metadata_for_plan(
     workspace: &Workspace,
@@ -47,7 +60,9 @@ pub(super) async fn prepare_feature_metadata_for_plan(
     else {
         return Ok(plan);
     };
-    plan.config_layers.feature_metadata = feature_install.metadata_layers.clone();
+    plan.config_layers
+        .feature_metadata
+        .clone_from(&feature_install.metadata_layers);
     plan.config = resolve_config(plan.config_layers.clone());
     let static_expansion = expand_static_plan_fields(
         workspace,

@@ -601,7 +601,7 @@ mod tests {
             manifest: OciManifestResponse {
                 digest: sha256_digest(MANIFEST_DIGEST_HEX),
                 layers: vec![OciLayerDescriptor {
-                    digest: layer_digest.clone(),
+                    digest: layer_digest,
                     media_type: "application/vnd.devcontainers.layer.v1+tar".to_owned(),
                     size: blob.len() as u64,
                 }],

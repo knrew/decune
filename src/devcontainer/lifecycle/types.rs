@@ -8,7 +8,7 @@ use crate::{config::types::HookLocation, devcontainer::metadata::LifecycleProper
 pub(crate) enum LifecycleCommand {
     Shell(String),
     Args(Vec<String>),
-    Parallel(BTreeMap<String, LifecycleCommand>),
+    Parallel(BTreeMap<String, Self>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -1,4 +1,11 @@
-use super::*;
+use crate::{
+    config::{
+        resolved::{ResolvedConfig, ResolvedDevcontainerSource, ResolvedPortAttributes},
+        types::{GitHttpsMode, GithubCredentialsMode, MountType, SshAgentMode},
+    },
+    docker::mounts::devcontainer_mount_type,
+    ui,
+};
 
 pub(in crate::up) fn report_deferred_config_messages(config: &ResolvedConfig) {
     for notice in security_notices(config) {
@@ -37,7 +44,7 @@ pub(in crate::up) fn security_notices(config: &ResolvedConfig) -> Vec<String> {
         .devcontainer
         .lifecycle
         .as_ref()
-        .is_some_and(|lifecycle| lifecycle.has_commands())
+        .is_some_and(crate::devcontainer::lifecycle::LifecycleDefinition::has_commands)
     {
         notices.push(
             "This dev container defines lifecycle commands that execute on the host or in the container. Review lifecycle commands before running untrusted repositories."

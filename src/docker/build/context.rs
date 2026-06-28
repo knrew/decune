@@ -140,7 +140,7 @@ pub(super) fn collect_context_entries(
                 directory.display()
             )
         })?;
-    children.sort_by_key(|entry| entry.path());
+    children.sort_by_key(std::fs::DirEntry::path);
 
     for child in children {
         let path = child.path();
@@ -318,7 +318,7 @@ fn dockerfile_specific_ignore_name(dockerfile_name: &std::ffi::OsStr) -> OsStrin
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path};
 
     use crate::config::layer::LayerDevcontainerBuild;
     use tempfile::TempDir;
@@ -335,7 +335,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -366,7 +366,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "../docker/Dockerfile".to_owned(),
             context: Some("..".to_owned()),
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -401,7 +401,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -429,7 +429,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -460,7 +460,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -488,7 +488,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -516,7 +516,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "Dockerfile".to_owned(),
             context: None,
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),
@@ -548,7 +548,7 @@ mod tests {
         let build = LayerDevcontainerBuild {
             dockerfile: "../.devcontainer/Dockerfile".to_owned(),
             context: Some("../app".to_owned()),
-            args: Default::default(),
+            args: BTreeMap::default(),
             options: Vec::new(),
             target: None,
             cache_from: Vec::new(),

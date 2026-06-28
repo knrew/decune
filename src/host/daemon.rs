@@ -897,7 +897,7 @@ mod tests {
             let executor = Arc::new(RecordingGitCredentialExecutor::default());
             let daemon = HostDaemon::start_with_git_credential_executor(
                 temp.path().join("runtime"),
-                executor.clone(),
+                Arc::<RecordingGitCredentialExecutor>::clone(&executor),
             )
             .await
             .unwrap();

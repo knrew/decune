@@ -1,4 +1,27 @@
-use super::*;
+use std::path::Path;
+
+use anyhow::Result;
+
+use crate::{
+    config::ConfigLayer,
+    docker::{
+        client::DockerClient,
+        image::{
+            LocalImagePresence, PullPolicy, ensure_image,
+            image_devcontainer_metadata_layers_if_present_with_forward_ports,
+            image_devcontainer_metadata_layers_with_forward_ports, local_image_presence,
+        },
+    },
+    up::{
+        plan::{
+            build_up_plan_with_forwarding_resolution,
+            build_up_plan_with_image_metadata_and_forwarding_resolution,
+        },
+        types::{ForwardingResolution, UpPlan, UpPlanResolution},
+        uid_gid::effective_users_depend_on_image_config_user,
+    },
+    workspace::Workspace,
+};
 
 pub(in crate::up) async fn build_existing_container_decision_plan(
     client: &DockerClient,
@@ -176,7 +199,7 @@ pub(in crate::up) async fn prepare_compose_image_metadata(
         !include_forward_ports && image_metadata.has_forward_ports,
         resolution,
     )?;
-    plan.base_image = compose_primary_image.to_owned();
+    compose_primary_image.clone_into(&mut plan.base_image);
     Ok(plan)
 }
 

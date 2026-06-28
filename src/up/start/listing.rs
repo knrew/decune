@@ -1,4 +1,13 @@
-use super::*;
+use anyhow::{Context, Result};
+
+use crate::{
+    docker::{client::DockerClient, container::ContainerInspect},
+    runtime::compose_ports::{
+        ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIpKind,
+        ComposePublishedPortReservation,
+    },
+    up::types::UpContainerSummary,
+};
 
 pub(in crate::up) async fn list_workspace_containers(
     client: &DockerClient,

@@ -288,7 +288,8 @@ impl PortInventoryEntry {
             return self;
         };
         self.requested_host_ip_kind = Some(endpoint_kind_name(&state.requested).to_owned());
-        self.requested_host_ip = state.requested.host_ip_value.clone();
+        self.requested_host_ip
+            .clone_from(&state.requested.host_ip_value);
         self.requested_host_port = Some(state.requested.host_port);
         self.port_entry_index = Some(state.port_entry_index);
         self.target = Some(PortInventoryTarget {

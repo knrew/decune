@@ -7,7 +7,6 @@
     clippy::map_unwrap_or,
     clippy::panic,
     clippy::similar_names,
-    clippy::stable_sort_primitive,
     clippy::tests_outside_test_module,
     clippy::too_many_lines,
     clippy::undocumented_unsafe_blocks,

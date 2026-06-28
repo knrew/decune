@@ -174,7 +174,9 @@ async fn resolve_forwarding_agent_targets(
             let container = resolve_compose_forwarding_container(started, service).await?;
             target.container_name = compose_container_name(container);
         } else {
-            target.container_name = started.outcome.container_name.clone();
+            target
+                .container_name
+                .clone_from(&started.outcome.container_name);
         }
     }
 

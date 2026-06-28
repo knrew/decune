@@ -400,9 +400,9 @@ impl From<&ContainerEvidence> for ContainerStatusSummary {
 impl From<ContainerRunState> for RuntimeRunState {
     fn from(value: ContainerRunState) -> Self {
         match value {
-            ContainerRunState::Running => RuntimeRunState::Running,
-            ContainerRunState::Stopped => RuntimeRunState::Stopped,
-            ContainerRunState::Unknown => RuntimeRunState::Unknown,
+            ContainerRunState::Running => Self::Running,
+            ContainerRunState::Stopped => Self::Stopped,
+            ContainerRunState::Unknown => Self::Unknown,
         }
     }
 }

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::{Context, Result};
 
 use crate::{
@@ -40,7 +42,7 @@ pub(crate) async fn setup_dotfiles(
             command: vec!["/bin/sh".to_owned(), "-lc".to_owned(), script],
             user: Some(remote_user.user.clone()),
             working_dir: Some(remote_home.to_owned()),
-            env: Default::default(),
+            env: BTreeMap::default(),
             redactions: Vec::new(),
             tty: false,
         },
@@ -67,7 +69,7 @@ async fn fix_dotfiles_mount_root_ownership(
             command: vec!["/bin/sh".to_owned(), "-c".to_owned(), script],
             user: Some("root".to_owned()),
             working_dir: None,
-            env: Default::default(),
+            env: BTreeMap::default(),
             redactions: Vec::new(),
             tty: false,
         },

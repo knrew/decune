@@ -1739,7 +1739,7 @@ fn compose_service_published_host_ports(
         .filter_map(Value::as_str)
         .map(|port| port.parse::<u16>().unwrap())
         .collect::<Vec<_>>();
-    host_ports.sort();
+    host_ports.sort_unstable();
     host_ports.dedup();
     host_ports
 }
@@ -1848,7 +1848,7 @@ fn running_services(containers: &[ComposeContainer]) -> Vec<&str> {
         .filter(|container| container.state == "running")
         .filter_map(|container| compose_label(&container.labels, "com.docker.compose.service"))
         .collect::<Vec<_>>();
-    services.sort();
+    services.sort_unstable();
     services
 }
 

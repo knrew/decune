@@ -51,7 +51,7 @@ pub(crate) fn read_feature_metadata_document(path: &Path) -> Result<FeatureMetad
     let metadata = serde_json::from_value(raw.clone())
         .with_context(|| format!("Failed to parse Feature metadata: {}", path.display()))?;
     validate_feature_metadata_schema(&metadata)?;
-    let layer = parse_metadata_layer(raw.clone())
+    let layer = parse_metadata_layer(raw)
         .and_then(|metadata| metadata.to_config_layer_without_forward_ports())
         .with_context(|| {
             format!(

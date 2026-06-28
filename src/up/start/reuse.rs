@@ -1,4 +1,24 @@
-use super::*;
+use anyhow::Result;
+
+use crate::{
+    docker::{
+        client::DockerClient,
+        container::{remove_container, stop_container},
+        dotfiles::materialize_dotfile_skeletons,
+        mounts::DockerMountSpec,
+    },
+    host::forward::ServiceForwardRuntime,
+    state::WorkspaceState,
+    ui,
+    up::types::{ExistingContainerDecision, UpContainerSummary, UpOutcome, UpPlan},
+    workspace::Workspace,
+};
+
+use super::{
+    REBUILD_STOP_TIMEOUT_SECONDS, list_compose_forwarding_service_containers,
+    reusable_lifecycle_state, start_container_and_verify_running, startup_verification_for_plan,
+    state_compose_project_name, state_container_snapshot, write_reused_started_state,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(super) struct ExistingContainerReusePolicy {

@@ -1,4 +1,49 @@
-use super::*;
+use std::path::Path;
+
+use anyhow::Result;
+
+use crate::{
+    config::{
+        ConfigHashInput, config_hash, resolved::ResolvedDevcontainerSource,
+        variables::expand_container_env_tracked,
+    },
+    docker::{
+        build::build_hash_input,
+        client::DockerClient,
+        resource::DockerResources,
+        user::{
+            EffectiveUserResolveInput, HostPlatform, current_host_user_ids, image_config_user,
+            resolve_effective_users_from_image, resolve_effective_users_with_compose_service_user,
+            resolve_remote_user_from_image, resolve_uid_gid_sync_plan_from_image,
+        },
+    },
+    runtime::compose_ports::{
+        ComposePublishedPortDiagnostic, ComposePublishedPortOverride, ComposePublishedPortPlan,
+        compose_published_port_override, plan_compose_published_ports_with_existing_project,
+    },
+    ui,
+    up::{
+        mounts::{
+            WorkspaceLocationValidation, mount_variable_context, resolve_workspace_location,
+            workspace_mount_plan_from_resolved,
+        },
+        plan::{
+            add_internal_hash_versions, base_image_source, expand_runtime_devcontainer_fields,
+            feature_lock_hash_inputs, final_image_source,
+        },
+        types::{ForwardingResolution, MountResolution, UpPlan},
+        uid_gid::{
+            effective_user_input_from_plan, plan_requires_uid_gid_sync_layer,
+            uid_gid_sync_hash_input, uid_gid_sync_plan_requires_layer, uid_gid_sync_warning,
+        },
+    },
+    workspace::Workspace,
+};
+
+use super::{
+    ComposePublishedPortFinalization, FinalizeUpPlanMountsOptions,
+    compose_generated_override_hash_input, startup_command_hash_input,
+};
 
 pub(super) async fn finalize_mounts_and_resources_for_plan(
     client: &DockerClient,
