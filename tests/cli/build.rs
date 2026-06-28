@@ -40,8 +40,8 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -57,9 +57,7 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
             )));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let expected_name = format!("/decune-{safe_slug}-{workspace_id}");
             assert_eq!(inspect.name.as_deref(), Some(expected_name.as_str()));
             assert!(inspect_has_mount_target(
@@ -67,7 +65,7 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
                 "/workspaces/APP__Name...v2"
             ));
 
-            let images = workspace_images(&workspace_root).await.unwrap();
+            let images = workspace_images(&workspace_root).unwrap();
             assert_eq!(images.len(), 1);
             assert!(
                 images[0].starts_with(&format!("decune/{safe_slug}-{workspace_id}:")),
@@ -78,8 +76,8 @@ fn up_detach_builds_with_safe_docker_resource_names_for_problem_workspace_basena
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -140,8 +138,8 @@ fn up_detach_builds_dockerfile_container_and_honors_dockerignore() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -155,7 +153,7 @@ fn up_detach_builds_dockerfile_container_and_honors_dockerignore() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let containers = workspace_containers(&workspace_root).await.unwrap();
+            let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             assert!(
                 containers[0]
@@ -163,14 +161,14 @@ fn up_detach_builds_dockerfile_container_and_honors_dockerignore() {
                     .as_ref()
                     .is_some_and(|image| image.starts_with("decune/"))
             );
-            let images = workspace_images(&workspace_root).await.unwrap();
+            let images = workspace_images(&workspace_root).unwrap();
             assert_eq!(images.len(), 1);
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -388,8 +386,8 @@ fn up_detach_rejects_changed_dockerfile_build_context_before_reuse() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -417,8 +415,8 @@ fn up_detach_rejects_changed_dockerfile_build_context_before_reuse() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -475,8 +473,8 @@ fn up_detach_builds_with_dockerfile_specific_ignore_over_default_ignore() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -491,8 +489,8 @@ fn up_detach_builds_with_dockerfile_specific_ignore_over_default_ignore() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -546,8 +544,8 @@ fn up_dockerfile_metadata_label_is_merged() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -567,8 +565,8 @@ fn up_dockerfile_metadata_label_is_merged() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 

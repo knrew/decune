@@ -44,7 +44,7 @@ read_only = true
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -57,9 +57,7 @@ read_only = true
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -75,7 +73,7 @@ read_only = true
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -131,7 +129,7 @@ target = ".config/nvim"
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -144,9 +142,7 @@ target = ".config/nvim"
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -161,7 +157,7 @@ target = ".config/nvim"
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -241,7 +237,7 @@ read_only = true
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -254,9 +250,7 @@ read_only = true
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let host_config = inspect
                 .host_config
                 .expect("container host config should exist");
@@ -295,7 +289,7 @@ read_only = true
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -362,7 +356,7 @@ read_only = true
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -390,14 +384,13 @@ read_only = true
                     &workspace_root,
                     ["cat", "/root/.config/lazygit/config.yml"],
                 )
-                .await
             })
             .unwrap();
         assert!(output.contains("nerdFontsVersion"));
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -458,7 +451,7 @@ read_only = true
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -476,7 +469,6 @@ read_only = true
                     &workspace_root,
                     ["cat", "/root/.config/app/config.yml"],
                 )
-                .await
             })
             .unwrap();
         assert_eq!(before, "before\n");
@@ -491,14 +483,13 @@ read_only = true
                     &workspace_root,
                     ["cat", "/root/.config/app/config.yml"],
                 )
-                .await
             })
             .unwrap();
         assert_eq!(after, "after\n");
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -561,7 +552,7 @@ read_only = true
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -579,7 +570,6 @@ read_only = true
                     &workspace_root,
                     ["cat", "/root/.config/app/config.yml"],
                 )
-                .await
             })
             .unwrap();
         assert_eq!(before, "before\n");
@@ -594,14 +584,13 @@ read_only = true
                     &workspace_root,
                     ["cat", "/root/.config/app/config.yml"],
                 )
-                .await
             })
             .unwrap();
         assert_eq!(after, "after\n");
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -675,7 +664,7 @@ read_only = false
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -695,7 +684,7 @@ read_only = false
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -754,7 +743,7 @@ on_conflict = "replace-symlink"
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -768,8 +757,8 @@ on_conflict = "replace-symlink"
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -827,8 +816,8 @@ on_conflict = "fail"
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -842,8 +831,8 @@ on_conflict = "fail"
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -902,8 +891,8 @@ on_conflict = "backup"
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -917,8 +906,8 @@ on_conflict = "backup"
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -972,11 +961,9 @@ target = ".config/tool"
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        remove_image_if_exists(&image_tag).await.unwrap();
-        create_image_with_nonstandard_home_user(&workspace_root, &image_tag)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        remove_image_if_exists(&image_tag).unwrap();
+        create_image_with_nonstandard_home_user(&workspace_root, &image_tag).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -990,8 +977,8 @@ target = ".config/tool"
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = remove_image_if_exists(&image_tag).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = remove_image_if_exists(&image_tag);
         container_cleanup.and(image_cleanup).unwrap();
     });
 

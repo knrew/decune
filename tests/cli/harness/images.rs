@@ -7,12 +7,12 @@ use super::{
     names::{workspace_id, workspace_image_repository},
 };
 
-pub(crate) async fn create_workspace_image_tag(
+pub(crate) fn create_workspace_image_tag(
     workspace_root: &Path,
     tag: &str,
 ) -> anyhow::Result<String> {
-    let docker = Docker::connect_with_defaults()?;
-    ensure_alpine_image(&docker).await?;
+    let docker = Docker::connect_with_defaults();
+    ensure_alpine_image(&docker)?;
 
     let image_repository = workspace_image_repository(workspace_root);
     let image = format!("{image_repository}:{tag}");
@@ -23,16 +23,14 @@ pub(crate) async fn create_workspace_image_tag(
     Ok(image)
 }
 
-pub(crate) async fn create_image_without_devcontainer_metadata(
-    image_tag: &str,
-) -> anyhow::Result<()> {
-    create_image_with_cmd(image_tag, Vec::new()).await
+pub(crate) fn create_image_without_devcontainer_metadata(image_tag: &str) -> anyhow::Result<()> {
+    create_image_with_cmd(image_tag, Vec::new())
 }
 
-pub(crate) async fn create_image_with_cmd(image_tag: &str, cmd: Vec<&str>) -> anyhow::Result<()> {
+pub(crate) fn create_image_with_cmd(image_tag: &str, cmd: Vec<&str>) -> anyhow::Result<()> {
     if cmd.is_empty() {
-        let docker = Docker::connect_with_defaults()?;
-        ensure_alpine_image(&docker).await?;
+        let docker = Docker::connect_with_defaults();
+        ensure_alpine_image(&docker)?;
         let _lock = acquire_shared_docker_resource_lock()?;
         docker_status(["tag", "alpine:3.20", image_tag])?;
         return Ok(());
@@ -40,15 +38,14 @@ pub(crate) async fn create_image_with_cmd(image_tag: &str, cmd: Vec<&str>) -> an
 
     build_alpine_configured_image(
         image_tag,
-        DockerfileImageConfig {
+        &DockerfileImageConfig {
             cmd: Some(cmd.into_iter().map(str::to_owned).collect()),
             ..DockerfileImageConfig::default()
         },
     )
-    .await
 }
 
-pub(crate) async fn create_image_with_github_cli(image_tag: &str) -> anyhow::Result<()> {
+pub(crate) fn create_image_with_github_cli(image_tag: &str) -> anyhow::Result<()> {
     let script = r#"
 printf '%s\n' \
   '#!/bin/sh' \
@@ -70,62 +67,59 @@ chmod +x /usr/local/bin/gh
 "#;
     build_alpine_configured_image(
         image_tag,
-        DockerfileImageConfig {
+        &DockerfileImageConfig {
             run_script: Some(script.to_owned()),
             ..DockerfileImageConfig::default()
         },
     )
-    .await
 }
 
-pub(crate) async fn create_image_with_devcontainer_metadata_label(
+pub(crate) fn create_image_with_devcontainer_metadata_label(
     image_tag: &str,
     metadata: &str,
 ) -> anyhow::Result<()> {
-    create_image_with_devcontainer_metadata_label_and_cmd(image_tag, metadata, vec!["true"]).await
+    create_image_with_devcontainer_metadata_label_and_cmd(image_tag, metadata, vec!["true"])
 }
 
-pub(crate) async fn create_image_with_devcontainer_metadata_label_and_cmd(
+pub(crate) fn create_image_with_devcontainer_metadata_label_and_cmd(
     image_tag: &str,
     metadata: &str,
     cmd: Vec<&str>,
 ) -> anyhow::Result<()> {
     build_alpine_configured_image(
         image_tag,
-        DockerfileImageConfig {
+        &DockerfileImageConfig {
             labels: HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]),
             cmd: Some(cmd.into_iter().map(str::to_owned).collect()),
             ..DockerfileImageConfig::default()
         },
     )
-    .await
 }
 
-pub(crate) async fn create_nonroot_image_with_devcontainer_metadata_label_and_cmd(
+pub(crate) fn create_nonroot_image_with_devcontainer_metadata_label_and_cmd(
     image_tag: &str,
     metadata: &str,
     cmd: Vec<&str>,
 ) -> anyhow::Result<()> {
     build_alpine_configured_image(
         image_tag,
-        DockerfileImageConfig {
+        &DockerfileImageConfig {
             run_script: Some("adduser -D -u 20001 app\n".to_owned()),
             labels: HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]),
             cmd: Some(cmd.into_iter().map(str::to_owned).collect()),
             user: Some("app".to_owned()),
         },
     )
-    .await
 }
 
-pub(crate) async fn tag_image(source: &str, target: &str) -> anyhow::Result<()> {
+pub(crate) fn tag_image(source: &str, target: &str) -> anyhow::Result<()> {
     let _lock = acquire_shared_docker_resource_lock()?;
     docker_status(["tag", source, target])?;
 
     Ok(())
 }
 
-pub(crate) async fn create_image_with_devcontainer_metadata(
+pub(crate) fn create_image_with_devcontainer_metadata(
     workspace_root: &Path,
     image_tag: &str,
 ) -> anyhow::Result<()> {
@@ -152,32 +146,30 @@ chmod +x /usr/local/bin/decune-record-shell
     _ = workspace_id(workspace_root);
     build_alpine_configured_image(
         image_tag,
-        DockerfileImageConfig {
+        &DockerfileImageConfig {
             run_script: Some(script.to_owned()),
             labels: HashMap::from([("devcontainer.metadata".to_owned(), metadata.to_owned())]),
             user: Some("root".to_owned()),
             ..DockerfileImageConfig::default()
         },
     )
-    .await
 }
 
-pub(crate) async fn create_image_with_nonstandard_home_user(
+pub(crate) fn create_image_with_nonstandard_home_user(
     workspace_root: &Path,
     image_tag: &str,
 ) -> anyhow::Result<()> {
     _ = workspace_id(workspace_root);
     build_alpine_configured_image(
         image_tag,
-        DockerfileImageConfig {
+        &DockerfileImageConfig {
             run_script: Some("adduser -D -h /usr/local/share/node node\n".to_owned()),
             ..DockerfileImageConfig::default()
         },
     )
-    .await
 }
 
-pub(crate) async fn remove_image_if_exists(image: &str) -> anyhow::Result<()> {
+pub(crate) fn remove_image_if_exists(image: &str) -> anyhow::Result<()> {
     let _lock = acquire_exclusive_docker_resource_lock()?;
     _ = docker_status(["image", "rm", "--force", "--no-prune", image]);
 
@@ -192,15 +184,15 @@ struct DockerfileImageConfig {
     user: Option<String>,
 }
 
-async fn build_alpine_configured_image(
+fn build_alpine_configured_image(
     image_tag: &str,
-    config: DockerfileImageConfig,
+    config: &DockerfileImageConfig,
 ) -> anyhow::Result<()> {
-    let docker = Docker::connect_with_defaults()?;
-    ensure_alpine_image(&docker).await?;
+    let docker = Docker::connect_with_defaults();
+    ensure_alpine_image(&docker)?;
 
     let context = tempfile::tempdir()?;
-    let dockerfile = dockerfile_for_config(&config)?;
+    let dockerfile = dockerfile_for_config(config)?;
     fs::write(context.path().join("Dockerfile"), dockerfile)?;
 
     let _lock = acquire_shared_docker_resource_lock()?;

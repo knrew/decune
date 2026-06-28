@@ -11,12 +11,8 @@ use super::{
 pub(crate) struct Docker;
 
 impl Docker {
-    pub(crate) const fn connect_with_defaults() -> anyhow::Result<Self> {
-        Ok(Self)
-    }
-
-    pub(crate) async fn inspect_image(&self, image: &str) -> anyhow::Result<ImageInspect> {
-        inspect_image(image).await
+    pub(crate) const fn connect_with_defaults() -> Self {
+        Self
     }
 }
 
@@ -102,9 +98,7 @@ pub(crate) struct PortBinding {
     pub(crate) host_port: Option<String>,
 }
 
-pub(crate) async fn workspace_containers(
-    workspace_root: &Path,
-) -> anyhow::Result<Vec<ContainerSummary>> {
+pub(crate) fn workspace_containers(workspace_root: &Path) -> anyhow::Result<Vec<ContainerSummary>> {
     let output = docker_output([
         "ps",
         "--all",
@@ -118,8 +112,8 @@ pub(crate) async fn workspace_containers(
     parse_json_lines(&output)
 }
 
-pub(crate) async fn cleanup_workspace_containers(workspace_root: &Path) -> anyhow::Result<()> {
-    for container in workspace_containers(workspace_root).await? {
+pub(crate) fn cleanup_workspace_containers(workspace_root: &Path) -> anyhow::Result<()> {
+    for container in workspace_containers(workspace_root)? {
         if let Some(id) = container.id {
             _ = docker_status(["rm", "--force", "--volumes", &id]);
         }
@@ -128,16 +122,16 @@ pub(crate) async fn cleanup_workspace_containers(workspace_root: &Path) -> anyho
     Ok(())
 }
 
-pub(crate) async fn assert_container_is_not_running(container_id: &str) {
-    let inspect = inspect_container(container_id).await.unwrap();
+pub(crate) fn assert_container_is_not_running(container_id: &str) {
+    let inspect = inspect_container(container_id).unwrap();
 
     assert_eq!(inspect.state.and_then(|state| state.running), Some(false));
 }
 
-pub(crate) async fn inspect_single_workspace_container(
+pub(crate) fn inspect_single_workspace_container(
     workspace_root: &Path,
 ) -> anyhow::Result<ContainerInspectResponse> {
-    let containers = workspace_containers(workspace_root).await?;
+    let containers = workspace_containers(workspace_root)?;
 
     anyhow::ensure!(containers.len() == 1, "expected one workspace container");
 
@@ -146,11 +140,11 @@ pub(crate) async fn inspect_single_workspace_container(
         .as_deref()
         .ok_or_else(|| anyhow::anyhow!("workspace container did not include an id"))?;
 
-    inspect_container(id).await
+    inspect_container(id)
 }
 
-pub(crate) async fn workspace_container_logs(workspace_root: &Path) -> anyhow::Result<String> {
-    let containers = workspace_containers(workspace_root).await?;
+pub(crate) fn workspace_container_logs(workspace_root: &Path) -> anyhow::Result<String> {
+    let containers = workspace_containers(workspace_root)?;
 
     anyhow::ensure!(containers.len() == 1, "expected one workspace container");
 
@@ -177,11 +171,11 @@ pub(crate) fn inspect_has_mount_target(inspect: &ContainerInspectResponse, targe
     })
 }
 
-pub(crate) async fn exec_single_workspace_container<const N: usize>(
+pub(crate) fn exec_single_workspace_container<const N: usize>(
     workspace_root: &Path,
     command: [&str; N],
 ) -> anyhow::Result<String> {
-    let inspect = inspect_single_workspace_container(workspace_root).await?;
+    let inspect = inspect_single_workspace_container(workspace_root)?;
     let container_id = inspect
         .id
         .ok_or_else(|| anyhow::anyhow!("workspace container did not include an id"))?;
@@ -190,7 +184,7 @@ pub(crate) async fn exec_single_workspace_container<const N: usize>(
     docker_output(args)
 }
 
-pub(crate) async fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
+pub(crate) fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
     let output = docker_output([
         "volume",
         "ls",
@@ -209,15 +203,15 @@ pub(crate) async fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<V
         .collect())
 }
 
-pub(crate) async fn cleanup_workspace_volumes(workspace_root: &Path) -> anyhow::Result<()> {
-    for volume in workspace_volumes(workspace_root).await? {
+pub(crate) fn cleanup_workspace_volumes(workspace_root: &Path) -> anyhow::Result<()> {
+    for volume in workspace_volumes(workspace_root)? {
         _ = docker_status(["volume", "rm", "--force", &volume]);
     }
 
     Ok(())
 }
 
-pub(crate) async fn workspace_images(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
+pub(crate) fn workspace_images(workspace_root: &Path) -> anyhow::Result<Vec<String>> {
     let image_repository = workspace_image_repository(workspace_root);
     let output = docker_output([
         "image",
@@ -237,17 +231,17 @@ pub(crate) async fn workspace_images(workspace_root: &Path) -> anyhow::Result<Ve
     Ok(images)
 }
 
-pub(crate) async fn cleanup_workspace_images(workspace_root: &Path) -> anyhow::Result<()> {
+pub(crate) fn cleanup_workspace_images(workspace_root: &Path) -> anyhow::Result<()> {
     let _lock = acquire_exclusive_docker_resource_lock()?;
 
-    for image in workspace_images(workspace_root).await? {
+    for image in workspace_images(workspace_root)? {
         _ = docker_status(["image", "rm", "--force", "--no-prune", &image]);
     }
 
     Ok(())
 }
 
-pub(crate) async fn create_managed_volume(
+pub(crate) fn create_managed_volume(
     workspace_root: &Path,
     volume_name: &str,
 ) -> anyhow::Result<()> {
@@ -267,9 +261,9 @@ pub(crate) async fn create_managed_volume(
     Ok(())
 }
 
-pub(crate) async fn create_term_marker_container(workspace_root: &Path) -> anyhow::Result<()> {
-    let docker = Docker::connect_with_defaults()?;
-    ensure_alpine_image(&docker).await?;
+pub(crate) fn create_term_marker_container(workspace_root: &Path) -> anyhow::Result<()> {
+    let docker = Docker::connect_with_defaults();
+    ensure_alpine_image(&docker)?;
 
     let workspace_id = workspace_id(workspace_root);
     let name = format!("decune-remove-term-test-{workspace_id}");
@@ -296,7 +290,7 @@ pub(crate) async fn create_term_marker_container(workspace_root: &Path) -> anyho
     Ok(())
 }
 
-pub(crate) async fn ensure_alpine_image(_docker: &Docker) -> anyhow::Result<()> {
+pub(crate) fn ensure_alpine_image(_docker: &Docker) -> anyhow::Result<()> {
     if docker_status(["image", "inspect", "alpine:3.20"]).is_ok() {
         return Ok(());
     }
@@ -305,7 +299,7 @@ pub(crate) async fn ensure_alpine_image(_docker: &Docker) -> anyhow::Result<()> 
     Ok(())
 }
 
-pub(crate) async fn inspect_image(image: &str) -> anyhow::Result<ImageInspect> {
+pub(crate) fn inspect_image(image: &str) -> anyhow::Result<ImageInspect> {
     let output = docker_output(["image", "inspect", image])?;
     let mut images = serde_json::from_str::<Vec<ImageInspect>>(&output)?;
     images
@@ -313,7 +307,7 @@ pub(crate) async fn inspect_image(image: &str) -> anyhow::Result<ImageInspect> {
         .ok_or_else(|| anyhow::anyhow!("image inspect returned no images"))
 }
 
-async fn inspect_container(container: &str) -> anyhow::Result<ContainerInspectResponse> {
+fn inspect_container(container: &str) -> anyhow::Result<ContainerInspectResponse> {
     let output = docker_output(["container", "inspect", container])?;
     let mut containers = serde_json::from_str::<Vec<ContainerInspectResponse>>(&output)?;
     containers

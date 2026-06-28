@@ -70,8 +70,8 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -98,9 +98,7 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
             .stderr(predicate::str::contains("github-test-secret").not());
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let config = inspect.config.unwrap_or_default();
             let env = config.env.unwrap_or_default();
             assert!(
@@ -118,17 +116,16 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
                     .get("decune.config_hash")
                     .is_some_and(|hash| !hash.contains("github-test-secret"))
             );
-            let logs = workspace_container_logs(&workspace_root).await.unwrap();
+            let logs = workspace_container_logs(&workspace_root).unwrap();
             assert!(!logs.contains("github-test-secret"));
-            let images = workspace_images(&workspace_root).await.unwrap();
+            let images = workspace_images(&workspace_root).unwrap();
             assert!(
                 images
                     .iter()
                     .all(|image| !image.contains("github-test-secret"))
             );
-            let docker = Docker::connect_with_defaults().unwrap();
             for image in images {
-                let inspect = docker.inspect_image(&image).await.unwrap();
+                let inspect = inspect_image(&image).unwrap();
                 let labels = inspect.config.and_then(|config| config.labels);
                 assert!(
                     labels
@@ -157,8 +154,8 @@ fn up_detach_reports_when_github_cli_is_missing_and_auto_install_is_disabled_wit
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -252,8 +249,8 @@ fn up_detach_does_not_run_remote_profile_as_root_during_github_cli_setup() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -272,14 +269,13 @@ fn up_detach_does_not_run_remote_profile_as_root_during_github_cli_setup() {
                 &workspace_root,
                 ["test", "!", "-f", "/tmp/decune-profile-leak"],
             )
-            .await
             .unwrap();
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -384,8 +380,8 @@ fn up_detach_uses_remote_user_login_path_for_github_cli_setup() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -402,8 +398,8 @@ fn up_detach_uses_remote_user_login_path_for_github_cli_setup() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -474,8 +470,8 @@ fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_aut
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -492,7 +488,6 @@ fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_aut
 
         let first_id = runtime.block_on(async {
             inspect_single_workspace_container(&workspace_root)
-                .await
                 .unwrap()
                 .id
                 .unwrap()
@@ -511,16 +506,14 @@ fn up_detach_reuses_dockerfile_container_without_github_cli_probe_build_when_aut
             .stderr(predicate::str::contains("github-test-secret").not());
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -616,8 +609,8 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -632,9 +625,7 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
             .stderr(predicate::str::contains("github-test-secret").not());
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let env = inspect.config.unwrap_or_default().env.unwrap_or_default();
             assert!(
                 env.iter()
@@ -648,8 +639,8 @@ fn up_detach_sets_github_cli_config_for_nonroot_remote_user() {
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -746,8 +737,8 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -762,9 +753,7 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
             .stderr(predicate::str::contains("github-test-secret").not());
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             let config = inspect.config.unwrap_or_default();
             let env = config.env.unwrap_or_default();
             assert!(
@@ -785,8 +774,8 @@ fn up_detach_sets_github_cli_config_when_remote_user_uid_differs_from_host_uid()
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -842,7 +831,7 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -858,9 +847,7 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
             .stderr(predicate::str::contains("github-test-secret").not());
 
         let first_id = runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
             assert!(inspect_has_mount_target(
                 &inspect,
@@ -881,9 +868,7 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
             .stderr(predicate::str::contains("Started dev container"));
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert_ne!(inspect.id.as_deref(), Some(first_id.as_str()));
             assert!(!inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
             assert!(!inspect_has_mount_target(
@@ -895,7 +880,7 @@ fn up_detach_recreates_container_when_github_cli_token_becomes_unavailable() {
     });
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
     });
 
     if let Err(payload) = result {
@@ -975,8 +960,8 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -994,7 +979,6 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
 
         let first_id = runtime.block_on(async {
             inspect_single_workspace_container(&workspace_root)
-                .await
                 .unwrap()
                 .id
                 .unwrap()
@@ -1013,16 +997,14 @@ fn up_detach_reuses_auto_added_github_cli_feature_container() {
             .stderr(predicate::str::contains("github-test-secret").not());
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1109,12 +1091,10 @@ fn up_detach_reuses_auto_added_github_cli_feature_container_when_source_tag_is_r
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
-        remove_image_if_exists(&source_image).await.unwrap();
-        create_image_without_devcontainer_metadata(&source_image)
-            .await
-            .unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
+        remove_image_if_exists(&source_image).unwrap();
+        create_image_without_devcontainer_metadata(&source_image).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1131,15 +1111,13 @@ fn up_detach_reuses_auto_added_github_cli_feature_container_when_source_tag_is_r
             .stderr(predicate::str::contains("github-test-secret").not());
 
         let first_id = runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
             inspect.id.unwrap()
         });
 
         runtime.block_on(async {
-            remove_image_if_exists(&source_image).await.unwrap();
+            remove_image_if_exists(&source_image).unwrap();
         });
 
         decune()
@@ -1155,18 +1133,16 @@ fn up_detach_reuses_auto_added_github_cli_feature_container_when_source_tag_is_r
             .stderr(predicate::str::contains("github-test-secret").not());
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
             assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let workspace_image_cleanup = cleanup_workspace_images(&workspace_root).await;
-        let source_image_cleanup = remove_image_if_exists(&source_image).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let workspace_image_cleanup = cleanup_workspace_images(&workspace_root);
+        let source_image_cleanup = remove_image_if_exists(&source_image);
         container_cleanup
             .and(workspace_image_cleanup)
             .and(source_image_cleanup)
@@ -1235,10 +1211,10 @@ fn up_detach_reuses_github_cli_source_container_when_source_tag_is_removed() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
-        remove_image_if_exists(&source_image).await.unwrap();
-        create_image_with_github_cli(&source_image).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
+        remove_image_if_exists(&source_image).unwrap();
+        create_image_with_github_cli(&source_image).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1255,15 +1231,13 @@ fn up_detach_reuses_github_cli_source_container_when_source_tag_is_removed() {
             .stderr(predicate::str::contains("github-test-secret").not());
 
         let first_id = runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
             inspect.id.unwrap()
         });
 
         runtime.block_on(async {
-            remove_image_if_exists(&source_image).await.unwrap();
+            remove_image_if_exists(&source_image).unwrap();
         });
 
         decune()
@@ -1279,18 +1253,16 @@ fn up_detach_reuses_github_cli_source_container_when_source_tag_is_removed() {
             .stderr(predicate::str::contains("github-test-secret").not());
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
             assert!(inspect_has_env(&inspect, "GH_CONFIG_DIR=/run/decune/gh"));
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let workspace_image_cleanup = cleanup_workspace_images(&workspace_root).await;
-        let source_image_cleanup = remove_image_if_exists(&source_image).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let workspace_image_cleanup = cleanup_workspace_images(&workspace_root);
+        let source_image_cleanup = remove_image_if_exists(&source_image);
         container_cleanup
             .and(workspace_image_cleanup)
             .and(source_image_cleanup)
@@ -1386,8 +1358,8 @@ fn up_detach_detects_github_cli_from_container_env_path_before_auto_adding_featu
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1405,8 +1377,8 @@ fn up_detach_detects_github_cli_from_container_env_path_before_auto_adding_featu
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1502,8 +1474,8 @@ fn up_detach_expands_container_env_remote_user_home_path_before_github_cli_probe
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1521,8 +1493,8 @@ fn up_detach_expands_container_env_remote_user_home_path_before_github_cli_probe
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1611,8 +1583,8 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1630,7 +1602,6 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
 
         let first_id = runtime.block_on(async {
             inspect_single_workspace_container(&workspace_root)
-                .await
                 .unwrap()
                 .id
                 .unwrap()
@@ -1662,16 +1633,14 @@ fn up_detach_refreshes_github_cli_token_when_reusing_stopped_container() {
             .stderr(predicate::str::contains("second-secret").not());
 
         runtime.block_on(async {
-            let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
-                .unwrap();
+            let inspect = inspect_single_workspace_container(&workspace_root).unwrap();
             assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
@@ -1760,8 +1729,8 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
         .unwrap();
 
     runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).await.unwrap();
-        cleanup_workspace_images(&workspace_root).await.unwrap();
+        cleanup_workspace_containers(&workspace_root).unwrap();
+        cleanup_workspace_images(&workspace_root).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -1779,7 +1748,6 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
 
         let first_id = runtime.block_on(async {
             inspect_single_workspace_container(&workspace_root)
-                .await
                 .unwrap()
                 .id
                 .unwrap()
@@ -1804,7 +1772,6 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
 
         runtime.block_on(async {
             let inspect = inspect_single_workspace_container(&workspace_root)
-                .await
                 .unwrap();
             assert_eq!(inspect.id.as_deref(), Some(first_id.as_str()));
             exec_single_workspace_container(
@@ -1815,14 +1782,13 @@ fn up_detach_refreshes_github_cli_token_when_reusing_running_container() {
                     "test \"${GH_CONFIG_DIR:-}\" = /run/decune/gh && grep -qx \"$(cat /workspace/expected-token)\" \"$GH_CONFIG_DIR/token\"",
                 ],
             )
-            .await
             .unwrap();
         });
     });
 
     runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root).await;
-        let image_cleanup = cleanup_workspace_images(&workspace_root).await;
+        let container_cleanup = cleanup_workspace_containers(&workspace_root);
+        let image_cleanup = cleanup_workspace_images(&workspace_root);
         container_cleanup.and(image_cleanup).unwrap();
     });
 
