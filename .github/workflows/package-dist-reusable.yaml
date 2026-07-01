@@ -47,7 +47,7 @@ jobs:
         run: |
           mkdir -p target/decune-dist
           tar -C target/decune-xtask -czf target/decune-dist/container-tools-bundle.tar.gz container-tools-bundle
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           if-no-files-found: error
           name: container-tools-bundle
@@ -120,7 +120,7 @@ jobs:
           if [ "${{ inputs.verify-display-version }}" = "true" ]; then
             test "$version_output" = "decune ${{ inputs.version }}"
           fi
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           if-no-files-found: error
           name: dist-${{ matrix.target }}
@@ -155,7 +155,7 @@ jobs:
             --version "${{ inputs.version }}"
           cd target/dist
           sha256sum -c SHA256SUMS
-      - uses: actions/upload-artifact@v6
+      - uses: actions/upload-artifact@v7
         with:
           if-no-files-found: error
           name: ${{ inputs['artifact-name'] }}
