@@ -503,7 +503,7 @@ mod tests {
         );
         assert_eq!(
             entry.planned_endpoint_probe,
-            ComposePublishedPortPlannedEndpointProbe::Unprobeable
+            ComposePublishedPortPlannedEndpointProbe::Available
         );
     }
 
@@ -534,6 +534,10 @@ mod tests {
         assert_eq!(
             entry.allocation_reason,
             ComposePublishedPortAllocationReason::Available
+        );
+        assert_eq!(
+            entry.planned_endpoint_probe,
+            ComposePublishedPortPlannedEndpointProbe::Unprobeable
         );
     }
 
