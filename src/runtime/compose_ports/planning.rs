@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::{
     docker::ports::{
-        HostPortReservation, ResolvedForwardPort, host_port_available,
+        HostPortProbe, HostPortReservation, ResolvedForwardPort, host_port_probe,
         host_port_reservations_conflict, resolved_forward_port_reservations,
     },
     runtime::compose_ports::{
@@ -83,7 +83,7 @@ pub(crate) fn plan_compose_published_ports_with_existing_project(
         relocation_enabled,
         existing_forward_ports,
         existing_project_published_ports,
-        host_port_available,
+        host_port_probe,
     )
 }
 
@@ -92,10 +92,10 @@ pub(crate) fn plan_compose_published_ports_with<F>(
     relocation_enabled: bool,
     existing_forward_ports: &[ResolvedForwardPort],
     existing_project_published_ports: &[ComposePublishedPortReservation],
-    mut host_port_available: F,
+    mut host_port_probe: F,
 ) -> std::result::Result<ComposePublishedPortPlan, ComposePublishedPortPlanError>
 where
-    F: FnMut(&str, u16) -> anyhow::Result<bool>,
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
 {
     if !relocation_enabled {
         return Ok(ComposePublishedPortPlan::default());
@@ -114,7 +114,7 @@ where
             entry,
             &requested,
             &reservations,
-            &mut host_port_available,
+            &mut host_port_probe,
         )?;
         let requested_reserved =
             host_port_reservations_conflict(&reservations, requested_host_ip, requested.host_port);
@@ -126,18 +126,19 @@ where
             };
             (existing_endpoint, allocation_reason)
         } else {
-            let requested_available = if requested_reserved {
-                false
+            let requested_probe = if requested_reserved {
+                HostPortProbe::Occupied
             } else {
-                host_port_available(requested_host_ip, requested.host_port).map_err(|source| {
-                    ComposePublishedPortPlanError::HostPortAvailability {
-                        host_ip: requested_host_ip.to_owned(),
-                        host_port: requested.host_port,
-                        source,
-                    }
-                })?
+                probe_compose_published_host_port(
+                    &mut host_port_probe,
+                    requested_host_ip,
+                    requested.host_port,
+                )?
             };
-            if requested_available {
+            if matches!(
+                requested_probe,
+                HostPortProbe::Available | HostPortProbe::Unprobeable
+            ) {
                 (
                     requested.clone(),
                     ComposePublishedPortAllocationReason::Available,
@@ -153,7 +154,7 @@ where
                     &requested,
                     requested_host_ip,
                     &reservations,
-                    &mut host_port_available,
+                    &mut host_port_probe,
                 )?;
                 (
                     ComposePublishedPortEndpoint {
@@ -267,10 +268,10 @@ fn existing_project_published_port_candidate<F>(
     entry: &ComposePortEntry,
     requested: &ComposePublishedPortEndpoint,
     reservations: &[HostPortReservation],
-    host_port_available: &mut F,
+    host_port_probe: &mut F,
 ) -> std::result::Result<Option<ComposePublishedPortEndpoint>, ComposePublishedPortPlanError>
 where
-    F: FnMut(&str, u16) -> anyhow::Result<bool>,
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
 {
     for existing in existing_project_published_ports {
         if !existing_project_published_port_matches_entry(existing, entry, requested) {
@@ -291,15 +292,15 @@ where
                 )));
             }
             ComposePublishedPortReservationSource::StoppedContainer => {
-                let available = host_port_available(existing_host_ip, existing.endpoint.host_port)
-                    .map_err(
-                        |source| ComposePublishedPortPlanError::HostPortAvailability {
-                            host_ip: existing_host_ip.to_owned(),
-                            host_port: existing.endpoint.host_port,
-                            source,
-                        },
-                    )?;
-                if available {
+                let existing_probe = probe_compose_published_host_port(
+                    host_port_probe,
+                    existing_host_ip,
+                    existing.endpoint.host_port,
+                )?;
+                if matches!(
+                    existing_probe,
+                    HostPortProbe::Available | HostPortProbe::Unprobeable
+                ) {
                     return Ok(Some(existing_project_published_port_planned_endpoint(
                         existing, requested,
                     )));
@@ -358,10 +359,10 @@ fn allocate_relocated_host_port<F>(
     requested: &ComposePublishedPortEndpoint,
     reservation_host_ip: &str,
     reservations: &[HostPortReservation],
-    host_port_available: &mut F,
+    host_port_probe: &mut F,
 ) -> std::result::Result<u16, ComposePublishedPortPlanError>
 where
-    F: FnMut(&str, u16) -> anyhow::Result<bool>,
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
 {
     let Some(mut candidate) = requested.host_port.checked_add(1) else {
         return Err(no_relocation_candidate(entry, requested));
@@ -370,18 +371,12 @@ where
     loop {
         let reserved =
             host_port_reservations_conflict(reservations, reservation_host_ip, candidate);
-        let available = if reserved {
-            false
+        let candidate_probe = if reserved {
+            HostPortProbe::Occupied
         } else {
-            host_port_available(reservation_host_ip, candidate).map_err(|source| {
-                ComposePublishedPortPlanError::HostPortAvailability {
-                    host_ip: reservation_host_ip.to_owned(),
-                    host_port: candidate,
-                    source,
-                }
-            })?
+            probe_compose_published_host_port(host_port_probe, reservation_host_ip, candidate)?
         };
-        if available {
+        if candidate_probe == HostPortProbe::Available {
             return Ok(candidate);
         }
         let Some(next) = candidate.checked_add(1) else {
@@ -389,6 +384,23 @@ where
         };
         candidate = next;
     }
+}
+
+fn probe_compose_published_host_port<F>(
+    host_port_probe: &mut F,
+    host_ip: &str,
+    host_port: u16,
+) -> std::result::Result<HostPortProbe, ComposePublishedPortPlanError>
+where
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
+{
+    host_port_probe(host_ip, host_port).map_err(|source| {
+        ComposePublishedPortPlanError::HostPortAvailability {
+            host_ip: host_ip.to_owned(),
+            host_port,
+            source,
+        }
+    })
 }
 
 fn no_relocation_candidate(
@@ -409,7 +421,9 @@ mod tests {
     use crate::runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
         ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortReservation,
-        test_support::{forward_port, plan_with_availability, planning_input},
+        test_support::{
+            forward_port, host_port_probe_from_availability, plan_with_availability, planning_input,
+        },
     };
 
     #[test]
@@ -468,6 +482,36 @@ mod tests {
     }
 
     #[test]
+    fn planner_keeps_requested_endpoint_when_probe_is_unprobeable() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 502, "published": "502"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+
+        let plan = plan_compose_published_ports_with(&input, true, &[], &[], |_, port| {
+            assert_eq!(port, 502);
+            Ok(HostPortProbe::Unprobeable)
+        })
+        .unwrap();
+
+        let entry = &plan.entries[0];
+        assert_eq!(entry.requested.host_port, 502);
+        assert_eq!(entry.planned.host_port, 502);
+        assert!(!entry.relocated);
+        assert_eq!(
+            entry.allocation_reason,
+            ComposePublishedPortAllocationReason::Available
+        );
+    }
+
+    #[test]
     fn planner_allocates_next_candidate_when_requested_is_unavailable() {
         let input = planning_input(
             json!({
@@ -493,6 +537,40 @@ mod tests {
     }
 
     #[test]
+    fn planner_skips_unprobeable_relocation_candidates() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 502, "published": "502"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let forwarding = vec![forward_port("0.0.0.0", 502, 8080)];
+
+        let plan = plan_compose_published_ports_with(&input, true, &forwarding, &[], |_, port| {
+            Ok(match port {
+                503 | 504 => HostPortProbe::Unprobeable,
+                505 => HostPortProbe::Available,
+                unexpected => panic!("unexpected probe for port {unexpected}"),
+            })
+        })
+        .unwrap();
+
+        let entry = &plan.entries[0];
+        assert_eq!(entry.requested.host_port, 502);
+        assert_eq!(entry.planned.host_port, 505);
+        assert!(entry.relocated);
+        assert_eq!(
+            entry.allocation_reason,
+            ComposePublishedPortAllocationReason::Reserved
+        );
+    }
+
+    #[test]
     fn planner_returns_typed_error_when_no_candidate_exists() {
         let input = planning_input(
             json!({
@@ -506,8 +584,10 @@ mod tests {
             &[],
         );
 
-        let error = plan_compose_published_ports_with(&input, true, &[], &[], |_, _| Ok(false))
-            .expect_err("planner should fail without a relocation candidate");
+        let error = plan_compose_published_ports_with(&input, true, &[], &[], |_, _| {
+            Ok(HostPortProbe::Occupied)
+        })
+        .expect_err("planner should fail without a relocation candidate");
 
         match error {
             ComposePublishedPortPlanError::NoRelocationCandidate {
@@ -527,6 +607,42 @@ mod tests {
     }
 
     #[test]
+    fn planner_keeps_unexpected_probe_errors_as_host_port_availability() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+
+        let error = plan_compose_published_ports_with(&input, true, &[], &[], |_, _| {
+            Err(anyhow::anyhow!("socket probe failed"))
+        })
+        .expect_err("unexpected probe error should stay fallible");
+
+        match error {
+            ComposePublishedPortPlanError::HostPortAvailability {
+                host_ip,
+                host_port,
+                source,
+            } => {
+                assert_eq!(host_ip, "0.0.0.0");
+                assert_eq!(host_port, 3000);
+                assert!(source.to_string().contains("socket probe failed"));
+            }
+            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            | ComposePublishedPortPlanError::InconsistentEntry { .. }) => {
+                panic!("expected host port availability error, got {other:?}")
+            }
+        }
+    }
+
+    #[test]
     fn planner_errors_on_inconsistent_eligible_entry() {
         let mut input = planning_input(
             json!({
@@ -541,8 +657,10 @@ mod tests {
         );
         input.port_entries[0].published_host_port = ComposePublishedHostPort::None;
 
-        let error = plan_compose_published_ports_with(&input, true, &[], &[], |_, _| Ok(true))
-            .expect_err("inconsistent eligible entry must fail");
+        let error = plan_compose_published_ports_with(&input, true, &[], &[], |_, _| {
+            Ok(HostPortProbe::Available)
+        })
+        .expect_err("inconsistent eligible entry must fail");
 
         match error {
             ComposePublishedPortPlanError::InconsistentEntry {
@@ -626,7 +744,7 @@ mod tests {
             true,
             &[],
             &existing_project_published_ports,
-            |_, _| Ok(false),
+            |_, _| Ok(HostPortProbe::Occupied),
         )
         .unwrap();
 
@@ -667,7 +785,7 @@ mod tests {
             true,
             &[],
             &existing_project_published_ports,
-            |_, _| Ok(false),
+            |_, _| Ok(HostPortProbe::Occupied),
         )
         .expect_err("different target binding must not suppress availability failure");
 
@@ -706,7 +824,7 @@ mod tests {
             true,
             &[],
             &existing_project_published_ports,
-            |_, _| Ok(false),
+            |_, _| Ok(HostPortProbe::Occupied),
         )
         .unwrap();
 
@@ -747,7 +865,7 @@ mod tests {
             true,
             &[],
             &existing_project_published_ports,
-            |_, _| Ok(false),
+            |_, _| Ok(HostPortProbe::Occupied),
         )
         .unwrap();
 
@@ -790,12 +908,57 @@ mod tests {
             true,
             &[],
             &existing_project_published_ports,
-            |_, _| Ok(true),
+            |_, _| Ok(HostPortProbe::Available),
         )
         .unwrap();
 
         assert_eq!(plan.entries[0].planned.host_port, 3001);
         assert!(plan.entries[0].relocated);
+    }
+
+    #[test]
+    fn planner_reuses_stopped_existing_binding_when_probe_is_unprobeable() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let existing_project_published_ports = vec![ComposePublishedPortReservation {
+            service: "app".to_owned(),
+            target_port: 3000,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                host_port: 502,
+            },
+            source: ComposePublishedPortReservationSource::StoppedContainer,
+        }];
+
+        let plan = plan_compose_published_ports_with(
+            &input,
+            true,
+            &[],
+            &existing_project_published_ports,
+            |_, port| {
+                assert_eq!(port, 502);
+                Ok(HostPortProbe::Unprobeable)
+            },
+        )
+        .unwrap();
+
+        let entry = &plan.entries[0];
+        assert_eq!(entry.planned.host_port, 502);
+        assert!(entry.relocated);
+        assert_eq!(
+            entry.allocation_reason,
+            ComposePublishedPortAllocationReason::Unavailable
+        );
     }
 
     #[test]
@@ -827,7 +990,7 @@ mod tests {
             true,
             &[],
             &existing_project_published_ports,
-            |_, port| Ok(port != 3000),
+            |_, port| Ok(host_port_probe_from_availability(port != 3000)),
         )
         .unwrap();
 
@@ -868,7 +1031,7 @@ mod tests {
             true,
             &[],
             &existing_project_published_ports,
-            |_, _| Ok(false),
+            |_, _| Ok(HostPortProbe::Occupied),
         )
         .expect_err("different service binding must not suppress availability failure");
 
@@ -988,9 +1151,10 @@ mod tests {
         );
         let forwarding = vec![forward_port("127.0.0.1", 3000, 8080)];
 
-        let plan =
-            plan_compose_published_ports_with(&input, true, &forwarding, &[], |_, _| Ok(true))
-                .unwrap();
+        let plan = plan_compose_published_ports_with(&input, true, &forwarding, &[], |_, _| {
+            Ok(HostPortProbe::Available)
+        })
+        .unwrap();
 
         assert_eq!(plan.entries[0].planned.host_port, 3001);
         assert_eq!(
@@ -1017,9 +1181,10 @@ mod tests {
         );
         let forwarding = vec![forward_port("0.0.0.0", 3000, 8080)];
 
-        let plan =
-            plan_compose_published_ports_with(&input, true, &forwarding, &[], |_, _| Ok(true))
-                .unwrap();
+        let plan = plan_compose_published_ports_with(&input, true, &forwarding, &[], |_, _| {
+            Ok(HostPortProbe::Available)
+        })
+        .unwrap();
 
         assert_eq!(plan.entries[0].planned.host_port, 3001);
         assert_eq!(

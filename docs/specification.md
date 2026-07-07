@@ -780,8 +780,10 @@ CLI `--published-port-relocation` / `--no-published-port-relocation` は、こ�
 relocation の対象は fixed TCP published host port に限る。relocation 処理は以下の契約に従う。
 
 - image metadata や Feature metadata を merge した後の final `forwardPorts` / `[[ports]]` / CLI `-p` forwarding reservation を考慮し、同じ host endpoint を Compose published port と decune port forwarding の両方へ割り当ててはならない。
-- 同一 Compose project の既存 container が同一 service / 同一 protocol / 同一 target port の published binding を持つ場合、requested port より既存 binding の host port 維持を優先する。running container 由来の binding は自 project が bind しているものとして availability probe なしで採用してよい。stopped container 由来の binding は実際には bind されていないため、採用前に availability probe を行う。
-- 既存 binding が使えない場合、requested host port を試し、requested host port も使えない場合は host IP の指定方法を維持したまま requested host port + 1 から昇順に relocation candidate を探索する。OS assigned port fallback は行わず、65535 まで candidate がない場合は error にする。
+- availability probe は decune process からの TCP bind probe で行う。probe が `AddrInUse` で失敗した host port は occupied と扱う。probe が `PermissionDenied` で失敗した host port は、privileged port など decune process の権限では空き・占有を判別できない unprobeable な port として扱い、occupied とも available とも unexpected error とも区別する。`PermissionDenied` 以外の unexpected probe error は従来どおり hard error とする。
+- 同一 Compose project の既存 container が同一 service / 同一 protocol / 同一 target port の published binding を持つ場合、requested port より既存 binding の host port 維持を優先する。running container 由来の binding は自 project が bind しているものとして availability probe なしで採用してよい。stopped container 由来の binding は実際には bind されていないため、採用前に availability probe を行う。stopped container 由来の binding が unprobeable な場合は、その binding を採用して実際の bind 成否を Docker daemon に委ねる。
+- 既存 binding が使えない場合、requested host port を試す。requested host port が unprobeable な場合は、reservation と衝突していない限り requested host port を維持して実際の bind 成否を Docker daemon に委ねる。requested host port が occupied または reservation と衝突する場合は、host IP の指定方法を維持したまま requested host port + 1 から昇順に relocation candidate を探索する。relocation candidate が unprobeable な場合は採用せず、次の candidate へ進む。OS assigned port fallback は行わず、65535 まで candidate がない場合は error にする。
+- unprobeable な requested host port または既存 binding を採用した後、実際にはその host endpoint が使用中だった場合、Docker/Compose 起動時の published port collision diagnostic になる。
 - 既存 container の actual published binding と新しい plan の planned endpoint が異なり、container 再作成しなければ起動できない場合、decune は published port relocation による再作成であることを warning し、`docker compose up --force-recreate` 相当で自動再作成して起動を継続する。この warning は `warn_on_relocation` と独立に常に出す。
 - relocate 済み binding は、blocker が消えて requested host port が再び利用可能になっても維持する。requested host port へ戻すのは rebuild 時のみである。
 - relocation により実際に host port を変更する場合、generated Compose override は Compose `!override` tag で service `ports` を置換する。このため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose では error にする。
@@ -790,13 +792,13 @@ relocation の対象は fixed TCP published host port に限る。relocation 処
 Compose published port diagnostics は relocation policy の有効/無効とは別に、Docker Compose config から判定できる published port condition に対して使う。
 
 - effective replica count が 2 以上の service が fixed TCP published host port を持つ場合、decune は replica ごとの published host port allocation を行わず `compose_published_port_multi_replica_unsupported` diagnostic で error にする。effective replica count は Docker Compose config の `scale`、なければ `deploy.replicas` から読む。
-- invalid host IP、malformed port syntax、host port availability check の permission error は simple collision として扱わず、decune が判定できる場合は `compose_published_port_invalid` diagnostic で error にする。
+- invalid host IP、malformed port syntax、unexpected host port availability probe error は simple collision として扱わず、decune が判定できる場合は `compose_published_port_invalid` diagnostic で error にする。
 
 Compose published port diagnostics の code は以下を使う。
 
 - `compose_published_port_multi_replica_unsupported`: replica 数が 2 以上の service が、decune が対応しない fixed TCP published host port を持つ。
 - `compose_published_port_unsupported`: startup failure が、host endpoint を安全に照合できる範囲で decune が対応しない Compose published port entry に関係している。
-- `compose_published_port_invalid`: invalid host IP、malformed syntax、permission denied など、simple collision ではない invalid published port condition。
+- `compose_published_port_invalid`: invalid host IP、malformed syntax、unexpected host port availability probe error など、simple collision ではない invalid published port condition。
 - `compose_published_port_collision`: requested fixed TCP published host endpoint が unavailable。
 - `compose_published_port_relocation_failed`: relocation candidate を割り当てられない。
 - `compose_published_port_bind_race`: planning 後に別 process が planned endpoint を取得した可能性がある。

@@ -2,7 +2,7 @@ use serde_json::Value as JsonValue;
 
 use crate::{
     config::types::PortProtocol,
-    docker::ports::ResolvedForwardPort,
+    docker::ports::{HostPortProbe, ResolvedForwardPort},
     runtime::{
         compose_cli::ComposeConfigModel,
         compose_ports::{
@@ -37,9 +37,19 @@ pub(super) fn plan_with_availability(
     unavailable_ports: &[u16],
 ) -> ComposePublishedPortPlan {
     plan_compose_published_ports_with(input, true, &[], &[], |_, port| {
-        Ok(!unavailable_ports.contains(&port))
+        Ok(host_port_probe_from_availability(
+            !unavailable_ports.contains(&port),
+        ))
     })
     .unwrap()
+}
+
+pub(super) const fn host_port_probe_from_availability(available: bool) -> HostPortProbe {
+    if available {
+        HostPortProbe::Available
+    } else {
+        HostPortProbe::Occupied
+    }
 }
 
 pub(super) fn forward_port(host_ip: &str, host: u16, container: u16) -> ResolvedForwardPort {

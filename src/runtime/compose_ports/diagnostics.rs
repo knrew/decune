@@ -216,13 +216,13 @@ mod tests {
         );
 
         let error = plan_compose_published_ports_with(&input, true, &[], &[], |_, _| {
-            Err(anyhow::anyhow!("permission denied"))
+            Err(anyhow::anyhow!("socket probe failed"))
         })
         .expect_err("availability error should be returned");
         let diagnostic = ComposePublishedPortDiagnostic::from_plan_error(error).to_string();
 
         assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_INVALID));
-        assert!(diagnostic.contains("permission denied"));
+        assert!(diagnostic.contains("socket probe failed"));
         assert!(!diagnostic.contains("compose_published_port_collision"));
     }
 
