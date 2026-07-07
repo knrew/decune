@@ -9,8 +9,8 @@ use crate::{
         ComposePortEligibility, ComposePortEntry, ComposePublishedPortAllocationReason,
         ComposePublishedPortEndpoint, ComposePublishedPortPlan, ComposePublishedPortPlanEntry,
         ComposePublishedPortPlanEntryType, ComposePublishedPortPlanSource,
-        ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
-        ComposePublishedPortReservationSource,
+        ComposePublishedPortPlannedEndpointProbe, ComposePublishedPortPlanningInput,
+        ComposePublishedPortReservation, ComposePublishedPortReservationSource,
     },
 };
 
@@ -118,53 +118,63 @@ where
         )?;
         let requested_reserved =
             host_port_reservations_conflict(&reservations, requested_host_ip, requested.host_port);
-        let (planned, allocation_reason) = if let Some(existing_endpoint) = existing_endpoint {
-            let allocation_reason = if existing_endpoint == requested {
-                ComposePublishedPortAllocationReason::Available
-            } else {
-                ComposePublishedPortAllocationReason::Unavailable
-            };
-            (existing_endpoint, allocation_reason)
-        } else {
-            let requested_probe = if requested_reserved {
-                HostPortProbe::Occupied
-            } else {
-                probe_compose_published_host_port(
-                    &mut host_port_probe,
-                    requested_host_ip,
-                    requested.host_port,
-                )?
-            };
-            if matches!(
-                requested_probe,
-                HostPortProbe::Available | HostPortProbe::Unprobeable
-            ) {
-                (
-                    requested.clone(),
-                    ComposePublishedPortAllocationReason::Available,
-                )
-            } else {
-                let allocation_reason = if requested_reserved {
-                    ComposePublishedPortAllocationReason::Reserved
+        let (planned, allocation_reason, planned_endpoint_probe) =
+            if let Some(existing_candidate) = existing_endpoint {
+                let allocation_reason = if existing_candidate.endpoint == requested {
+                    ComposePublishedPortAllocationReason::Available
                 } else {
                     ComposePublishedPortAllocationReason::Unavailable
                 };
-                let planned_host_port = allocate_relocated_host_port(
-                    entry,
-                    &requested,
-                    requested_host_ip,
-                    &reservations,
-                    &mut host_port_probe,
-                )?;
                 (
-                    ComposePublishedPortEndpoint {
-                        host_ip: requested.host_ip.clone(),
-                        host_port: planned_host_port,
-                    },
+                    existing_candidate.endpoint,
                     allocation_reason,
+                    existing_candidate.planned_endpoint_probe,
                 )
-            }
-        };
+            } else {
+                let requested_probe = if requested_reserved {
+                    HostPortProbe::Occupied
+                } else {
+                    probe_compose_published_host_port(
+                        &mut host_port_probe,
+                        requested_host_ip,
+                        requested.host_port,
+                    )?
+                };
+                match requested_probe {
+                    HostPortProbe::Available => (
+                        requested.clone(),
+                        ComposePublishedPortAllocationReason::Available,
+                        ComposePublishedPortPlannedEndpointProbe::Available,
+                    ),
+                    HostPortProbe::Unprobeable => (
+                        requested.clone(),
+                        ComposePublishedPortAllocationReason::Available,
+                        ComposePublishedPortPlannedEndpointProbe::Unprobeable,
+                    ),
+                    HostPortProbe::Occupied => {
+                        let allocation_reason = if requested_reserved {
+                            ComposePublishedPortAllocationReason::Reserved
+                        } else {
+                            ComposePublishedPortAllocationReason::Unavailable
+                        };
+                        let planned_host_port = allocate_relocated_host_port(
+                            entry,
+                            &requested,
+                            requested_host_ip,
+                            &reservations,
+                            &mut host_port_probe,
+                        )?;
+                        (
+                            ComposePublishedPortEndpoint {
+                                host_ip: requested.host_ip.clone(),
+                                host_port: planned_host_port,
+                            },
+                            allocation_reason,
+                            ComposePublishedPortPlannedEndpointProbe::Available,
+                        )
+                    }
+                }
+            };
         reservations.push(HostPortReservation {
             host_ip: reservation_host_ip(&planned).to_owned(),
             host: planned.host_port,
@@ -180,6 +190,7 @@ where
             protocol: entry.protocol.clone(),
             requested,
             planned,
+            planned_endpoint_probe,
             relocated,
             allocation_reason,
         });
@@ -224,6 +235,7 @@ pub(crate) fn compose_published_port_runtime_plan(
             protocol: entry.protocol.clone(),
             requested: requested.clone(),
             planned: requested,
+            planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
             relocated: false,
             allocation_reason: ComposePublishedPortAllocationReason::Available,
         });
@@ -269,7 +281,7 @@ fn existing_project_published_port_candidate<F>(
     requested: &ComposePublishedPortEndpoint,
     reservations: &[HostPortReservation],
     host_port_probe: &mut F,
-) -> std::result::Result<Option<ComposePublishedPortEndpoint>, ComposePublishedPortPlanError>
+) -> std::result::Result<Option<ExistingProjectPublishedPortCandidate>, ComposePublishedPortPlanError>
 where
     F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
 {
@@ -287,9 +299,10 @@ where
         }
         match existing.source {
             ComposePublishedPortReservationSource::RunningContainer => {
-                return Ok(Some(existing_project_published_port_planned_endpoint(
-                    existing, requested,
-                )));
+                return Ok(Some(ExistingProjectPublishedPortCandidate {
+                    endpoint: existing_project_published_port_planned_endpoint(existing, requested),
+                    planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
+                }));
             }
             ComposePublishedPortReservationSource::StoppedContainer => {
                 let existing_probe = probe_compose_published_host_port(
@@ -297,19 +310,27 @@ where
                     existing_host_ip,
                     existing.endpoint.host_port,
                 )?;
-                if matches!(
-                    existing_probe,
-                    HostPortProbe::Available | HostPortProbe::Unprobeable
-                ) {
-                    return Ok(Some(existing_project_published_port_planned_endpoint(
-                        existing, requested,
-                    )));
-                }
+                let planned_endpoint_probe = match existing_probe {
+                    HostPortProbe::Available => ComposePublishedPortPlannedEndpointProbe::Available,
+                    HostPortProbe::Unprobeable => {
+                        ComposePublishedPortPlannedEndpointProbe::Unprobeable
+                    }
+                    HostPortProbe::Occupied => continue,
+                };
+                return Ok(Some(ExistingProjectPublishedPortCandidate {
+                    endpoint: existing_project_published_port_planned_endpoint(existing, requested),
+                    planned_endpoint_probe,
+                }));
             }
         }
     }
 
     Ok(None)
+}
+
+struct ExistingProjectPublishedPortCandidate {
+    endpoint: ComposePublishedPortEndpoint,
+    planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe,
 }
 
 fn existing_project_published_port_planned_endpoint(
@@ -420,7 +441,8 @@ mod tests {
     use super::*;
     use crate::runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
-        ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortReservation,
+        ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
+        ComposePublishedPortPlannedEndpointProbe, ComposePublishedPortReservation,
         test_support::{
             forward_port, host_port_probe_from_availability, plan_with_availability, planning_input,
         },
@@ -478,6 +500,10 @@ mod tests {
         assert_eq!(
             entry.allocation_reason,
             ComposePublishedPortAllocationReason::Available
+        );
+        assert_eq!(
+            entry.planned_endpoint_probe,
+            ComposePublishedPortPlannedEndpointProbe::Unprobeable
         );
     }
 
@@ -958,6 +984,10 @@ mod tests {
         assert_eq!(
             entry.allocation_reason,
             ComposePublishedPortAllocationReason::Unavailable
+        );
+        assert_eq!(
+            entry.planned_endpoint_probe,
+            ComposePublishedPortPlannedEndpointProbe::Unprobeable
         );
     }
 

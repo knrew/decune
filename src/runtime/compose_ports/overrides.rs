@@ -101,7 +101,8 @@ mod tests {
     use crate::runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedPortAllocationReason, ComposePublishedPortEndpoint,
         ComposePublishedPortHostIp, ComposePublishedPortPlan, ComposePublishedPortPlanEntry,
-        ComposePublishedPortPlanEntryType, ComposePublishedPortPlanSource, test_support::entries,
+        ComposePublishedPortPlanEntryType, ComposePublishedPortPlanSource,
+        ComposePublishedPortPlannedEndpointProbe, test_support::entries,
     };
 
     #[test]
@@ -146,6 +147,7 @@ mod tests {
                         host_ip: ComposePublishedPortHostIp::Omitted,
                         host_port: 3005,
                     },
+                    planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
                     relocated: true,
                     allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
                 },
@@ -164,6 +166,7 @@ mod tests {
                         host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
                         host_port: 3006,
                     },
+                    planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
                     relocated: true,
                     allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
                 },
@@ -182,6 +185,7 @@ mod tests {
                         host_ip: ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
                         host_port: 3007,
                     },
+                    planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
                     relocated: true,
                     allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
                 },

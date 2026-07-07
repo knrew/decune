@@ -84,8 +84,15 @@ pub(crate) struct ComposePublishedPortPlanEntry {
     pub(crate) protocol: ComposePortProtocol,
     pub(crate) requested: ComposePublishedPortEndpoint,
     pub(crate) planned: ComposePublishedPortEndpoint,
+    pub(crate) planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe,
     pub(crate) relocated: bool,
     pub(crate) allocation_reason: ComposePublishedPortAllocationReason,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComposePublishedPortPlannedEndpointProbe {
+    Available,
+    Unprobeable,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

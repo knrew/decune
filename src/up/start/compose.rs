@@ -1140,7 +1140,8 @@ mod tests {
     use super::*;
     use crate::runtime::compose_ports::{
         ComposePublishedPortAllocationReason, ComposePublishedPortPlanEntryType,
-        ComposePublishedPortPlanSource, ComposePublishedPortReservationSource,
+        ComposePublishedPortPlanSource, ComposePublishedPortPlannedEndpointProbe,
+        ComposePublishedPortReservationSource,
     };
 
     #[test]
@@ -1287,6 +1288,7 @@ mod tests {
                 host_ip: ComposePublishedPortHostIp::Omitted,
                 host_port: planned_host_port,
             },
+            planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
             relocated: requested_host_port != planned_host_port,
             allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
         }

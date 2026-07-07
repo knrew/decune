@@ -27,7 +27,7 @@ pub(crate) use types::{
     ComposePortSyntax, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
     ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
     ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
-    ComposePublishedPortPlanSource, ComposePublishedPortPlanningInput,
-    ComposePublishedPortReservation, ComposePublishedPortReservationSource,
-    ComposePublishedPortStartupDiagnostics,
+    ComposePublishedPortPlanSource, ComposePublishedPortPlannedEndpointProbe,
+    ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
+    ComposePublishedPortReservationSource, ComposePublishedPortStartupDiagnostics,
 };
