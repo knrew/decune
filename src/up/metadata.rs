@@ -53,7 +53,9 @@ mod tests {
         },
         runtime::compose_cli::ComposeConfigService,
         runtime::compose_ports::{
-            ComposePublishedPortOverride, classify_compose_published_ports,
+            ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
+            ComposePublishedPortOverride, ComposePublishedPortReservation,
+            ComposePublishedPortReservationSource, classify_compose_published_ports,
             compose_published_port_planning_input,
         },
         up::{plan::build_up_plan, types::UpPlan},
@@ -283,7 +285,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_override_semantic_hash_changes_for_published_port_override() {
+    fn generated_override_semantic_hash_ignores_published_port_override() {
         let plan = compose_hash_plan("stable-hash", "decune/test:first", "1.0.0");
         let baseline = compose_generated_override_hash_input(
             &PathBuf::from("/state/compose.override.yaml"),
@@ -310,7 +312,7 @@ mod tests {
         )
         .unwrap();
 
-        assert_ne!(baseline.content_hash, changed.content_hash);
+        assert_eq!(baseline.content_hash, changed.content_hash);
     }
 
     #[test]
@@ -337,12 +339,22 @@ mod tests {
         .unwrap();
         let port_entries = classify_compose_published_ports(&model);
         let input = compose_published_port_planning_input(&model, &port_entries, "app", &[]);
+        let existing = vec![ComposePublishedPortReservation {
+            service: "app".to_owned(),
+            target_port: 3000,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                host_port: 3001,
+            },
+            source: ComposePublishedPortReservationSource::RunningContainer,
+        }];
 
         let (port_plan, port_override) = finalized_compose_published_ports(
             &plan,
             Some(ComposePublishedPortFinalization {
                 input: &input,
-                existing_project_published_ports: &[],
+                existing_project_published_ports: &existing,
             }),
         )
         .unwrap();

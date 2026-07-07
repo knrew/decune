@@ -94,6 +94,13 @@ pub(crate) struct ComposePublishedPortReservation {
     pub(crate) target_port: u16,
     pub(crate) protocol: ComposePortProtocol,
     pub(crate) endpoint: ComposePublishedPortEndpoint,
+    pub(crate) source: ComposePublishedPortReservationSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ComposePublishedPortReservationSource {
+    RunningContainer,
+    StoppedContainer,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

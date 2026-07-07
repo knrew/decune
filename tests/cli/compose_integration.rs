@@ -332,6 +332,188 @@ fn compose_integration_published_port_relocation_starts_second_workspace_and_rep
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_published_port_relocation_recreates_stopped_project_when_binding_must_move()
+{
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    drop(requested_listener);
+    let workspace = compose_published_primary_workspace(requested_port);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let first_containers = compose_project_containers(workspace.path()).unwrap();
+    let first_primary = first_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    let first_id = first_primary.id.clone();
+
+    decune()
+        .arg("down")
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success();
+    let blocker = TcpListener::bind(("127.0.0.1", requested_port)).unwrap();
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("Compose published port relocation will recreate")
+                .and(predicate::str::contains("service `app`"))
+                .and(predicate::str::contains("Started dev container")),
+        );
+
+    let second_containers = compose_project_containers(workspace.path()).unwrap();
+    let second_primary = second_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    assert_ne!(second_primary.id, first_id);
+
+    let published_ports = compose_service_published_host_ports(workspace.path(), "app", "3000/tcp");
+    assert!(
+        !published_ports.contains(&requested_port),
+        "relocation must not keep the blocked requested port active"
+    );
+    assert!(
+        published_ports.iter().any(|port| *port > requested_port),
+        "expected relocated host port greater than {requested_port}: {published_ports:?}"
+    );
+    drop(blocker);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_published_port_relocation_keeps_running_binding_after_blocker_disappears() {
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    let workspace = compose_published_primary_workspace(requested_port);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let published_ports = compose_service_published_host_ports(workspace.path(), "app", "3000/tcp");
+    assert!(
+        !published_ports.contains(&requested_port),
+        "initial relocation must not keep the blocked requested port active"
+    );
+    let planned_port = *published_ports
+        .iter()
+        .find(|port| **port > requested_port)
+        .unwrap_or_else(|| {
+            panic!(
+                "expected relocated host port greater than {requested_port}: {published_ports:?}"
+            )
+        });
+    let first_containers = compose_project_containers(workspace.path()).unwrap();
+    let first_primary = first_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    let first_id = first_primary.id.clone();
+    drop(requested_listener);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Reusing running dev container"));
+
+    let second_containers = compose_project_containers(workspace.path()).unwrap();
+    let second_primary = second_containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist");
+    assert_eq!(second_primary.id, first_id);
+
+    let current_ports = compose_service_published_host_ports(workspace.path(), "app", "3000/tcp");
+    assert!(current_ports.contains(&planned_port));
+    assert!(
+        !current_ports.contains(&requested_port),
+        "relocated binding must not move back to requested port until rebuild"
+    );
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_published_port_relocation_returns_to_requested_on_rebuild() {
+    let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
+        return;
+    };
+    let requested_port = requested_listener.local_addr().unwrap().port();
+    let workspace = compose_published_primary_workspace(requested_port);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
+
+    decune()
+        .args(["up", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let relocated_ports = compose_service_published_host_ports(workspace.path(), "app", "3000/tcp");
+    assert!(
+        !relocated_ports.contains(&requested_port),
+        "initial relocation must not keep the blocked requested port active"
+    );
+    drop(requested_listener);
+
+    decune()
+        .args(["rebuild", "--detach", "--published-port-relocation"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let rebuilt_ports = compose_service_published_host_ports(workspace.path(), "app", "3000/tcp");
+    assert!(
+        rebuilt_ports.contains(&requested_port),
+        "rebuild should return relocated binding to requested port {requested_port}: {rebuilt_ports:?}"
+    );
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_published_port_relocation_replaces_original_binding() {
     let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
         return;

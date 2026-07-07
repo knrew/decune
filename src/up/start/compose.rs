@@ -7,6 +7,7 @@ use crate::{
         client::DockerClient,
         dotfiles::materialize_dotfile_skeletons,
         image::{PullPolicy, ensure_image, image_container_tool_platform},
+        ports::{HostPortReservation, host_port_reservations_conflict},
     },
     runtime::{
         compose_cli::{
@@ -16,13 +17,15 @@ use crate::{
             DockerComposeCli,
         },
         compose_ports::{
-            ComposePublishedPortPlan, ComposePublishedPortPlanningInput,
-            ComposePublishedPortReservation, ComposePublishedPortStartupDiagnostics,
-            compose_published_port_plan_has_relocations,
+            ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
+            ComposePublishedPortOverride, ComposePublishedPortPlan, ComposePublishedPortPlanEntry,
+            ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
+            ComposePublishedPortStartupDiagnostics, compose_port_protocol_name,
+            compose_published_port_endpoint_display, compose_published_port_plan_has_relocations,
             validate_compose_published_port_diagnostics,
         },
     },
-    state,
+    state, ui,
     up::{
         build::plan_requires_final_image_layer,
         existing::{self, decide_existing_container},
@@ -66,7 +69,9 @@ struct ComposeRunningReuseInput<'a> {
     plan: UpPlan,
     options: &'a UpOptions,
     forwarding_resolution: ForwardingResolution,
+    existing_compose_project_containers: &'a [UpContainerSummary],
     existing_compose_containers: &'a [UpContainerSummary],
+    existing_project_published_ports: &'a [ComposePublishedPortReservation],
     compose_primary_image: &'a str,
     user_config: &'a ComposeConfigOutput,
     compose_primary_service_user: Option<&'a str>,
@@ -97,7 +102,7 @@ async fn try_reuse_running_compose_container_before_image_prepare(
         workspace,
         input.options.config_path.as_deref(),
         input.options.cli_layer.clone(),
-        input.plan,
+        input.plan.clone(),
         input.compose_primary_image,
         resolution,
     )
@@ -136,29 +141,15 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     attach_compose_interpolation_env_to_plan(&mut plan);
     report_deferred_config_messages(&plan.config);
 
-    let Some(compose_project) = &plan.compose_project else {
-        bail!("Docker Compose project plan is missing after finalization");
-    };
-    let decision = decide_existing_container(
-        input.existing_compose_containers,
-        &plan.resources.config_hash,
-        credentials.mount_policy(),
-        input.options.reuse.rebuild,
-    )?;
-    let service_forward_requires_recreate = compose_service_forward_requires_recreate(
+    let (decision, should_reuse) = fast_path_existing_container_decision(
         client,
-        workspace.id(),
-        compose_project.project_name(),
-        credentials.service_forward(),
+        workspace,
+        &input,
+        &plan,
+        &credentials,
+        &published_port_plan,
     )
     .await?;
-    let should_reuse = should_reuse_existing_container(
-        &decision,
-        ExistingContainerReusePolicy {
-            pull: input.options.build.pull,
-            service_forward_requires_recreate,
-        },
-    );
 
     if let ExistingContainerDecision::ReuseRunning { id, name } = decision
         && should_reuse
@@ -189,6 +180,44 @@ const fn compose_fast_path_resolution(input: &ComposeRunningReuseInput<'_>) -> U
         input.options.build.update_features,
         input.options.config.skip_global_config,
     )
+}
+
+async fn fast_path_existing_container_decision(
+    client: &DockerClient,
+    workspace: &Workspace,
+    input: &ComposeRunningReuseInput<'_>,
+    plan: &UpPlan,
+    credentials: &CredentialRuntime,
+    published_port_plan: &ComposePublishedPortPlan,
+) -> Result<(ExistingContainerDecision, bool)> {
+    let Some(compose_project) = &plan.compose_project else {
+        bail!("Docker Compose project plan is missing after finalization");
+    };
+    let decision = decide_existing_compose_container(&ComposeExistingContainerDecisionInput {
+        containers: input.existing_compose_containers,
+        project_containers: input.existing_compose_project_containers,
+        expected_config_hash: &plan.resources.config_hash,
+        mount_policy: credentials.mount_policy(),
+        rebuild: input.options.reuse.rebuild,
+        existing_project_published_ports: input.existing_project_published_ports,
+        published_port_plan,
+        warning: ComposePublishedPortRecreateWarning::Suppress,
+    })?;
+    let service_forward_requires_recreate = compose_service_forward_requires_recreate(
+        client,
+        workspace.id(),
+        compose_project.project_name(),
+        credentials.service_forward(),
+    )
+    .await?;
+    let should_reuse = should_reuse_existing_container(
+        &decision,
+        ExistingContainerReusePolicy {
+            pull: input.options.build.pull,
+            service_forward_requires_recreate,
+        },
+    );
+    Ok((decision, should_reuse))
 }
 
 async fn started_fast_path_reused_compose_container(
@@ -243,11 +272,19 @@ struct ComposeStartupContext {
 }
 
 impl ComposeStartupContext {
-    fn compose_published_ports(&self) -> Option<ComposePublishedPortFinalization<'_>> {
+    fn compose_published_ports(
+        &self,
+        preserve_existing_bindings: bool,
+    ) -> Option<ComposePublishedPortFinalization<'_>> {
+        let existing_project_published_ports = if preserve_existing_bindings {
+            self.existing_project_published_ports.as_slice()
+        } else {
+            &[]
+        };
         self.published_port_relocation_enabled
             .then_some(ComposePublishedPortFinalization {
                 input: &self.published_port_policy_input,
-                existing_project_published_ports: &self.existing_project_published_ports,
+                existing_project_published_ports,
             })
     }
 }
@@ -256,6 +293,7 @@ struct FinalizedComposeStart {
     plan: UpPlan,
     credentials: CredentialRuntime,
     published_port_plan: ComposePublishedPortPlan,
+    published_port_override: ComposePublishedPortOverride,
     runtime_lifecycle: ComposeLifecyclePlan,
     service: String,
 }
@@ -278,6 +316,173 @@ struct ComposeStartRunOptions {
     remove_orphans: bool,
 }
 
+struct ComposeExistingContainerDecisionInput<'a> {
+    containers: &'a [UpContainerSummary],
+    project_containers: &'a [UpContainerSummary],
+    expected_config_hash: &'a str,
+    mount_policy: &'a existing::CredentialRuntimeMountPolicy,
+    rebuild: bool,
+    existing_project_published_ports: &'a [ComposePublishedPortReservation],
+    published_port_plan: &'a ComposePublishedPortPlan,
+    warning: ComposePublishedPortRecreateWarning,
+}
+
+struct ComposeStartRunOptionsInput<'a> {
+    client: &'a DockerClient,
+    workspace: &'a Workspace,
+    options: &'a UpOptions,
+    context: &'a ComposeStartupContext,
+    plan: &'a UpPlan,
+    credentials: &'a CredentialRuntime,
+    runtime_lifecycle: &'a ComposeLifecyclePlan,
+    published_port_plan: &'a ComposePublishedPortPlan,
+}
+
+struct ComposeNewStartInput<'a> {
+    client: &'a DockerClient,
+    workspace: &'a Workspace,
+    plan: &'a UpPlan,
+    context: &'a ComposeStartupContext,
+    runtime_lifecycle: &'a ComposeLifecyclePlan,
+    run_options: &'a ComposeStartRunOptions,
+    service: &'a str,
+    published_port_plan: &'a ComposePublishedPortPlan,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ComposePublishedPortRecreateWarning {
+    Emit,
+    Suppress,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ComposePublishedPortRecreateChange {
+    service: String,
+    target_port: u16,
+    protocol: ComposePortProtocol,
+    existing: ComposePublishedPortEndpoint,
+    planned: ComposePublishedPortEndpoint,
+}
+
+fn decide_existing_compose_container(
+    input: &ComposeExistingContainerDecisionInput<'_>,
+) -> Result<ExistingContainerDecision> {
+    let decision = decide_existing_container(
+        input.containers,
+        input.expected_config_hash,
+        input.mount_policy,
+        input.rebuild,
+    )?;
+    if !matches!(
+        decision,
+        ExistingContainerDecision::ReuseRunning { .. }
+            | ExistingContainerDecision::StartStopped { .. }
+    ) {
+        return Ok(decision);
+    }
+
+    let changes = compose_published_port_recreate_changes(
+        input.existing_project_published_ports,
+        input.published_port_plan,
+    );
+    if changes.is_empty() {
+        return Ok(decision);
+    }
+    if input.warning == ComposePublishedPortRecreateWarning::Emit {
+        warn_on_compose_published_port_recreate(&changes);
+    }
+    let containers = if input.project_containers.is_empty() {
+        input.containers.to_vec()
+    } else {
+        input.project_containers.to_vec()
+    };
+    Ok(ExistingContainerDecision::Recreate { containers })
+}
+
+fn compose_published_port_recreate_changes(
+    existing_project_published_ports: &[ComposePublishedPortReservation],
+    published_port_plan: &ComposePublishedPortPlan,
+) -> Vec<ComposePublishedPortRecreateChange> {
+    published_port_plan
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            compose_published_port_recreate_change(existing_project_published_ports, entry)
+        })
+        .collect()
+}
+
+fn compose_published_port_recreate_change(
+    existing_project_published_ports: &[ComposePublishedPortReservation],
+    entry: &ComposePublishedPortPlanEntry,
+) -> Option<ComposePublishedPortRecreateChange> {
+    let existing = existing_project_published_ports
+        .iter()
+        .filter(|existing| compose_published_port_reservation_matches_entry(existing, entry))
+        .collect::<Vec<_>>();
+    if existing.is_empty()
+        || existing
+            .iter()
+            .any(|existing| existing.endpoint.host_port == entry.planned.host_port)
+    {
+        return None;
+    }
+    let existing = existing.first()?;
+    Some(ComposePublishedPortRecreateChange {
+        service: entry.service.clone(),
+        target_port: entry.target_port,
+        protocol: entry.protocol.clone(),
+        existing: existing.endpoint.clone(),
+        planned: entry.planned.clone(),
+    })
+}
+
+fn compose_published_port_reservation_matches_entry(
+    reservation: &ComposePublishedPortReservation,
+    entry: &ComposePublishedPortPlanEntry,
+) -> bool {
+    reservation.service == entry.service
+        && reservation.target_port == entry.target_port
+        && reservation.protocol == entry.protocol
+        && compose_published_port_host_ips_conflict(&reservation.endpoint, &entry.planned)
+}
+
+fn compose_published_port_host_ips_conflict(
+    existing: &ComposePublishedPortEndpoint,
+    planned: &ComposePublishedPortEndpoint,
+) -> bool {
+    const HOST_PORT_FOR_HOST_IP_MATCH: u16 = 1;
+    host_port_reservations_conflict(
+        [HostPortReservation {
+            host_ip: compose_published_port_reservation_host_ip(existing).to_owned(),
+            host: HOST_PORT_FOR_HOST_IP_MATCH,
+        }]
+        .iter(),
+        compose_published_port_reservation_host_ip(planned),
+        HOST_PORT_FOR_HOST_IP_MATCH,
+    )
+}
+
+fn compose_published_port_reservation_host_ip(endpoint: &ComposePublishedPortEndpoint) -> &str {
+    match &endpoint.host_ip {
+        ComposePublishedPortHostIp::Omitted => "0.0.0.0",
+        ComposePublishedPortHostIp::Explicit(value) => value,
+    }
+}
+
+fn warn_on_compose_published_port_recreate(changes: &[ComposePublishedPortRecreateChange]) {
+    for change in changes {
+        ui::warn(&format!(
+            "Compose published port relocation will recreate the Compose project because service `{}` target {}/{} must move from {} to {}",
+            change.service,
+            change.target_port,
+            compose_port_protocol_name(&change.protocol),
+            compose_published_port_endpoint_display(&change.existing),
+            compose_published_port_endpoint_display(&change.planned),
+        ));
+    }
+}
+
 pub(super) async fn start_compose_project(
     workspace: Workspace,
     mut plan: UpPlan,
@@ -294,13 +499,15 @@ pub(super) async fn start_compose_project(
             plan: plan.clone(),
             options: &options,
             forwarding_resolution,
+            existing_compose_project_containers: &context.existing_compose_project_containers,
             existing_compose_containers: &context.existing_compose_containers,
+            existing_project_published_ports: &context.existing_project_published_ports,
             compose_primary_image: &context.compose_primary_image,
             user_config: &context.user_config,
             compose_primary_service_user: context.compose_primary_service_user.as_deref(),
             compose_primary_service: context.compose_primary_service.as_ref(),
             published_port_policy_input: &context.published_port_policy_input,
-            compose_published_ports: context.compose_published_ports(),
+            compose_published_ports: context.compose_published_ports(true),
         },
     ))
     .await?
@@ -517,7 +724,7 @@ async fn finalize_compose_start_plan(
             compose_canonical_model: Some(&context.user_config.canonical_model),
             compose_primary_service_user: context.compose_primary_service_user.as_deref(),
             compose_primary_service: context.compose_primary_service.as_ref(),
-            compose_published_ports: context.compose_published_ports(),
+            compose_published_ports: context.compose_published_ports(!options.reuse.rebuild),
         },
     ))
     .await?;
@@ -538,16 +745,6 @@ async fn finalize_compose_start_plan(
         "Docker Compose project plan is missing after finalization",
         "Docker Compose devcontainer source is missing after finalization",
     )?;
-    write_generated_compose_override(
-        client,
-        source.project,
-        &source.compose.service,
-        &plan,
-        context.compose_primary_service.as_ref(),
-        credentials.service_forward(),
-        &published_port_override,
-    )
-    .await?;
     let runtime_lifecycle = ComposeLifecyclePlan::up(
         source.project.command_plan_with_generated_override(),
         &source.compose.service,
@@ -559,6 +756,7 @@ async fn finalize_compose_start_plan(
         plan,
         credentials,
         published_port_plan,
+        published_port_override,
         runtime_lifecycle,
         service,
     })
@@ -603,22 +801,30 @@ async fn prepare_finalized_compose_image(
 }
 
 async fn compose_start_run_options(
-    client: &DockerClient,
-    workspace: &Workspace,
-    options: &UpOptions,
-    context: &ComposeStartupContext,
-    plan: &UpPlan,
-    credentials: &CredentialRuntime,
-    runtime_lifecycle: &ComposeLifecyclePlan,
+    input: ComposeStartRunOptionsInput<'_>,
 ) -> Result<ComposeStartRunOptions> {
+    let ComposeStartRunOptionsInput {
+        client,
+        workspace,
+        options,
+        context,
+        plan,
+        credentials,
+        runtime_lifecycle,
+        published_port_plan,
+    } = input;
     let stale_compose_project = !context.existing_compose_project_containers.is_empty()
         && context.existing_compose_containers.is_empty();
-    let decision = decide_existing_container(
-        &context.existing_compose_containers,
-        &plan.resources.config_hash,
-        credentials.mount_policy(),
-        options.reuse.rebuild,
-    )?;
+    let decision = decide_existing_compose_container(&ComposeExistingContainerDecisionInput {
+        containers: &context.existing_compose_containers,
+        project_containers: &context.existing_compose_project_containers,
+        expected_config_hash: &plan.resources.config_hash,
+        mount_policy: credentials.mount_policy(),
+        rebuild: options.reuse.rebuild,
+        existing_project_published_ports: &context.existing_project_published_ports,
+        published_port_plan,
+        warning: ComposePublishedPortRecreateWarning::Emit,
+    })?;
     let service_forward_requires_recreate = compose_service_forward_requires_recreate(
         client,
         workspace.id(),
@@ -661,6 +867,7 @@ async fn start_finalized_compose_project(
         plan,
         credentials,
         published_port_plan,
+        published_port_override,
         runtime_lifecycle,
         service,
     } = finalized;
@@ -668,16 +875,27 @@ async fn start_finalized_compose_project(
     if context.existing_compose_project_containers.is_empty() {
         state::reconcile_state_without_container(workspace.paths().state_dir())?;
     }
-    let run_options = compose_start_run_options(
-        &client,
-        &workspace,
-        &options,
-        &context,
-        &plan,
-        &credentials,
-        &runtime_lifecycle,
-    )
+    let run_options = compose_start_run_options(ComposeStartRunOptionsInput {
+        client: &client,
+        workspace: &workspace,
+        options: &options,
+        context: &context,
+        plan: &plan,
+        credentials: &credentials,
+        runtime_lifecycle: &runtime_lifecycle,
+        published_port_plan: &published_port_plan,
+    })
     .await?;
+    if compose_start_requires_generated_override(&run_options) {
+        write_finalized_generated_compose_override(
+            &client,
+            &context,
+            &plan,
+            &credentials,
+            &published_port_override,
+        )
+        .await?;
+    }
     if let Some((outcome, lifecycle_path, state)) =
         try_start_reusable_compose_container(ComposeReusableStartInput {
             client: &client,
@@ -702,48 +920,16 @@ async fn start_finalized_compose_project(
         ));
     }
 
-    materialize_dotfile_skeletons(&plan.dotfile_skeletons)?;
-    context
-        .cli
-        .up(
-            &runtime_lifecycle.project,
-            ComposeUpOptions {
-                force_recreate: run_options.force_recreate,
-                remove_orphans: run_options.remove_orphans,
-            },
-            &runtime_lifecycle.services,
-            Some(compose_startup_diagnostics(
-                &plan,
-                &context.published_port_policy_input,
-                &published_port_plan,
-            )),
-        )
-        .await?;
-
-    let container = ComposeIntrospector::new(context.cli)
-        .resolve_service_container(&runtime_lifecycle.project, &service)
-        .await?;
-    let container_name = container.name.unwrap_or_else(|| container.id.clone());
-    let outcome = UpOutcome {
-        container_id: container.id,
-        container_name,
-        reused: false,
-    };
-    ensure_container_running_after_start(
-        &client,
-        &outcome.container_name,
-        startup_verification_for_plan(&plan),
-    )
-    .await?;
-    let state = sync_started_compose_state(
-        &client,
-        &workspace,
-        &plan,
-        &outcome,
-        LifecycleRunPath::New,
-        &context.published_port_policy_input,
-        &published_port_plan,
-    )
+    let (outcome, state) = start_new_compose_container(ComposeNewStartInput {
+        client: &client,
+        workspace: &workspace,
+        plan: &plan,
+        context: &context,
+        runtime_lifecycle: &runtime_lifecycle,
+        run_options: &run_options,
+        service: &service,
+        published_port_plan: &published_port_plan,
+    })
     .await?;
 
     Ok(started_up_container_with_state(
@@ -755,6 +941,87 @@ async fn start_finalized_compose_project(
         credentials,
         state,
     ))
+}
+
+async fn start_new_compose_container(
+    input: ComposeNewStartInput<'_>,
+) -> Result<(UpOutcome, state::WorkspaceState)> {
+    materialize_dotfile_skeletons(&input.plan.dotfile_skeletons)?;
+    input
+        .context
+        .cli
+        .up(
+            &input.runtime_lifecycle.project,
+            ComposeUpOptions {
+                force_recreate: input.run_options.force_recreate,
+                remove_orphans: input.run_options.remove_orphans,
+            },
+            &input.runtime_lifecycle.services,
+            Some(compose_startup_diagnostics(
+                input.plan,
+                &input.context.published_port_policy_input,
+                input.published_port_plan,
+            )),
+        )
+        .await?;
+
+    let container = ComposeIntrospector::new(input.context.cli.clone())
+        .resolve_service_container(&input.runtime_lifecycle.project, input.service)
+        .await?;
+    let container_name = container.name.unwrap_or_else(|| container.id.clone());
+    let outcome = UpOutcome {
+        container_id: container.id,
+        container_name,
+        reused: false,
+    };
+    ensure_container_running_after_start(
+        input.client,
+        &outcome.container_name,
+        startup_verification_for_plan(input.plan),
+    )
+    .await?;
+    let state = sync_started_compose_state(
+        input.client,
+        input.workspace,
+        input.plan,
+        &outcome,
+        LifecycleRunPath::New,
+        &input.context.published_port_policy_input,
+        input.published_port_plan,
+    )
+    .await?;
+    Ok((outcome, state))
+}
+
+const fn compose_start_requires_generated_override(options: &ComposeStartRunOptions) -> bool {
+    !matches!(
+        options.decision,
+        ExistingContainerDecision::ReuseRunning { .. }
+    ) || !options.should_reuse
+}
+
+async fn write_finalized_generated_compose_override(
+    client: &DockerClient,
+    context: &ComposeStartupContext,
+    plan: &UpPlan,
+    credentials: &CredentialRuntime,
+    published_port_override: &ComposePublishedPortOverride,
+) -> Result<()> {
+    let source = compose_plan_source(
+        plan,
+        "Docker Compose project plan is missing after finalization",
+        "Docker Compose devcontainer source is missing after finalization",
+    )?;
+    write_generated_compose_override(
+        client,
+        source.project,
+        &source.compose.service,
+        plan,
+        context.compose_primary_service.as_ref(),
+        credentials.service_forward(),
+        published_port_override,
+    )
+    .await
 }
 
 async fn try_start_reusable_compose_container(
@@ -869,8 +1136,12 @@ pub(super) async fn validate_compose_canonical_model(plan: &UpPlan) -> Result<()
 
 #[cfg(test)]
 mod tests {
-    use super::super::test_support::{reusable_container, up_options_for_fast_path};
+    use super::super::test_support::{mount_policy, reusable_container, up_options_for_fast_path};
     use super::*;
+    use crate::runtime::compose_ports::{
+        ComposePublishedPortAllocationReason, ComposePublishedPortPlanEntryType,
+        ComposePublishedPortPlanSource, ComposePublishedPortReservationSource,
+    };
 
     #[test]
     fn compose_running_reuse_fast_path_only_allows_running_container_without_mutating_flags() {
@@ -914,5 +1185,110 @@ mod tests {
             &options,
             std::slice::from_ref(&running),
         ));
+    }
+
+    #[test]
+    fn compose_decision_recreates_when_published_port_plan_changes_existing_binding() {
+        let container = reusable_container("stable-hash");
+        let existing = vec![reservation(
+            18300,
+            ComposePublishedPortReservationSource::StoppedContainer,
+        )];
+        let plan = ComposePublishedPortPlan {
+            entries: vec![plan_entry(18300, 18301)],
+        };
+
+        let policy = mount_policy(&[]);
+        let decision = decide_existing_compose_container(&ComposeExistingContainerDecisionInput {
+            containers: std::slice::from_ref(&container),
+            project_containers: std::slice::from_ref(&container),
+            expected_config_hash: "stable-hash",
+            mount_policy: &policy,
+            rebuild: false,
+            existing_project_published_ports: &existing,
+            published_port_plan: &plan,
+            warning: ComposePublishedPortRecreateWarning::Suppress,
+        })
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container],
+            }
+        );
+    }
+
+    #[test]
+    fn compose_decision_reuses_when_published_port_plan_matches_existing_binding() {
+        let container = reusable_container("stable-hash");
+        let existing = vec![reservation(
+            18300,
+            ComposePublishedPortReservationSource::RunningContainer,
+        )];
+        let plan = ComposePublishedPortPlan {
+            entries: vec![plan_entry(18300, 18300)],
+        };
+
+        let policy = mount_policy(&[]);
+        let decision = decide_existing_compose_container(&ComposeExistingContainerDecisionInput {
+            containers: std::slice::from_ref(&container),
+            project_containers: std::slice::from_ref(&container),
+            expected_config_hash: "stable-hash",
+            mount_policy: &policy,
+            rebuild: false,
+            existing_project_published_ports: &existing,
+            published_port_plan: &plan,
+            warning: ComposePublishedPortRecreateWarning::Suppress,
+        })
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::ReuseRunning {
+                id: "container-id".to_owned(),
+                name: "project-app-1".to_owned(),
+            }
+        );
+    }
+
+    fn reservation(
+        host_port: u16,
+        source: ComposePublishedPortReservationSource,
+    ) -> ComposePublishedPortReservation {
+        ComposePublishedPortReservation {
+            service: "app".to_owned(),
+            target_port: 80,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
+                host_port,
+            },
+            source,
+        }
+    }
+
+    fn plan_entry(
+        requested_host_port: u16,
+        planned_host_port: u16,
+    ) -> ComposePublishedPortPlanEntry {
+        ComposePublishedPortPlanEntry {
+            service: "app".to_owned(),
+            port_entry_index: 0,
+            source: ComposePublishedPortPlanSource::Compose,
+            kind: ComposePublishedPortPlanEntryType::Published,
+            target_port: 80,
+            protocol: ComposePortProtocol::Tcp,
+            requested: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Omitted,
+                host_port: requested_host_port,
+            },
+            planned: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Omitted,
+                host_port: planned_host_port,
+            },
+            relocated: requested_host_port != planned_host_port,
+            allocation_reason: ComposePublishedPortAllocationReason::Unavailable,
+        }
     }
 }

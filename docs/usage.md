@@ -348,9 +348,11 @@ Docker Compose-based 構成では Docker published port を Compose サービス
 
 `[compose.published_ports].relocation = true`、または `decune up --published-port-relocation` / `decune rebuild --published-port-relocation` は、後続の Compose published port relocation 処理の policy を有効化します。既定は無効です。`--no-published-port-relocation` はこの実行で config を上書きして無効化します。`--no-auto-forward` は automatic port forwarding だけを無効化し、この policy は変更しません。
 
-`[compose.published_ports].warn_on_relocation = true` にすると、relocation により requested endpoint とは別の planned endpoint を使う場合に、起動時に warning を表示します。既定では warning を出しません。warning を無効にしていても、relocated published port は `decune ports` の `STATE`、`REQUESTED`、JSON 出力で確認できます。
+`[compose.published_ports].warn_on_relocation = true` にすると、relocation により requested endpoint とは別の planned endpoint を使う場合に、起動時に warning を表示します。既定では warning を出しません。warning を無効にしていても、relocated published port は `decune ports` の `STATE`、`REQUESTED`、JSON 出力で確認できます。既存 Compose project の published binding を変更するために container 再作成が必要な場合は、この設定に関係なく warning を表示し、自動的に再作成して起動を継続します。
 
 relocation の対象は fixed TCP の Compose published port だけです。たとえば `3000:3000` や `127.0.0.1:3000:3000` は relocation 対象です。UDP、range、host port を省略した port entry は relocation 対象外です。たとえば `3000:3000/udp`、`3000-3005:3000-3005`、`3000` は relocation されません。
+
+同じ Compose project に既存 container がある場合、decune は同一 service / protocol / target port の既存 published binding を requested port より優先して維持します。いったん `3000` から `3001` に relocate された binding は、`3000` を塞いでいた process が終了しても `decune up` では `3001` のまま維持されます。requested port へ戻すには `decune rebuild` を実行します。
 
 relocation 対象外の entry は、存在するだけでは warning しません。`network_mode: host` の service にある port mapping も relocation 対象として扱いません。ただし、`network_mode: host` と `ports` の組み合わせは Docker Compose 自体が runtime error にする場合があります。
 

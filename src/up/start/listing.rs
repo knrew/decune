@@ -4,7 +4,7 @@ use crate::{
     docker::{client::DockerClient, container::ContainerInspect},
     runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
-        ComposePublishedPortReservation,
+        ComposePublishedPortReservation, ComposePublishedPortReservationSource,
     },
     up::types::UpContainerSummary,
 };
@@ -100,9 +100,11 @@ fn existing_compose_project_published_ports_from_container(
         .as_ref()
         .and_then(|state| state.running)
         .unwrap_or(false);
-    if !running {
-        return Vec::new();
-    }
+    let source = if running {
+        ComposePublishedPortReservationSource::RunningContainer
+    } else {
+        ComposePublishedPortReservationSource::StoppedContainer
+    };
 
     let Some(service) = container
         .config
@@ -113,10 +115,16 @@ fn existing_compose_project_published_ports_from_container(
     else {
         return Vec::new();
     };
-    let Some(ports) = container
-        .network_settings
-        .and_then(|settings| settings.ports)
-    else {
+    let ports = if running {
+        container
+            .network_settings
+            .and_then(|settings| settings.ports)
+    } else {
+        container
+            .host_config
+            .and_then(|host_config| host_config.port_bindings)
+    };
+    let Some(ports) = ports else {
         return Vec::new();
     };
 
@@ -148,6 +156,7 @@ fn existing_compose_project_published_ports_from_container(
                     host_ip: ComposePublishedPortHostIp::Explicit(host_ip),
                     host_port,
                 },
+                source,
             });
         }
     }
@@ -163,4 +172,92 @@ fn parse_container_port_key(value: &str) -> Option<(u16, ComposePortProtocol)> {
         other => ComposePortProtocol::Other(other.to_owned()),
     };
     Some((target_port, protocol))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, HashMap};
+
+    use super::*;
+    use crate::docker::container::{
+        ContainerInspectConfig, ContainerInspectHostConfig, ContainerNetworkSettings,
+        ContainerPortBinding, ContainerState,
+    };
+
+    #[test]
+    fn compose_project_published_ports_include_stopped_host_config_bindings() {
+        let reservations = existing_compose_project_published_ports_from_container(
+            container_with_ports(false, None, Some(port_map("80/tcp", "127.0.0.1", "18300"))),
+        );
+
+        assert_eq!(reservations.len(), 1);
+        assert_eq!(reservations[0].service, "app");
+        assert_eq!(reservations[0].target_port, 80);
+        assert_eq!(reservations[0].protocol, ComposePortProtocol::Tcp);
+        assert_eq!(
+            reservations[0].endpoint,
+            ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                host_port: 18300,
+            }
+        );
+        assert_eq!(
+            reservations[0].source,
+            ComposePublishedPortReservationSource::StoppedContainer
+        );
+    }
+
+    #[test]
+    fn compose_project_published_ports_mark_running_network_bindings() {
+        let reservations = existing_compose_project_published_ports_from_container(
+            container_with_ports(true, Some(port_map("80/tcp", "0.0.0.0", "18300")), None),
+        );
+
+        assert_eq!(reservations.len(), 1);
+        assert_eq!(
+            reservations[0].source,
+            ComposePublishedPortReservationSource::RunningContainer
+        );
+    }
+
+    fn container_with_ports(
+        running: bool,
+        network_ports: Option<HashMap<String, Option<Vec<ContainerPortBinding>>>>,
+        host_port_bindings: Option<HashMap<String, Option<Vec<ContainerPortBinding>>>>,
+    ) -> ContainerInspect {
+        ContainerInspect {
+            config: Some(ContainerInspectConfig {
+                labels: Some(BTreeMap::from([(
+                    "com.docker.compose.service".to_owned(),
+                    "app".to_owned(),
+                )])),
+                ..ContainerInspectConfig::default()
+            }),
+            state: Some(ContainerState {
+                running: Some(running),
+                ..ContainerState::default()
+            }),
+            host_config: Some(ContainerInspectHostConfig {
+                port_bindings: host_port_bindings,
+            }),
+            network_settings: Some(ContainerNetworkSettings {
+                ports: network_ports,
+            }),
+            ..ContainerInspect::default()
+        }
+    }
+
+    fn port_map(
+        container_port: &str,
+        host_ip: &str,
+        host_port: &str,
+    ) -> HashMap<String, Option<Vec<ContainerPortBinding>>> {
+        HashMap::from([(
+            container_port.to_owned(),
+            Some(vec![ContainerPortBinding {
+                host_ip: Some(host_ip.to_owned()),
+                host_port: Some(host_port.to_owned()),
+            }]),
+        )])
+    }
 }
