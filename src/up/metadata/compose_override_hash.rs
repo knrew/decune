@@ -17,7 +17,7 @@ pub(super) fn compose_generated_override_hash_input(
     plan: &UpPlan,
     mounts: &[DockerMountSpec],
     startup_command: Option<&StartupCommandHashInput>,
-    published_port_override: &ComposePublishedPortOverride,
+    _published_port_override: &ComposePublishedPortOverride,
 ) -> Option<ComposeGeneratedOverrideHashInput> {
     let Some(ResolvedDevcontainerSource::Compose(compose)) = &plan.config.devcontainer.source
     else {
@@ -32,9 +32,6 @@ pub(super) fn compose_generated_override_hash_input(
         });
         writer.field("startup_command", |writer| {
             write_generated_override_startup_command(writer, startup_command);
-        });
-        writer.field("published_port_override", |writer| {
-            write_generated_override_published_ports(writer, published_port_override);
         });
     });
 
@@ -152,19 +149,6 @@ fn write_generated_override_startup_command(
         }
         None => writer.none(),
     }
-}
-
-fn write_generated_override_published_ports(
-    writer: &mut CanonicalWriter,
-    published_port_override: &ComposePublishedPortOverride,
-) {
-    writer.map(published_port_override.services(), |writer, ports| {
-        writer.seq(ports.iter(), |writer, port| {
-            writer.map(port.iter(), |writer, value| {
-                writer.json_value(value);
-            });
-        });
-    });
 }
 
 fn generated_override_semantic_image(plan: &UpPlan) -> &str {

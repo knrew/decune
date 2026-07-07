@@ -46,8 +46,26 @@ pub(crate) fn resolve_forward_ports(ports: &[ResolvedPort]) -> Result<Vec<Resolv
     resolve_forward_ports_with(ports, host_port_available)
 }
 
+pub(crate) fn resolve_forward_ports_with_host_reservations(
+    ports: &[ResolvedPort],
+    additional_host_reservations: &[HostPortReservation],
+) -> Result<Vec<ResolvedForwardPort>> {
+    resolve_forward_ports_inner(ports, additional_host_reservations, host_port_available)
+}
+
 pub(crate) fn resolve_forward_ports_with<F>(
     ports: &[ResolvedPort],
+    host_port_available: F,
+) -> Result<Vec<ResolvedForwardPort>>
+where
+    F: FnMut(&str, u16) -> Result<bool>,
+{
+    resolve_forward_ports_inner(ports, &[], host_port_available)
+}
+
+fn resolve_forward_ports_inner<F>(
+    ports: &[ResolvedPort],
+    additional_host_reservations: &[HostPortReservation],
     mut host_port_available: F,
 ) -> Result<Vec<ResolvedForwardPort>>
 where
@@ -57,7 +75,13 @@ where
 
     for port in ports {
         let start_host = port.host.unwrap_or(port.container);
-        let host = resolve_host_port(port, start_host, &resolved, &[], &mut host_port_available)?;
+        let host = resolve_host_port(
+            port,
+            start_host,
+            &resolved,
+            additional_host_reservations,
+            &mut host_port_available,
+        )?;
 
         resolved.push(ResolvedForwardPort {
             service: port.service.clone(),
@@ -407,6 +431,20 @@ mod tests {
 
         assert_eq!(resolved[0].host, 3000);
         assert_eq!(resolved[1].host, 3001);
+    }
+
+    #[test]
+    fn resolver_respects_additional_host_reservations() {
+        let ports = vec![manual_port(8080, Some(3000), DEFAULT_PORT_HOST_IP, false)];
+        let reservations = vec![HostPortReservation {
+            host_ip: "0.0.0.0".to_owned(),
+            host: 3000,
+        }];
+
+        let resolved = resolve_forward_ports_inner(&ports, &reservations, |_, _| Ok(true)).unwrap();
+
+        assert_eq!(resolved[0].requested_host, 3000);
+        assert_eq!(resolved[0].host, 3001);
     }
 
     #[test]

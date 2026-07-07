@@ -28,5 +28,6 @@ pub(crate) use types::{
     ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
     ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
     ComposePublishedPortPlanSource, ComposePublishedPortPlanningInput,
-    ComposePublishedPortReservation, ComposePublishedPortStartupDiagnostics,
+    ComposePublishedPortReservation, ComposePublishedPortReservationSource,
+    ComposePublishedPortStartupDiagnostics,
 };

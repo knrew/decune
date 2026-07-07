@@ -11,6 +11,7 @@ use crate::{
         build::build_hash_input,
         client::DockerClient,
         mounts::DockerMountSpec,
+        ports::{HostPortReservation, resolve_forward_ports_with_host_reservations},
         resource::DockerResources,
         user::{
             EffectiveUserResolveInput, HostPlatform, UidGidSyncPlan, current_host_user_ids,
@@ -20,8 +21,9 @@ use crate::{
         },
     },
     runtime::compose_ports::{
-        ComposePublishedPortDiagnostic, ComposePublishedPortOverride, ComposePublishedPortPlan,
-        compose_published_port_override, plan_compose_published_ports_with_existing_project,
+        ComposePublishedPortDiagnostic, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
+        ComposePublishedPortOverride, ComposePublishedPortPlan, compose_published_port_override,
+        plan_compose_published_ports_with_existing_project,
     },
     ui,
     up::{
@@ -89,7 +91,9 @@ pub(super) async fn finalize_mounts_and_resources_for_plan(
         finalized_runtime_mounts(workspace, &mut plan, remote_user.user, remote_user.home)?;
     plan.forward_ports = match options.forwarding {
         ForwardingResolution::Resolve => {
-            crate::docker::ports::resolve_forward_ports(&plan.config.ports.entries)?
+            let reservations =
+                compose_published_port_host_reservations(options.compose_published_ports);
+            resolve_forward_ports_with_host_reservations(&plan.config.ports.entries, &reservations)?
         }
         ForwardingResolution::IgnoreDetached => Vec::new(),
     };
@@ -189,6 +193,26 @@ fn finalized_runtime_mounts(
         workspace_folder: workspace_location.workspace_folder,
         mount_plan,
     })
+}
+
+fn compose_published_port_host_reservations(
+    context: Option<ComposePublishedPortFinalization<'_>>,
+) -> Vec<HostPortReservation> {
+    context
+        .into_iter()
+        .flat_map(|context| context.existing_project_published_ports.iter())
+        .map(|reservation| HostPortReservation {
+            host_ip: compose_published_port_reservation_host_ip(&reservation.endpoint).to_owned(),
+            host: reservation.endpoint.host_port,
+        })
+        .collect()
+}
+
+fn compose_published_port_reservation_host_ip(endpoint: &ComposePublishedPortEndpoint) -> &str {
+    match &endpoint.host_ip {
+        ComposePublishedPortHostIp::Omitted => "0.0.0.0",
+        ComposePublishedPortHostIp::Explicit(value) => value,
+    }
 }
 
 fn finalized_config_hash_input<'a>(

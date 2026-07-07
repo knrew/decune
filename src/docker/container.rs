@@ -189,6 +189,7 @@ pub(crate) struct ContainerInspect {
     pub(crate) image: Option<String>,
     pub(crate) config: Option<ContainerInspectConfig>,
     pub(crate) state: Option<ContainerState>,
+    pub(crate) host_config: Option<ContainerInspectHostConfig>,
     pub(crate) mounts: Option<Vec<ContainerMount>>,
     pub(crate) network_settings: Option<ContainerNetworkSettings>,
 }
@@ -199,6 +200,12 @@ pub(crate) struct ContainerInspectConfig {
     pub(crate) env: Option<Vec<String>>,
     pub(crate) labels: Option<BTreeMap<String, String>>,
     pub(crate) user: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct ContainerInspectHostConfig {
+    pub(crate) port_bindings: Option<HashMap<String, Option<Vec<ContainerPortBinding>>>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
