@@ -1,6 +1,7 @@
 use crate::runtime::compose_ports::{
     ComposePortEligibility, ComposePortEntry, ComposePortProtocol, ComposePublishedHostPort,
     ComposePublishedPortDiagnostic, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
+    ComposePublishedPortPlanEntry, ComposePublishedPortPlannedEndpointProbe,
     ComposePublishedPortPlanningInput, ComposePublishedPortStartupDiagnostics,
     compose_published_port_endpoint_display,
 };
@@ -27,13 +28,7 @@ pub(crate) fn classify_compose_published_port_startup_failure(
             ) {
                 continue;
             }
-            return Ok(Some(ComposePublishedPortDiagnostic::BindRace {
-                service: entry.service.clone(),
-                requested: entry.requested.clone(),
-                planned: entry.planned.clone(),
-                target_port: entry.target_port,
-                protocol: entry.protocol.clone(),
-            }));
+            return Ok(Some(planned_endpoint_startup_failure_diagnostic(entry)));
         }
         return Ok(classify_unsupported_compose_published_port_startup_failure(
             stderr,
@@ -65,6 +60,27 @@ pub(crate) fn classify_compose_published_port_startup_failure(
         stderr,
         diagnostics.input,
     ))
+}
+
+fn planned_endpoint_startup_failure_diagnostic(
+    entry: &ComposePublishedPortPlanEntry,
+) -> ComposePublishedPortDiagnostic {
+    if entry.planned_endpoint_probe == ComposePublishedPortPlannedEndpointProbe::Unprobeable {
+        return ComposePublishedPortDiagnostic::Collision {
+            service: entry.service.clone(),
+            requested: entry.planned.clone(),
+            target_port: entry.target_port,
+            protocol: entry.protocol.clone(),
+        };
+    }
+
+    ComposePublishedPortDiagnostic::BindRace {
+        service: entry.service.clone(),
+        requested: entry.requested.clone(),
+        planned: entry.planned.clone(),
+        target_port: entry.target_port,
+        protocol: entry.protocol.clone(),
+    }
 }
 
 fn classify_unsupported_compose_published_port_startup_failure(
@@ -284,13 +300,17 @@ fn contains_endpoint_token_with_port_boundary(haystack: &str, needle: &str) -> b
 mod tests {
     use serde_json::json;
 
+    use super::super::planning::plan_compose_published_ports_with;
     use super::*;
+    use crate::docker::ports::HostPortProbe;
     use crate::runtime::compose_ports::diagnostics::{
         COMPOSE_PUBLISHED_PORT_BIND_RACE, COMPOSE_PUBLISHED_PORT_COLLISION,
         COMPOSE_PUBLISHED_PORT_INVALID, COMPOSE_PUBLISHED_PORT_UNSUPPORTED,
     };
     use crate::runtime::compose_ports::{
-        ComposePublishedHostPort, ComposePublishedPortPlan, ComposePublishedPortStartupDiagnostics,
+        ComposePortProtocol, ComposePublishedHostPort, ComposePublishedPortEndpoint,
+        ComposePublishedPortHostIp, ComposePublishedPortPlan, ComposePublishedPortReservation,
+        ComposePublishedPortReservationSource, ComposePublishedPortStartupDiagnostics,
         test_support::{plan_with_availability, planning_input},
     };
 
@@ -428,6 +448,97 @@ mod tests {
         assert!(diagnostic.contains("requested: 127.0.0.1:3000"));
         assert!(diagnostic.contains("planned: 127.0.0.1:3001"));
         assert!(diagnostic.contains("app:3000/tcp"));
+    }
+
+    #[test]
+    fn startup_failure_classifier_reports_collision_for_unprobeable_requested_endpoint() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 502, "published": "502"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let plan = plan_compose_published_ports_with(&input, true, &[], &[], |_, port| {
+            assert_eq!(port, 502);
+            Ok(HostPortProbe::Unprobeable)
+        })
+        .unwrap();
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen tcp 127.0.0.1:502: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: true,
+            },
+        )
+        .unwrap()
+        .expect("unprobeable requested bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
+        assert!(diagnostic.contains("requested: 127.0.0.1:502"));
+        assert!(diagnostic.contains("app:502/tcp"));
+        assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
+    }
+
+    #[test]
+    fn startup_failure_classifier_reports_collision_for_unprobeable_existing_binding() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 3000, "published": "3000"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let existing_project_published_ports = vec![ComposePublishedPortReservation {
+            service: "app".to_owned(),
+            target_port: 3000,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                host_port: 502,
+            },
+            source: ComposePublishedPortReservationSource::StoppedContainer,
+        }];
+        let plan = plan_compose_published_ports_with(
+            &input,
+            true,
+            &[],
+            &existing_project_published_ports,
+            |_, port| {
+                assert_eq!(port, 502);
+                Ok(HostPortProbe::Unprobeable)
+            },
+        )
+        .unwrap();
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen tcp 127.0.0.1:502: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: true,
+            },
+        )
+        .unwrap()
+        .expect("unprobeable existing binding conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
+        assert!(diagnostic.contains("requested: 127.0.0.1:502"));
+        assert!(diagnostic.contains("app:3000/tcp"));
+        assert!(!diagnostic.contains("requested: 127.0.0.1:3000"));
+        assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
     }
 
     #[test]

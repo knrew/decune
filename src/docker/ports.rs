@@ -42,6 +42,13 @@ pub(crate) struct HostPortReservation {
     pub(crate) host: u16,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum HostPortProbe {
+    Available,
+    Occupied,
+    Unprobeable,
+}
+
 pub(crate) fn resolve_forward_ports(ports: &[ResolvedPort]) -> Result<Vec<ResolvedForwardPort>> {
     resolve_forward_ports_with(ports, host_port_available)
 }
@@ -328,20 +335,42 @@ const fn same_ip_family(left: IpAddr, right: IpAddr) -> bool {
     )
 }
 
+pub(crate) fn host_port_probe(host_ip: &str, host_port: u16) -> Result<HostPortProbe> {
+    match TcpListener::bind((host_ip, host_port)) {
+        Ok(_listener) => Ok(HostPortProbe::Available),
+        Err(error) => host_port_probe_from_bind_error(error, host_ip, host_port),
+    }
+}
+
 pub(crate) fn host_port_available(host_ip: &str, host_port: u16) -> Result<bool> {
     match TcpListener::bind((host_ip, host_port)) {
-        Ok(listener) => {
-            drop(listener);
-            Ok(true)
-        }
+        Ok(_listener) => Ok(true),
         Err(error) if is_addr_in_use(&error) => Ok(false),
         Err(error) => Err(error)
             .with_context(|| format!("check host port availability for {host_ip}:{host_port}")),
     }
 }
 
+fn host_port_probe_from_bind_error(
+    error: std::io::Error,
+    host_ip: &str,
+    host_port: u16,
+) -> Result<HostPortProbe> {
+    if is_addr_in_use(&error) {
+        return Ok(HostPortProbe::Occupied);
+    }
+    if is_permission_denied(&error) {
+        return Ok(HostPortProbe::Unprobeable);
+    }
+    Err(error).with_context(|| format!("check host port availability for {host_ip}:{host_port}"))
+}
+
 fn is_addr_in_use(error: &std::io::Error) -> bool {
     error.kind() == std::io::ErrorKind::AddrInUse
+}
+
+fn is_permission_denied(error: &std::io::Error) -> bool {
+    error.kind() == std::io::ErrorKind::PermissionDenied
 }
 
 #[cfg(test)]
@@ -747,6 +776,42 @@ mod tests {
         .unwrap();
 
         assert!(resolved.is_empty());
+    }
+
+    #[test]
+    fn host_port_probe_maps_addr_in_use_to_occupied() {
+        let probe = host_port_probe_from_bind_error(
+            std::io::Error::from(std::io::ErrorKind::AddrInUse),
+            "127.0.0.1",
+            3000,
+        )
+        .unwrap();
+
+        assert_eq!(probe, HostPortProbe::Occupied);
+    }
+
+    #[test]
+    fn host_port_probe_maps_permission_denied_to_unprobeable() {
+        let probe = host_port_probe_from_bind_error(
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+            "127.0.0.1",
+            80,
+        )
+        .unwrap();
+
+        assert_eq!(probe, HostPortProbe::Unprobeable);
+    }
+
+    #[test]
+    fn host_port_probe_keeps_unexpected_bind_errors_fallible() {
+        let error = host_port_probe_from_bind_error(
+            std::io::Error::from(std::io::ErrorKind::AddrNotAvailable),
+            "192.0.2.1",
+            3000,
+        )
+        .expect_err("unexpected bind error must stay fallible");
+
+        assert!(format!("{error:#}").contains("check host port availability for 192.0.2.1:3000"));
     }
 
     fn manual_port(

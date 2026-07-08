@@ -352,13 +352,17 @@ Docker Compose-based 構成では Docker published port を Compose サービス
 
 relocation の対象は fixed TCP の Compose published port だけです。たとえば `3000:3000` や `127.0.0.1:3000:3000` は relocation 対象です。UDP、range、host port を省略した port entry は relocation 対象外です。たとえば `3000:3000/udp`、`3000-3005:3000-3005`、`3000` は relocation されません。
 
+privileged port など decune process が権限上 TCP bind probe できない published host port は、requested port や同じ Compose project の既存 binding としては維持し、relocation 先候補としては使いません。実際に他 process や container が使っていた場合は、Docker/Compose 起動時の published port collision diagnostic になります。
+
 同じ Compose project に既存 container がある場合、decune は同一 service / protocol / target port の既存 published binding を requested port より優先して維持します。いったん `3000` から `3001` に relocate された binding は、`3000` を塞いでいた process が終了しても `decune up` では `3001` のまま維持されます。requested port へ戻すには `decune rebuild` を実行します。
+
+同じ Compose project の running container が別 service や stale service で既に使っている published host endpoint は、unprobeable な requested port であっても予約済みとして扱います。その場合、decune は requested port を維持せず、次の relocation candidate を探索します。
 
 relocation 対象外の entry は、存在するだけでは warning しません。`network_mode: host` の service にある port mapping も relocation 対象として扱いません。ただし、`network_mode: host` と `ports` の組み合わせは Docker Compose 自体が runtime error にする場合があります。
 
 replica 数が 2 以上の service が fixed TCP published host port を持つ場合、decune は replica ごとの個別 host port 割り当てを行わず、`compose_published_port_multi_replica_unsupported` error にします。この場合は container-only port、明示的に分けた複数 service、Compose port range、または replica 数 1 を使ってください。
 
-invalid host IP、malformed port syntax、permission denied などは simple collision とは区別し、decune が判定できる場合は `compose_published_port_invalid` error として表示します。
+invalid host IP、malformed port syntax、想定外の availability probe error などは simple collision とは区別し、decune が判定できる場合は `compose_published_port_invalid` error として表示します。
 
 relocation により実際に host port を変更する場合は、generated Compose override で Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要です。version 判定不能または古い Compose では起動前に error になります。
 
@@ -374,7 +378,7 @@ Compose published port 関連の代表的な diagnostic code と対処は次の�
 - `compose_published_port_relocation_failed`: requested host port 以降に利用可能な relocation candidate が見つかりません。使用中の host port を解放するか、Compose `ports` を変更してください。
 - `compose_published_port_bind_race`: planning 後に別 process が planned endpoint を取得した可能性があります。再実行するか、該当 endpoint を使っている process を停止してください。
 - `compose_published_port_unsupported`: startup failure が、host endpoint を安全に照合できる範囲で relocation 対象外 entry に関係しています。UDP、range、`network_mode: host` などの Compose `ports` を確認してください。
-- `compose_published_port_invalid`: invalid host IP、malformed port syntax、permission denied など、simple collision ではない状態です。Compose `ports` の記述と host 権限を確認してください。
+- `compose_published_port_invalid`: invalid host IP、malformed port syntax、想定外の availability probe error など、simple collision ではない状態です。Compose `ports` の記述を確認してください。
 - `compose_published_port_multi_replica_unsupported`: replica 数が 2 以上の service が fixed TCP published host port を持っています。container-only port、明示的に分けた複数 service、Compose port range、または replica 数 1 を使ってください。
 
 decune port forwarding と、Dev Container `appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error です。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧に表示されます。
