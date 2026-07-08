@@ -356,6 +356,8 @@ privileged port など decune process が権限上 TCP bind probe できない p
 
 同じ Compose project に既存 container がある場合、decune は同一 service / protocol / target port の既存 published binding を requested port より優先して維持します。いったん `3000` から `3001` に relocate された binding は、`3000` を塞いでいた process が終了しても `decune up` では `3001` のまま維持されます。requested port へ戻すには `decune rebuild` を実行します。
 
+同じ Compose project の running container が別 service や stale service で既に使っている published host endpoint は、unprobeable な requested port であっても予約済みとして扱います。その場合、decune は requested port を維持せず、次の relocation candidate を探索します。
+
 relocation 対象外の entry は、存在するだけでは warning しません。`network_mode: host` の service にある port mapping も relocation 対象として扱いません。ただし、`network_mode: host` と `ports` の組み合わせは Docker Compose 自体が runtime error にする場合があります。
 
 replica 数が 2 以上の service が fixed TCP published host port を持つ場合、decune は replica ごとの個別 host port 割り当てを行わず、`compose_published_port_multi_replica_unsupported` error にします。この場合は container-only port、明示的に分けた複数 service、Compose port range、または replica 数 1 を使ってください。
