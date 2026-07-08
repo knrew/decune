@@ -8,6 +8,7 @@ use crate::{
         dotfiles::materialize_dotfile_skeletons,
         image::{PullPolicy, ensure_image, image_container_tool_platform},
         ports::{HostPortReservation, host_port_reservations_conflict},
+        resource::{compose_project_name_from_labels, non_empty_trimmed},
     },
     runtime::{
         compose_cli::{
@@ -671,16 +672,12 @@ async fn compose_isolation_daemon_snapshot(
         }
     }
     if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::ServiceContainer) {
-        for container in client.cli().list_all_container_inspects().await? {
-            let labels = container.config.and_then(|config| config.labels);
-            if let Some(name) = docker_container_name(container.name.as_deref()).map(str::to_owned)
-            {
-                snapshot.resources.push(ComposeIsolationDockerResource {
-                    kind: ComposeIsolationResourceKind::ServiceContainer,
-                    name,
-                    compose_project: compose_project_label(labels.as_ref()),
-                });
-            }
+        for container in client.cli().list_all_container_resource_summaries().await? {
+            snapshot.resources.push(ComposeIsolationDockerResource {
+                kind: ComposeIsolationResourceKind::ServiceContainer,
+                name: container.name,
+                compose_project: container.compose_project,
+            });
         }
     }
     if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::Volume) {
@@ -717,7 +714,10 @@ fn add_compose_isolation_network(
     let Some(name) = non_empty_trimmed(network.name.as_deref()).map(str::to_owned) else {
         return;
     };
-    let compose_project = compose_project_label(network.labels.as_ref());
+    let compose_project = network
+        .labels
+        .as_ref()
+        .and_then(compose_project_name_from_labels);
     let ipam_configs = network
         .ipam
         .map(|ipam| {
@@ -752,7 +752,10 @@ fn add_compose_isolation_volume(
     snapshot.resources.push(ComposeIsolationDockerResource {
         kind: ComposeIsolationResourceKind::Volume,
         name,
-        compose_project: compose_project_label(volume.labels.as_ref()),
+        compose_project: volume
+            .labels
+            .as_ref()
+            .and_then(compose_project_name_from_labels),
     });
 }
 
@@ -770,25 +773,11 @@ fn add_compose_isolation_swarm_resource(
     snapshot.resources.push(ComposeIsolationDockerResource {
         kind,
         name,
-        compose_project: compose_project_label(spec.labels.as_ref()),
+        compose_project: spec
+            .labels
+            .as_ref()
+            .and_then(compose_project_name_from_labels),
     });
-}
-
-fn docker_container_name(name: Option<&str>) -> Option<&str> {
-    non_empty_trimmed(name.map(|name| name.trim_start_matches('/')))
-}
-
-fn compose_project_label(
-    labels: Option<&std::collections::BTreeMap<String, String>>,
-) -> Option<String> {
-    labels
-        .and_then(|labels| labels.get("com.docker.compose.project"))
-        .and_then(|value| non_empty_trimmed(Some(value.as_str())))
-        .map(str::to_owned)
-}
-
-fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 async fn prepare_compose_user_images(

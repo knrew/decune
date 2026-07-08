@@ -9,6 +9,8 @@ const CONFIG_HASH_LABEL: &str = "decune.config_hash";
 const VERSION_LABEL: &str = "decune.version";
 const DEVCONTAINER_LOCAL_FOLDER_LABEL: &str = "devcontainer.local_folder";
 const DEVCONTAINER_CONFIG_FILE_LABEL: &str = "devcontainer.config_file";
+pub(crate) const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
+pub(crate) const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
 const IMAGE_REPOSITORY_PREFIX: &str = "decune/";
 const DOCKER_REPOSITORY_NAME_MAX: usize = 255;
 
@@ -110,6 +112,19 @@ pub(crate) fn config_hash_from_labels(labels: &BTreeMap<String, String>) -> Opti
         .get(CONFIG_HASH_LABEL)
         .filter(|config_hash| !config_hash.trim().is_empty())
         .cloned()
+}
+
+pub(crate) fn compose_project_name_from_labels(
+    labels: &BTreeMap<String, String>,
+) -> Option<String> {
+    labels
+        .get(COMPOSE_PROJECT_LABEL)
+        .and_then(|project_name| non_empty_trimmed(Some(project_name.as_str())))
+        .map(str::to_owned)
+}
+
+pub(crate) fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 fn labels(entries: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, String> {

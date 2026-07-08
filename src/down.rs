@@ -14,8 +14,8 @@ use crate::{
         container::{remove_container, stop_container},
         image::{remove_image, workspace_image_tags},
         resource::{
-            DockerResources, managed_workspace_id_from_container, managed_workspace_id_from_labels,
-            workspace_path_from_labels,
+            COMPOSE_PROJECT_LABEL, DockerResources, managed_workspace_id_from_container,
+            managed_workspace_id_from_labels, workspace_path_from_labels,
         },
         volume::{remove_volume, workspace_volumes},
     },
@@ -314,7 +314,7 @@ async fn discover_all_workspace_removal_plans(
             plan.workspace_path.get_or_insert(workspace_path);
         }
         if let Some(project_name) = labels
-            .get("com.docker.compose.project")
+            .get(COMPOSE_PROJECT_LABEL)
             .filter(|project_name| !project_name.trim().is_empty())
             .cloned()
         {

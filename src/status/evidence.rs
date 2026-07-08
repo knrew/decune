@@ -8,8 +8,9 @@ use crate::{
     docker::{
         container::ContainerInspect,
         resource::{
+            COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL, compose_project_name_from_labels,
             config_hash_from_labels, managed_workspace_id_from_container,
-            managed_workspace_id_from_labels, workspace_path_from_labels,
+            managed_workspace_id_from_labels, non_empty_trimmed, workspace_path_from_labels,
         },
     },
     runtime::docker_cli::{DockerCli, DockerVolumeInspect},
@@ -343,9 +344,7 @@ fn compose_project_name_from_container(container: &ContainerInspect) -> Option<S
         .config
         .as_ref()
         .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get("com.docker.compose.project"))
-        .filter(|project_name| !project_name.trim().is_empty())
-        .cloned()
+        .and_then(compose_project_name_from_labels)
 }
 
 fn dedupe_container_evidence(containers: Vec<ContainerEvidence>) -> Vec<ContainerEvidence> {
@@ -478,12 +477,12 @@ const fn mode_from_source(source: Option<&ResolvedDevcontainerSource>) -> Worksp
 
 fn compose_service_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
     labels
-        .get("com.docker.compose.project")
-        .filter(|project| !project.trim().is_empty())?;
+        .get(COMPOSE_PROJECT_LABEL)
+        .and_then(|project| non_empty_trimmed(Some(project.as_str())))?;
     labels
-        .get("com.docker.compose.service")
-        .filter(|service| !service.trim().is_empty())
-        .cloned()
+        .get(COMPOSE_SERVICE_LABEL)
+        .and_then(|service| non_empty_trimmed(Some(service.as_str())))
+        .map(str::to_owned)
 }
 
 fn is_missing_devcontainer_metadata_error(error: &anyhow::Error) -> bool {

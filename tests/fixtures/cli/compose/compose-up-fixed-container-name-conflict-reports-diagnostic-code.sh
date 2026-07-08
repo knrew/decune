@@ -17,7 +17,7 @@ if [ "${1:-}" = compose ]; then
   esac
 fi
 if [ "${1:-}" = ps ]; then
-  printf '{"ID":"other-container-id"}\n'
+  printf '{"ID":"other-container-id","Names":"fixed-app","Labels":"com.docker.compose.project=other-project"}\n'
   exit 0
 fi
 if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then

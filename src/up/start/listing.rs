@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 
 use crate::{
-    docker::{client::DockerClient, container::ContainerInspect},
+    docker::{client::DockerClient, container::ContainerInspect, resource::COMPOSE_SERVICE_LABEL},
     runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
         ComposePublishedPortReservation, ComposePublishedPortReservationSource,
@@ -110,7 +110,7 @@ fn existing_compose_project_published_ports_from_container(
         .config
         .as_ref()
         .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get("com.docker.compose.service"))
+        .and_then(|labels| labels.get(COMPOSE_SERVICE_LABEL))
         .cloned()
     else {
         return Vec::new();
@@ -228,7 +228,7 @@ mod tests {
         ContainerInspect {
             config: Some(ContainerInspectConfig {
                 labels: Some(BTreeMap::from([(
-                    "com.docker.compose.service".to_owned(),
+                    COMPOSE_SERVICE_LABEL.to_owned(),
                     "app".to_owned(),
                 )])),
                 ..ContainerInspectConfig::default()
