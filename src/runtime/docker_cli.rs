@@ -208,6 +208,11 @@ impl DockerCli {
         .await
     }
 
+    pub(crate) async fn list_all_container_inspects(&self) -> Result<Vec<ContainerInspect>> {
+        self.list_container_inspects_with_filters("Docker containers", &[])
+            .await
+    }
+
     pub(crate) async fn list_standalone_workspace_containers(
         &self,
         workspace_id: &str,
@@ -414,6 +419,36 @@ impl DockerCli {
         Ok(lines_from_output(&output.stdout_string()?))
     }
 
+    pub(crate) async fn list_network_inspects(&self) -> Result<Vec<DockerNetworkInspect>> {
+        let command = docker_cmd(["network", "ls", "--format", "{{.ID}}"]);
+        let output = self.runner.run_capture(command.clone()).await?;
+        ensure_success("list Docker networks", "Docker networks", &command, &output)?;
+        let ids = lines_from_output(&output.stdout_string()?);
+        if ids.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let command = docker_cmd(["network", "inspect"])
+            .args(ids.iter().map(String::as_str))
+            .arg("--format")
+            .arg("json");
+        let output = self.runner.run_capture(command.clone()).await?;
+        if output.exit_code != 0 && !is_no_such_network_only(&output) {
+            ensure_success(
+                "inspect Docker networks",
+                "Docker networks",
+                &command,
+                &output,
+            )?;
+        }
+        parse_json_sequence_output::<DockerNetworkInspect>(
+            "inspect Docker networks",
+            "Docker networks",
+            &command,
+            &output,
+        )
+    }
+
     pub(crate) async fn remove_network(&self, network: &str) -> Result<()> {
         self.run_ok_or_not_found(
             "remove Docker network",
@@ -512,6 +547,68 @@ impl DockerCli {
         let command = docker_cmd(["volume", "inspect"]).args(names.iter().map(String::as_str));
         self.run_json_command("inspect Docker volumes", "decune-managed volumes", command)
             .await
+    }
+
+    pub(crate) async fn list_all_volume_inspects(&self) -> Result<Vec<DockerVolumeInspect>> {
+        let command = docker_cmd(["volume", "ls", "--format", "{{.Name}}"]);
+        let output = self.runner.run_capture(command.clone()).await?;
+        ensure_success("list Docker volumes", "Docker volumes", &command, &output)?;
+        let names = lines_from_output(&output.stdout_string()?);
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let command = docker_cmd(["volume", "inspect"]).args(names.iter().map(String::as_str));
+        self.run_json_command("inspect Docker volumes", "Docker volumes", command)
+            .await
+    }
+
+    pub(crate) async fn list_config_inspects(&self) -> Result<Vec<DockerSwarmResourceInspect>> {
+        self.list_optional_swarm_resource_inspects("config").await
+    }
+
+    pub(crate) async fn list_secret_inspects(&self) -> Result<Vec<DockerSwarmResourceInspect>> {
+        self.list_optional_swarm_resource_inspects("secret").await
+    }
+
+    async fn list_optional_swarm_resource_inspects(
+        &self,
+        resource_kind: &str,
+    ) -> Result<Vec<DockerSwarmResourceInspect>> {
+        let list_target = format!("Docker {resource_kind}s");
+        let command = docker_cmd([resource_kind, "ls", "--format", "{{.Name}}"]);
+        let output = self.runner.run_capture(command.clone()).await?;
+        if output.exit_code != 0 && is_swarm_resource_unavailable(&output) {
+            return Ok(Vec::new());
+        }
+        ensure_success(
+            &format!("list Docker {resource_kind}s"),
+            &list_target,
+            &command,
+            &output,
+        )?;
+        let names = lines_from_output(&output.stdout_string()?);
+        if names.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let command = docker_cmd([resource_kind, "inspect"]).args(names.iter().map(String::as_str));
+        let output = self.runner.run_capture(command.clone()).await?;
+        if output.exit_code != 0 && is_swarm_resource_unavailable(&output) {
+            return Ok(Vec::new());
+        }
+        ensure_success(
+            &format!("inspect Docker {resource_kind}s"),
+            &list_target,
+            &command,
+            &output,
+        )?;
+        parse_json_sequence_output::<DockerSwarmResourceInspect>(
+            &format!("inspect Docker {resource_kind}s"),
+            &list_target,
+            &command,
+            &output,
+        )
     }
 
     pub(crate) async fn remove_volume(&self, volume: &str, force: bool) -> Result<()> {
@@ -768,6 +865,29 @@ fn is_not_found(output: &RuntimeOutput) -> bool {
     stderr.contains("no such") || stderr.contains("not found")
 }
 
+fn is_no_such_network_only(output: &RuntimeOutput) -> bool {
+    let stderr = output.stderr_string_lossy().to_ascii_lowercase();
+    let mut saw_network_not_found = false;
+    for line in stderr
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+    {
+        let network_not_found = line.contains("no such network")
+            || (line.contains("network") && line.contains("not found"));
+        if !network_not_found {
+            return false;
+        }
+        saw_network_not_found = true;
+    }
+    saw_network_not_found
+}
+
+fn is_swarm_resource_unavailable(output: &RuntimeOutput) -> bool {
+    let stderr = output.stderr_string_lossy().to_ascii_lowercase();
+    stderr.contains("not a swarm manager") || stderr.contains("swarm")
+}
+
 fn is_not_found_or_not_running(output: &RuntimeOutput) -> bool {
     let stderr = output.stderr_string_lossy().to_ascii_lowercase();
     is_not_found(output) || stderr.contains("is not running")
@@ -789,6 +909,37 @@ fn compose_project_name_from_labels(labels: &BTreeMap<String, String>) -> Option
         .cloned()
 }
 
+fn parse_json_sequence_output<T: for<'de> Deserialize<'de>>(
+    action: &str,
+    target: &str,
+    command: &RuntimeCommand,
+    output: &RuntimeOutput,
+) -> Result<Vec<T>> {
+    if output.stdout.is_empty() {
+        return Ok(Vec::new());
+    }
+    if let Ok(values) = serde_json::from_slice::<Vec<T>>(&output.stdout) {
+        return Ok(values);
+    }
+    if let Ok(value) = serde_json::from_slice::<T>(&output.stdout) {
+        return Ok(vec![value]);
+    }
+
+    let stdout = output.stdout_string()?;
+    stdout
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(|line| {
+            serde_json::from_str::<T>(line).with_context(|| {
+                format!(
+                    "Failed to parse JSON output for {action}: {target}. stderr: {}",
+                    command.redact_output(&output.stderr_string_lossy())
+                )
+            })
+        })
+        .collect()
+}
+
 #[derive(Debug, Deserialize)]
 struct DockerPsRow {
     #[serde(rename = "ID")]
@@ -798,6 +949,43 @@ struct DockerPsRow {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct DockerVolumeInspect {
+    pub(crate) name: Option<String>,
+    pub(crate) labels: Option<BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct DockerNetworkInspect {
+    pub(crate) name: Option<String>,
+    pub(crate) labels: Option<BTreeMap<String, String>>,
+    #[serde(rename = "IPAM")]
+    pub(crate) ipam: Option<DockerNetworkIpam>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct DockerNetworkIpam {
+    #[serde(default)]
+    pub(crate) config: Vec<DockerNetworkIpamConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct DockerNetworkIpamConfig {
+    pub(crate) subnet: Option<String>,
+    pub(crate) gateway: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct DockerSwarmResourceInspect {
+    pub(crate) id: Option<String>,
+    pub(crate) spec: Option<DockerSwarmResourceSpec>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
+#[serde(rename_all = "PascalCase")]
+pub(crate) struct DockerSwarmResourceSpec {
     pub(crate) name: Option<String>,
     pub(crate) labels: Option<BTreeMap<String, String>>,
 }
@@ -1021,6 +1209,91 @@ mod tests {
             super::compose_project_name_from_labels(&BTreeMap::new()),
             None
         );
+    }
+
+    #[test]
+    fn list_network_inspects_uses_ids_and_accepts_missing_network_partial_output() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(runtime_output(
+                br#"[{
+                    "Name":"other_net",
+                    "Labels":{"com.docker.compose.project":"other"},
+                    "IPAM":{"Config":[{"Subnet":"172.28.0.0/16","Gateway":"172.28.0.1"}]}
+                }]"#,
+                b"Error: No such network: removed\n",
+                1,
+            )),
+            Ok(output(b"id-one\nid-two\n")),
+        ]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let networks = runtime.block_on(client.list_network_inspects()).unwrap();
+
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].name.as_deref(), Some("other_net"));
+        assert_eq!(
+            networks[0]
+                .ipam
+                .as_ref()
+                .and_then(|ipam| ipam.config.first())
+                .and_then(|config| config.subnet.as_deref()),
+            Some("172.28.0.0/16")
+        );
+        let commands = runner.commands();
+        assert_eq!(
+            commands[0].args_vec(),
+            ["network", "ls", "--format", "{{.ID}}"]
+        );
+        assert_eq!(
+            commands[1].args_vec(),
+            ["network", "inspect", "id-one", "id-two", "--format", "json"]
+        );
+    }
+
+    #[test]
+    fn list_all_volume_inspects_does_not_filter_to_managed_volumes() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(
+                br#"[{"Name":"cache","Labels":{"com.docker.compose.project":"other"}}]"#,
+            )),
+            Ok(output(b"cache\n")),
+        ]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let volumes = runtime.block_on(client.list_all_volume_inspects()).unwrap();
+
+        assert_eq!(volumes.len(), 1);
+        assert_eq!(volumes[0].name.as_deref(), Some("cache"));
+        assert_eq!(
+            runner.commands()[0].args_vec(),
+            ["volume", "ls", "--format", "{{.Name}}"]
+        );
+    }
+
+    #[test]
+    fn list_config_inspects_returns_empty_when_swarm_is_unavailable() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            b"",
+            b"This node is not a swarm manager\n",
+            1,
+        ))]);
+        let client = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let configs = runtime.block_on(client.list_config_inspects()).unwrap();
+
+        assert!(configs.is_empty());
     }
 
     #[test]
@@ -1682,10 +1955,14 @@ mod tests {
     }
 
     fn output(stdout: &[u8]) -> RuntimeOutput {
+        runtime_output(stdout, b"", 0)
+    }
+
+    fn runtime_output(stdout: &[u8], stderr: &[u8], exit_code: i32) -> RuntimeOutput {
         RuntimeOutput {
             stdout: stdout.to_vec(),
-            stderr: Vec::new(),
-            exit_code: 0,
+            stderr: stderr.to_vec(),
+            exit_code,
         }
     }
 }

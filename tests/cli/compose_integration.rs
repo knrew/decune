@@ -230,6 +230,54 @@ fn compose_integration_default_published_port_collision_fails_without_relocation
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_fixed_subnet_overlap_fails_before_compose_up() {
+    let subnet = "172.31.240.0/24";
+    let first = compose_fixed_subnet_workspace(subnet);
+    let second = compose_fixed_subnet_workspace(subnet);
+    let first_container_tools_dir = fake_container_tools_bundle(&first.workspace);
+    let second_container_tools_dir = fake_container_tools_bundle(&second.workspace);
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(first.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &first_container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let first_network = format!("{}_grpc", compose_project_name(first.path()));
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(second.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &second_container_tools_dir)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_network_subnet_overlap")
+                .and(predicate::str::contains("network: `grpc`"))
+                .and(predicate::str::contains(format!(
+                    "requested subnet: {subnet}"
+                )))
+                .and(predicate::str::contains(format!(
+                    "existing network: `{first_network}`"
+                )))
+                .and(predicate::str::contains(format!(
+                    "existing subnet: {subnet}"
+                ))),
+        );
+
+    let second_containers = compose_project_containers(second.path()).unwrap();
+    assert!(
+        second_containers.is_empty(),
+        "second project should fail before docker compose up creates containers: {second_containers:?}"
+    );
+}
+
+#[test]
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_published_port_relocation_starts_second_workspace_and_reports_ports() {
     let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
@@ -1468,6 +1516,54 @@ fn compose_published_primary_workspace(host_port: u16) -> ComposeFixtureWorkspac
                   - ..:/workspace
                 ports:
                   - "127.0.0.1:{host_port}:3000"
+            "#
+            ),
+        )
+        .must();
+
+    ComposeFixtureWorkspace { workspace }
+}
+
+fn compose_fixed_subnet_workspace(subnet: &str) -> ComposeFixtureWorkspace {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => test_fail(message),
+    }
+
+    let workspace = support::TempWorkspace::new().must();
+    workspace.create_dir(".devcontainer").must();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "name": "compose-fixed-subnet",
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "workspaceFolder": "/workspace",
+              "updateRemoteUserUID": false
+            }
+            "#,
+        )
+        .must();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            format!(
+                r#"
+            services:
+              app:
+                image: alpine:3.20
+                command: sleep infinity
+                volumes:
+                  - ..:/workspace
+                networks:
+                  - grpc
+            networks:
+              grpc:
+                ipam:
+                  config:
+                    - subnet: "{subnet}"
             "#
             ),
         )

@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 use anyhow::{Result, anyhow, bail};
 use serde::{Deserialize, Deserializer, de};
 use serde_json::Value as JsonValue;
@@ -14,7 +16,15 @@ pub(crate) struct ComposeConfigOutput {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub(crate) struct ComposeConfigModel {
     #[serde(default)]
-    services: std::collections::BTreeMap<String, ComposeConfigService>,
+    services: BTreeMap<String, ComposeConfigService>,
+    #[serde(default)]
+    networks: BTreeMap<String, ComposeConfigResource>,
+    #[serde(default)]
+    volumes: BTreeMap<String, ComposeConfigResource>,
+    #[serde(default)]
+    configs: BTreeMap<String, ComposeConfigResource>,
+    #[serde(default)]
+    secrets: BTreeMap<String, ComposeConfigResource>,
 }
 
 impl ComposeConfigModel {
@@ -28,6 +38,22 @@ impl ComposeConfigModel {
 
     pub(crate) fn services(&self) -> impl Iterator<Item = (&String, &ComposeConfigService)> {
         self.services.iter()
+    }
+
+    pub(crate) fn networks(&self) -> impl Iterator<Item = (&String, &ComposeConfigResource)> {
+        self.networks.iter()
+    }
+
+    pub(crate) fn volumes(&self) -> impl Iterator<Item = (&String, &ComposeConfigResource)> {
+        self.volumes.iter()
+    }
+
+    pub(crate) fn configs(&self) -> impl Iterator<Item = (&String, &ComposeConfigResource)> {
+        self.configs.iter()
+    }
+
+    pub(crate) fn secrets(&self) -> impl Iterator<Item = (&String, &ComposeConfigResource)> {
+        self.secrets.iter()
     }
 
     pub(crate) fn validate_services(
@@ -127,6 +153,8 @@ pub(crate) struct ComposeConfigService {
     #[serde(default, deserialize_with = "deserialize_compose_startup_value")]
     pub(crate) command: Option<Vec<String>>,
     #[serde(default)]
+    pub(crate) container_name: Option<String>,
+    #[serde(default)]
     pub(crate) ports: Vec<JsonValue>,
 }
 
@@ -144,6 +172,59 @@ impl ComposeConfigService {
 pub(crate) struct ComposeConfigDeploy {
     #[serde(default)]
     pub(crate) replicas: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub(crate) struct ComposeConfigResource {
+    #[serde(default)]
+    pub(crate) name: Option<String>,
+    #[serde(default)]
+    pub(crate) external: ComposeConfigExternal,
+    #[serde(default)]
+    pub(crate) ipam: Option<ComposeConfigIpam>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub(crate) struct ComposeConfigIpam {
+    #[serde(default)]
+    pub(crate) config: Vec<ComposeConfigIpamConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+pub(crate) struct ComposeConfigIpamConfig {
+    #[serde(default)]
+    pub(crate) subnet: Option<String>,
+    #[serde(default)]
+    pub(crate) gateway: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct ComposeConfigExternal {
+    external: bool,
+}
+
+impl ComposeConfigExternal {
+    pub(crate) const fn is_external(self) -> bool {
+        self.external
+    }
+}
+
+impl<'de> Deserialize<'de> for ComposeConfigExternal {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let value = Option::<JsonValue>::deserialize(deserializer)?;
+        let external = match value {
+            Some(JsonValue::Bool(value)) => value,
+            Some(JsonValue::Object(_)) => true,
+            Some(
+                JsonValue::Null | JsonValue::Number(_) | JsonValue::String(_) | JsonValue::Array(_),
+            )
+            | None => false,
+        };
+        Ok(Self { external })
+    }
 }
 
 fn deserialize_compose_startup_value<'de, D>(

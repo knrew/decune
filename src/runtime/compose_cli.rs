@@ -14,8 +14,8 @@ pub(crate) use command_plan::{
     ComposeStopOptions, ComposeUpOptions,
 };
 pub(crate) use config::{
-    ComposeConfigModel, ComposeConfigOutput, ComposeConfigService, ComposePrimaryImageResolver,
-    ComposeServiceValidation,
+    ComposeConfigModel, ComposeConfigOutput, ComposeConfigResource, ComposeConfigService,
+    ComposePrimaryImageResolver, ComposeServiceValidation,
 };
 pub(crate) use introspector::ComposeIntrospector;
 pub(crate) use override_file::{

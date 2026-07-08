@@ -11,10 +11,16 @@ use crate::{
     },
     runtime::{
         compose_cli::{
-            ComposeBuildOptions, ComposeCliCapabilities, ComposeConfigOutput, ComposeConfigService,
-            ComposeIntrospector, ComposeLifecyclePlan, ComposePrimaryImageResolver,
-            ComposeProjectPlan, ComposePullOptions, ComposeServiceValidation, ComposeUpOptions,
-            DockerComposeCli,
+            ComposeBuildOptions, ComposeCliCapabilities, ComposeConfigModel, ComposeConfigOutput,
+            ComposeConfigService, ComposeIntrospector, ComposeLifecyclePlan,
+            ComposePrimaryImageResolver, ComposeProjectPlan, ComposePullOptions,
+            ComposeServiceValidation, ComposeUpOptions, DockerComposeCli,
+        },
+        compose_isolation::{
+            ComposeIsolationDaemonSnapshot, ComposeIsolationDockerIpamConfig,
+            ComposeIsolationDockerNetwork, ComposeIsolationDockerResource,
+            ComposeIsolationPlanInput, ComposeIsolationResourceKind, ComposeIsolationScan,
+            plan_compose_isolation, scan_compose_isolation, validate_compose_isolation_diagnostics,
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
@@ -24,6 +30,7 @@ use crate::{
             compose_published_port_endpoint_display, compose_published_port_plan_has_relocations,
             validate_compose_published_port_diagnostics,
         },
+        docker_cli::{DockerNetworkInspect, DockerSwarmResourceInspect, DockerVolumeInspect},
     },
     state, ui,
     up::{
@@ -579,6 +586,7 @@ async fn prepare_compose_startup_context(
         .user_config(source.project, &compose_service_validation)
         .await?;
     let user_model = &user_config.model;
+    run_compose_isolation_preflight(client, &project_name, user_model).await?;
     let compose_primary_image = ComposePrimaryImageResolver {
         project_name: &project_name,
         service: &service,
@@ -627,6 +635,160 @@ async fn prepare_compose_startup_context(
         existing_project_published_ports,
         published_port_relocation_enabled,
     })
+}
+
+async fn run_compose_isolation_preflight(
+    client: &DockerClient,
+    project_name: &str,
+    model: &ComposeConfigModel,
+) -> Result<()> {
+    let scan = scan_compose_isolation(model, project_name);
+    if scan.is_empty() {
+        return Ok(());
+    }
+
+    let daemon = compose_isolation_daemon_snapshot(client, &scan).await?;
+    let findings = plan_compose_isolation(&ComposeIsolationPlanInput {
+        project_name,
+        scan: &scan,
+        daemon: &daemon,
+    });
+    validate_compose_isolation_diagnostics(&findings)?;
+    Ok(())
+}
+
+async fn compose_isolation_daemon_snapshot(
+    client: &DockerClient,
+    scan: &ComposeIsolationScan,
+) -> Result<ComposeIsolationDaemonSnapshot> {
+    let mut snapshot = ComposeIsolationDaemonSnapshot::default();
+
+    if !scan.networks.is_empty()
+        || scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::Network)
+    {
+        for network in client.cli().list_network_inspects().await? {
+            add_compose_isolation_network(&mut snapshot, network);
+        }
+    }
+    if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::ServiceContainer) {
+        for container in client.cli().list_all_container_inspects().await? {
+            let labels = container.config.and_then(|config| config.labels);
+            if let Some(name) = docker_container_name(container.name.as_deref()).map(str::to_owned)
+            {
+                snapshot.resources.push(ComposeIsolationDockerResource {
+                    kind: ComposeIsolationResourceKind::ServiceContainer,
+                    name,
+                    compose_project: compose_project_label(labels.as_ref()),
+                });
+            }
+        }
+    }
+    if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::Volume) {
+        for volume in client.cli().list_all_volume_inspects().await? {
+            add_compose_isolation_volume(&mut snapshot, &volume);
+        }
+    }
+    if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::Config) {
+        for config in client.cli().list_config_inspects().await? {
+            add_compose_isolation_swarm_resource(
+                &mut snapshot,
+                ComposeIsolationResourceKind::Config,
+                config,
+            );
+        }
+    }
+    if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::Secret) {
+        for secret in client.cli().list_secret_inspects().await? {
+            add_compose_isolation_swarm_resource(
+                &mut snapshot,
+                ComposeIsolationResourceKind::Secret,
+                secret,
+            );
+        }
+    }
+
+    Ok(snapshot)
+}
+
+fn add_compose_isolation_network(
+    snapshot: &mut ComposeIsolationDaemonSnapshot,
+    network: DockerNetworkInspect,
+) {
+    let Some(name) = non_empty_trimmed(network.name.as_deref()).map(str::to_owned) else {
+        return;
+    };
+    let compose_project = compose_project_label(network.labels.as_ref());
+    let ipam_configs = network
+        .ipam
+        .map(|ipam| {
+            ipam.config
+                .into_iter()
+                .map(|config| ComposeIsolationDockerIpamConfig {
+                    subnet: config.subnet,
+                    gateway: config.gateway,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    snapshot.networks.push(ComposeIsolationDockerNetwork {
+        name: name.clone(),
+        compose_project: compose_project.clone(),
+        ipam_configs,
+    });
+    snapshot.resources.push(ComposeIsolationDockerResource {
+        kind: ComposeIsolationResourceKind::Network,
+        name,
+        compose_project,
+    });
+}
+
+fn add_compose_isolation_volume(
+    snapshot: &mut ComposeIsolationDaemonSnapshot,
+    volume: &DockerVolumeInspect,
+) {
+    let Some(name) = non_empty_trimmed(volume.name.as_deref()).map(str::to_owned) else {
+        return;
+    };
+    snapshot.resources.push(ComposeIsolationDockerResource {
+        kind: ComposeIsolationResourceKind::Volume,
+        name,
+        compose_project: compose_project_label(volume.labels.as_ref()),
+    });
+}
+
+fn add_compose_isolation_swarm_resource(
+    snapshot: &mut ComposeIsolationDaemonSnapshot,
+    kind: ComposeIsolationResourceKind,
+    resource: DockerSwarmResourceInspect,
+) {
+    let Some(spec) = resource.spec else {
+        return;
+    };
+    let Some(name) = non_empty_trimmed(spec.name.as_deref()).map(str::to_owned) else {
+        return;
+    };
+    snapshot.resources.push(ComposeIsolationDockerResource {
+        kind,
+        name,
+        compose_project: compose_project_label(spec.labels.as_ref()),
+    });
+}
+
+fn docker_container_name(name: Option<&str>) -> Option<&str> {
+    non_empty_trimmed(name.map(|name| name.trim_start_matches('/')))
+}
+
+fn compose_project_label(
+    labels: Option<&std::collections::BTreeMap<String, String>>,
+) -> Option<String> {
+    labels
+        .and_then(|labels| labels.get("com.docker.compose.project"))
+        .and_then(|value| non_empty_trimmed(Some(value.as_str())))
+        .map(str::to_owned)
+}
+
+fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
+    value.map(str::trim).filter(|value| !value.is_empty())
 }
 
 async fn prepare_compose_user_images(

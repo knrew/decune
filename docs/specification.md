@@ -520,6 +520,24 @@ docker compose --project-name <project> --project-directory <dir> -f <file>... c
 - profile により primary service が無効になる構成は error。必要な profile は host env `COMPOSE_PROFILES` または Docker Compose CLI の標準手段で有効化する。
 - `workspaceFolder` は absolute path でなければならない。
 
+### Clone isolation preflight
+
+Compose モードの `up` / `rebuild` は、user Compose file だけから得た canonical Compose model を使い、`docker compose up -d` の前に clone isolation preflight を常時実行する。この preflight は検出のみを行い、Compose file、generated override、Docker resource name、IPAM subnet を書き換えない。
+
+対象:
+
+- `networks.*.ipam.config[].subnet` に固定 IPv4 subnet を持つ non-external network。既存 Docker network の `IPAM.Config[].Subnet` と重複する場合、`compose_network_subnet_overlap` diagnostic で error にする。IPv6 subnet はこの preflight の重複判定対象外である。
+- service の `container_name`。
+- top-level `networks` / `volumes` / `configs` / `secrets` の `name:`。ただし Docker Compose が自 project name で scope した既定名と一致するものは固定名扱いしない。
+
+`external: true` の top-level resource は、利用者が共有 resource として扱う契約なので clone isolation preflight の対象外である。
+
+既存 Docker resource との照合では、`com.docker.compose.project` label が現在の decune Compose project name と一致する resource を自 project とみなし、衝突相手から除外する。label が無い resource は他 resource として扱い、衝突相手に含める。
+
+固定名が同種の既存 Docker resource と衝突する場合、`compose_fixed_name_conflict` diagnostic で error にする。診断 message には Compose 側の resource、要求した subnet/name、衝突相手の Docker resource name、衝突相手の `com.docker.compose.project` label があればその値を含める。
+
+canonical Compose model に上記の clone-sensitive 構成が 1 つも無い場合、decune は clone isolation preflight のための Docker daemon resource 照会を行わない。
+
 ### generated Compose override
 
 Compose モードで decune 固有機能を適用するため、state/runtime directory に generated override file を作る。この file は user が編集しない。
