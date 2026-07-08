@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
-use anyhow::{Context, Result};
-use serde::{Deserialize, Deserializer};
+use anyhow::{Context, Result, bail};
+use serde::Deserialize;
 
 use crate::{
     config::types::{MountType, PortProtocol},
@@ -12,7 +12,6 @@ use crate::{
         ports::DockerPublishPort,
         resource::{
             COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL, compose_project_name_from_labels,
-            non_empty_trimmed,
         },
     },
     runtime::command::{
@@ -186,6 +185,20 @@ impl DockerCli {
         })
     }
 
+    pub(crate) async fn inspect_container_if_present(
+        &self,
+        container: &str,
+    ) -> Result<Option<ContainerInspect>> {
+        self.inspect_resource_if_present(
+            "inspect Docker container",
+            container,
+            docker_cmd(["container", "inspect", container]),
+            "container",
+            false,
+        )
+        .await
+    }
+
     pub(crate) async fn list_workspace_containers(
         &self,
         workspace_id: &str,
@@ -210,22 +223,6 @@ impl DockerCli {
             &["label=decune.managed=true".to_owned()],
         )
         .await
-    }
-
-    pub(crate) async fn list_all_container_resource_summaries(
-        &self,
-    ) -> Result<Vec<DockerContainerResourceSummary>> {
-        let rows: Vec<DockerPsRow> = self
-            .run_json_lines_command(
-                "list Docker containers",
-                "Docker containers",
-                docker_cmd(["ps", "--all", "--format", "json"]),
-            )
-            .await?;
-        Ok(rows
-            .into_iter()
-            .filter_map(container_resource_summary_from_ps_row)
-            .collect())
     }
 
     pub(crate) async fn list_standalone_workspace_containers(
@@ -376,21 +373,16 @@ impl DockerCli {
         for filter in filters {
             command = command.arg("--filter").arg(filter);
         }
-        command = command.arg("--format").arg("json");
-        let values: Vec<DockerPsRow> = self
-            .run_json_lines_command("list Docker containers", target, command)
-            .await?;
-        let ids = values.into_iter().map(|row| row.id).collect::<Vec<_>>();
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let command = docker_cmd(["container", "inspect"]).args(ids.iter().map(String::as_str));
-        let output = self.runner.run_capture(command.clone()).await?;
-        if output.exit_code != 0 && !is_no_such_docker_resource_only(&output, "container") {
-            ensure_success("inspect Docker containers", target, &command, &output)?;
-        }
-        parse_json_sequence_output("inspect Docker containers", target, &command, &output)
+        command = command.arg("--format").arg("{{.ID}}");
+        self.list_and_inspect_resources(
+            "list Docker containers",
+            target,
+            command,
+            "inspect Docker containers",
+            "container",
+            |ids| docker_cmd(["container", "inspect"]).args(ids.iter().map(String::as_str)),
+        )
+        .await
     }
 
     pub(crate) async fn list_compose_project_volumes(
@@ -439,32 +431,20 @@ impl DockerCli {
 
     pub(crate) async fn list_network_inspects(&self) -> Result<Vec<DockerNetworkInspect>> {
         let command = docker_cmd(["network", "ls", "--format", "{{.ID}}"]);
-        let output = self.runner.run_capture(command.clone()).await?;
-        ensure_success("list Docker networks", "Docker networks", &command, &output)?;
-        let ids = lines_from_output(&output.stdout_string()?);
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let command = docker_cmd(["network", "inspect"])
-            .args(ids.iter().map(String::as_str))
-            .arg("--format")
-            .arg("json");
-        let output = self.runner.run_capture(command.clone()).await?;
-        if output.exit_code != 0 && !is_no_such_docker_resource_only(&output, "network") {
-            ensure_success(
-                "inspect Docker networks",
-                "Docker networks",
-                &command,
-                &output,
-            )?;
-        }
-        parse_json_sequence_output::<DockerNetworkInspect>(
-            "inspect Docker networks",
+        self.list_and_inspect_resources(
+            "list Docker networks",
             "Docker networks",
-            &command,
-            &output,
+            command,
+            "inspect Docker networks",
+            "network",
+            |ids| {
+                docker_cmd(["network", "inspect"])
+                    .args(ids.iter().map(String::as_str))
+                    .arg("--format")
+                    .arg("json")
+            },
         )
+        .await
     }
 
     pub(crate) async fn remove_network(&self, network: &str) -> Result<()> {
@@ -550,109 +530,57 @@ impl DockerCli {
             "--format",
             "{{.Name}}",
         ]);
-        let output = self.runner.run_capture(command.clone()).await?;
-        ensure_success(
+        self.list_and_inspect_resources(
             "list decune-managed Docker volumes",
             "decune-managed volumes",
-            &command,
-            &output,
-        )?;
-        let names = lines_from_output(&output.stdout_string()?);
-        if names.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let command = docker_cmd(["volume", "inspect"]).args(names.iter().map(String::as_str));
-        let output = self.runner.run_capture(command.clone()).await?;
-        if output.exit_code != 0 && !is_no_such_docker_resource_only(&output, "volume") {
-            ensure_success(
-                "inspect Docker volumes",
-                "decune-managed volumes",
-                &command,
-                &output,
-            )?;
-        }
-        parse_json_sequence_output(
+            command,
             "inspect Docker volumes",
-            "decune-managed volumes",
-            &command,
-            &output,
+            "volume",
+            |names| docker_cmd(["volume", "inspect"]).args(names.iter().map(String::as_str)),
         )
+        .await
     }
 
-    pub(crate) async fn list_all_volume_inspects(&self) -> Result<Vec<DockerVolumeInspect>> {
-        let command = docker_cmd(["volume", "ls", "--format", "{{.Name}}"]);
-        let output = self.runner.run_capture(command.clone()).await?;
-        ensure_success("list Docker volumes", "Docker volumes", &command, &output)?;
-        let names = lines_from_output(&output.stdout_string()?);
-        if names.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let command = docker_cmd(["volume", "inspect"]).args(names.iter().map(String::as_str));
-        let output = self.runner.run_capture(command.clone()).await?;
-        if output.exit_code != 0 && !is_no_such_docker_resource_only(&output, "volume") {
-            ensure_success(
-                "inspect Docker volumes",
-                "Docker volumes",
-                &command,
-                &output,
-            )?;
-        }
-        parse_json_sequence_output(
-            "inspect Docker volumes",
-            "Docker volumes",
-            &command,
-            &output,
-        )
-    }
-
-    pub(crate) async fn list_config_inspects(&self) -> Result<Vec<DockerSwarmResourceInspect>> {
-        self.list_optional_swarm_resource_inspects("config").await
-    }
-
-    pub(crate) async fn list_secret_inspects(&self) -> Result<Vec<DockerSwarmResourceInspect>> {
-        self.list_optional_swarm_resource_inspects("secret").await
-    }
-
-    async fn list_optional_swarm_resource_inspects(
+    pub(crate) async fn inspect_volume_if_present(
         &self,
-        resource_kind: &str,
-    ) -> Result<Vec<DockerSwarmResourceInspect>> {
-        let list_target = format!("Docker {resource_kind}s");
-        let command = docker_cmd([resource_kind, "ls", "--format", "{{.Name}}"]);
-        let output = self.runner.run_capture(command.clone()).await?;
-        if output.exit_code != 0 && is_swarm_resource_unavailable(&output) {
-            return Ok(Vec::new());
-        }
-        ensure_success(
-            &format!("list Docker {resource_kind}s"),
-            &list_target,
-            &command,
-            &output,
-        )?;
-        let names = lines_from_output(&output.stdout_string()?);
-        if names.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let command = docker_cmd([resource_kind, "inspect"]).args(names.iter().map(String::as_str));
-        let output = self.runner.run_capture(command.clone()).await?;
-        if output.exit_code != 0 && is_swarm_resource_unavailable(&output) {
-            return Ok(Vec::new());
-        }
-        ensure_success(
-            &format!("inspect Docker {resource_kind}s"),
-            &list_target,
-            &command,
-            &output,
-        )?;
-        parse_json_sequence_output::<DockerSwarmResourceInspect>(
-            &format!("inspect Docker {resource_kind}s"),
-            &list_target,
-            &command,
-            &output,
+        volume: &str,
+    ) -> Result<Option<DockerVolumeInspect>> {
+        self.inspect_resource_if_present(
+            "inspect Docker volume",
+            volume,
+            docker_cmd(["volume", "inspect", volume]),
+            "volume",
+            false,
         )
+        .await
+    }
+
+    pub(crate) async fn inspect_config_if_present(
+        &self,
+        config: &str,
+    ) -> Result<Option<DockerSwarmResourceInspect>> {
+        self.inspect_resource_if_present(
+            "inspect Docker config",
+            config,
+            docker_cmd(["config", "inspect", config]),
+            "config",
+            true,
+        )
+        .await
+    }
+
+    pub(crate) async fn inspect_secret_if_present(
+        &self,
+        secret: &str,
+    ) -> Result<Option<DockerSwarmResourceInspect>> {
+        self.inspect_resource_if_present(
+            "inspect Docker secret",
+            secret,
+            docker_cmd(["secret", "inspect", secret]),
+            "secret",
+            true,
+        )
+        .await
     }
 
     pub(crate) async fn remove_volume(&self, volume: &str, force: bool) -> Result<()> {
@@ -682,6 +610,62 @@ impl DockerCli {
         } else {
             ensure_success(action, target, &command, &output)
         }
+    }
+
+    async fn list_and_inspect_resources<T>(
+        &self,
+        list_action: &str,
+        target: &str,
+        list_command: RuntimeCommand,
+        inspect_action: &str,
+        resource_kind: &str,
+        build_inspect_command: impl FnOnce(&[String]) -> RuntimeCommand,
+    ) -> Result<Vec<T>>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let output = self.runner.run_capture(list_command.clone()).await?;
+        ensure_success(list_action, target, &list_command, &output)?;
+        let resource_refs = lines_from_output(&output.stdout_string()?);
+        if resource_refs.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let inspect_command = build_inspect_command(&resource_refs);
+        let output = self.runner.run_capture(inspect_command.clone()).await?;
+        if output.exit_code != 0 && !is_no_such_docker_resource_only(&output, resource_kind) {
+            ensure_success(inspect_action, target, &inspect_command, &output)?;
+        }
+        parse_json_sequence_output(inspect_action, target, &inspect_command, &output)
+    }
+
+    async fn inspect_resource_if_present<T>(
+        &self,
+        action: &str,
+        target: &str,
+        command: RuntimeCommand,
+        resource_kind: &str,
+        allow_swarm_unavailable: bool,
+    ) -> Result<Option<T>>
+    where
+        T: for<'de> Deserialize<'de>,
+    {
+        let output = self.runner.run_capture(command.clone()).await?;
+        if output.exit_code != 0 {
+            if is_no_such_docker_resource_only(&output, resource_kind) || is_not_found(&output) {
+                return Ok(None);
+            }
+            if allow_swarm_unavailable && is_swarm_resource_unavailable(&output) {
+                return Ok(None);
+            }
+            ensure_success(action, target, &command, &output)?;
+        }
+
+        let mut resources = parse_json_sequence_output(action, target, &command, &output)?;
+        let Some(resource) = resources.pop() else {
+            bail!("Docker {resource_kind} inspect returned no resources: {target}");
+        };
+        Ok(Some(resource))
     }
 
     async fn run_json_command<T: for<'de> Deserialize<'de>>(
@@ -979,73 +963,6 @@ fn parse_json_sequence_output<T: for<'de> Deserialize<'de>>(
             })
         })
         .collect()
-}
-
-fn container_resource_summary_from_ps_row(
-    row: DockerPsRow,
-) -> Option<DockerContainerResourceSummary> {
-    let DockerPsRow { names, labels, .. } = row;
-    let name = names
-        .split(',')
-        .find_map(|name| non_empty_trimmed(Some(name.trim_start_matches('/'))))
-        .map(str::to_owned)?;
-    Some(DockerContainerResourceSummary {
-        name,
-        compose_project: compose_project_name_from_labels(&labels),
-    })
-}
-
-fn deserialize_docker_ps_labels<'de, D>(
-    deserializer: D,
-) -> std::result::Result<BTreeMap<String, String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum RawLabels {
-        Map(BTreeMap<String, String>),
-        Text(String),
-    }
-
-    match RawLabels::deserialize(deserializer)? {
-        RawLabels::Map(labels) => Ok(labels),
-        RawLabels::Text(labels) => Ok(docker_ps_labels_from_string(&labels)),
-    }
-}
-
-fn docker_ps_labels_from_string(labels: &str) -> BTreeMap<String, String> {
-    labels
-        .split(',')
-        .filter_map(|entry| {
-            let (key, value) = entry.split_once('=')?;
-            let key = key.trim();
-            if key.is_empty() {
-                return None;
-            }
-            Some((key.to_owned(), value.trim().to_owned()))
-        })
-        .collect()
-}
-
-#[derive(Debug, Deserialize)]
-struct DockerPsRow {
-    #[serde(rename = "ID")]
-    id: String,
-    #[serde(rename = "Names", default)]
-    names: String,
-    #[serde(
-        rename = "Labels",
-        default,
-        deserialize_with = "deserialize_docker_ps_labels"
-    )]
-    labels: BTreeMap<String, String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct DockerContainerResourceSummary {
-    pub(crate) name: String,
-    pub(crate) compose_project: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -1357,12 +1274,17 @@ mod tests {
     }
 
     #[test]
-    fn list_all_container_resource_summaries_uses_ps_rows_without_inspect() {
-        let runner = FakeRuntimeCommand::new(vec![Ok(output(
-            br#"{"ID":"app-id","Names":"fixed-app","Labels":"com.docker.compose.project=other-project,com.docker.compose.service=app"}
-{"ID":"empty-id","Names":"  ","Labels":"com.docker.compose.project=ignored"}
-"#,
-        ))]);
+    fn list_container_inspects_uses_ps_ids_and_inspect_label_maps() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(
+                br#"[{
+                    "Id":"app-id",
+                    "Name":"/fixed-app",
+                    "Config":{"Labels":{"com.docker.compose.project":"other-project","custom":"a,b"}}
+                }]"#,
+            )),
+            Ok(output(b"app-id\n")),
+        ]);
         let client = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1370,18 +1292,26 @@ mod tests {
             .unwrap();
 
         let containers = runtime
-            .block_on(client.list_all_container_resource_summaries())
+            .block_on(client.list_container_inspects_with_filters("Docker containers", &[]))
             .unwrap();
 
         assert_eq!(containers.len(), 1);
-        assert_eq!(containers[0].name, "fixed-app");
         assert_eq!(
-            containers[0].compose_project.as_deref(),
-            Some("other-project")
+            containers[0]
+                .config
+                .as_ref()
+                .and_then(|config| config.labels.as_ref())
+                .and_then(|labels| labels.get("custom"))
+                .map(String::as_str),
+            Some("a,b")
         );
         let commands = runner.commands();
-        assert_eq!(commands.len(), 1);
-        assert_eq!(commands[0].args_vec(), ["ps", "--all", "--format", "json"]);
+        assert_eq!(commands.len(), 2);
+        assert_eq!(
+            commands[0].args_vec(),
+            ["ps", "--all", "--format", "{{.ID}}"]
+        );
+        assert_eq!(commands[1].args_vec(), ["container", "inspect", "app-id"]);
     }
 
     #[test]
@@ -1392,11 +1322,7 @@ mod tests {
                 b"Error: No such container: removed\n",
                 1,
             )),
-            Ok(output(
-                br#"{"ID":"kept-id","Names":"kept","ImageID":"sha256:image","State":"running","Labels":""}
-{"ID":"removed-id","Names":"removed","ImageID":"sha256:image","State":"exited","Labels":""}
-"#,
-            )),
+            Ok(output(b"kept-id\nremoved-id\n")),
         ]);
         let client = DockerCli::new(Arc::new(runner));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1420,9 +1346,7 @@ mod tests {
                 b"Error response from daemon: permission denied\n",
                 1,
             )),
-            Ok(output(
-                br#"{"ID":"kept-id","Names":"kept","ImageID":"sha256:image","State":"running","Labels":""}"#,
-            )),
+            Ok(output(b"kept-id\n")),
         ]);
         let client = DockerCli::new(Arc::new(runner));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1438,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn list_all_volume_inspects_does_not_filter_to_managed_volumes() {
+    fn list_all_managed_volume_inspects_uses_list_and_inspect_helper() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(output(
                 br#"[{"Name":"cache","Labels":{"com.docker.compose.project":"other"}}]"#,
@@ -1451,18 +1375,27 @@ mod tests {
             .build()
             .unwrap();
 
-        let volumes = runtime.block_on(client.list_all_volume_inspects()).unwrap();
+        let volumes = runtime
+            .block_on(client.list_all_managed_volume_inspects())
+            .unwrap();
 
         assert_eq!(volumes.len(), 1);
         assert_eq!(volumes[0].name.as_deref(), Some("cache"));
         assert_eq!(
             runner.commands()[0].args_vec(),
-            ["volume", "ls", "--format", "{{.Name}}"]
+            [
+                "volume",
+                "ls",
+                "--filter",
+                "label=decune.managed=true",
+                "--format",
+                "{{.Name}}"
+            ]
         );
     }
 
     #[test]
-    fn list_all_volume_inspects_accepts_missing_volume_partial_output() {
+    fn list_all_managed_volume_inspects_accepts_missing_volume_partial_output() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(runtime_output(
                 br#"[{"Name":"cache","Labels":{"com.docker.compose.project":"other"}}]"#,
@@ -1477,14 +1410,16 @@ mod tests {
             .build()
             .unwrap();
 
-        let volumes = runtime.block_on(client.list_all_volume_inspects()).unwrap();
+        let volumes = runtime
+            .block_on(client.list_all_managed_volume_inspects())
+            .unwrap();
 
         assert_eq!(volumes.len(), 1);
         assert_eq!(volumes[0].name.as_deref(), Some("cache"));
     }
 
     #[test]
-    fn list_all_volume_inspects_rejects_non_not_found_partial_error() {
+    fn list_all_managed_volume_inspects_rejects_non_not_found_partial_error() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(runtime_output(
                 br#"[{"Name":"cache"}]"#,
@@ -1500,14 +1435,57 @@ mod tests {
             .unwrap();
 
         let error = runtime
-            .block_on(client.list_all_volume_inspects())
+            .block_on(client.list_all_managed_volume_inspects())
             .unwrap_err();
 
         assert!(error.to_string().contains("volume store unavailable"));
     }
 
     #[test]
-    fn list_config_inspects_returns_empty_when_swarm_is_unavailable() {
+    fn inspect_volume_if_present_returns_none_for_missing_volume() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            b"",
+            b"Error: No such volume: fixed-cache\n",
+            1,
+        ))]);
+        let client = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let volume = runtime
+            .block_on(client.inspect_volume_if_present("fixed-cache"))
+            .unwrap();
+
+        assert!(volume.is_none());
+    }
+
+    #[test]
+    fn inspect_volume_if_present_returns_volume() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(output(
+            br#"[{"Name":"fixed-cache","Labels":{"com.docker.compose.project":"other"}}]"#,
+        ))]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let volume = runtime
+            .block_on(client.inspect_volume_if_present("fixed-cache"))
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(volume.name.as_deref(), Some("fixed-cache"));
+        assert_eq!(
+            runner.commands()[0].args_vec(),
+            ["volume", "inspect", "fixed-cache"]
+        );
+    }
+
+    #[test]
+    fn inspect_config_if_present_returns_none_when_swarm_is_unavailable() {
         let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
             b"",
             b"This node is not a swarm manager\n",
@@ -1519,13 +1497,15 @@ mod tests {
             .build()
             .unwrap();
 
-        let configs = runtime.block_on(client.list_config_inspects()).unwrap();
+        let config = runtime
+            .block_on(client.inspect_config_if_present("fixed-config"))
+            .unwrap();
 
-        assert!(configs.is_empty());
+        assert!(config.is_none());
     }
 
     #[test]
-    fn list_config_inspects_rejects_non_swarm_unavailable_errors() {
+    fn inspect_config_if_present_rejects_non_swarm_unavailable_errors() {
         let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
             b"",
             b"custom swarm proxy failed\n",
@@ -1537,7 +1517,9 @@ mod tests {
             .build()
             .unwrap();
 
-        let error = runtime.block_on(client.list_config_inspects()).unwrap_err();
+        let error = runtime
+            .block_on(client.inspect_config_if_present("fixed-config"))
+            .unwrap_err();
 
         assert!(error.to_string().contains("custom swarm proxy failed"));
     }
@@ -2074,9 +2056,7 @@ mod tests {
                     }]
                 }]"#,
             )),
-            Ok(output(
-                br#"{"ID":"container-id","Names":"decune-project","ImageID":"sha256:image","State":"running","Labels":"decune.config_hash=hash123"}"#,
-            )),
+            Ok(output(b"container-id\n")),
         ]);
         let client = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -2131,9 +2111,7 @@ mod tests {
                     "Mounts": []
                 }]"#,
             )),
-            Ok(output(
-                br#"{"ID":"db-id","Names":"project-db-1","ImageID":"sha256:image","State":"running","Labels":"com.docker.compose.project=project,com.docker.compose.service=db"}"#,
-            )),
+            Ok(output(b"db-id\n")),
         ]);
         let client = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -2174,9 +2152,7 @@ mod tests {
                     "State": { "Running": true }
                 }]"#,
             )),
-            Ok(output(
-                br#"{"ID":"app-id","Names":"project-app-1","ImageID":"sha256:image","State":"running","Labels":"com.docker.compose.project=project,com.docker.compose.service=app"}"#,
-            )),
+            Ok(output(b"app-id\n")),
         ]);
         let client = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()

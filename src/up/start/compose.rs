@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use anyhow::{Result, bail};
 
 use crate::{
@@ -5,6 +7,7 @@ use crate::{
     devcontainer::lifecycle::LifecycleRunPath,
     docker::{
         client::DockerClient,
+        container::ContainerInspect,
         dotfiles::materialize_dotfile_skeletons,
         image::{PullPolicy, ensure_image, image_container_tool_platform},
         ports::{HostPortReservation, host_port_reservations_conflict},
@@ -671,35 +674,33 @@ async fn compose_isolation_daemon_snapshot(
             add_compose_isolation_network(&mut snapshot, network);
         }
     }
-    if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::ServiceContainer) {
-        for container in client.cli().list_all_container_resource_summaries().await? {
-            snapshot.resources.push(ComposeIsolationDockerResource {
-                kind: ComposeIsolationResourceKind::ServiceContainer,
-                name: container.name,
-                compose_project: container.compose_project,
-            });
+    for name in fixed_resource_names(scan, ComposeIsolationResourceKind::ServiceContainer) {
+        if let Some(container) = client.cli().inspect_container_if_present(&name).await? {
+            add_compose_isolation_container(&mut snapshot, &name, &container);
         }
     }
-    if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::Volume) {
-        for volume in client.cli().list_all_volume_inspects().await? {
-            add_compose_isolation_volume(&mut snapshot, &volume);
+    for name in fixed_resource_names(scan, ComposeIsolationResourceKind::Volume) {
+        if let Some(volume) = client.cli().inspect_volume_if_present(&name).await? {
+            add_compose_isolation_volume(&mut snapshot, &name, &volume);
         }
     }
-    if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::Config) {
-        for config in client.cli().list_config_inspects().await? {
+    for name in fixed_resource_names(scan, ComposeIsolationResourceKind::Config) {
+        if let Some(config) = client.cli().inspect_config_if_present(&name).await? {
             add_compose_isolation_swarm_resource(
                 &mut snapshot,
                 ComposeIsolationResourceKind::Config,
-                config,
+                &name,
+                &config,
             );
         }
     }
-    if scan.has_fixed_names_of_kind(ComposeIsolationResourceKind::Secret) {
-        for secret in client.cli().list_secret_inspects().await? {
+    for name in fixed_resource_names(scan, ComposeIsolationResourceKind::Secret) {
+        if let Some(secret) = client.cli().inspect_secret_if_present(&name).await? {
             add_compose_isolation_swarm_resource(
                 &mut snapshot,
                 ComposeIsolationResourceKind::Secret,
-                secret,
+                &name,
+                &secret,
             );
         }
     }
@@ -707,11 +708,29 @@ async fn compose_isolation_daemon_snapshot(
     Ok(snapshot)
 }
 
+fn fixed_resource_names(
+    scan: &ComposeIsolationScan,
+    kind: ComposeIsolationResourceKind,
+) -> Vec<String> {
+    scan.fixed_names
+        .iter()
+        .filter(|fixed| fixed.kind == kind)
+        .map(|fixed| fixed.name.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
+}
+
 fn add_compose_isolation_network(
     snapshot: &mut ComposeIsolationDaemonSnapshot,
     network: DockerNetworkInspect,
 ) {
-    let Some(name) = non_empty_trimmed(network.name.as_deref()).map(str::to_owned) else {
+    let Some(name) = network
+        .name
+        .as_deref()
+        .and_then(non_empty_trimmed)
+        .map(str::to_owned)
+    else {
         return;
     };
     let compose_project = network
@@ -742,13 +761,40 @@ fn add_compose_isolation_network(
     });
 }
 
+fn add_compose_isolation_container(
+    snapshot: &mut ComposeIsolationDaemonSnapshot,
+    requested_name: &str,
+    container: &ContainerInspect,
+) {
+    let name = container
+        .name
+        .as_deref()
+        .map(|name| name.trim_start_matches('/'))
+        .and_then(non_empty_trimmed)
+        .unwrap_or(requested_name)
+        .to_owned();
+    snapshot.resources.push(ComposeIsolationDockerResource {
+        kind: ComposeIsolationResourceKind::ServiceContainer,
+        name,
+        compose_project: container
+            .config
+            .as_ref()
+            .and_then(|config| config.labels.as_ref())
+            .and_then(compose_project_name_from_labels),
+    });
+}
+
 fn add_compose_isolation_volume(
     snapshot: &mut ComposeIsolationDaemonSnapshot,
+    requested_name: &str,
     volume: &DockerVolumeInspect,
 ) {
-    let Some(name) = non_empty_trimmed(volume.name.as_deref()).map(str::to_owned) else {
-        return;
-    };
+    let name = volume
+        .name
+        .as_deref()
+        .and_then(non_empty_trimmed)
+        .unwrap_or(requested_name)
+        .to_owned();
     snapshot.resources.push(ComposeIsolationDockerResource {
         kind: ComposeIsolationResourceKind::Volume,
         name,
@@ -762,20 +808,23 @@ fn add_compose_isolation_volume(
 fn add_compose_isolation_swarm_resource(
     snapshot: &mut ComposeIsolationDaemonSnapshot,
     kind: ComposeIsolationResourceKind,
-    resource: DockerSwarmResourceInspect,
+    requested_name: &str,
+    resource: &DockerSwarmResourceInspect,
 ) {
-    let Some(spec) = resource.spec else {
-        return;
-    };
-    let Some(name) = non_empty_trimmed(spec.name.as_deref()).map(str::to_owned) else {
-        return;
-    };
+    let name = resource
+        .spec
+        .as_ref()
+        .and_then(|spec| spec.name.as_deref())
+        .and_then(non_empty_trimmed)
+        .unwrap_or(requested_name)
+        .to_owned();
     snapshot.resources.push(ComposeIsolationDockerResource {
         kind,
         name,
-        compose_project: spec
-            .labels
+        compose_project: resource
+            .spec
             .as_ref()
+            .and_then(|spec| spec.labels.as_ref())
             .and_then(compose_project_name_from_labels),
     });
 }

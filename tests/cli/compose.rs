@@ -269,6 +269,65 @@ fn compose_fixed_container_name_conflict_reports_diagnostic_code_before_compose_
 }
 
 #[test]
+fn compose_fixed_volume_name_conflict_reports_diagnostic_code_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                volumes:
+                  - cache:/cache
+            volumes:
+              cache:
+                name: fixed-cache
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-volume-name-conflict-reports-diagnostic-code.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_fixed_name_conflict")
+                .and(predicate::str::contains("volume `cache`"))
+                .and(predicate::str::contains("requested name: `fixed-cache`"))
+                .and(predicate::str::contains(
+                    "existing resource: volume `fixed-cache`",
+                ))
+                .and(predicate::str::contains(
+                    "existing compose project: other-project",
+                ))
+                .and(predicate::str::contains("compose up should not run").not()),
+        );
+}
+
+#[test]
 fn compose_without_clone_sensitive_config_does_not_list_networks() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();

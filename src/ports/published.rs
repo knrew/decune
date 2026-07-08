@@ -402,11 +402,10 @@ pub(super) fn compose_project_name_from_container(container: &ContainerInspect) 
 fn compose_service_from_labels(labels: &BTreeMap<String, String>) -> Option<&String> {
     labels
         .get(COMPOSE_PROJECT_LABEL)
-        .and_then(|project_name| non_empty_trimmed(Some(project_name.as_str())))?;
-    labels.get(COMPOSE_SERVICE_LABEL).and_then(|service| {
-        non_empty_trimmed(Some(service.as_str()))?;
-        Some(service)
-    })
+        .and_then(|project_name| non_empty_trimmed(project_name))?;
+    labels
+        .get(COMPOSE_SERVICE_LABEL)
+        .filter(|service| non_empty_trimmed(service).is_some())
 }
 
 fn container_is_running(container: &ContainerInspect) -> bool {

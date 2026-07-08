@@ -478,10 +478,10 @@ const fn mode_from_source(source: Option<&ResolvedDevcontainerSource>) -> Worksp
 fn compose_service_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
     labels
         .get(COMPOSE_PROJECT_LABEL)
-        .and_then(|project| non_empty_trimmed(Some(project.as_str())))?;
+        .and_then(|project| non_empty_trimmed(project))?;
     labels
         .get(COMPOSE_SERVICE_LABEL)
-        .and_then(|service| non_empty_trimmed(Some(service.as_str())))
+        .and_then(|service| non_empty_trimmed(service))
         .map(str::to_owned)
 }
 

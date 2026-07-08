@@ -7,7 +7,7 @@ fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
-      printf '{"services":{"app":{"image":"alpine:3.20","container_name":"fixed-app"}}}\n'
+      printf '{"services":{"app":{"image":"alpine:3.20","volumes":["cache:/cache"]}},"volumes":{"cache":{"name":"fixed-cache"}}}\n'
       exit 0
       ;;
     *" up -d "*)
@@ -16,8 +16,8 @@ if [ "${1:-}" = compose ]; then
       ;;
   esac
 fi
-if [ "${1:-}" = container ] && [ "${2:-}" = inspect ] && [ "${3:-}" = fixed-app ]; then
-  printf '[{"Id":"other-container-id","Name":"/fixed-app","Config":{"Env":[],"Labels":{"com.docker.compose.project":"other-project"}},"State":{"Running":true}}]\n'
+if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ] && [ "${3:-}" = fixed-cache ]; then
+  printf '[{"Name":"fixed-cache","Labels":{"com.docker.compose.project":"other-project"}}]\n'
   exit 0
 fi
 echo "unexpected fake docker command: $*" >&2

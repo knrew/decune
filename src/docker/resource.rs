@@ -119,12 +119,13 @@ pub(crate) fn compose_project_name_from_labels(
 ) -> Option<String> {
     labels
         .get(COMPOSE_PROJECT_LABEL)
-        .and_then(|project_name| non_empty_trimmed(Some(project_name.as_str())))
+        .and_then(|project_name| non_empty_trimmed(project_name))
         .map(str::to_owned)
 }
 
-pub(crate) fn non_empty_trimmed(value: Option<&str>) -> Option<&str> {
-    value.map(str::trim).filter(|value| !value.is_empty())
+pub(crate) fn non_empty_trimmed(value: &str) -> Option<&str> {
+    let value = value.trim();
+    if value.is_empty() { None } else { Some(value) }
 }
 
 fn labels(entries: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, String> {

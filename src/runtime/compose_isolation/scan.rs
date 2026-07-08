@@ -16,7 +16,11 @@ pub(crate) fn scan_compose_isolation(
     let mut scan = ComposeIsolationScan::default();
 
     for (service_name, service) in model.services() {
-        if let Some(name) = non_empty_trimmed(service.container_name.as_deref()) {
+        if let Some(name) = service
+            .container_name
+            .as_deref()
+            .and_then(non_empty_trimmed)
+        {
             scan.fixed_names.push(ComposeIsolationFixedNameRequest {
                 kind: ComposeIsolationResourceKind::ServiceContainer,
                 resource: service_name.clone(),
@@ -55,11 +59,15 @@ fn scan_networks(model: &ComposeConfigModel, project_name: &str, scan: &mut Comp
         }
         if let Some(ipam) = &network.ipam {
             for config in &ipam.config {
-                if let Some(subnet) = non_empty_trimmed(config.subnet.as_deref()) {
+                if let Some(subnet) = config.subnet.as_deref().and_then(non_empty_trimmed) {
                     scan.networks.push(ComposeIsolationNetworkRequest {
                         network: network_name.clone(),
                         subnet: subnet.to_owned(),
-                        gateway: non_empty_trimmed(config.gateway.as_deref()).map(str::to_owned),
+                        gateway: config
+                            .gateway
+                            .as_deref()
+                            .and_then(non_empty_trimmed)
+                            .map(str::to_owned),
                     });
                 }
             }
@@ -95,7 +103,7 @@ fn scan_named_resource(
     if resource.external.is_external() {
         return;
     }
-    let Some(name) = non_empty_trimmed(resource.name.as_deref()) else {
+    let Some(name) = resource.name.as_deref().and_then(non_empty_trimmed) else {
         return;
     };
     if name == scoped_resource_name(project_name, resource_name) {
