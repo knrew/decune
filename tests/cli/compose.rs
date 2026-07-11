@@ -1,4 +1,5 @@
 use crate::harness::*;
+use sha2::{Digest, Sha256};
 use std::net::TcpListener;
 
 #[test]
@@ -480,6 +481,160 @@ fn compose_clone_isolation_without_opt_in_does_not_rewrite_fixed_names() {
     let generated = fs::read_to_string(override_file).unwrap();
     assert!(!generated.contains("container_name:"));
     assert!(!generated.contains("volumes:\n  'cache':\n    name:"));
+}
+
+#[test]
+fn compose_clone_isolation_relocates_fixed_subnet_after_occupied_initial_slot() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.200.0.0/24"
+            subnet_prefix = 25
+
+            [credentials.git]
+            enabled = false
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let (occupied, expected) = two_slot_subnets(&workspace_id, "grpc");
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", state_home.path())
+        .env("XDG_RUNTIME_DIR", host_tools.path())
+        .env("DECUNE_FAKE_SUBNET_RELOCATION", "1")
+        .env("DECUNE_FAKE_OCCUPIED_SUBNET", &occupied)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let state_dir = state_home.path().join("decune").join(&workspace_id);
+    let generated = fs::read_to_string(state_dir.join("compose.override.yaml")).unwrap();
+    assert!(generated.contains("config: !override"));
+    assert!(generated.contains(&format!("subnet: '{expected}'")));
+    assert!(!generated.contains(&format!("subnet: '{occupied}'")));
+    let state = fs::read_to_string(state_dir.join("state.toml")).unwrap();
+    assert!(state.contains("[[clone_isolation.networks]]"));
+    assert!(state.contains(&format!("planned_subnet = \"{expected}\"")));
+}
+
+#[test]
+fn compose_clone_isolation_without_opt_in_does_not_override_fixed_subnet() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = false
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.200.0.0/24"
+            subnet_prefix = 25
+
+            [credentials.git]
+            enabled = false
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", state_home.path())
+        .env("XDG_RUNTIME_DIR", host_tools.path())
+        .env("DECUNE_FAKE_SUBNET_RELOCATION", "1")
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success();
+
+    let generated = fs::read_to_string(
+        state_home
+            .path()
+            .join("decune")
+            .join(workspace_id)
+            .join("compose.override.yaml"),
+    )
+    .unwrap();
+    assert!(!generated.contains("config: !override"));
+}
+
+fn two_slot_subnets(workspace_id: &str, network: &str) -> (String, String) {
+    let input = format!("decune-clone-isolation-subnet-v1:{workspace_id}:{network}");
+    let digest = Sha256::digest(input.as_bytes());
+    let slot = u64::from_be_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ]) % 2;
+    if slot == 0 {
+        ("10.200.0.0/25".to_owned(), "10.200.0.128/25".to_owned())
+    } else {
+        ("10.200.0.128/25".to_owned(), "10.200.0.0/25".to_owned())
+    }
 }
 
 #[test]

@@ -120,13 +120,13 @@ impl ComposeCliCapabilities {
             .and_then(parse_compose_version)
         else {
             bail!(
-                "Compose published port relocation requires Docker Compose v2.24.4 or newer; failed to determine Docker Compose version"
+                "Compose override-based relocation requires Docker Compose v2.24.4 or newer; failed to determine Docker Compose version"
             );
         };
 
         if version < Self::COMPOSE_OVERRIDE_TAG_MIN_VERSION {
             bail!(
-                "Compose published port relocation requires Docker Compose v2.24.4 or newer; detected Docker Compose v{}.{}.{}",
+                "Compose override-based relocation requires Docker Compose v2.24.4 or newer; detected Docker Compose v{}.{}.{}",
                 version.0,
                 version.1,
                 version.2
@@ -198,7 +198,7 @@ mod tests {
             .to_string();
 
         assert!(error.contains(
-            "Compose published port relocation requires Docker Compose v2.24.4 or newer"
+            "Compose override-based relocation requires Docker Compose v2.24.4 or newer"
         ));
         assert!(error.contains("detected Docker Compose v2.24.3"));
     }
@@ -216,7 +216,7 @@ mod tests {
             .to_string();
 
         assert!(error.contains(
-            "Compose published port relocation requires Docker Compose v2.24.4 or newer"
+            "Compose override-based relocation requires Docker Compose v2.24.4 or newer"
         ));
         assert!(error.contains("failed to determine Docker Compose version"));
     }

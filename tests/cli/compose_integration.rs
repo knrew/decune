@@ -279,6 +279,66 @@ fn compose_integration_fixed_subnet_overlap_fails_before_compose_up() {
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_clone_isolation_relocates_fixed_subnets_stably_for_two_workspaces() {
+    let first = compose_relocated_subnet_workspace();
+    let second = compose_relocated_subnet_workspace();
+    let first_container_tools_dir = fake_container_tools_bundle(&first.workspace);
+    let second_container_tools_dir = fake_container_tools_bundle(&second.workspace);
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(first.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &first_container_tools_dir)
+        .assert()
+        .success();
+    decune()
+        .args(["up", "--detach"])
+        .arg(second.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &second_container_tools_dir)
+        .assert()
+        .success();
+
+    let first_network = format!("{}_grpc", compose_project_name(first.path()));
+    let second_network = format!("{}_grpc", compose_project_name(second.path()));
+    let first_subnet = docker_output([
+        "network",
+        "inspect",
+        "--format",
+        "{{(index .IPAM.Config 0).Subnet}}",
+        &first_network,
+    ])
+    .must();
+    let second_subnet = docker_output([
+        "network",
+        "inspect",
+        "--format",
+        "{{(index .IPAM.Config 0).Subnet}}",
+        &second_network,
+    ])
+    .must();
+    assert!(first_subnet.trim().starts_with("10.240."));
+    assert!(second_subnet.trim().starts_with("10.240."));
+    assert_ne!(first_subnet.trim(), second_subnet.trim());
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(first.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &first_container_tools_dir)
+        .assert()
+        .success();
+    let stable_subnet = docker_output([
+        "network",
+        "inspect",
+        "--format",
+        "{{(index .IPAM.Config 0).Subnet}}",
+        &first_network,
+    ])
+    .must();
+    assert_eq!(stable_subnet.trim(), first_subnet.trim());
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_published_port_relocation_starts_second_workspace_and_reports_ports() {
     let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
         return;
@@ -1678,6 +1738,29 @@ fn compose_fixed_subnet_workspace(subnet: &str) -> ComposeFixtureWorkspace {
         .must();
 
     ComposeFixtureWorkspace { workspace }
+}
+
+fn compose_relocated_subnet_workspace() -> ComposeFixtureWorkspace {
+    let workspace = compose_fixed_subnet_workspace("10.99.0.0/24");
+    workspace.workspace.create_dir(".decune").must();
+    workspace
+        .workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.240.0.0/16"
+            subnet_prefix = 24
+            "#,
+        )
+        .must();
+    workspace
 }
 
 fn compose_published_host_ip_workspace(base_host_port: u16) -> ComposeFixtureWorkspace {

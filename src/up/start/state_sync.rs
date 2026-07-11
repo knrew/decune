@@ -3,12 +3,14 @@ use std::{cell::RefCell, collections::BTreeSet};
 use crate::{
     devcontainer::lifecycle::LifecycleRunPath,
     docker::{client::DockerClient, container::ContainerInspect, resource::COMPOSE_SERVICE_LABEL},
+    runtime::compose_isolation::ComposeIsolationSubnetPlan,
     runtime::compose_ports::{
         ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
         ComposePublishedPortPlanningInput, compose_published_port_runtime_plan,
     },
     state::{
-        self, LifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
+        self, CloneIsolationNetworkRuntimeState, CloneIsolationRuntimeState, ComposeRuntimeState,
+        LifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
         PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
         PublishedPortSource, PublishedPortTarget, StateContainerSnapshot, WorkspaceState,
     },
@@ -132,54 +134,80 @@ pub(super) fn write_reused_started_state(
     )
 }
 
+pub(super) struct ComposeStateSyncInput<'a> {
+    pub(super) port_input: &'a ComposePublishedPortPlanningInput,
+    pub(super) port_plan: &'a ComposePublishedPortPlan,
+    pub(super) subnet_plan: &'a ComposeIsolationSubnetPlan,
+}
+
 pub(super) async fn sync_started_compose_state(
     client: &DockerClient,
     workspace: &Workspace,
     plan: &UpPlan,
     outcome: &UpOutcome,
     lifecycle_path: LifecycleRunPath,
-    port_input: &ComposePublishedPortPlanningInput,
-    port_plan: &ComposePublishedPortPlan,
+    runtime: ComposeStateSyncInput<'_>,
 ) -> Result<WorkspaceState> {
     let container = state_container_snapshot(plan, outcome.container_id.clone());
     let compose_project_name = state_compose_project_name(plan);
     let published_ports =
-        compose_published_port_runtime_state(client, plan, port_input, port_plan).await?;
+        compose_published_port_runtime_state(client, plan, runtime.port_input, runtime.port_plan)
+            .await?;
+    let compose_runtime = ComposeRuntimeState {
+        published_ports,
+        clone_isolation: clone_isolation_runtime_state(runtime.subnet_plan),
+    };
     match lifecycle_path {
-        LifecycleRunPath::New => {
-            state::sync_state_with_container_and_compose_project_and_published_ports(
-                workspace.paths().state_dir(),
-                workspace.root(),
-                container,
-                compose_project_name,
-                published_ports,
-                LifecycleState::default(),
-            )
-        }
+        LifecycleRunPath::New => state::sync_state_with_container_and_compose_runtime(
+            workspace.paths().state_dir(),
+            workspace.root(),
+            container,
+            compose_project_name,
+            compose_runtime,
+            LifecycleState::default(),
+        ),
         LifecycleRunPath::Started => {
             let existing = reusable_lifecycle_state(workspace, &container)?;
-            state::write_reused_state_for_container_with_published_ports(
+            state::write_reused_state_for_container_with_compose_runtime(
                 workspace.paths().state_dir(),
                 workspace.root(),
                 container,
                 compose_project_name,
-                published_ports,
+                compose_runtime,
                 &existing,
                 true,
             )
         }
         LifecycleRunPath::Running => {
             let existing = reusable_lifecycle_state(workspace, &container)?;
-            state::write_reused_state_for_container_with_published_ports(
+            state::write_reused_state_for_container_with_compose_runtime(
                 workspace.paths().state_dir(),
                 workspace.root(),
                 container,
                 compose_project_name,
-                published_ports,
+                compose_runtime,
                 &existing,
                 false,
             )
         }
+    }
+}
+
+fn clone_isolation_runtime_state(
+    subnet_plan: &ComposeIsolationSubnetPlan,
+) -> CloneIsolationRuntimeState {
+    CloneIsolationRuntimeState {
+        networks: subnet_plan
+            .allocations
+            .iter()
+            .map(|allocation| CloneIsolationNetworkRuntimeState {
+                network: allocation.network.clone(),
+                requested_subnet: allocation.requested_subnet.clone(),
+                planned_subnet: allocation.planned_subnet.clone(),
+                planned_gateway: allocation.planned_gateway.clone(),
+                relocated: allocation.relocated,
+            })
+            .collect(),
     }
 }
 

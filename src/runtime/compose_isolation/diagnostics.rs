@@ -3,6 +3,9 @@ use crate::runtime::compose_isolation::{ComposeIsolationFinding, ComposeIsolatio
 pub(crate) const COMPOSE_NETWORK_SUBNET_OVERLAP: &str = "compose_network_subnet_overlap";
 pub(crate) const COMPOSE_FIXED_NAME_CONFLICT: &str = "compose_fixed_name_conflict";
 pub(crate) const COMPOSE_CLONE_ISOLATION_INVALID: &str = "compose_clone_isolation_invalid";
+pub(crate) const COMPOSE_CLONE_ISOLATION_UNSUPPORTED: &str = "compose_clone_isolation_unsupported";
+pub(crate) const COMPOSE_CLONE_ISOLATION_POOL_EXHAUSTED: &str =
+    "compose_clone_isolation_pool_exhausted";
 
 #[derive(Debug)]
 pub(crate) enum ComposeIsolationDiagnostic {

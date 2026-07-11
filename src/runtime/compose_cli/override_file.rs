@@ -15,7 +15,7 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ComposeOverridePatch {
     services: BTreeMap<String, ComposeOverrideServicePatch>,
-    networks: BTreeMap<String, String>,
+    networks: BTreeMap<String, ComposeOverrideNetworkPatch>,
     volumes: BTreeMap<String, String>,
     configs: BTreeMap<String, String>,
     secrets: BTreeMap<String, String>,
@@ -44,6 +44,18 @@ pub(crate) struct ComposeOverrideServicePatch {
 }
 
 pub(crate) type ComposeOverridePortEntry = BTreeMap<String, JsonValue>;
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+struct ComposeOverrideNetworkPatch {
+    name: Option<String>,
+    ipam_config_override: Vec<ComposeOverrideNetworkIpamConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeOverrideNetworkIpamConfig {
+    pub(crate) subnet: String,
+    pub(crate) gateway: Option<String>,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ComposeOverrideEnvironmentValue {
@@ -108,7 +120,19 @@ impl ComposeOverridePatch {
     }
 
     pub(crate) fn network_name(mut self, resource: &str, name: &str) -> Self {
-        self.networks.insert(resource.to_owned(), name.to_owned());
+        self.networks.entry(resource.to_owned()).or_default().name = Some(name.to_owned());
+        self
+    }
+
+    pub(crate) fn network_ipam_override(
+        mut self,
+        resource: &str,
+        config: ComposeOverrideNetworkIpamConfig,
+    ) -> Self {
+        self.networks
+            .entry(resource.to_owned())
+            .or_default()
+            .ipam_config_override = vec![config];
         self
     }
 
@@ -136,7 +160,7 @@ impl ComposeOverridePatch {
             content.push_str(":\n");
             service.append_yaml(&mut content);
         }
-        append_yaml_named_resources(&mut content, "networks", &self.networks);
+        append_yaml_networks(&mut content, &self.networks);
         append_yaml_named_resources(&mut content, "volumes", &self.volumes);
         append_yaml_named_resources(&mut content, "configs", &self.configs);
         append_yaml_named_resources(&mut content, "secrets", &self.secrets);
@@ -452,6 +476,40 @@ fn append_yaml_named_resources(
         content.push_str(&yaml_quote(resource));
         content.push_str(":\n");
         append_yaml_scalar(content, 4, "name", name);
+    }
+}
+
+fn append_yaml_networks(
+    content: &mut String,
+    networks: &BTreeMap<String, ComposeOverrideNetworkPatch>,
+) {
+    if networks.is_empty() {
+        return;
+    }
+    content.push_str("networks:\n");
+    for (resource, patch) in networks {
+        append_indent(content, 2);
+        content.push_str(&yaml_quote(resource));
+        content.push_str(":\n");
+        if let Some(name) = &patch.name {
+            append_yaml_scalar(content, 4, "name", name);
+        }
+        if patch.ipam_config_override.is_empty() {
+            continue;
+        }
+        append_indent(content, 4);
+        content.push_str("ipam:\n");
+        append_indent(content, 6);
+        content.push_str("config: !override\n");
+        for config in &patch.ipam_config_override {
+            append_indent(content, 8);
+            content.push_str("- subnet: ");
+            content.push_str(&yaml_quote(&config.subnet));
+            content.push('\n');
+            if let Some(gateway) = &config.gateway {
+                append_yaml_scalar(content, 10, "gateway", gateway);
+            }
+        }
     }
 }
 
@@ -879,6 +937,31 @@ mod tests {
                 "    name: 'fixed-secret-abc123def456'\n",
             )
         );
+    }
+
+    #[test]
+    fn compose_override_yaml_replaces_network_ipam_config_with_override_tag() {
+        let patch = ComposeOverridePatch::new(ComposeOverrideServicePatch::new("app"))
+            .network_name("grpc", "fixed-grpc-workspace")
+            .network_ipam_override(
+                "grpc",
+                ComposeOverrideNetworkIpamConfig {
+                    subnet: "10.200.42.0/24".to_owned(),
+                    gateway: Some("10.200.42.1".to_owned()),
+                },
+            );
+
+        let yaml = patch.to_yaml().unwrap();
+
+        assert!(yaml.contains(concat!(
+            "networks:\n",
+            "  'grpc':\n",
+            "    name: 'fixed-grpc-workspace'\n",
+            "    ipam:\n",
+            "      config: !override\n",
+            "        - subnet: '10.200.42.0/24'\n",
+            "          gateway: '10.200.42.1'\n",
+        )));
     }
 
     #[test]

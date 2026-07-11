@@ -5,6 +5,7 @@ pub(super) struct ComposeGeneratedOverrideRuntime<'a> {
     pub(super) service_forward: &'a [ServiceForwardRuntime],
     pub(super) published_port_override: &'a ComposePublishedPortOverride,
     pub(super) name_rewrite_plan: &'a ComposeIsolationNameRewritePlan,
+    pub(super) subnet_plan: &'a ComposeIsolationSubnetPlan,
 }
 
 pub(super) async fn write_generated_compose_override(
@@ -23,6 +24,7 @@ pub(super) async fn write_generated_compose_override(
         runtime.service_forward,
         runtime.published_port_override,
         runtime.name_rewrite_plan,
+        runtime.subnet_plan,
     )?;
     write_compose_override(&output_path, &override_patch)
 }
@@ -160,6 +162,7 @@ fn generated_compose_override_content_with_startup(
         service_forward,
         published_port_override,
         &ComposeIsolationNameRewritePlan::default(),
+        &ComposeIsolationSubnetPlan::default(),
     )
 }
 
@@ -171,6 +174,7 @@ fn generated_compose_override_content_with_name_rewrites(
     service_forward: &[ServiceForwardRuntime],
     published_port_override: &ComposePublishedPortOverride,
     name_rewrite_plan: &ComposeIsolationNameRewritePlan,
+    subnet_plan: &ComposeIsolationSubnetPlan,
 ) -> Result<String> {
     generated_compose_override_patch(
         primary_service,
@@ -179,6 +183,7 @@ fn generated_compose_override_content_with_name_rewrites(
         service_forward,
         published_port_override,
         name_rewrite_plan,
+        subnet_plan,
     )?
     .to_yaml()
 }
@@ -190,6 +195,7 @@ fn generated_compose_override_patch(
     service_forward: &[ServiceForwardRuntime],
     published_port_override: &ComposePublishedPortOverride,
     name_rewrite_plan: &ComposeIsolationNameRewritePlan,
+    subnet_plan: &ComposeIsolationSubnetPlan,
 ) -> Result<ComposeOverridePatch> {
     let mut service = ComposeOverrideServicePatch::new(primary_service)
         .image(&plan.image)
@@ -249,7 +255,24 @@ fn generated_compose_override_patch(
             .service(ComposeOverrideServicePatch::new(service_name).ports_override(ports.clone()));
     }
     patch = apply_compose_name_rewrites(patch, name_rewrite_plan);
+    patch = apply_compose_subnet_plan(patch, subnet_plan);
     Ok(patch)
+}
+
+fn apply_compose_subnet_plan(
+    mut patch: ComposeOverridePatch,
+    subnet_plan: &ComposeIsolationSubnetPlan,
+) -> ComposeOverridePatch {
+    for allocation in &subnet_plan.allocations {
+        patch = patch.network_ipam_override(
+            &allocation.network,
+            ComposeOverrideNetworkIpamConfig {
+                subnet: allocation.planned_subnet.clone(),
+                gateway: allocation.planned_gateway.clone(),
+            },
+        );
+    }
+    patch
 }
 
 fn apply_compose_name_rewrites(

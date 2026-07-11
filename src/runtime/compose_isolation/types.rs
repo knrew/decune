@@ -84,6 +84,28 @@ pub(crate) struct ComposeIsolationResourceNameRewrite {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ComposeIsolationSubnetPlan {
+    pub(crate) allocations: Vec<ComposeIsolationSubnetAllocation>,
+    pub(crate) networks_to_remove: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeIsolationSubnetAllocation {
+    pub(crate) network: String,
+    pub(crate) requested_subnet: String,
+    pub(crate) planned_subnet: String,
+    pub(crate) planned_gateway: Option<String>,
+    pub(crate) relocated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeIsolationPersistedSubnet {
+    pub(crate) network: String,
+    pub(crate) requested_subnet: String,
+    pub(crate) planned_subnet: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ComposeIsolationDaemonSnapshot {
     pub(crate) networks: Vec<ComposeIsolationDockerNetwork>,
     pub(crate) resources: Vec<ComposeIsolationDockerResource>,
@@ -93,9 +115,11 @@ pub(crate) struct ComposeIsolationDaemonSnapshot {
 pub(crate) struct ComposeIsolationDockerNetwork {
     pub(crate) name: String,
     pub(crate) compose_project: Option<String>,
+    pub(crate) compose_network: Option<String>,
     pub(crate) scope: Option<String>,
     pub(crate) ipam_driver: Option<String>,
     pub(crate) ipam_configs: Vec<ComposeIsolationDockerIpamConfig>,
+    pub(crate) has_attached_containers: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

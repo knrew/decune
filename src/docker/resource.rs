@@ -14,6 +14,7 @@ const DEVCONTAINER_LOCAL_FOLDER_LABEL: &str = "devcontainer.local_folder";
 const DEVCONTAINER_CONFIG_FILE_LABEL: &str = "devcontainer.config_file";
 pub(crate) const COMPOSE_PROJECT_LABEL: &str = "com.docker.compose.project";
 pub(crate) const COMPOSE_SERVICE_LABEL: &str = "com.docker.compose.service";
+pub(crate) const COMPOSE_NETWORK_LABEL: &str = "com.docker.compose.network";
 const IMAGE_REPOSITORY_PREFIX: &str = "decune/";
 const DOCKER_REPOSITORY_NAME_MAX: usize = 255;
 

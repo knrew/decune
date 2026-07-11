@@ -1,6 +1,6 @@
 use std::collections::BTreeSet;
 
-use anyhow::{Result, bail};
+use anyhow::{Context, Result, bail};
 
 use crate::{
     config::{
@@ -14,7 +14,7 @@ use crate::{
         dotfiles::materialize_dotfile_skeletons,
         image::{PullPolicy, ensure_image, image_container_tool_platform},
         ports::{HostPortReservation, host_port_reservations_conflict},
-        resource::compose_project_name_from_labels,
+        resource::{COMPOSE_NETWORK_LABEL, compose_project_name_from_labels},
     },
     runtime::{
         compose_cli::{
@@ -27,10 +27,12 @@ use crate::{
             ComposeIsolationDaemonSnapshot, ComposeIsolationDockerIpamConfig,
             ComposeIsolationDockerNetwork, ComposeIsolationDockerResource,
             ComposeIsolationNameRewritePlan, ComposeIsolationNameRewritePlanInput,
-            ComposeIsolationPlanInput, ComposeIsolationResourceKind, ComposeIsolationScan,
-            apply_compose_isolation_name_rewrites, plan_compose_isolation,
-            plan_compose_isolation_name_rewrites, scan_compose_isolation,
-            validate_compose_isolation_diagnostics,
+            ComposeIsolationPersistedSubnet, ComposeIsolationPlanInput,
+            ComposeIsolationResourceKind, ComposeIsolationScan, ComposeIsolationSubnetPlan,
+            ComposeIsolationSubnetPlanInput, apply_compose_isolation_name_rewrites,
+            apply_compose_isolation_subnet_plan, plan_compose_isolation,
+            plan_compose_isolation_name_rewrites, plan_compose_isolation_subnets,
+            scan_compose_isolation, validate_compose_isolation_diagnostics,
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
@@ -61,13 +63,13 @@ use crate::{
 };
 
 use super::{
-    ComposeGeneratedOverrideRuntime, CredentialRuntime, ExistingContainerReusePolicy,
-    ImagePreparation, StartedUpContainer, add_credential_runtime_mounts,
-    attach_compose_interpolation_env_to_plan, compose_service_forward_requires_recreate,
-    container_tool_platform_for_plan, ensure_container_running_after_start,
-    list_compose_primary_containers, list_compose_project_containers,
-    list_existing_compose_project_published_ports, prepare_image_for_create,
-    should_reuse_existing_container, started_up_container_with_state,
+    ComposeGeneratedOverrideRuntime, ComposeStateSyncInput, CredentialRuntime,
+    ExistingContainerReusePolicy, ImagePreparation, StartedUpContainer,
+    add_credential_runtime_mounts, attach_compose_interpolation_env_to_plan,
+    compose_service_forward_requires_recreate, container_tool_platform_for_plan,
+    ensure_container_running_after_start, list_compose_primary_containers,
+    list_compose_project_containers, list_existing_compose_project_published_ports,
+    prepare_image_for_create, should_reuse_existing_container, started_up_container_with_state,
     startup_verification_for_plan, sync_started_compose_state,
     warn_on_compose_published_port_relocations, write_generated_compose_override,
 };
@@ -75,11 +77,13 @@ use super::{
 fn compose_running_reuse_fast_path_enabled(
     options: &UpOptions,
     existing_compose_containers: &[UpContainerSummary],
+    subnet_plan: &ComposeIsolationSubnetPlan,
 ) -> bool {
     !(options.build.pull
         || options.reuse.rebuild
         || options.build.no_cache
         || options.build.update_features)
+        && subnet_plan.networks_to_remove.is_empty()
         && existing_compose_containers
             .first()
             .is_some_and(|container| container.running)
@@ -98,6 +102,7 @@ struct ComposeRunningReuseInput<'a> {
     compose_primary_service: Option<&'a ComposeConfigService>,
     published_port_policy_input: &'a ComposePublishedPortPlanningInput,
     compose_published_ports: Option<ComposePublishedPortFinalization<'a>>,
+    subnet_plan: &'a ComposeIsolationSubnetPlan,
 }
 
 async fn try_reuse_running_compose_container_before_image_prepare(
@@ -105,7 +110,11 @@ async fn try_reuse_running_compose_container_before_image_prepare(
     workspace: &Workspace,
     input: ComposeRunningReuseInput<'_>,
 ) -> Result<Option<StartedUpContainer>> {
-    if !compose_running_reuse_fast_path_enabled(input.options, input.existing_compose_containers) {
+    if !compose_running_reuse_fast_path_enabled(
+        input.options,
+        input.existing_compose_containers,
+        input.subnet_plan,
+    ) {
         return Ok(None);
     }
     let Some(existing_container_image) = input
@@ -184,8 +193,11 @@ async fn try_reuse_running_compose_container_before_image_prepare(
                 container_name: name,
                 reused: true,
             },
-            input.published_port_policy_input,
-            &published_port_plan,
+            ComposeStateSyncInput {
+                port_input: input.published_port_policy_input,
+                port_plan: &published_port_plan,
+                subnet_plan: input.subnet_plan,
+            },
         )
         .await
         .map(Some);
@@ -246,8 +258,7 @@ async fn started_fast_path_reused_compose_container(
     plan: UpPlan,
     credentials: CredentialRuntime,
     outcome: UpOutcome,
-    published_port_policy_input: &ComposePublishedPortPlanningInput,
-    published_port_plan: &ComposePublishedPortPlan,
+    runtime: ComposeStateSyncInput<'_>,
 ) -> Result<StartedUpContainer> {
     let state = sync_started_compose_state(
         client,
@@ -255,8 +266,7 @@ async fn started_fast_path_reused_compose_container(
         &plan,
         &outcome,
         LifecycleRunPath::Running,
-        published_port_policy_input,
-        published_port_plan,
+        runtime,
     )
     .await?;
     Ok(started_up_container_with_state(
@@ -290,6 +300,7 @@ struct ComposeStartupContext {
     existing_project_published_ports: Vec<ComposePublishedPortReservation>,
     published_port_relocation_enabled: bool,
     name_rewrite_plan: ComposeIsolationNameRewritePlan,
+    subnet_plan: ComposeIsolationSubnetPlan,
 }
 
 impl ComposeStartupContext {
@@ -511,7 +522,7 @@ pub(super) async fn start_compose_project(
     forwarding_resolution: ForwardingResolution,
 ) -> Result<StartedUpContainer> {
     let client = DockerClient::connect_from_env();
-    let context = prepare_compose_startup_context(&client, &workspace, &mut plan).await?;
+    let context = prepare_compose_startup_context(&client, &workspace, &mut plan, &options).await?;
 
     if let Some(started) = Box::pin(try_reuse_running_compose_container_before_image_prepare(
         &client,
@@ -529,6 +540,7 @@ pub(super) async fn start_compose_project(
             compose_primary_service: context.compose_primary_service.as_ref(),
             published_port_policy_input: &context.published_port_policy_input,
             compose_published_ports: context.compose_published_ports(true),
+            subnet_plan: &context.subnet_plan,
         },
     ))
     .await?
@@ -573,6 +585,7 @@ async fn prepare_compose_startup_context(
     client: &DockerClient,
     workspace: &Workspace,
     plan: &mut UpPlan,
+    options: &UpOptions,
 ) -> Result<ComposeStartupContext> {
     let source = compose_plan_source(
         plan,
@@ -614,12 +627,14 @@ async fn prepare_compose_startup_context(
         )
     };
     let active_user_config = active_user_config.as_ref().unwrap_or(&user_config);
-    let name_rewrite_plan = run_compose_isolation_preflight(
+    let (name_rewrite_plan, subnet_plan) = run_compose_isolation_preflight(
         client,
+        workspace,
         &project_name,
         &active_user_config.model,
-        workspace.id(),
         &plan.config.compose.clone_isolation,
+        &compose_capabilities,
+        options.reuse.rebuild,
     )
     .await?;
     let compose_primary_image = ComposePrimaryImageResolver {
@@ -669,40 +684,77 @@ async fn prepare_compose_startup_context(
         existing_project_published_ports,
         published_port_relocation_enabled,
         name_rewrite_plan,
+        subnet_plan,
     })
 }
 
 async fn run_compose_isolation_preflight(
     client: &DockerClient,
+    workspace: &Workspace,
     project_name: &str,
     model: &ComposeConfigModel,
-    workspace_id: &str,
     clone_isolation: &ResolvedComposeCloneIsolation,
-) -> Result<ComposeIsolationNameRewritePlan> {
+    compose_capabilities: &ComposeCliCapabilities,
+    rebuild: bool,
+) -> Result<(ComposeIsolationNameRewritePlan, ComposeIsolationSubnetPlan)> {
     let scan = scan_compose_isolation(model, project_name);
     if scan.is_empty() {
-        return Ok(ComposeIsolationNameRewritePlan::default());
+        return Ok((
+            ComposeIsolationNameRewritePlan::default(),
+            ComposeIsolationSubnetPlan::default(),
+        ));
     }
 
     let name_rewrite_plan =
         plan_compose_isolation_name_rewrites(&ComposeIsolationNameRewritePlanInput {
             model,
             scan: &scan,
-            workspace_id,
+            workspace_id: workspace.id(),
             enabled: clone_isolation.enabled,
             rewrite_container_names: clone_isolation.names.rewrite_container_names,
             rewrite_resource_names: clone_isolation.names.rewrite_resource_names,
         });
-    let effective_scan = apply_compose_isolation_name_rewrites(&scan, &name_rewrite_plan);
+    let name_effective_scan = apply_compose_isolation_name_rewrites(&scan, &name_rewrite_plan);
 
-    let daemon = compose_isolation_daemon_snapshot(client, &effective_scan).await?;
+    let daemon = compose_isolation_daemon_snapshot(client, &name_effective_scan).await?;
+    let persisted_subnets = state::load_state_file(workspace.paths().state_dir())?
+        .map(|state| {
+            state
+                .clone_isolation
+                .networks
+                .into_iter()
+                .map(|network| ComposeIsolationPersistedSubnet {
+                    network: network.network,
+                    requested_subnet: network.requested_subnet,
+                    planned_subnet: network.planned_subnet,
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let subnet_plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+        model,
+        project_name,
+        workspace_id: workspace.id(),
+        scan: &name_effective_scan,
+        daemon: &daemon,
+        state: &persisted_subnets,
+        enabled: clone_isolation.enabled,
+        relocation: clone_isolation.networks.relocation,
+        subnet_pool: clone_isolation.networks.subnet_pool.as_deref(),
+        subnet_prefix: clone_isolation.networks.subnet_prefix,
+        rebuild,
+    })?;
+    if !subnet_plan.allocations.is_empty() {
+        compose_capabilities.ensure_compose_override_tag()?;
+    }
+    let effective_scan = apply_compose_isolation_subnet_plan(&name_effective_scan, &subnet_plan);
     let findings = plan_compose_isolation(&ComposeIsolationPlanInput {
         project_name,
         scan: &effective_scan,
         daemon: &daemon,
     });
     validate_compose_isolation_diagnostics(&findings)?;
-    Ok(name_rewrite_plan)
+    Ok((name_rewrite_plan, subnet_plan))
 }
 
 async fn compose_isolation_daemon_snapshot(
@@ -781,6 +833,13 @@ fn add_compose_isolation_network(
         .labels
         .as_ref()
         .and_then(compose_project_name_from_labels);
+    let compose_network = network.labels.as_ref().and_then(|labels| {
+        labels
+            .get(COMPOSE_NETWORK_LABEL)
+            .and_then(|network| non_empty_trimmed(network))
+            .map(str::to_owned)
+    });
+    let has_attached_containers = !network.containers.is_empty();
     let ipam_configs = network
         .ipam
         .as_ref()
@@ -797,9 +856,11 @@ fn add_compose_isolation_network(
     snapshot.networks.push(ComposeIsolationDockerNetwork {
         name: name.clone(),
         compose_project: compose_project.clone(),
+        compose_network,
         scope: network.scope,
         ipam_driver: network.ipam.and_then(|ipam| ipam.driver),
         ipam_configs,
+        has_attached_containers,
     });
     snapshot.resources.push(ComposeIsolationDockerResource {
         kind: ComposeIsolationResourceKind::Network,
@@ -1079,22 +1140,26 @@ async fn compose_start_run_options(
         credentials.service_forward(),
     )
     .await?;
-    let should_reuse = should_reuse_existing_container(
-        &decision,
-        ExistingContainerReusePolicy {
-            pull: options.build.pull,
-            service_forward_requires_recreate,
-        },
-    );
+    let subnet_requires_recreate = !context.subnet_plan.networks_to_remove.is_empty();
+    let should_reuse = !subnet_requires_recreate
+        && should_reuse_existing_container(
+            &decision,
+            ExistingContainerReusePolicy {
+                pull: options.build.pull,
+                service_forward_requires_recreate,
+            },
+        );
     let force_recreate = matches!(decision, ExistingContainerDecision::Recreate { .. })
         || options.reuse.rebuild
         || options.build.pull
         || stale_compose_project
-        || service_forward_requires_recreate;
+        || service_forward_requires_recreate
+        || subnet_requires_recreate;
     let remove_orphans = matches!(decision, ExistingContainerDecision::Recreate { .. })
         || options.reuse.rebuild
         || stale_compose_project
-        || service_forward_requires_recreate;
+        || service_forward_requires_recreate
+        || subnet_requires_recreate;
     Ok(ComposeStartRunOptions {
         decision,
         should_reuse,
@@ -1133,6 +1198,7 @@ async fn start_finalized_compose_project(
         published_port_plan: &published_port_plan,
     })
     .await?;
+    remove_stale_compose_isolation_networks(&client, &context.subnet_plan).await?;
     if compose_start_requires_generated_override(&run_options) {
         write_finalized_generated_compose_override(
             &client,
@@ -1190,6 +1256,24 @@ async fn start_finalized_compose_project(
     ))
 }
 
+async fn remove_stale_compose_isolation_networks(
+    client: &DockerClient,
+    subnet_plan: &ComposeIsolationSubnetPlan,
+) -> Result<()> {
+    for network in &subnet_plan.networks_to_remove {
+        client
+            .cli()
+            .remove_network(network)
+            .await
+            .with_context(|| {
+                format!(
+                    "Failed to recreate Docker network `{network}` for Compose clone isolation. Run decune down, then decune rebuild."
+                )
+            })?;
+    }
+    Ok(())
+}
+
 async fn start_new_compose_container(
     input: ComposeNewStartInput<'_>,
 ) -> Result<(UpOutcome, state::WorkspaceState)> {
@@ -1233,8 +1317,11 @@ async fn start_new_compose_container(
         input.plan,
         &outcome,
         LifecycleRunPath::New,
-        &input.context.published_port_policy_input,
-        input.published_port_plan,
+        ComposeStateSyncInput {
+            port_input: &input.context.published_port_policy_input,
+            port_plan: input.published_port_plan,
+            subnet_plan: &input.context.subnet_plan,
+        },
     )
     .await?;
     Ok((outcome, state))
@@ -1269,6 +1356,7 @@ async fn write_finalized_generated_compose_override(
             service_forward: credentials.service_forward(),
             published_port_override,
             name_rewrite_plan: &context.name_rewrite_plan,
+            subnet_plan: &context.subnet_plan,
         },
     )
     .await
@@ -1304,8 +1392,11 @@ async fn try_start_reusable_compose_container(
                 plan,
                 &outcome,
                 LifecycleRunPath::Running,
-                &context.published_port_policy_input,
-                published_port_plan,
+                ComposeStateSyncInput {
+                    port_input: &context.published_port_policy_input,
+                    port_plan: published_port_plan,
+                    subnet_plan: &context.subnet_plan,
+                },
             )
             .await?;
             Ok(Some((outcome, LifecycleRunPath::Running, state)))
@@ -1341,8 +1432,11 @@ async fn try_start_reusable_compose_container(
                 plan,
                 &outcome,
                 LifecycleRunPath::Started,
-                &context.published_port_policy_input,
-                published_port_plan,
+                ComposeStateSyncInput {
+                    port_input: &context.published_port_policy_input,
+                    port_plan: published_port_plan,
+                    subnet_plan: &context.subnet_plan,
+                },
             )
             .await?;
             Ok(Some((outcome, LifecycleRunPath::Started, state)))
@@ -1402,6 +1496,7 @@ mod tests {
         assert!(compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),
+            &ComposeIsolationSubnetPlan::default(),
         ));
 
         let stopped = UpContainerSummary {
@@ -1411,30 +1506,35 @@ mod tests {
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             &[stopped],
+            &ComposeIsolationSubnetPlan::default(),
         ));
 
         options.build.pull = true;
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),
+            &ComposeIsolationSubnetPlan::default(),
         ));
         options = up_options_for_fast_path();
         options.reuse.rebuild = true;
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),
+            &ComposeIsolationSubnetPlan::default(),
         ));
         options = up_options_for_fast_path();
         options.build.no_cache = true;
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),
+            &ComposeIsolationSubnetPlan::default(),
         ));
         options = up_options_for_fast_path();
         options.build.update_features = true;
         assert!(!compose_running_reuse_fast_path_enabled(
             &options,
             std::slice::from_ref(&running),
+            &ComposeIsolationSubnetPlan::default(),
         ));
     }
 

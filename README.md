@@ -124,7 +124,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `appPort` は image/Dockerfile モードの Docker published port です。
 - Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。`appPort`、`workspaceMount`、`runArgs` は Compose モードでは unsupported error です。
 - Compose published port relocation policy は既定で無効です。`[compose.published_ports].relocation = true` または `decune up --published-port-relocation` / `decune rebuild --published-port-relocation` で、この実行の policy を有効化できます。relocation 対象は fixed TCP の Compose published port だけで、実際に host port を変更する場合は Docker Compose v2.24.4 以上が必要です。
-- Compose clone isolation は既定で無効です。`[compose.clone_isolation].enabled = true` にすると、明示的な `container_name` と non-external な top-level resource の固定 `name` を workspace 固有名へ書き換え、複数 clone の同時起動時の名前衝突を避けます。固定名 volume のデータも clone ごとに分離されます。
+- Compose clone isolation は既定で無効です。`[compose.clone_isolation].enabled = true` にすると、明示的な `container_name` と non-external な top-level resource の固定 `name` を workspace 固有名へ書き換え、複数 clone の同時起動時の名前衝突を避けます。固定名 volume のデータも clone ごとに分離されます。固定 IPv4 IPAM subnet も分離する場合は、`[compose.clone_isolation.networks].relocation = true` と `subnet_pool` を設定します。固定 IPv4 subnet がある構成では Docker Compose v2.24.4 以上が必要です。
 - `decune up` は Dockerfile instruction、Compose build、Feature `install.sh`、ライフサイクルコマンド、hook、シェル起動ファイルを実行し得ます。信頼していないリポジトリでは起動前に内容を確認してください。
 - 認証情報転送は、ホストの Git 認証情報、SSH agent、GitHub token file への到達性をコンテナ内プロセスに与え得ます。信頼していないリポジトリでは無効化または read-only に制限してください。
 

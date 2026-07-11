@@ -1,12 +1,21 @@
+use std::{collections::BTreeSet, net::Ipv4Addr};
+
+use anyhow::{Result, anyhow, bail};
+
 use crate::runtime::{
     compose_cli::ComposeConfigModel,
     compose_isolation::{
-        ComposeIsolationDaemonSnapshot, ComposeIsolationDockerNetwork, ComposeIsolationFinding,
-        ComposeIsolationNameRewritePlan, ComposeIsolationNetworkRequest,
+        COMPOSE_CLONE_ISOLATION_INVALID, COMPOSE_CLONE_ISOLATION_POOL_EXHAUSTED,
+        COMPOSE_CLONE_ISOLATION_UNSUPPORTED, ComposeIsolationDaemonSnapshot,
+        ComposeIsolationDockerNetwork, ComposeIsolationFinding, ComposeIsolationNameRewritePlan,
+        ComposeIsolationNetworkRequest, ComposeIsolationPersistedSubnet,
         ComposeIsolationResourceKind, ComposeIsolationResourceNameRewrite, ComposeIsolationScan,
-        ComposeIsolationServiceNameRewrite, Ipv4Cidr,
+        ComposeIsolationServiceNameRewrite, ComposeIsolationSubnetAllocation,
+        ComposeIsolationSubnetPlan, Ipv4Cidr, allocate_ipv4_subnet_slot,
     },
 };
+
+const COMPOSE_CLONE_ISOLATION_RECREATE_HINT: &str = "Run decune down, then decune rebuild.";
 
 pub(crate) struct ComposeIsolationNameRewritePlanInput<'a> {
     pub(crate) model: &'a ComposeConfigModel,
@@ -86,6 +95,290 @@ pub(crate) fn apply_compose_isolation_name_rewrites(
         }
     }
     effective
+}
+
+pub(crate) struct ComposeIsolationSubnetPlanInput<'a> {
+    pub(crate) model: &'a ComposeConfigModel,
+    pub(crate) project_name: &'a str,
+    pub(crate) workspace_id: &'a str,
+    pub(crate) scan: &'a ComposeIsolationScan,
+    pub(crate) daemon: &'a ComposeIsolationDaemonSnapshot,
+    pub(crate) state: &'a [ComposeIsolationPersistedSubnet],
+    pub(crate) enabled: bool,
+    pub(crate) relocation: bool,
+    pub(crate) subnet_pool: Option<&'a str>,
+    pub(crate) subnet_prefix: Option<u8>,
+    pub(crate) rebuild: bool,
+}
+
+struct ValidatedRelocationRequest<'a> {
+    requested: &'a ComposeIsolationNetworkRequest,
+    cidr: Ipv4Cidr,
+}
+
+pub(crate) fn plan_compose_isolation_subnets(
+    input: &ComposeIsolationSubnetPlanInput<'_>,
+) -> Result<ComposeIsolationSubnetPlan> {
+    if !input.enabled || !input.relocation || input.scan.networks.is_empty() {
+        return Ok(ComposeIsolationSubnetPlan::default());
+    }
+    let validated_requests = validate_relocation_requests(input)?;
+    let pool_text = input.subnet_pool.ok_or_else(|| {
+        anyhow!(
+            "{COMPOSE_CLONE_ISOLATION_INVALID}: compose.clone_isolation.networks.subnet_pool is required when network relocation is enabled"
+        )
+    })?;
+    let pool = Ipv4Cidr::parse(pool_text).ok_or_else(|| {
+        anyhow!(
+            "{COMPOSE_CLONE_ISOLATION_INVALID}: clone isolation subnet pool is not a valid IPv4 CIDR: {pool_text}"
+        )
+    })?;
+    let mut plan = ComposeIsolationSubnetPlan::default();
+    let mut assigned = Vec::new();
+
+    for validated in validated_requests {
+        let requested = validated.requested;
+        let requested_cidr = validated.cidr;
+        let prefix = input
+            .subnet_prefix
+            .unwrap_or_else(|| requested_cidr.prefix());
+        if prefix < pool.prefix() {
+            bail!(
+                "{COMPOSE_CLONE_ISOLATION_INVALID}: subnet prefix {prefix} for Compose network `{}` does not fit subnet pool {pool}",
+                requested.network
+            );
+        }
+        let unavailable = unavailable_subnets(input, requested, &assigned);
+        let stable = if input.rebuild {
+            None
+        } else {
+            preferred_existing_subnet(input, requested, pool, prefix, &unavailable)
+                .or_else(|| preferred_state_subnet(input, requested, pool, prefix, &unavailable))
+        };
+        let requested_on_rebuild = input
+            .rebuild
+            .then_some(requested_cidr)
+            .filter(|candidate| candidate.prefix() == prefix)
+            .filter(|candidate| subnet_is_available(*candidate, pool, &unavailable));
+        let planned = stable
+            .or(requested_on_rebuild)
+            .or_else(|| {
+                allocate_ipv4_subnet_slot(
+                    pool,
+                    prefix,
+                    input.workspace_id,
+                    &requested.network,
+                    &unavailable,
+                )
+            })
+            .ok_or_else(|| {
+                anyhow!(
+                    "{COMPOSE_CLONE_ISOLATION_POOL_EXHAUSTED}: no available /{prefix} subnet remains in pool {pool} for Compose network `{}`",
+                    requested.network
+                )
+            })?;
+        let planned_gateway = relocate_gateway(requested, requested_cidr, planned)?;
+        assigned.push(planned);
+        plan.allocations.push(ComposeIsolationSubnetAllocation {
+            network: requested.network.clone(),
+            requested_subnet: requested.subnet.clone(),
+            planned_subnet: planned.to_string(),
+            planned_gateway,
+            relocated: planned != requested_cidr,
+        });
+    }
+
+    plan.networks_to_remove = networks_to_recreate(input, &plan.allocations)?;
+    Ok(plan)
+}
+
+pub(crate) fn apply_compose_isolation_subnet_plan(
+    scan: &ComposeIsolationScan,
+    plan: &ComposeIsolationSubnetPlan,
+) -> ComposeIsolationScan {
+    let mut effective = scan.clone();
+    for requested in &mut effective.networks {
+        if let Some(allocation) = plan.allocations.iter().find(|allocation| {
+            (&allocation.network, &allocation.requested_subnet)
+                == (&requested.network, &requested.subnet)
+        }) {
+            requested.subnet.clone_from(&allocation.planned_subnet);
+            requested.gateway.clone_from(&allocation.planned_gateway);
+        }
+    }
+    effective
+}
+
+fn validate_relocation_requests<'a>(
+    input: &'a ComposeIsolationSubnetPlanInput<'_>,
+) -> Result<Vec<ValidatedRelocationRequest<'a>>> {
+    let mut networks = BTreeSet::new();
+    let mut validated = Vec::with_capacity(input.scan.networks.len());
+    for requested in &input.scan.networks {
+        let cidr = Ipv4Cidr::parse(&requested.subnet).ok_or_else(|| {
+            anyhow!(
+                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: fixed IPv6 Compose network subnets cannot be relocated; network `{}`; subnet {}",
+                requested.network,
+                requested.subnet
+            )
+        })?;
+        if !networks.insert(&requested.network) {
+            bail!(
+                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: multiple fixed IPAM subnets on Compose network `{}` cannot be relocated",
+                requested.network
+            );
+        }
+        for (service_name, service) in input.model.services() {
+            let Some(network_config) = service.network_config(&requested.network) else {
+                continue;
+            };
+            let Some(network_config) = network_config.as_object() else {
+                continue;
+            };
+            for key in ["ipv4_address", "ipv6_address", "link_local_ips"] {
+                if network_config.contains_key(key) {
+                    bail!(
+                        "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: static service network addressing cannot be relocated; service `{service_name}`; network `{}`; field `{key}`",
+                        requested.network
+                    );
+                }
+            }
+        }
+        validated.push(ValidatedRelocationRequest { requested, cidr });
+    }
+    Ok(validated)
+}
+
+fn unavailable_subnets(
+    input: &ComposeIsolationSubnetPlanInput<'_>,
+    requested: &ComposeIsolationNetworkRequest,
+    assigned: &[Ipv4Cidr],
+) -> Vec<Ipv4Cidr> {
+    let mut unavailable = assigned.to_vec();
+    for network in &input.daemon.networks {
+        let is_requested_self_network =
+            is_self_project(network.compose_project.as_deref(), input.project_name)
+                && network.compose_network.as_deref() == Some(requested.network.as_str());
+        if is_requested_self_network || !uses_same_ipam_address_space(requested, network) {
+            continue;
+        }
+        unavailable.extend(
+            network
+                .ipam_configs
+                .iter()
+                .filter_map(|config| config.subnet.as_deref().and_then(Ipv4Cidr::parse)),
+        );
+    }
+    unavailable
+}
+
+fn preferred_existing_subnet(
+    input: &ComposeIsolationSubnetPlanInput<'_>,
+    requested: &ComposeIsolationNetworkRequest,
+    pool: Ipv4Cidr,
+    prefix: u8,
+    unavailable: &[Ipv4Cidr],
+) -> Option<Ipv4Cidr> {
+    input
+        .daemon
+        .networks
+        .iter()
+        .filter(|network| {
+            is_self_project(network.compose_project.as_deref(), input.project_name)
+                && network.compose_network.as_deref() == Some(requested.network.as_str())
+        })
+        .flat_map(|network| &network.ipam_configs)
+        .filter_map(|config| config.subnet.as_deref().and_then(Ipv4Cidr::parse))
+        .find(|candidate| {
+            candidate.prefix() == prefix && subnet_is_available(*candidate, pool, unavailable)
+        })
+}
+
+fn preferred_state_subnet(
+    input: &ComposeIsolationSubnetPlanInput<'_>,
+    requested: &ComposeIsolationNetworkRequest,
+    pool: Ipv4Cidr,
+    prefix: u8,
+    unavailable: &[Ipv4Cidr],
+) -> Option<Ipv4Cidr> {
+    input
+        .state
+        .iter()
+        .find(|state| {
+            (&state.network, &state.requested_subnet) == (&requested.network, &requested.subnet)
+        })
+        .and_then(|state| Ipv4Cidr::parse(&state.planned_subnet))
+        .filter(|candidate| candidate.prefix() == prefix)
+        .filter(|candidate| subnet_is_available(*candidate, pool, unavailable))
+}
+
+fn subnet_is_available(candidate: Ipv4Cidr, pool: Ipv4Cidr, unavailable: &[Ipv4Cidr]) -> bool {
+    pool.contains(candidate)
+        && unavailable
+            .iter()
+            .all(|existing| !candidate.overlaps(*existing))
+}
+
+fn relocate_gateway(
+    requested: &ComposeIsolationNetworkRequest,
+    requested_cidr: Ipv4Cidr,
+    planned: Ipv4Cidr,
+) -> Result<Option<String>> {
+    let Some(gateway) = requested.gateway.as_deref() else {
+        return Ok(None);
+    };
+    let gateway = gateway.parse::<Ipv4Addr>().map_err(|error| {
+        anyhow!(
+            "{COMPOSE_CLONE_ISOLATION_INVALID}: gateway for Compose network `{}` is not a valid IPv4 address: {gateway}: {error}",
+            requested.network,
+        )
+    })?;
+    if !requested_cidr.contains_address(gateway) {
+        bail!(
+            "{COMPOSE_CLONE_ISOLATION_INVALID}: gateway {gateway} is outside requested subnet {} for Compose network `{}`",
+            requested.subnet,
+            requested.network
+        );
+    }
+    let offset = u32::from(gateway) - requested_cidr.network();
+    let planned_gateway = planned.address_at_offset(offset).ok_or_else(|| {
+        anyhow!(
+            "{COMPOSE_CLONE_ISOLATION_INVALID}: gateway host offset from {gateway} does not fit planned subnet {planned} for Compose network `{}`",
+            requested.network
+        )
+    })?;
+    Ok(Some(planned_gateway.to_string()))
+}
+
+fn networks_to_recreate(
+    input: &ComposeIsolationSubnetPlanInput<'_>,
+    allocations: &[ComposeIsolationSubnetAllocation],
+) -> Result<Vec<String>> {
+    let mut removals = BTreeSet::new();
+    for allocation in allocations {
+        for network in input.daemon.networks.iter().filter(|network| {
+            is_self_project(network.compose_project.as_deref(), input.project_name)
+                && network.compose_network.as_deref() == Some(allocation.network.as_str())
+        }) {
+            let matches_plan = network
+                .ipam_configs
+                .iter()
+                .any(|config| config.subnet.as_deref() == Some(allocation.planned_subnet.as_str()));
+            if matches_plan {
+                continue;
+            }
+            if network.has_attached_containers {
+                bail!(
+                    "{COMPOSE_CLONE_ISOLATION_INVALID}: Docker network `{}` for Compose network `{}` must be recreated with subnet {}, but containers are still attached. {COMPOSE_CLONE_ISOLATION_RECREATE_HINT}",
+                    network.name,
+                    allocation.network,
+                    allocation.planned_subnet
+                );
+            }
+            removals.insert(network.name.clone());
+        }
+    }
+    Ok(removals.into_iter().collect())
 }
 
 pub(crate) struct ComposeIsolationPlanInput<'a> {
@@ -222,8 +515,508 @@ mod tests {
     use crate::runtime::compose_isolation::{
         ComposeIsolationDockerIpamConfig, ComposeIsolationDockerNetwork,
         ComposeIsolationDockerResource, ComposeIsolationFixedNameRequest,
-        ComposeIsolationNetworkRequest, ComposeIsolationResourceKind, scan_compose_isolation,
+        ComposeIsolationNetworkRequest, ComposeIsolationPersistedSubnet,
+        ComposeIsolationResourceKind, allocate_ipv4_subnet_slot, scan_compose_isolation,
     };
+
+    #[test]
+    fn subnet_planner_skips_occupied_initial_slot_and_preserves_gateway_offset() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{
+                "subnet": "10.99.0.0/24", "gateway": "10.99.0.1"
+            }]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let pool = Ipv4Cidr::parse("10.200.0.0/16").unwrap();
+        let initial = allocate_ipv4_subnet_slot(pool, 24, "workspace-a", "grpc", &[]).unwrap();
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![network(
+                "occupied",
+                Some("other-project"),
+                &initial.to_string(),
+            )],
+            resources: Vec::new(),
+        };
+
+        let plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap();
+
+        assert_eq!(plan.allocations.len(), 1);
+        assert_ne!(plan.allocations[0].planned_subnet, initial.to_string());
+        let planned = Ipv4Cidr::parse(&plan.allocations[0].planned_subnet).unwrap();
+        assert_eq!(
+            plan.allocations[0].planned_gateway,
+            planned
+                .address_at_offset(1)
+                .map(|address| address.to_string())
+        );
+    }
+
+    #[test]
+    fn gateway_relocation_rejects_gateway_outside_requested_subnet() {
+        let requested = ComposeIsolationNetworkRequest {
+            network: "grpc".to_owned(),
+            driver: None,
+            ipam_driver: None,
+            subnet: "10.99.0.0/24".to_owned(),
+            gateway: Some("10.99.1.1".to_owned()),
+        };
+
+        let error = relocate_gateway(
+            &requested,
+            Ipv4Cidr::parse(&requested.subnet).unwrap(),
+            Ipv4Cidr::parse("10.200.0.0/24").unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(error.to_string().contains("outside requested subnet"));
+    }
+
+    #[test]
+    fn gateway_relocation_rejects_offset_that_does_not_fit_narrower_subnet() {
+        let requested = ComposeIsolationNetworkRequest {
+            network: "grpc".to_owned(),
+            driver: None,
+            ipam_driver: None,
+            subnet: "10.99.0.0/24".to_owned(),
+            gateway: Some("10.99.0.200".to_owned()),
+        };
+
+        let error = relocate_gateway(
+            &requested,
+            Ipv4Cidr::parse(&requested.subnet).unwrap(),
+            Ipv4Cidr::parse("10.200.0.0/25").unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(error.to_string().contains("does not fit planned subnet"));
+    }
+
+    #[test]
+    fn subnet_planner_assigns_distinct_slots_within_one_plan() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"a": null, "b": null}}},
+            "networks": {
+                "a": {"ipam": {"config": [{"subnet": "10.90.0.0/24"}]}},
+                "b": {"ipam": {"config": [{"subnet": "10.91.0.0/24"}]}}
+            }
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap();
+
+        assert_eq!(plan.allocations.len(), 2);
+        assert_ne!(
+            plan.allocations[0].planned_subnet,
+            plan.allocations[1].planned_subnet
+        );
+    }
+
+    #[test]
+    fn subnet_planner_reports_pool_exhaustion_code() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.99.0.0/30"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![
+                network("occupied-a", Some("other-a"), "10.200.0.0/30"),
+                network("occupied-b", Some("other-b"), "10.200.0.4/30"),
+            ],
+            resources: Vec::new(),
+        };
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/29"),
+            subnet_prefix: Some(30),
+            rebuild: false,
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_POOL_EXHAUSTED)
+        );
+    }
+
+    #[test]
+    fn subnet_planner_prefers_self_project_then_persisted_assignment() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.99.0.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let mut existing = network("self_grpc", Some("self-project"), "10.200.42.0/24");
+        existing.compose_network = Some("grpc".to_owned());
+        let state = [ComposeIsolationPersistedSubnet {
+            network: "grpc".to_owned(),
+            requested_subnet: "10.99.0.0/24".to_owned(),
+            planned_subnet: "10.200.43.0/24".to_owned(),
+        }];
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![existing],
+            resources: Vec::new(),
+        };
+        let plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &state,
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap();
+        assert_eq!(plan.allocations[0].planned_subnet, "10.200.42.0/24");
+
+        let state_plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &state,
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap();
+        assert_eq!(state_plan.allocations[0].planned_subnet, "10.200.43.0/24");
+    }
+
+    #[test]
+    fn subnet_planner_returns_to_requested_slot_only_on_rebuild() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.200.1.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let state = [ComposeIsolationPersistedSubnet {
+            network: "grpc".to_owned(),
+            requested_subnet: "10.200.1.0/24".to_owned(),
+            planned_subnet: "10.200.2.0/24".to_owned(),
+        }];
+        let plan = |rebuild| {
+            plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+                model: &model,
+                project_name: "self-project",
+                workspace_id: "workspace-a",
+                scan: &scan,
+                daemon: &ComposeIsolationDaemonSnapshot::default(),
+                state: &state,
+                enabled: true,
+                relocation: true,
+                subnet_pool: Some("10.200.0.0/16"),
+                subnet_prefix: Some(24),
+                rebuild,
+            })
+            .unwrap()
+        };
+
+        assert_eq!(plan(false).allocations[0].planned_subnet, "10.200.2.0/24");
+        assert_eq!(plan(true).allocations[0].planned_subnet, "10.200.1.0/24");
+    }
+
+    #[test]
+    fn subnet_planner_keeps_noop_allocation_for_override_generation() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.200.1.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.1.0/24"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap();
+
+        assert_eq!(plan.allocations.len(), 1);
+        assert_eq!(plan.allocations[0].planned_subnet, "10.200.1.0/24");
+        assert!(!plan.allocations[0].relocated);
+    }
+
+    #[test]
+    fn subnet_planner_rejects_static_addresses_and_ipv6() {
+        let static_model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {
+                "grpc": {"ipv4_address": "10.99.0.2"}
+            }}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.99.0.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&static_model, "self-project");
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &static_model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED)
+        );
+        assert!(error.to_string().contains("ipv4_address"));
+
+        let ipv6_model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "fd00::/64"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&ipv6_model, "self-project");
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &ipv6_model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED)
+        );
+    }
+
+    #[test]
+    fn subnet_planner_rejects_multiple_fixed_subnets_on_one_network() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [
+                {"subnet": "10.99.0.0/24"},
+                {"subnet": "10.99.1.0/24"}
+            ]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED)
+        );
+        assert!(error.to_string().contains("multiple fixed IPAM subnets"));
+    }
+
+    #[test]
+    fn subnet_planner_reports_ipv6_for_dual_stack_network_in_either_order() {
+        for configs in [
+            serde_json::json!([
+                {"subnet": "10.99.0.0/24"},
+                {"subnet": "fd00::/64"}
+            ]),
+            serde_json::json!([
+                {"subnet": "fd00::/64"},
+                {"subnet": "10.99.0.0/24"}
+            ]),
+        ] {
+            let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+                "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+                "networks": {"grpc": {"ipam": {"config": configs}}}
+            }))
+            .unwrap();
+            let scan = scan_compose_isolation(&model, "self-project");
+
+            let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+                model: &model,
+                project_name: "self-project",
+                workspace_id: "workspace-a",
+                scan: &scan,
+                daemon: &ComposeIsolationDaemonSnapshot::default(),
+                state: &[],
+                enabled: true,
+                relocation: true,
+                subnet_pool: Some("10.200.0.0/16"),
+                subnet_prefix: Some(24),
+                rebuild: false,
+            })
+            .unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED)
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("fixed IPv6 Compose network subnets")
+            );
+            assert!(!error.to_string().contains("multiple fixed IPAM subnets"));
+        }
+    }
+
+    #[test]
+    fn subnet_planner_removes_unused_stale_self_network_and_rejects_attached_one() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.99.0.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let mut existing = network("self_grpc", Some("self-project"), "10.50.0.0/24");
+        existing.compose_network = Some("grpc".to_owned());
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![existing.clone()],
+            resources: Vec::new(),
+        };
+        let input = |daemon| ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        };
+        let plan = plan_compose_isolation_subnets(&input(&daemon)).unwrap();
+        assert_eq!(plan.networks_to_remove, ["self_grpc"]);
+
+        existing.has_attached_containers = true;
+        let attached = ComposeIsolationDaemonSnapshot {
+            networks: vec![existing],
+            resources: Vec::new(),
+        };
+        let error = plan_compose_isolation_subnets(&input(&attached)).unwrap_err();
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_RECREATE_HINT)
+        );
+    }
+
+    #[test]
+    fn subnet_planner_requires_down_before_rebuild_returns_to_requested_subnet() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.200.1.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let mut existing = network("self_grpc", Some("self-project"), "10.200.2.0/24");
+        existing.compose_network = Some("grpc".to_owned());
+        existing.has_attached_containers = true;
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![existing],
+            resources: Vec::new(),
+        };
+
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: true,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(error.to_string().contains("10.200.1.0/24"));
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_RECREATE_HINT)
+        );
+    }
 
     #[test]
     fn plans_workspace_scoped_name_rewrites_and_aliases() {
@@ -515,12 +1308,14 @@ mod tests {
         ComposeIsolationDockerNetwork {
             name: name.to_owned(),
             compose_project: compose_project.map(str::to_owned),
+            compose_network: None,
             scope: Some("local".to_owned()),
             ipam_driver: Some("default".to_owned()),
             ipam_configs: vec![ComposeIsolationDockerIpamConfig {
                 subnet: Some(subnet.to_owned()),
                 gateway: None,
             }],
+            has_attached_containers: false,
         }
     }
 

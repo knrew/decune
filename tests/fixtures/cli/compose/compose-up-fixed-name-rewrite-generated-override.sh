@@ -7,7 +7,11 @@ fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
-      printf '{"services":{"app":{"image":"alpine:3.20","container_name":"fixed-app","networks":{"default":null},"volumes":["cache:/cache"]}},"volumes":{"cache":{"name":"fixed-cache"}}}\n'
+      if [ -n "${DECUNE_FAKE_SUBNET_RELOCATION:-}" ]; then
+        printf '{"services":{"app":{"image":"alpine:3.20","networks":{"grpc":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25","gateway":"10.99.0.1"}]}}}}\n'
+      else
+        printf '{"services":{"app":{"image":"alpine:3.20","container_name":"fixed-app","networks":{"default":null},"volumes":["cache:/cache"]}},"volumes":{"cache":{"name":"fixed-cache"}}}\n'
+      fi
       exit 0
       ;;
     *" up -d "*)
@@ -18,6 +22,16 @@ if [ "${1:-}" = compose ]; then
       exit 0
       ;;
   esac
+fi
+if [ "${1:-}" = network ] && [ "${2:-}" = ls ]; then
+  if [ -n "${DECUNE_FAKE_OCCUPIED_SUBNET:-}" ]; then
+    printf 'occupied-network-id\n'
+  fi
+  exit 0
+fi
+if [ "${1:-}" = network ] && [ "${2:-}" = inspect ]; then
+  printf '{"Name":"occupied_grpc","Driver":"bridge","Scope":"local","Labels":{"com.docker.compose.project":"other-project","com.docker.compose.network":"grpc"},"Containers":{},"IPAM":{"Driver":"default","Config":[{"Subnet":"%s"}]}}\n' "$DECUNE_FAKE_OCCUPIED_SUBNET"
+  exit 0
 fi
 if [ "${1:-}" = container ] && [ "${2:-}" = inspect ] && [ "${3:-}" = -- ]; then
   if [ "${4:-}" != "$DECUNE_FAKE_EXPECTED_CONTAINER_NAME" ]; then
