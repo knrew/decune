@@ -5,7 +5,7 @@ printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = ps ]; then
   case "$*" in
     *"label=decune.managed=true"*)
-      printf '{"ID":"invalid-container"}\n'
+      printf 'invalid-container\n'
       exit 0
       ;;
   esac

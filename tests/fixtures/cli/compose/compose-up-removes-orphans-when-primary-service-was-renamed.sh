@@ -34,7 +34,7 @@ if [ "${1:-}" = ps ]; then
       exit 0
       ;;
     *"com.docker.compose.project="*)
-      printf '{"ID":"old-compose-id"}\n'
+      printf 'old-compose-id\n'
       exit 0
       ;;
   esac

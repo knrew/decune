@@ -22,7 +22,7 @@ if [ "${1:-}" = ps ]; then
   if [ "$count" -eq 1 ]; then
     exit 0
   fi
-  printf '{"ID":"old-image-id"}\n'
+  printf 'old-image-id\n'
   exit 0
 fi
 if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then

@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::Path, sync::Arc};
 
 use anyhow::{Context, Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
 
 use crate::{
     config::types::{MountType, PortProtocol},
@@ -441,7 +441,7 @@ impl DockerCli {
                 docker_cmd(["network", "inspect"])
                     .args(ids.iter().map(String::as_str))
                     .arg("--format")
-                    .arg("json")
+                    .arg("{{json .}}")
             },
         )
         .await
@@ -984,8 +984,18 @@ pub(crate) struct DockerNetworkInspect {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct DockerNetworkIpam {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub(crate) config: Vec<DockerNetworkIpamConfig>,
+}
+
+fn deserialize_null_as_empty_vec<'de, D, T>(
+    deserializer: D,
+) -> std::result::Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -1234,15 +1244,13 @@ mod tests {
     fn list_network_inspects_uses_ids_and_accepts_missing_network_partial_output() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(runtime_output(
-                br#"[{
-                    "Name":"other_net",
-                    "Labels":{"com.docker.compose.project":"other"},
-                    "IPAM":{"Config":[{"Subnet":"172.28.0.0/16","Gateway":"172.28.0.1"}]}
-                }]"#,
+                br#"{"Name":"other_net","Labels":{"com.docker.compose.project":"other"},"IPAM":{"Config":[{"Subnet":"172.28.0.0/16","Gateway":"172.28.0.1"}]}}
+{"Name":"host","Labels":{},"IPAM":{"Config":null}}
+"#,
                 b"Error: No such network: removed\n",
                 1,
             )),
-            Ok(output(b"id-one\nid-two\n")),
+            Ok(output(b"id-one\nid-two\nremoved\n")),
         ]);
         let client = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1252,7 +1260,7 @@ mod tests {
 
         let networks = runtime.block_on(client.list_network_inspects()).unwrap();
 
-        assert_eq!(networks.len(), 1);
+        assert_eq!(networks.len(), 2);
         assert_eq!(networks[0].name.as_deref(), Some("other_net"));
         assert_eq!(
             networks[0]
@@ -1262,6 +1270,12 @@ mod tests {
                 .and_then(|config| config.subnet.as_deref()),
             Some("172.28.0.0/16")
         );
+        assert!(
+            networks[1]
+                .ipam
+                .as_ref()
+                .is_some_and(|ipam| ipam.config.is_empty())
+        );
         let commands = runner.commands();
         assert_eq!(
             commands[0].args_vec(),
@@ -1269,7 +1283,15 @@ mod tests {
         );
         assert_eq!(
             commands[1].args_vec(),
-            ["network", "inspect", "id-one", "id-two", "--format", "json"]
+            [
+                "network",
+                "inspect",
+                "id-one",
+                "id-two",
+                "removed",
+                "--format",
+                "{{json .}}"
+            ]
         );
     }
 

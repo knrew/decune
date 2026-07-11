@@ -836,7 +836,7 @@ mod tests {
                     "State": { "Running": true }
                 }]"#,
             )),
-            Ok(output(br#"{"ID":"container-id"}"#)),
+            Ok(output(b"container-id\n")),
         ]);
         let cli = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -864,7 +864,7 @@ mod tests {
                     "--filter",
                     "label=decune.managed=true",
                     "--format",
-                    "json",
+                    "{{.ID}}",
                 ],
                 vec!["container", "inspect", "container-id"],
                 vec![
