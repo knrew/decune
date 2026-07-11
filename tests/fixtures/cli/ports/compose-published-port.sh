@@ -2,11 +2,11 @@
 set -eu
 project="decune-test-$DECUNE_FAKE_WORKSPACE_ID"
 case "$*" in
-  *"ps --all"*"label=decune.managed=true"*"label=decune.workspace_id=$DECUNE_FAKE_WORKSPACE_ID"*"--format json"*)
+  *"ps --all"*"label=decune.managed=true"*"label=decune.workspace_id=$DECUNE_FAKE_WORKSPACE_ID"*"--format {{.ID}}"*)
     exit 0
     ;;
-  *"ps --all"*"label=com.docker.compose.project=$project"*"--format json"*)
-    printf '{"ID":"compose-web-id"}\n'
+  *"ps --all"*"label=com.docker.compose.project=$project"*"--format {{.ID}}"*)
+    printf 'compose-web-id\n'
     exit 0
     ;;
   "container inspect compose-web-id")

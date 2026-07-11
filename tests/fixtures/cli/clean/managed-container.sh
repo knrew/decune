@@ -4,7 +4,7 @@ set -euo pipefail
 if [ "${1:-}" = ps ]; then
   case "$*" in
     *"label=decune.managed=true"*)
-      printf '{"ID":"managed-container"}\n'
+      printf 'managed-container\n'
       exit 0
       ;;
   esac

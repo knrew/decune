@@ -3,7 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     docker::{
         container::{ContainerInspect, ContainerPortBinding},
-        resource::{managed_workspace_id_from_container, workspace_path_from_labels},
+        resource::{
+            compose_project_name_from_labels, compose_service_name_from_labels,
+            managed_workspace_id_from_container, workspace_path_from_labels,
+        },
     },
     state::{PublishedPortEndpointState, PublishedPortRuntimeState},
 };
@@ -98,13 +101,13 @@ fn published_ports_from_container(
     let workspace_path = context
         .and_then(|context| context.workspace_path.clone())
         .or_else(|| labels.and_then(workspace_path_from_labels));
-    let compose_service = labels.and_then(compose_service_from_labels);
+    let compose_service = labels.and_then(compose_service_name_from_labels);
     let source = if compose_service.is_some() {
         "compose"
     } else {
         "appPort"
     };
-    let service = compose_service.cloned();
+    let service = compose_service;
     let ports = container
         .network_settings
         .and_then(|settings| settings.ports)
@@ -393,18 +396,7 @@ pub(super) fn compose_project_name_from_container(container: &ContainerInspect) 
         .config
         .as_ref()
         .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get("com.docker.compose.project"))
-        .filter(|project_name| !project_name.trim().is_empty())
-        .cloned()
-}
-
-fn compose_service_from_labels(labels: &BTreeMap<String, String>) -> Option<&String> {
-    labels
-        .get("com.docker.compose.project")
-        .filter(|project_name| !project_name.trim().is_empty())?;
-    labels
-        .get("com.docker.compose.service")
-        .filter(|service| !service.trim().is_empty())
+        .and_then(compose_project_name_from_labels)
 }
 
 fn container_is_running(container: &ContainerInspect) -> bool {

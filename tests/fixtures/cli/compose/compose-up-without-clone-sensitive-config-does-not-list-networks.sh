@@ -4,6 +4,11 @@ if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; the
   # shellcheck disable=SC1090
   . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
 fi
+printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
+if [ "${1:-}" = network ]; then
+  echo "docker network ls should not run without clone-sensitive Compose config" >&2
+  exit 92
+fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
@@ -11,7 +16,6 @@ if [ "${1:-}" = compose ]; then
       exit 0
       ;;
     *" up -d "*)
-      printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
       exit 0
       ;;
     *" ps --format json app "*)
@@ -29,15 +33,6 @@ if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   exit 0
 fi
 if [ "${1:-}" = ps ]; then
-  case " $* " in
-    *"com.docker.compose.service=app"*)
-      exit 0
-      ;;
-    *"com.docker.compose.project="*)
-      printf 'old-compose-id\n'
-      exit 0
-      ;;
-  esac
   exit 0
 fi
 if [ "${1:-}" = create ]; then
@@ -55,10 +50,6 @@ if [ "${1:-}" = inspect ]; then
   exit 0
 fi
 if [ "${1:-}" = container ] && [ "${2:-}" = inspect ]; then
-  if [ "${3:-}" = old-compose-id ]; then
-    printf '[{"Id":"old-compose-id","Name":"/old-service-1","Image":"alpine:3.19","ImageID":"sha256:old","Config":{"Env":[],"Labels":{"decune.managed":"true","decune.workspace_id":"old-workspace","decune.config_hash":"old-hash","com.docker.compose.project":"old-project","com.docker.compose.service":"old"}},"State":{"Running":true}}]\n'
-    exit 0
-  fi
   printf '[{"Id":"compose-app-id","Name":"/compose-app-1","Config":{"Env":[],"Labels":{}},"State":{"Running":true}}]\n'
   exit 0
 fi

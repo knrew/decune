@@ -43,6 +43,7 @@
 - primary service: Dev Container `service` property で選ばれた Compose service。decune は shell attach、lifecycle command、Features、dotfiles、credentials、UID/GID sync、automatic port forwarding をこの service に適用する。
 - sidecar service: primary service 以外の Compose service。
 - generated Compose override: decune が state/runtime area に生成する Compose override file。利用者は編集しない。
+- clone isolation preflight: Compose モードで別 clone / 別 workspace の同時起動時に daemon global resource が衝突しうる固定 subnet や固定 resource name を、`docker compose up` の前に検出する処理。検出のみで rewrite はしない。
 
 ## ネットワーク用語
 

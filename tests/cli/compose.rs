@@ -153,6 +153,364 @@ fn compose_up_default_published_port_collision_reports_diagnostic_code() {
 }
 
 #[test]
+fn compose_fixed_subnet_overlap_reports_diagnostic_code_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                networks:
+                  - grpc
+            networks:
+              grpc:
+                ipam:
+                  config:
+                    - subnet: 172.28.0.0/16
+                      gateway: 172.28.0.1
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-subnet-overlap-reports-diagnostic-code.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_network_subnet_overlap")
+                .and(predicate::str::contains("network: `grpc`"))
+                .and(predicate::str::contains("requested subnet: 172.28.0.0/16"))
+                .and(predicate::str::contains("existing network: `other_grpc`"))
+                .and(predicate::str::contains("existing subnet: 172.28.10.0/24"))
+                .and(predicate::str::contains(
+                    "existing compose project: other-project",
+                ))
+                .and(predicate::str::contains("compose up should not run").not()),
+        );
+}
+
+#[test]
+fn compose_fixed_container_name_conflict_reports_diagnostic_code_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                container_name: fixed-app
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-container-name-conflict-reports-diagnostic-code.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_fixed_name_conflict")
+                .and(predicate::str::contains("service container `app`"))
+                .and(predicate::str::contains("requested name: `fixed-app`"))
+                .and(predicate::str::contains(
+                    "existing resource: container `fixed-app`",
+                ))
+                .and(predicate::str::contains(
+                    "existing compose project: other-project",
+                ))
+                .and(predicate::str::contains("compose up should not run").not()),
+        );
+}
+
+#[test]
+fn compose_fixed_volume_name_conflict_reports_diagnostic_code_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                volumes:
+                  - cache:/cache
+            volumes:
+              cache:
+                name: fixed-cache
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-volume-name-conflict-reports-diagnostic-code.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_fixed_name_conflict")
+                .and(predicate::str::contains("volume `cache`"))
+                .and(predicate::str::contains("requested name: `fixed-cache`"))
+                .and(predicate::str::contains(
+                    "existing resource: volume `fixed-cache`",
+                ))
+                .and(predicate::str::contains(
+                    "existing compose project: other-project",
+                ))
+                .and(predicate::str::contains("compose up should not run").not()),
+        );
+}
+
+#[test]
+fn compose_reports_all_fixed_resource_name_conflicts_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                networks: [app]
+                configs: [app]
+                secrets: [app]
+            networks:
+              app:
+                name: fixed-network
+            configs:
+              app:
+                name: fixed-config
+            secrets:
+              app:
+                name: fixed-secret
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-reports-all-fixed-resource-name-conflicts.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains(
+                "Docker Compose clone isolation preflight detected 3 conflicts:",
+            )
+            .and(predicate::str::contains("network `app`"))
+            .and(predicate::str::contains("requested name: `fixed-network`"))
+            .and(predicate::str::contains("config `app`"))
+            .and(predicate::str::contains("requested name: `fixed-config`"))
+            .and(predicate::str::contains("secret `app`"))
+            .and(predicate::str::contains("requested name: `fixed-secret`"))
+            .and(predicate::str::contains("compose up should not run").not()),
+        );
+}
+
+#[test]
+fn compose_without_clone_sensitive_config_does_not_list_networks() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-without-clone-sensitive-config-does-not-list-networks.sh",
+    );
+    let command_log = host_tools.path().join("commands.log");
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    // One config validates the preliminary plan and one prepares startup context. The latter
+    // must not be repeated when the lifecycle targets the whole Compose project.
+    assert_eq!(
+        commands
+            .lines()
+            .filter(|command| command.contains(" config --format json"))
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn compose_isolation_preflight_ignores_unselected_services_and_resources() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "runServices": ["app"],
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+              unused:
+                image: alpine:3.20
+                container_name: fixed-unused
+                networks: [unused-network]
+                volumes: [unused-volume:/data]
+            networks:
+              unused-network:
+                ipam:
+                  config:
+                    - subnet: 172.28.0.0/16
+            volumes:
+              unused-volume:
+                name: fixed-unused-volume
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-ignores-unselected-isolation-resources.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_RUNTIME_DIR", host_tools.path())
+        .env("XDG_STATE_HOME", host_tools.path())
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "selected Compose up reached after isolation preflight",
+        ));
+}
+
+#[test]
 fn compose_up_unsupported_published_port_startup_failure_reports_diagnostic_code() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();

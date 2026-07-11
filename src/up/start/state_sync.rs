@@ -2,7 +2,7 @@ use std::{cell::RefCell, collections::BTreeSet};
 
 use crate::{
     devcontainer::lifecycle::LifecycleRunPath,
-    docker::{client::DockerClient, container::ContainerInspect},
+    docker::{client::DockerClient, container::ContainerInspect, resource::COMPOSE_SERVICE_LABEL},
     runtime::compose_ports::{
         ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
         ComposePublishedPortPlanningInput, compose_published_port_runtime_plan,
@@ -281,7 +281,7 @@ fn actual_bindings_for_compose_published_port(
             continue;
         };
         if labels
-            .get("com.docker.compose.service")
+            .get(COMPOSE_SERVICE_LABEL)
             .is_none_or(|service| service != &entry.service)
         {
             continue;

@@ -25,7 +25,7 @@ if [ "${1:-}" = ps ]; then
   case " $* " in
     *"com.docker.compose.project=$project"*)
       if [ -f "$DECUNE_FAKE_UP_MARKER" ]; then
-        printf '{"ID":"compose-app-id"}\n'
+        printf 'compose-app-id\n'
       fi
       exit 0
       ;;

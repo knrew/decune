@@ -9,7 +9,7 @@ if [ "${1:-}" = ps ]; then
   count=$((count + 1))
   printf '%s\n' "$count" >"$DECUNE_FAKE_COUNT_FILE"
   if [ "$count" -ge 2 ]; then
-    printf '{"ID":"managed-container"}\n'
+    printf 'managed-container\n'
   fi
   exit 0
 fi

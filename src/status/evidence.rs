@@ -8,6 +8,7 @@ use crate::{
     docker::{
         container::ContainerInspect,
         resource::{
+            compose_project_name_from_labels, compose_service_name_from_labels,
             config_hash_from_labels, managed_workspace_id_from_container,
             managed_workspace_id_from_labels, workspace_path_from_labels,
         },
@@ -307,7 +308,7 @@ fn container_evidence_from_labels(
 ) -> ContainerEvidence {
     let workspace_path = workspace_path_from_labels(labels);
     let config_hash = config_hash_from_labels(labels);
-    let service = compose_service_from_labels(labels);
+    let service = compose_service_name_from_labels(labels);
     let run_state = container_run_state(container.state.as_ref());
     let health_status = container_health_status(container.state.as_ref());
     ContainerEvidence {
@@ -343,9 +344,7 @@ fn compose_project_name_from_container(container: &ContainerInspect) -> Option<S
         .config
         .as_ref()
         .and_then(|config| config.labels.as_ref())
-        .and_then(|labels| labels.get("com.docker.compose.project"))
-        .filter(|project_name| !project_name.trim().is_empty())
-        .cloned()
+        .and_then(compose_project_name_from_labels)
 }
 
 fn dedupe_container_evidence(containers: Vec<ContainerEvidence>) -> Vec<ContainerEvidence> {
@@ -474,16 +473,6 @@ const fn mode_from_source(source: Option<&ResolvedDevcontainerSource>) -> Worksp
         Some(ResolvedDevcontainerSource::Compose(_)) => WorkspaceMode::Compose,
         None => WorkspaceMode::Unknown,
     }
-}
-
-fn compose_service_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
-    labels
-        .get("com.docker.compose.project")
-        .filter(|project| !project.trim().is_empty())?;
-    labels
-        .get("com.docker.compose.service")
-        .filter(|service| !service.trim().is_empty())
-        .cloned()
 }
 
 fn is_missing_devcontainer_metadata_error(error: &anyhow::Error) -> bool {
@@ -837,7 +826,7 @@ mod tests {
                     "State": { "Running": true }
                 }]"#,
             )),
-            Ok(output(br#"{"ID":"container-id"}"#)),
+            Ok(output(b"container-id\n")),
         ]);
         let cli = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -865,7 +854,7 @@ mod tests {
                     "--filter",
                     "label=decune.managed=true",
                     "--format",
-                    "json",
+                    "{{.ID}}",
                 ],
                 vec!["container", "inspect", "container-id"],
                 vec![

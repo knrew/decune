@@ -5,13 +5,13 @@ printf '%s\n' "$*" >>"$DECUNE_FAKE_COMMAND_LOG"
 if [ "${1:-}" = ps ]; then
   case "$*" in
     *"label=decune.managed=true"*)
-      printf '{"ID":"standalone-id"}\n'
-      printf '{"ID":"compose-primary-id"}\n'
+      printf 'standalone-id\n'
+      printf 'compose-primary-id\n'
       exit 0
       ;;
     *"label=com.docker.compose.project=compose-owned"*)
-      printf '{"ID":"compose-primary-id"}\n'
-      printf '{"ID":"compose-sidecar-id"}\n'
+      printf 'compose-primary-id\n'
+      printf 'compose-sidecar-id\n'
       exit 0
       ;;
     *"label=com.docker.compose.project=state-owned"*)

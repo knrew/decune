@@ -8,12 +8,12 @@ project="decune-missing-config-$DECUNE_FAKE_WORKSPACE_ID"
 if [ "${1:-}" = ps ]; then
   case " $* " in
     *"decune.workspace_id=$DECUNE_FAKE_WORKSPACE_ID"*)
-      printf '{"ID":"compose-primary-id"}\n'
+      printf 'compose-primary-id\n'
       exit 0
       ;;
     *"com.docker.compose.project=$project"*)
-      printf '{"ID":"compose-primary-id"}\n'
-      printf '{"ID":"compose-sidecar-id"}\n'
+      printf 'compose-primary-id\n'
+      printf 'compose-sidecar-id\n'
       exit 0
       ;;
   esac

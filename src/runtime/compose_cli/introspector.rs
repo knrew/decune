@@ -1,9 +1,5 @@
 use anyhow::Result;
 
-use crate::runtime::compose_ports::{
-    ComposePublishedPortPlanningInput, compose_published_port_planning_input,
-};
-
 use super::{
     adapter::DockerComposeCli,
     command_plan::ComposeCommandPlan,
@@ -66,23 +62,6 @@ impl ComposeIntrospector {
         Ok(output)
     }
 
-    pub(crate) async fn user_published_port_planning_input(
-        &self,
-        project: &ComposeProjectPlan,
-        validation: &ComposeServiceValidation<'_>,
-        services: &[String],
-    ) -> Result<ComposePublishedPortPlanningInput> {
-        let output = self
-            .user_config_for_services(project, validation, services)
-            .await?;
-        Ok(compose_published_port_planning_input(
-            &output.model,
-            &output.published_port_entries,
-            validation.primary_service,
-            services,
-        ))
-    }
-
     #[cfg(test)]
     pub(crate) async fn config_model_with_generated_override(
         &self,
@@ -111,7 +90,10 @@ impl ComposeIntrospector {
 mod tests {
     use std::fs;
 
-    use crate::runtime::command::{FakeRuntimeCommand, RuntimeOutput};
+    use crate::runtime::{
+        command::{FakeRuntimeCommand, RuntimeOutput},
+        compose_ports::compose_published_port_planning_input,
+    };
 
     use super::super::{
         adapter::DockerComposeCli,
@@ -159,13 +141,19 @@ mod tests {
             .build()
             .unwrap();
 
-        let input = runtime
-            .block_on(introspector.user_published_port_planning_input(
+        let output = runtime
+            .block_on(introspector.user_config_for_services(
                 &project,
                 &validation,
                 &selected_services,
             ))
             .unwrap();
+        let input = compose_published_port_planning_input(
+            &output.model,
+            &output.published_port_entries,
+            validation.primary_service,
+            &selected_services,
+        );
 
         assert_eq!(input.port_entries.len(), 2);
         assert_eq!(
@@ -220,13 +208,19 @@ mod tests {
             .build()
             .unwrap();
 
-        let input = runtime
-            .block_on(introspector.user_published_port_planning_input(
+        let output = runtime
+            .block_on(introspector.user_config_for_services(
                 &project,
                 &validation,
                 &selected_services,
             ))
             .unwrap();
+        let input = compose_published_port_planning_input(
+            &output.model,
+            &output.published_port_entries,
+            validation.primary_service,
+            &selected_services,
+        );
 
         assert_eq!(input.port_entries.len(), 1);
         assert_eq!(input.port_entries[0].service, "db");

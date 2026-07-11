@@ -11,12 +11,12 @@ if [ "${1:-}" = ps ]; then
       if [ -f "$DECUNE_FAKE_REMOVED_MARKER" ]; then
         exit 0
       fi
-      printf '{"ID":"compose-primary-id"}\n'
+      printf 'compose-primary-id\n'
       exit 0
       ;;
     *"com.docker.compose.project=$project"*)
-      printf '{"ID":"compose-primary-id"}\n'
-      printf '{"ID":"compose-sidecar-id"}\n'
+      printf 'compose-primary-id\n'
+      printf 'compose-sidecar-id\n'
       exit 0
       ;;
   esac
