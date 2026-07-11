@@ -369,6 +369,131 @@ fn compose_integration_clone_isolation_renders_relocated_gateway_endpoint() {
 }
 
 #[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() {
+    let first = compose_fixture_workspace("clone-isolation");
+    let second = compose_fixture_workspace("clone-isolation");
+    let first_container_tools_dir = fake_container_tools_bundle(&first.workspace);
+    let second_container_tools_dir = fake_container_tools_bundle(&second.workspace);
+    let first_id = workspace_id(first.path());
+    let second_id = workspace_id(second.path());
+    assert_ne!(first_id, second_id);
+    first.workspace.write_file("clone-marker", "first\n").must();
+    second
+        .workspace
+        .write_file("clone-marker", "second\n")
+        .must();
+
+    let docker_resource_lock = acquire_exclusive_docker_resource_lock().must();
+    let (first_up, second_up) = thread::scope(|scope| {
+        let first_up = scope
+            .spawn(|| run_clone_isolation_fixture_up(first.path(), &first_container_tools_dir));
+        let second_up = scope
+            .spawn(|| run_clone_isolation_fixture_up(second.path(), &second_container_tools_dir));
+        (first_up.join().must(), second_up.join().must())
+    });
+    finish_clone_isolation_fixture_up(first.path(), &first_container_tools_dir, first_up);
+    finish_clone_isolation_fixture_up(second.path(), &second_container_tools_dir, second_up);
+
+    let first_ports = compose_service_published_host_ports(first.path(), "app", "80/tcp");
+    let second_ports = compose_service_published_host_ports(second.path(), "app", "80/tcp");
+    assert_eq!(first_ports.len(), 1);
+    assert_eq!(second_ports.len(), 1);
+    assert_ne!(first_ports, second_ports);
+
+    let first_container = format!("fixed-app-388-{first_id}");
+    let second_container = format!("fixed-app-388-{second_id}");
+    assert!(docker_status(["container", "inspect", &first_container]).is_ok());
+    assert!(docker_status(["container", "inspect", &second_container]).is_ok());
+    assert_eq!(
+        compose_primary_container_output(first.path(), ["cat", "/workspace/clone-marker"]).trim(),
+        "first"
+    );
+    assert_eq!(
+        compose_primary_container_output(second.path(), ["cat", "/workspace/clone-marker"]).trim(),
+        "second"
+    );
+
+    let first_volume = format!("fixed-cache-388-{first_id}");
+    let second_volume = format!("fixed-cache-388-{second_id}");
+    assert!(docker_status(["volume", "inspect", &first_volume]).is_ok());
+    assert!(docker_status(["volume", "inspect", &second_volume]).is_ok());
+    compose_primary_container_output(first.path(), ["sh", "-c", "echo first > /cache/owner"]);
+    assert_eq!(
+        compose_primary_container_output(first.path(), ["cat", "/cache/owner"]).trim(),
+        "first"
+    );
+    assert_eq!(
+        compose_primary_container_output(
+            second.path(),
+            ["sh", "-c", "test ! -e /cache/owner && echo isolated"],
+        )
+        .trim(),
+        "isolated"
+    );
+
+    let first_network = format!("fixed-network-388-{first_id}");
+    let second_network = format!("fixed-network-388-{second_id}");
+    let (first_subnet, first_gateway) = compose_network_subnet_and_gateway(&first_network);
+    let (second_subnet, second_gateway) = compose_network_subnet_and_gateway(&second_network);
+    assert!(first_subnet.starts_with("10."));
+    assert!(first_subnet.ends_with("/24"));
+    assert!(second_subnet.starts_with("10."));
+    assert!(second_subnet.ends_with("/24"));
+    assert_ne!(first_subnet, second_subnet);
+
+    let first_endpoint =
+        compose_primary_container_output(first.path(), ["printenv", "AGENT_ENDPOINT"]);
+    let second_endpoint =
+        compose_primary_container_output(second.path(), ["printenv", "AGENT_ENDPOINT"]);
+    assert_eq!(
+        first_endpoint.trim(),
+        format!("http://{first_gateway}:9000")
+    );
+    assert_eq!(
+        second_endpoint.trim(),
+        format!("http://{second_gateway}:9000")
+    );
+
+    drop(docker_resource_lock);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_clone_isolation_fixture_rejects_undeclared_stale_endpoint() {
+    let workspace = compose_fixture_workspace("clone-isolation");
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
+    remove_clone_isolation_endpoint_declaration(workspace.path());
+    let docker_resource_lock = acquire_exclusive_docker_resource_lock().must();
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .env_remove("DECUNE_DOCKER_RESOURCE_LOCK")
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_clone_isolation_endpoint_unsafe")
+                .and(predicate::str::contains("service: `app`"))
+                .and(predicate::str::contains(
+                    "environment variable: `AGENT_ENDPOINT`",
+                ))
+                .and(predicate::str::contains("network: `appnet`"))
+                .and(predicate::str::contains("original address: 10.223.0.1")),
+        );
+
+    let containers = compose_project_containers(workspace.path()).must();
+    assert!(
+        containers.is_empty(),
+        "unsafe endpoint must fail before docker compose up creates containers: {containers:?}"
+    );
+
+    drop(docker_resource_lock);
+}
+
+#[test]
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_published_port_relocation_starts_second_workspace_and_reports_ports() {
     let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
@@ -2186,6 +2311,57 @@ fn run_decune_up_detach(workspace: &Path, envs: &[(&str, &str)]) {
         .stderr(predicate::str::contains("Started dev container"));
 }
 
+fn run_clone_isolation_fixture_up(
+    workspace: &Path,
+    container_tools_dir: &Path,
+) -> std::process::Output {
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace)
+        .env("DECUNE_CONTAINER_TOOLS_DIR", container_tools_dir)
+        .env_remove("DECUNE_DOCKER_RESOURCE_LOCK")
+        .output()
+        .must()
+}
+
+fn finish_clone_isolation_fixture_up(
+    workspace: &Path,
+    container_tools_dir: &Path,
+    mut output: std::process::Output,
+) {
+    if !output.status.success() {
+        // Published port planning and Compose startup are intentionally non-atomic across
+        // processes. Keep the concurrent attempt, then follow the documented single retry.
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("compose_published_port_bind_race"),
+            "concurrent clone isolation startup failed unexpectedly: {stderr}"
+        );
+        output = run_clone_isolation_fixture_up(workspace, container_tools_dir);
+    }
+
+    assert!(
+        output.status.success(),
+        "clone isolation startup failed after the documented bind-race retry: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(output.stdout.is_empty());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("Started dev container"),
+        "clone isolation startup did not report success: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+fn remove_clone_isolation_endpoint_declaration(workspace: &Path) {
+    let config_path = workspace.join(".decune/config.toml");
+    let config = fs::read_to_string(&config_path).must();
+    let (config_without_endpoint, _) = config
+        .split_once("\n[[compose.clone_isolation.endpoints]]\n")
+        .must_msg("clone isolation fixture endpoint declaration was not found");
+    fs::write(config_path, format!("{config_without_endpoint}\n")).must();
+}
+
 fn run_decune_remove(workspace: &Path, state_home: &str, images: bool) {
     let mut command = decune();
     command.args(["remove", "--no-confirm"]);
@@ -2307,6 +2483,29 @@ fn compose_service_published_host_ports(
     host_ports.sort_unstable();
     host_ports.dedup();
     host_ports
+}
+
+fn compose_network_subnet_and_gateway(network: &str) -> (String, String) {
+    let output = docker_output([
+        "network",
+        "inspect",
+        "--format",
+        "{{(index .IPAM.Config 0).Subnet}} {{(index .IPAM.Config 0).Gateway}}",
+        network,
+    ])
+    .must();
+    let mut fields = output.split_whitespace();
+    let subnet = fields
+        .next()
+        .must_msg(format_args!("network subnet was missing: {network}"));
+    let gateway = fields
+        .next()
+        .must_msg(format_args!("network gateway was missing: {network}"));
+    assert!(
+        fields.next().is_none(),
+        "unexpected network IPAM output for {network}: {output}"
+    );
+    (subnet.to_owned(), gateway.to_owned())
 }
 
 fn decune_ports_json(workspace: &Path) -> Vec<Value> {

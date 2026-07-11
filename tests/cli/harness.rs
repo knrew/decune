@@ -28,6 +28,10 @@ pub(crate) use features::*;
 pub(crate) use images::*;
 pub(crate) use names::*;
 
+pub fn acquire_exclusive_docker_resource_lock() -> anyhow::Result<impl Drop> {
+    locks::acquire_exclusive_docker_resource_lock()
+}
+
 const DECUNE_DOCKER_RESOURCE_LOCK_ENV: &str = "DECUNE_DOCKER_RESOURCE_LOCK";
 const DECUNE_FAKE_COMPOSE_CAPABILITIES_ENV: &str = "DECUNE_FAKE_COMPOSE_CAPABILITIES";
 
