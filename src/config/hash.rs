@@ -438,6 +438,9 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
         writer.field("mounts", |writer| write_config_mounts(writer, config));
         // forwarding は up 実行時の runtime 設定であり，container/image の再作成条件ではない．
         _ = &config.ports;
+        writer.field("compose", |writer| {
+            write_config_compose(writer, config);
+        });
         writer.field("devcontainer", |writer| {
             write_devcontainer(
                 writer,
@@ -452,6 +455,55 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
         });
         writer.field("hooks", |writer| {
             write_config_hooks(writer, config);
+        });
+    });
+}
+
+fn write_config_compose(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
+    let clone_isolation = &config.compose.clone_isolation;
+    writer.object("Compose", |writer| {
+        writer.field("clone_isolation", |writer| {
+            writer.object("CloneIsolation", |writer| {
+                writer.field("enabled", |writer| writer.bool(clone_isolation.enabled));
+                if !clone_isolation.enabled {
+                    return;
+                }
+                writer.field("networks", |writer| {
+                    writer.object("Networks", |writer| {
+                        writer.field("relocation", |writer| {
+                            writer.bool(clone_isolation.networks.relocation);
+                        });
+                        writer.field("subnet_pool", |writer| {
+                            writer.option_string(clone_isolation.networks.subnet_pool.as_deref());
+                        });
+                        writer.field("subnet_prefix", |writer| {
+                            match clone_isolation.networks.subnet_prefix {
+                                Some(prefix) => writer.string(&prefix.to_string()),
+                                None => writer.none(),
+                            }
+                        });
+                    });
+                });
+                writer.field("names", |writer| {
+                    writer.object("Names", |writer| {
+                        writer.field("rewrite_container_names", |writer| {
+                            writer.bool(clone_isolation.names.rewrite_container_names);
+                        });
+                        writer.field("rewrite_resource_names", |writer| {
+                            writer.bool(clone_isolation.names.rewrite_resource_names);
+                        });
+                    });
+                });
+                writer.field("endpoints", |writer| {
+                    writer.seq(clone_isolation.endpoints.iter(), |writer, endpoint| {
+                        writer.object("Endpoint", |writer| {
+                            writer.field("service", |writer| writer.string(&endpoint.service));
+                            writer.field("env", |writer| writer.string(&endpoint.env));
+                            writer.field("value", |writer| writer.string(&endpoint.value));
+                        });
+                    });
+                });
+            });
         });
     });
 }
@@ -1771,6 +1823,85 @@ warn_on_relocation = true
         );
 
         assert_eq!(hash_for(&disabled), hash_for(&enabled));
+    }
+
+    #[test]
+    fn compose_clone_isolation_enabled_changes_hash() {
+        let disabled = resolved_config("version = 1\n");
+        let enabled = resolved_config(
+            r"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+",
+        );
+
+        assert_ne!(hash_for(&disabled), hash_for(&enabled));
+    }
+
+    #[test]
+    fn disabled_compose_clone_isolation_settings_do_not_change_hash() {
+        let baseline = resolved_config("version = 1\n");
+        let configured = resolved_config(
+            r#"
+version = 1
+
+[compose.clone_isolation]
+enabled = false
+
+[compose.clone_isolation.networks]
+relocation = true
+subnet_pool = "10.200.0.0/16"
+subnet_prefix = 24
+
+[compose.clone_isolation.names]
+rewrite_container_names = false
+rewrite_resource_names = false
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "HOST_AGENT_ENDPOINT"
+value = "grpc://${decune.network.fixed_net.gateway}:50051"
+"#,
+        );
+
+        assert_eq!(hash_for(&baseline), hash_for(&configured));
+    }
+
+    #[test]
+    fn enabled_compose_clone_isolation_settings_change_hash() {
+        let baseline = resolved_config(
+            r"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+",
+        );
+        let configured = resolved_config(
+            r#"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+
+[compose.clone_isolation.networks]
+relocation = true
+subnet_pool = "10.200.0.0/16"
+subnet_prefix = 24
+
+[compose.clone_isolation.names]
+rewrite_container_names = false
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "HOST_AGENT_ENDPOINT"
+value = "grpc://${decune.network.fixed_net.gateway}:50051"
+"#,
+        );
+
+        assert_ne!(hash_for(&baseline), hash_for(&configured));
     }
 
     #[test]

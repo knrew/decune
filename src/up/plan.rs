@@ -291,6 +291,7 @@ pub(super) fn rebuild_up_plan_with_image_metadata_layers(
     let config_layers = plan.config_layers.clone();
     let workspace_validation = workspace_validation_for_mount_resolution(mount_resolution);
     let mut config = resolve_config(config_layers.clone());
+    config.validate()?;
     let static_expansion = expand_static_plan_fields(
         workspace,
         &devcontainer_file,
@@ -394,6 +395,7 @@ fn build_up_plan_inner(
     };
     let workspace_validation = workspace_validation_for_mount_resolution(mount_resolution);
     let mut config = resolve_config(config_layers.clone());
+    config.validate()?;
     let static_expansion = expand_static_plan_fields(
         workspace,
         devcontainer_json.path(),
@@ -559,6 +561,37 @@ mod tests {
         let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
         assert!(plan.config_layers.global.is_none());
+    }
+
+    #[test]
+    fn build_up_plan_rejects_invalid_clone_isolation_config() {
+        let config_home = tempfile::tempdir().unwrap();
+        let _guard = set_xdg_config_home(config_home.path());
+        let workspace = test_workspace("invalid-clone-isolation-config");
+        write_devcontainer(&workspace, r#"{"image":"alpine:3.20"}"#);
+        fs::create_dir_all(workspace.root().join(".decune")).unwrap();
+        fs::write(
+            workspace.root().join(".decune/config.toml"),
+            r#"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+
+[compose.clone_isolation.networks]
+subnet_pool = "not-a-cidr"
+"#,
+        )
+        .unwrap();
+
+        let error = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("compose_clone_isolation_invalid")
+        );
+        assert!(error.to_string().contains("must be a valid IPv4 CIDR"));
     }
 
     #[test]

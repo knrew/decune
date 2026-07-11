@@ -257,6 +257,7 @@ pub(in crate::up) fn add_github_cli_feature_to_plan(mut plan: UpPlan) -> Result<
         .push(LayerFeature::new(GITHUB_CLI_FEATURE_REF.to_owned()));
     plan.config_layers.cli = Some(cli_layer);
     plan.config = resolve_config(plan.config_layers.clone());
+    plan.config.validate()?;
     plan.feature_install = None;
     plan.image = final_image_source(&plan.config, &plan.resources, &plan.uid_gid_sync_plan)?;
     if !preserve_base_image {

@@ -784,6 +784,41 @@ manual port forwarding 設定。Docker published port ではない。
 
 Compose モードの automatic forwarding は primary service の container を対象にする。sidecar service は明示 `forwardPorts` または `[[ports]].service` で指定する。
 
+### `[compose.clone_isolation]`
+
+同じ Compose-based workspace を複数の clone から同時起動するための opt-in 設定。`enabled` は master gate で、既定は false。false の場合、下位 table や `endpoints` が指定されていても無効として扱い、その内容は検証しない。
+
+```toml
+[compose.clone_isolation]
+enabled = false
+
+[compose.clone_isolation.networks]
+relocation = false
+subnet_pool = "10.200.0.0/16"
+# subnet_prefix = 24
+
+[compose.clone_isolation.names]
+rewrite_container_names = true
+rewrite_resource_names = true
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "HOST_AGENT_ENDPOINT"
+value = "grpc://${decune.network.fixed_net.gateway}:50051"
+```
+
+- `enabled`: 既定 false。false の場合、clone isolation による書き換えをすべて無効にする。true で `[compose.published_ports].relocation` が未指定の場合、その既定値を true に切り替える。global / project / CLI のいずれかで `relocation = false` が明示されていれば、明示値を優先する。
+- `networks.relocation`: 既定 false。true の場合、固定 subnet を workspace ごとに relocation する対象とする。
+- `networks.subnet_pool`: `networks.relocation = true` のとき必須。relocation 先を割り当てる IPv4 CIDR pool。`enabled = true` のとき、指定値が IPv4 CIDR でなければ error。
+- `networks.subnet_prefix`: 任意。省略時は元 subnet の prefix 長を維持する。指定する場合は `subnet_pool` の prefix 以上かつ 31 未満でなければならない。
+- `names.rewrite_container_names`: 既定 true。明示的な service `container_name` を workspace 固有名へ書き換える対象とする。
+- `names.rewrite_resource_names`: 既定 true。top-level `name` を持つ `networks` / `volumes` / `configs` / `secrets` を workspace 固有名へ書き換える対象とする。
+- `endpoints`: 0 個以上。`service` は環境変数を設定する Compose service、`env` は環境変数名、`value` は値 template。同一 `service` + `env` の重複宣言は error。
+
+`endpoints.value` では `${decune.network.<compose-network-key>.gateway}` と `${decune.network.<compose-network-key>.subnet}` の 2 形式を clone isolation 専用 placeholder として予約する。これは一般の decune config 変数展開とは別に扱い、Compose network key の存在確認と展開は endpoint rewrite の preflight で行う。
+
+不正な有効設定は `compose_clone_isolation_invalid` diagnostic で error にする。network / name / endpoint の実際の書き換えは段階的に追加され、この設定を読む各機能が実装されるまでは、`enabled` による published port relocation の既定値切り替えを除いて挙動を変更しない。
+
 ### `[compose.published_ports]`
 
 Docker Compose-based 構成の Compose service `ports` に対する published port relocation policy。
@@ -794,7 +829,7 @@ relocation = false
 warn_on_relocation = false
 ```
 
-- `relocation`: 既定 false。true の場合、後続の relocation 処理は対象となる fixed TCP published host port の host 側 port number を変更してよい。
+- `relocation`: 既定 false。ただし `[compose.clone_isolation].enabled = true` かつ `relocation` 未指定の場合は既定 true。true の場合、後続の relocation 処理は対象となる fixed TCP published host port の host 側 port number を変更してよい。
 - `warn_on_relocation`: 既定 false。true の場合、後続の relocation 処理は requested endpoint と planned endpoint が異なる relocation について warning を出してよい。既存 Compose project の published binding を変更するために container 再作成を伴う場合の warning は、この設定に関係なく常に出す。
 
 CLI `--published-port-relocation` / `--no-published-port-relocation` は、この実行で `relocation` を override する。`--no-auto-forward` はこの policy を変更しない。

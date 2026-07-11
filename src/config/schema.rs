@@ -273,6 +273,7 @@ pub(crate) enum RawOnAutoForward {
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawComposeConfig {
     pub(crate) published_ports: Option<RawComposePublishedPortsConfig>,
+    pub(crate) clone_isolation: Option<RawComposeCloneIsolationConfig>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -280,6 +281,39 @@ pub(crate) struct RawComposeConfig {
 pub(crate) struct RawComposePublishedPortsConfig {
     pub(crate) relocation: Option<bool>,
     pub(crate) warn_on_relocation: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawComposeCloneIsolationConfig {
+    pub(crate) enabled: Option<bool>,
+    pub(crate) networks: Option<RawComposeCloneIsolationNetworksConfig>,
+    pub(crate) names: Option<RawComposeCloneIsolationNamesConfig>,
+    #[serde(default)]
+    pub(crate) endpoints: Vec<RawComposeCloneIsolationEndpointConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawComposeCloneIsolationNetworksConfig {
+    pub(crate) relocation: Option<bool>,
+    pub(crate) subnet_pool: Option<String>,
+    pub(crate) subnet_prefix: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawComposeCloneIsolationNamesConfig {
+    pub(crate) rewrite_container_names: Option<bool>,
+    pub(crate) rewrite_resource_names: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawComposeCloneIsolationEndpointConfig {
+    pub(crate) service: String,
+    pub(crate) env: String,
+    pub(crate) value: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
@@ -619,6 +653,65 @@ warn_on_relocation = true
         let published_ports = config.compose.published_ports.unwrap();
         assert_eq!(published_ports.relocation, Some(true));
         assert_eq!(published_ports.warn_on_relocation, Some(true));
+    }
+
+    #[test]
+    fn compose_clone_isolation_config_is_supported() {
+        let config: RawDecuneConfig = toml::from_str(
+            r#"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+
+[compose.clone_isolation.networks]
+relocation = true
+subnet_pool = "10.200.0.0/16"
+subnet_prefix = 24
+
+[compose.clone_isolation.names]
+rewrite_container_names = false
+rewrite_resource_names = true
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "HOST_AGENT_ENDPOINT"
+value = "grpc://${decune.network.fixed_net.gateway}:50051"
+"#,
+        )
+        .expect("test config should parse");
+
+        let clone_isolation = config.compose.clone_isolation.unwrap();
+        assert_eq!(clone_isolation.enabled, Some(true));
+        let networks = clone_isolation.networks.unwrap();
+        assert_eq!(networks.relocation, Some(true));
+        assert_eq!(networks.subnet_pool.as_deref(), Some("10.200.0.0/16"));
+        assert_eq!(networks.subnet_prefix, Some(24));
+        let names = clone_isolation.names.unwrap();
+        assert_eq!(names.rewrite_container_names, Some(false));
+        assert_eq!(names.rewrite_resource_names, Some(true));
+        assert_eq!(clone_isolation.endpoints.len(), 1);
+        assert_eq!(clone_isolation.endpoints[0].service, "app");
+        assert_eq!(clone_isolation.endpoints[0].env, "HOST_AGENT_ENDPOINT");
+        assert_eq!(
+            clone_isolation.endpoints[0].value,
+            "grpc://${decune.network.fixed_net.gateway}:50051"
+        );
+    }
+
+    #[test]
+    fn compose_clone_isolation_unknown_key_is_rejected() {
+        let error = toml::from_str::<RawDecuneConfig>(
+            r#"
+version = 1
+
+[compose.clone_isolation.networks]
+subnet_poo1 = "10.200.0.0/16"
+"#,
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("subnet_poo1"));
     }
 
     #[derive(Debug, Deserialize)]

@@ -108,6 +108,23 @@ on_auto_forward = "notify"
 relocation = true
 warn_on_relocation = true
 
+[compose.clone_isolation]
+enabled = true
+
+[compose.clone_isolation.networks]
+relocation = true
+subnet_pool = "10.200.0.0/16"
+subnet_prefix = 24
+
+[compose.clone_isolation.names]
+rewrite_container_names = true
+rewrite_resource_names = true
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "HOST_AGENT_ENDPOINT"
+value = "grpc://${decune.network.fixed_net.gateway}:50051"
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -209,6 +226,7 @@ shell = false
         assert_spec_example_dotfiles(&config);
         assert_spec_example_mounts(&config);
         assert_spec_example_ports(&config);
+        assert_spec_example_compose(&config);
         assert_spec_example_credentials(&config);
         assert_spec_example_hooks(&config);
     }
@@ -269,9 +287,23 @@ shell = false
         assert_eq!(auto.max, Some(32768));
         assert_eq!(auto.ignore.as_deref(), Some([22, 2375, 2376].as_slice()));
         assert_eq!(auto.on_auto_forward, Some(RawOnAutoForward::Notify));
+    }
+
+    fn assert_spec_example_compose(config: &RawDecuneConfig) {
         let published_ports = config.compose.published_ports.as_ref().unwrap();
         assert_eq!(published_ports.relocation, Some(true));
         assert_eq!(published_ports.warn_on_relocation, Some(true));
+        let clone_isolation = config.compose.clone_isolation.as_ref().unwrap();
+        assert_eq!(clone_isolation.enabled, Some(true));
+        let networks = clone_isolation.networks.as_ref().unwrap();
+        assert_eq!(networks.relocation, Some(true));
+        assert_eq!(networks.subnet_pool.as_deref(), Some("10.200.0.0/16"));
+        assert_eq!(networks.subnet_prefix, Some(24));
+        let names = clone_isolation.names.as_ref().unwrap();
+        assert_eq!(names.rewrite_container_names, Some(true));
+        assert_eq!(names.rewrite_resource_names, Some(true));
+        assert_eq!(clone_isolation.endpoints.len(), 1);
+        assert_eq!(clone_isolation.endpoints[0].service, "app");
     }
 
     fn assert_spec_example_credentials(config: &RawDecuneConfig) {

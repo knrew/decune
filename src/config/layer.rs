@@ -8,10 +8,11 @@ use crate::devcontainer::lifecycle::LayerLifecycleDefinition;
 use crate::config::{
     path::ConfigPathOrigin,
     schema::{
-        RawAutoPortsConfig, RawComposeConfig, RawComposePublishedPortsConfig, RawCredentialsConfig,
-        RawDecuneConfig, RawDotfileConfig, RawFeatureConfig, RawGitCredentialsConfig,
-        RawGithubCredentialsConfig, RawHookConfig, RawHooksConfig, RawMountConfig, RawPortConfig,
-        RawPortProtocol,
+        RawAutoPortsConfig, RawComposeCloneIsolationConfig, RawComposeCloneIsolationEndpointConfig,
+        RawComposeCloneIsolationNamesConfig, RawComposeCloneIsolationNetworksConfig,
+        RawComposeConfig, RawComposePublishedPortsConfig, RawCredentialsConfig, RawDecuneConfig,
+        RawDotfileConfig, RawFeatureConfig, RawGitCredentialsConfig, RawGithubCredentialsConfig,
+        RawHookConfig, RawHooksConfig, RawMountConfig, RawPortConfig, RawPortProtocol,
     },
     types::{
         Command, DEFAULT_PORT_HOST_IP, DotfileConflict, GitHttpsMode, GithubCredentialsMode,
@@ -90,6 +91,7 @@ impl ConfigLayer {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct LayerCompose {
     pub(crate) published_ports: LayerComposePublishedPorts,
+    pub(crate) clone_isolation: Box<LayerComposeCloneIsolation>,
 }
 
 impl LayerCompose {
@@ -100,6 +102,92 @@ impl LayerCompose {
                 .as_ref()
                 .map(LayerComposePublishedPorts::from_raw)
                 .unwrap_or_default(),
+            clone_isolation: Box::new(
+                raw.clone_isolation
+                    .as_ref()
+                    .map(LayerComposeCloneIsolation::from_raw)
+                    .unwrap_or_default(),
+            ),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LayerComposeCloneIsolation {
+    pub(crate) enabled: Option<bool>,
+    pub(crate) networks: LayerComposeCloneIsolationNetworks,
+    pub(crate) names: LayerComposeCloneIsolationNames,
+    pub(crate) endpoints: Vec<LayerComposeCloneIsolationEndpoint>,
+}
+
+impl LayerComposeCloneIsolation {
+    fn from_raw(raw: &RawComposeCloneIsolationConfig) -> Self {
+        Self {
+            enabled: raw.enabled,
+            networks: raw
+                .networks
+                .as_ref()
+                .map(LayerComposeCloneIsolationNetworks::from_raw)
+                .unwrap_or_default(),
+            names: raw
+                .names
+                .as_ref()
+                .map(LayerComposeCloneIsolationNames::from_raw)
+                .unwrap_or_default(),
+            endpoints: raw
+                .endpoints
+                .iter()
+                .map(LayerComposeCloneIsolationEndpoint::from_raw)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LayerComposeCloneIsolationNetworks {
+    pub(crate) relocation: Option<bool>,
+    pub(crate) subnet_pool: Option<String>,
+    pub(crate) subnet_prefix: Option<u8>,
+}
+
+impl LayerComposeCloneIsolationNetworks {
+    fn from_raw(raw: &RawComposeCloneIsolationNetworksConfig) -> Self {
+        Self {
+            relocation: raw.relocation,
+            subnet_pool: raw.subnet_pool.clone(),
+            subnet_prefix: raw.subnet_prefix,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LayerComposeCloneIsolationNames {
+    pub(crate) rewrite_container_names: Option<bool>,
+    pub(crate) rewrite_resource_names: Option<bool>,
+}
+
+impl LayerComposeCloneIsolationNames {
+    const fn from_raw(raw: &RawComposeCloneIsolationNamesConfig) -> Self {
+        Self {
+            rewrite_container_names: raw.rewrite_container_names,
+            rewrite_resource_names: raw.rewrite_resource_names,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerComposeCloneIsolationEndpoint {
+    pub(crate) service: String,
+    pub(crate) env: String,
+    pub(crate) value: String,
+}
+
+impl LayerComposeCloneIsolationEndpoint {
+    fn from_raw(raw: &RawComposeCloneIsolationEndpointConfig) -> Self {
+        Self {
+            service: raw.service.clone(),
+            env: raw.env.clone(),
+            value: raw.value.clone(),
         }
     }
 }
