@@ -651,7 +651,7 @@ fn compose_up_records_published_port_runtime_state() {
     );
 }
 
-fn decune_with_fake_container_tools(workspace: &support::TempWorkspace) -> assert_cmd::Command {
+fn decune_with_fake_container_tools(workspace: &support::TempWorkspace) -> TestCommand {
     let container_tools_dir = fake_container_tools_bundle(workspace);
     let mut command = decune();
     command.env("DECUNE_CONTAINER_TOOLS_DIR", container_tools_dir);

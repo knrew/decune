@@ -484,7 +484,7 @@ mod tests {
     }
     #[test]
     fn corrupt_state_file_reports_unreadable_config_and_issue() {
-        let root = temp_root("corrupt-state");
+        let (_temp, root) = temp_root("corrupt-state");
         let state_dir = root.join(WORKSPACE_ID);
         fs::create_dir_all(&state_dir).unwrap();
         fs::write(state_dir.join("state.toml"), "version = 'bad'").unwrap();
@@ -817,13 +817,13 @@ mod tests {
         }
     }
 
-    fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir()
-            .join("decune-status-tests")
-            .join(std::process::id().to_string())
-            .join(name);
-        _ = fs::remove_dir_all(&root);
+    fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::Builder::new()
+            .prefix("decune-status-inventory-tests-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().join(name);
         fs::create_dir_all(&root).unwrap();
-        root
+        (temp, root)
     }
 }

@@ -503,7 +503,7 @@ mod tests {
     const WORKSPACE_ID: &str = "123456abcdef";
     #[test]
     fn invalid_state_directory_ids_are_ignored() {
-        let root = temp_root("invalid-state");
+        let (_temp, root) = temp_root("invalid-state");
         fs::create_dir_all(root.join("../invalid")).unwrap();
         let invalid = root.join("not-a-valid-id");
         fs::create_dir_all(&invalid).unwrap();
@@ -911,14 +911,14 @@ mod tests {
             lifecycle: LifecycleState::default(),
         }
     }
-    fn temp_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir()
-            .join("decune-status-tests")
-            .join(std::process::id().to_string())
-            .join(name);
-        _ = fs::remove_dir_all(&root);
+    fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::Builder::new()
+            .prefix("decune-status-evidence-tests-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().join(name);
         fs::create_dir_all(&root).unwrap();
-        root
+        (temp, root)
     }
     fn output(stdout: &[u8]) -> RuntimeOutput {
         RuntimeOutput {

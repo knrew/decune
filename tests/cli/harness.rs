@@ -1,6 +1,7 @@
 use std::{
     ffi::OsString,
     fmt::{Debug, Display},
+    ops::{Deref, DerefMut},
 };
 
 use assert_cmd::Command;
@@ -29,6 +30,25 @@ pub(crate) use names::*;
 
 const DECUNE_DOCKER_RESOURCE_LOCK_ENV: &str = "DECUNE_DOCKER_RESOURCE_LOCK";
 const DECUNE_FAKE_COMPOSE_CAPABILITIES_ENV: &str = "DECUNE_FAKE_COMPOSE_CAPABILITIES";
+
+pub(crate) struct TestCommand {
+    command: Command,
+    gh_config: support::TempWorkspace,
+}
+
+impl Deref for TestCommand {
+    type Target = Command;
+
+    fn deref(&self) -> &Self::Target {
+        &self.command
+    }
+}
+
+impl DerefMut for TestCommand {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.command
+    }
+}
 
 // Clippy's allow-*-in-tests settings do not apply to shared integration-test
 // helpers, so these keep setup failures as test failures without local allows.
@@ -78,14 +98,11 @@ pub(crate) fn test_fail(message: impl Display) -> ! {
     std::process::abort();
 }
 
-pub(crate) fn decune() -> Command {
-    let gh_config_dir =
-        std::env::temp_dir().join(format!("decune-cli-test-empty-gh-{}", std::process::id()));
-    std::fs::create_dir_all(&gh_config_dir).must();
-
+pub(crate) fn decune() -> TestCommand {
+    let gh_config = support::TempWorkspace::new().must();
     let mut command = Command::cargo_bin("decune").must();
     command
-        .env("GH_CONFIG_DIR", gh_config_dir)
+        .env("GH_CONFIG_DIR", gh_config.path())
         .env(
             DECUNE_FAKE_COMPOSE_CAPABILITIES_ENV,
             fake_compose_capabilities_script_path(),
@@ -98,7 +115,18 @@ pub(crate) fn decune() -> Command {
         .env_remove("GITHUB_TOKEN")
         .env_remove("GH_ENTERPRISE_TOKEN")
         .env_remove("GITHUB_ENTERPRISE_TOKEN");
-    command
+    TestCommand { command, gh_config }
+}
+
+#[test]
+fn decune_command_removes_gh_config_directory_on_drop() {
+    let command = decune();
+    let gh_config_path = command.gh_config.path().to_path_buf();
+    assert!(gh_config_path.is_dir());
+
+    drop(command);
+
+    assert!(!gh_config_path.exists());
 }
 
 pub(crate) fn symlink_host_executable_into_path(name: &str, path_dir: &Path) -> PathBuf {

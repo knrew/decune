@@ -19,6 +19,18 @@ mod tests {
     }
 
     #[test]
+    fn temp_workspace_removes_directory_on_drop() {
+        let path = {
+            let workspace = TempWorkspace::new().unwrap();
+            let path = workspace.path().to_path_buf();
+            assert!(path.is_dir());
+            path
+        };
+
+        assert!(!path.exists());
+    }
+
+    #[test]
     fn temp_workspace_writes_nested_files() {
         let workspace = TempWorkspace::new().unwrap();
 

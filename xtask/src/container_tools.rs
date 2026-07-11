@@ -306,8 +306,8 @@ fn read_manifest(dir: &Path) -> Result<Manifest> {
     })
 }
 
-fn replace_dir(temp: TempDir, target: &Path) -> Result<()> {
-    let persist_path = temp.keep();
+fn replace_dir(mut temp: TempDir, target: &Path) -> Result<()> {
+    let staging_path = temp.path().to_path_buf();
     match fs::remove_dir_all(target) {
         Ok(()) => {}
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
@@ -320,13 +320,15 @@ fn replace_dir(temp: TempDir, target: &Path) -> Result<()> {
             });
         }
     }
-    fs::rename(&persist_path, target).with_context(|| {
+    fs::rename(&staging_path, target).with_context(|| {
         format!(
             "Failed to replace container tools directory: {} -> {}",
-            persist_path.display(),
+            staging_path.display(),
             target.display()
         )
-    })
+    })?;
+    temp.disable_cleanup(true);
+    Ok(())
 }
 
 fn validate_manifest_path(path: &Path) -> Result<()> {
@@ -440,6 +442,60 @@ mod tests {
         assert_eq!(PLATFORMS[0].rust_target, "x86_64-unknown-linux-musl");
         assert_eq!(PLATFORMS[1].id, "linux-arm64");
         assert_eq!(PLATFORMS[1].rust_target, "aarch64-unknown-linux-musl");
+    }
+
+    #[test]
+    fn replace_dir_promotes_staging_directory() {
+        let parent = TempDir::new().unwrap();
+        let staging = TempDir::new_in(parent.path()).unwrap();
+        let staging_path = staging.path().to_path_buf();
+        fs::write(staging.path().join("new"), "new").unwrap();
+        let target = parent.path().join("target");
+        fs::create_dir_all(&target).unwrap();
+        fs::write(target.join("old"), "old").unwrap();
+
+        replace_dir(staging, &target).unwrap();
+
+        assert!(!staging_path.exists());
+        assert!(!target.join("old").exists());
+        assert_eq!(fs::read_to_string(target.join("new")).unwrap(), "new");
+    }
+
+    #[test]
+    fn replace_dir_cleans_staging_when_target_removal_fails() {
+        let parent = TempDir::new().unwrap();
+        let staging = TempDir::new_in(parent.path()).unwrap();
+        let staging_path = staging.path().to_path_buf();
+        let target = parent.path().join("target");
+        fs::write(&target, "not a directory").unwrap();
+
+        let error = replace_dir(staging, &target).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to remove existing container tools directory")
+        );
+        assert!(!staging_path.exists());
+        assert!(target.is_file());
+    }
+
+    #[test]
+    fn replace_dir_cleans_staging_when_rename_fails() {
+        let parent = TempDir::new().unwrap();
+        let staging = TempDir::new_in(parent.path()).unwrap();
+        let staging_path = staging.path().to_path_buf();
+        let target = parent.path().join("missing/target");
+
+        let error = replace_dir(staging, &target).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Failed to replace container tools directory")
+        );
+        assert!(!staging_path.exists());
+        assert!(!target.exists());
     }
 
     #[test]

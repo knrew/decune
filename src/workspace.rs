@@ -367,18 +367,19 @@ mod tests {
         PathRoots, Workspace, WorkspacePaths, git_stdout_line, safe_workspace_slug, workspace_id,
     };
 
-    fn fixture_root(name: &str) -> PathBuf {
-        let root = std::env::temp_dir()
-            .join("decune-workspace-tests")
-            .join(format!("{}-{}", name, std::process::id()));
-        _ = fs::remove_dir_all(&root);
+    fn fixture_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::Builder::new()
+            .prefix("decune-workspace-tests-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().join(name);
         fs::create_dir_all(&root).unwrap();
-        root
+        (temp, root)
     }
 
     #[test]
     fn resolves_existing_directory_as_canonical_workspace_root() {
-        let root = fixture_root("plain");
+        let (_temp, root) = fixture_root("plain");
 
         let workspace = Workspace::resolve(&root).unwrap();
 
@@ -397,7 +398,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlinked_workspace_uses_same_canonical_id() {
-        let root = fixture_root("symlink-target");
+        let (_temp, root) = fixture_root("symlink-target");
         let link = root.with_file_name("symlink-link");
         _ = fs::remove_file(&link);
         unix_fs::symlink(&root, &link).unwrap();
@@ -416,7 +417,7 @@ mod tests {
             return;
         }
 
-        let root = fixture_root("git-root");
+        let (_temp, root) = fixture_root("git-root");
         let child = root.join("nested/project");
         fs::create_dir_all(&child).unwrap();
 
@@ -445,7 +446,7 @@ mod tests {
             return;
         }
 
-        let parent = fixture_root("git-root-with-trailing-space-parent");
+        let (_temp, parent) = fixture_root("git-root-with-trailing-space-parent");
         let root = parent.join("repo-with-trailing-space ");
         let child = root.join("nested/project");
         fs::create_dir_all(&child).unwrap();
@@ -469,7 +470,8 @@ mod tests {
 
     #[test]
     fn missing_workspace_path_returns_contextual_error() {
-        let missing = fixture_root("missing-parent").join("missing");
+        let (_temp, parent) = fixture_root("missing-parent");
+        let missing = parent.join("missing");
 
         let error = Workspace::resolve(&missing).unwrap_err();
         let message = format!("{error:#}");
@@ -480,7 +482,7 @@ mod tests {
 
     #[test]
     fn file_workspace_path_is_rejected() {
-        let root = fixture_root("file-path");
+        let (_temp, root) = fixture_root("file-path");
         let file = root.join("not-a-directory");
         fs::write(&file, b"contents").unwrap();
 
