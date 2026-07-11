@@ -154,6 +154,8 @@ pub(crate) struct ComposeConfigService {
     pub(crate) command: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) container_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_compose_service_networks")]
+    pub(crate) networks: BTreeMap<String, JsonValue>,
     #[serde(default)]
     pub(crate) ports: Vec<JsonValue>,
 }
@@ -165,6 +167,10 @@ impl ComposeConfigService {
 
     pub(crate) fn uses_host_network(&self) -> bool {
         self.network_mode.as_deref() == Some("host")
+    }
+
+    pub(crate) fn network_names(&self) -> impl Iterator<Item = &String> {
+        self.networks.keys()
     }
 }
 
@@ -266,6 +272,39 @@ where
         other @ (JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::Object(_)) => {
             Err(de::Error::custom(format!(
                 "Docker Compose startup value must be null, string, or string array: {other}"
+            )))
+        }
+    }
+}
+
+fn deserialize_compose_service_networks<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<String, JsonValue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let Some(value) = Option::<JsonValue>::deserialize(deserializer)? else {
+        return Ok(BTreeMap::new());
+    };
+    match value {
+        JsonValue::Object(values) => Ok(values.into_iter().collect()),
+        JsonValue::Array(values) => values
+            .into_iter()
+            .map(|value| match value {
+                JsonValue::String(network) => Ok((network, JsonValue::Null)),
+                other @ (JsonValue::Null
+                | JsonValue::Bool(_)
+                | JsonValue::Number(_)
+                | JsonValue::Array(_)
+                | JsonValue::Object(_)) => Err(de::Error::custom(format!(
+                    "Docker Compose service networks list must contain only strings: {other}"
+                ))),
+            })
+            .collect(),
+        JsonValue::Null => Ok(BTreeMap::new()),
+        other @ (JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_)) => {
+            Err(de::Error::custom(format!(
+                "Docker Compose service networks must be an object or string array: {other}"
             )))
         }
     }

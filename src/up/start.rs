@@ -43,6 +43,7 @@ use crate::{
             ComposeConfigService, ComposeOverridePatch, ComposeOverrideServicePatch,
             ComposeProjectPlan, write_compose_override,
         },
+        compose_isolation::{ComposeIsolationNameRewritePlan, ComposeIsolationResourceKind},
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
             ComposePublishedPortOverride, ComposePublishedPortPlan,
@@ -101,8 +102,8 @@ pub(in crate::up) use state_sync::StartedUpContainer;
 use compose::{start_compose_project, validate_compose_canonical_model};
 use compose_override::warn_on_compose_published_port_relocations;
 use compose_override::{
-    attach_compose_interpolation_env_to_plan, compose_port_protocol_name,
-    write_generated_compose_override,
+    ComposeGeneratedOverrideRuntime, attach_compose_interpolation_env_to_plan,
+    compose_port_protocol_name, write_generated_compose_override,
 };
 use container::{
     container_exited_during_startup_error, ensure_container_running_after_start,

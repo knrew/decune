@@ -317,6 +317,13 @@ on_auto_forward = "notify"
 relocation = false
 warn_on_relocation = false
 
+[compose.clone_isolation]
+enabled = false
+
+[compose.clone_isolation.names]
+rewrite_container_names = true
+rewrite_resource_names = true
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -382,6 +389,23 @@ Compose published port 関連の代表的な diagnostic code と対処は次の�
 - `compose_published_port_multi_replica_unsupported`: replica 数が 2 以上の service が fixed TCP published host port を持っています。container-only port、明示的に分けた複数 service、Compose port range、または replica 数 1 を使ってください。
 
 decune port forwarding と、Dev Container `appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error です。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧に表示されます。
+
+## Compose clone isolation
+
+同じ Compose-based workspace の複数 clone を同時起動すると、明示的な `container_name` や top-level resource の `name` が Compose project name の scope を外れて衝突します。`.decune/config.toml` で `[compose.clone_isolation].enabled = true` にすると、既定でこれらを `<元名>-<workspace_id>` へ書き換えます。
+
+```toml
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+
+[compose.clone_isolation.names]
+rewrite_container_names = true
+rewrite_resource_names = true
+```
+
+`external: true` の network / volume / config / secret は共有 resource として書き換えません。固定名 volume は clone ごとに別 volume になるため、データも clone 間で分離されます。container 間通信では元の `container_name` を DNS alias として維持しますが、host 側から `docker exec <元名>` のように固定名を直接使う tool は書き換え後の名前へ更新してください。詳細は [specification.md](specification.md#composeclone_isolation) を参照してください。
 
 ## 認証情報とセキュリティ
 

@@ -889,6 +889,55 @@ fn compose_integration_generated_override_is_valid_final_compose_config() {
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_clone_isolation_rewrites_fixed_names_for_two_workspaces() {
+    let first = compose_fixture_workspace("clone-isolation-fixed-names");
+    let second = compose_fixture_workspace("clone-isolation-fixed-names");
+    let first_id = workspace_id(first.path());
+    let second_id = workspace_id(second.path());
+    assert_ne!(first_id, second_id);
+
+    run_decune_up_detach(first.path(), &[]);
+    run_decune_up_detach(second.path(), &[]);
+
+    let first_container = format!("fixed-app-385-{first_id}");
+    let second_container = format!("fixed-app-385-{second_id}");
+    let container_names = docker_output([
+        "ps",
+        "--filter",
+        "name=fixed-app-385-",
+        "--format",
+        "{{.Names}}",
+    ])
+    .must();
+    let container_names = container_names.lines().collect::<Vec<_>>();
+    assert!(container_names.contains(&first_container.as_str()));
+    assert!(container_names.contains(&second_container.as_str()));
+
+    let first_volume = format!("fixed-cache-385-{first_id}");
+    let second_volume = format!("fixed-cache-385-{second_id}");
+    let volume_names = docker_output([
+        "volume",
+        "ls",
+        "--filter",
+        "name=fixed-cache-385-",
+        "--format",
+        "{{.Name}}",
+    ])
+    .must();
+    let volume_names = volume_names.lines().collect::<Vec<_>>();
+    assert!(volume_names.contains(&first_volume.as_str()));
+    assert!(volume_names.contains(&second_volume.as_str()));
+
+    let resolved = compose_service_container_output(
+        first.path(),
+        "probe",
+        ["getent", "hosts", "fixed-app-385"],
+    );
+    assert!(resolved.contains("fixed-app-385"));
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_multi_file_merge_applies_override() {
     let workspace = compose_fixture_workspace("multi-file");
 

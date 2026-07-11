@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
 
 use anyhow::{Context, Result, bail};
 use serde_json::Value as JsonValue;
@@ -11,6 +15,10 @@ use crate::{
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ComposeOverridePatch {
     services: BTreeMap<String, ComposeOverrideServicePatch>,
+    networks: BTreeMap<String, String>,
+    volumes: BTreeMap<String, String>,
+    configs: BTreeMap<String, String>,
+    secrets: BTreeMap<String, String>,
     forbidden_secret_values: Vec<String>,
 }
 
@@ -18,6 +26,7 @@ pub(crate) struct ComposeOverridePatch {
 pub(crate) struct ComposeOverrideServicePatch {
     name: String,
     image: Option<String>,
+    container_name: Option<String>,
     pull_policy: Option<String>,
     labels: BTreeMap<String, String>,
     environment: BTreeMap<String, ComposeOverrideEnvironmentValue>,
@@ -27,6 +36,7 @@ pub(crate) struct ComposeOverrideServicePatch {
     cap_add: Vec<String>,
     security_opt: Vec<String>,
     mounts: Vec<ComposeOverrideMount>,
+    network_aliases: BTreeMap<String, BTreeSet<String>>,
     ports_override: Vec<ComposeOverridePortEntry>,
     entrypoint: Vec<String>,
     command: Vec<String>,
@@ -60,6 +70,10 @@ impl ComposeOverridePatch {
         let forbidden_secret_values = primary.forbidden_secret_values();
         Self {
             services: BTreeMap::from([(primary.name.clone(), primary)]),
+            networks: BTreeMap::new(),
+            volumes: BTreeMap::new(),
+            configs: BTreeMap::new(),
+            secrets: BTreeMap::new(),
             forbidden_secret_values,
         }
     }
@@ -68,6 +82,48 @@ impl ComposeOverridePatch {
         self.forbidden_secret_values
             .extend(service.forbidden_secret_values());
         self.services.insert(service.name.clone(), service);
+        self
+    }
+
+    pub(crate) fn service_container_name(
+        mut self,
+        service_name: &str,
+        container_name: &str,
+        original_name: &str,
+        networks: &[String],
+    ) -> Self {
+        let service = self
+            .services
+            .entry(service_name.to_owned())
+            .or_insert_with(|| ComposeOverrideServicePatch::new(service_name));
+        service.container_name = Some(container_name.to_owned());
+        for network in networks {
+            service
+                .network_aliases
+                .entry(network.clone())
+                .or_default()
+                .insert(original_name.to_owned());
+        }
+        self
+    }
+
+    pub(crate) fn network_name(mut self, resource: &str, name: &str) -> Self {
+        self.networks.insert(resource.to_owned(), name.to_owned());
+        self
+    }
+
+    pub(crate) fn volume_name(mut self, resource: &str, name: &str) -> Self {
+        self.volumes.insert(resource.to_owned(), name.to_owned());
+        self
+    }
+
+    pub(crate) fn config_name(mut self, resource: &str, name: &str) -> Self {
+        self.configs.insert(resource.to_owned(), name.to_owned());
+        self
+    }
+
+    pub(crate) fn secret_name(mut self, resource: &str, name: &str) -> Self {
+        self.secrets.insert(resource.to_owned(), name.to_owned());
         self
     }
 
@@ -80,6 +136,10 @@ impl ComposeOverridePatch {
             content.push_str(":\n");
             service.append_yaml(&mut content);
         }
+        append_yaml_named_resources(&mut content, "networks", &self.networks);
+        append_yaml_named_resources(&mut content, "volumes", &self.volumes);
+        append_yaml_named_resources(&mut content, "configs", &self.configs);
+        append_yaml_named_resources(&mut content, "secrets", &self.secrets);
         self.ensure_no_forbidden_secret_values(&content)?;
         Ok(content)
     }
@@ -103,6 +163,7 @@ impl ComposeOverrideServicePatch {
         Self {
             name: name.into(),
             image: None,
+            container_name: None,
             pull_policy: None,
             labels: BTreeMap::new(),
             environment: BTreeMap::new(),
@@ -112,6 +173,7 @@ impl ComposeOverrideServicePatch {
             cap_add: Vec::new(),
             security_opt: Vec::new(),
             mounts: Vec::new(),
+            network_aliases: BTreeMap::new(),
             ports_override: Vec::new(),
             entrypoint: Vec::new(),
             command: Vec::new(),
@@ -250,6 +312,9 @@ impl ComposeOverrideServicePatch {
         if let Some(image) = &self.image {
             append_yaml_scalar(content, 4, "image", image);
         }
+        if let Some(container_name) = &self.container_name {
+            append_yaml_scalar(content, 4, "container_name", container_name);
+        }
         if let Some(pull_policy) = &self.pull_policy {
             append_yaml_scalar(content, 4, "pull_policy", pull_policy);
         }
@@ -267,6 +332,7 @@ impl ComposeOverrideServicePatch {
         append_yaml_string_list(content, 4, "cap_add", &self.cap_add);
         append_yaml_string_list(content, 4, "security_opt", &self.security_opt);
         append_yaml_mounts(content, 4, &self.mounts);
+        append_yaml_network_aliases(content, 4, &self.network_aliases);
         append_yaml_ports_override(content, 4, &self.ports_override);
         append_yaml_string_list(content, 4, "entrypoint", &self.entrypoint);
         append_yaml_string_list(content, 4, "command", &self.command);
@@ -368,6 +434,49 @@ fn append_yaml_map(
         content.push_str(": ");
         content.push_str(&yaml_quote(value));
         content.push('\n');
+    }
+}
+
+fn append_yaml_named_resources(
+    content: &mut String,
+    section: &str,
+    resources: &BTreeMap<String, String>,
+) {
+    if resources.is_empty() {
+        return;
+    }
+    content.push_str(section);
+    content.push_str(":\n");
+    for (resource, name) in resources {
+        append_indent(content, 2);
+        content.push_str(&yaml_quote(resource));
+        content.push_str(":\n");
+        append_yaml_scalar(content, 4, "name", name);
+    }
+}
+
+fn append_yaml_network_aliases(
+    content: &mut String,
+    indent: usize,
+    networks: &BTreeMap<String, BTreeSet<String>>,
+) {
+    if networks.is_empty() {
+        return;
+    }
+    append_indent(content, indent);
+    content.push_str("networks:\n");
+    for (network, aliases) in networks {
+        append_indent(content, indent + 2);
+        content.push_str(&yaml_quote(network));
+        content.push_str(":\n");
+        append_indent(content, indent + 4);
+        content.push_str("aliases:\n");
+        for alias in aliases {
+            append_indent(content, indent + 6);
+            content.push_str("- ");
+            content.push_str(&yaml_quote(alias));
+            content.push('\n');
+        }
     }
 }
 
@@ -728,6 +837,51 @@ mod tests {
     }
 
     #[test]
+    fn compose_override_yaml_rewrites_fixed_names_and_preserves_container_dns_aliases() {
+        let patch = ComposeOverridePatch::new(ComposeOverrideServicePatch::new("app"))
+            .service_container_name(
+                "app",
+                "fixed-app-abc123def456",
+                "fixed-app",
+                &["backend".to_owned(), "frontend".to_owned()],
+            )
+            .network_name("backend", "fixed-backend-abc123def456")
+            .volume_name("cache", "fixed-cache-abc123def456")
+            .config_name("app-config", "fixed-config-abc123def456")
+            .secret_name("app-secret", "fixed-secret-abc123def456");
+
+        let yaml = patch.to_yaml().unwrap();
+
+        assert_eq!(
+            yaml,
+            concat!(
+                "services:\n",
+                "  'app':\n",
+                "    container_name: 'fixed-app-abc123def456'\n",
+                "    networks:\n",
+                "      'backend':\n",
+                "        aliases:\n",
+                "          - 'fixed-app'\n",
+                "      'frontend':\n",
+                "        aliases:\n",
+                "          - 'fixed-app'\n",
+                "networks:\n",
+                "  'backend':\n",
+                "    name: 'fixed-backend-abc123def456'\n",
+                "volumes:\n",
+                "  'cache':\n",
+                "    name: 'fixed-cache-abc123def456'\n",
+                "configs:\n",
+                "  'app-config':\n",
+                "    name: 'fixed-config-abc123def456'\n",
+                "secrets:\n",
+                "  'app-secret':\n",
+                "    name: 'fixed-secret-abc123def456'\n",
+            )
+        );
+    }
+
+    #[test]
     fn compose_override_command_is_emitted_only_when_requested() {
         let keepalive = ComposeOverridePatch::new(
             ComposeOverrideServicePatch::new("app").keepalive_command(true),
@@ -764,6 +918,22 @@ mod tests {
         let yaml = fs::read_to_string(override_path).unwrap();
         assert!(yaml.contains("/run/decune/secrets/github-token"));
         assert!(!yaml.contains("github-test-secret"));
+    }
+
+    #[test]
+    fn compose_override_rejects_forbidden_secret_values_in_named_resource_sections() {
+        let patch = ComposeOverridePatch::new(
+            ComposeOverrideServicePatch::new("app").secret_value_forbidden("secret-name-value"),
+        )
+        .volume_name("cache", "secret-name-value");
+
+        let error = patch.to_yaml().unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Generated Docker Compose override contains a forbidden secret value")
+        );
     }
 
     #[test]

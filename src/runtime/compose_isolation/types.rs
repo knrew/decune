@@ -62,6 +62,28 @@ pub(crate) struct ComposeIsolationFixedNameRequest {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ComposeIsolationNameRewritePlan {
+    pub(crate) services: Vec<ComposeIsolationServiceNameRewrite>,
+    pub(crate) resources: Vec<ComposeIsolationResourceNameRewrite>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeIsolationServiceNameRewrite {
+    pub(crate) service: String,
+    pub(crate) original_name: String,
+    pub(crate) rewritten_name: String,
+    pub(crate) networks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeIsolationResourceNameRewrite {
+    pub(crate) kind: ComposeIsolationResourceKind,
+    pub(crate) resource: String,
+    pub(crate) original_name: String,
+    pub(crate) rewritten_name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ComposeIsolationDaemonSnapshot {
     pub(crate) networks: Vec<ComposeIsolationDockerNetwork>,
     pub(crate) resources: Vec<ComposeIsolationDockerResource>,

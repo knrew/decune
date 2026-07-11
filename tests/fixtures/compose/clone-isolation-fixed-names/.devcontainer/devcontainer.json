@@ -1,0 +1,9 @@
+{
+  "name": "compose-clone-isolation-fixed-names",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "runServices": ["app", "probe"],
+  "workspaceFolder": "/workspace",
+  "overrideCommand": true,
+  "updateRemoteUserUID": false
+}

@@ -328,6 +328,161 @@ fn compose_fixed_volume_name_conflict_reports_diagnostic_code_before_compose_up(
 }
 
 #[test]
+fn compose_clone_isolation_opt_in_rewrites_fixed_names_in_generated_override() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                container_name: fixed-app
+                networks: [default]
+                volumes: [cache:/cache]
+            volumes:
+              cache:
+                name: fixed-cache
+            ",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let rewritten_container = format!("fixed-app-{workspace_id}");
+    let rewritten_volume = format!("fixed-cache-{workspace_id}");
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", state_home.path())
+        .env("DECUNE_FAKE_EXPECTED_CONTAINER_NAME", &rewritten_container)
+        .env("DECUNE_FAKE_EXPECTED_VOLUME_NAME", &rewritten_volume)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let override_file = state_home
+        .path()
+        .join("decune")
+        .join(&workspace_id)
+        .join("compose.override.yaml");
+    let generated = fs::read_to_string(override_file).unwrap();
+    assert!(generated.contains(&format!("container_name: '{rewritten_container}'")));
+    assert!(generated.contains("'default':\n        aliases:\n          - 'fixed-app'"));
+    assert!(generated.contains(&format!(
+        "volumes:\n  'cache':\n    name: '{rewritten_volume}'"
+    )));
+}
+
+#[test]
+fn compose_clone_isolation_without_opt_in_does_not_rewrite_fixed_names() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                container_name: fixed-app
+                networks: [default]
+                volumes: [cache:/cache]
+            volumes:
+              cache:
+                name: fixed-cache
+            ",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = false
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", state_home.path())
+        .env("DECUNE_FAKE_EXPECTED_CONTAINER_NAME", "fixed-app")
+        .env("DECUNE_FAKE_EXPECTED_VOLUME_NAME", "fixed-cache")
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let override_file = state_home
+        .path()
+        .join("decune")
+        .join(workspace_id)
+        .join("compose.override.yaml");
+    let generated = fs::read_to_string(override_file).unwrap();
+    assert!(!generated.contains("container_name:"));
+    assert!(!generated.contains("volumes:\n  'cache':\n    name:"));
+}
+
+#[test]
 fn compose_reports_all_fixed_resource_name_conflicts_before_compose_up() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
