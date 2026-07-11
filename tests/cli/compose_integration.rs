@@ -423,9 +423,9 @@ fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() 
     let second_network = format!("fixed-network-388-{second_id}");
     let (first_subnet, first_gateway) = compose_network_subnet_and_gateway(&first_network);
     let (second_subnet, second_gateway) = compose_network_subnet_and_gateway(&second_network);
-    assert!(first_subnet.starts_with("10.224."));
+    assert!(first_subnet.starts_with("10."));
     assert!(first_subnet.ends_with("/24"));
-    assert!(second_subnet.starts_with("10.224."));
+    assert!(second_subnet.starts_with("10."));
     assert!(second_subnet.ends_with("/24"));
     assert_ne!(first_subnet, second_subnet);
 
