@@ -111,13 +111,18 @@ pub(crate) struct ComposeIsolationSubnetPlanInput<'a> {
     pub(crate) rebuild: bool,
 }
 
+struct ValidatedRelocationRequest<'a> {
+    requested: &'a ComposeIsolationNetworkRequest,
+    cidr: Ipv4Cidr,
+}
+
 pub(crate) fn plan_compose_isolation_subnets(
     input: &ComposeIsolationSubnetPlanInput<'_>,
 ) -> Result<ComposeIsolationSubnetPlan> {
     if !input.enabled || !input.relocation || input.scan.networks.is_empty() {
         return Ok(ComposeIsolationSubnetPlan::default());
     }
-    validate_relocation_requests(input)?;
+    let validated_requests = validate_relocation_requests(input)?;
     let pool_text = input.subnet_pool.ok_or_else(|| {
         anyhow!(
             "{COMPOSE_CLONE_ISOLATION_INVALID}: compose.clone_isolation.networks.subnet_pool is required when network relocation is enabled"
@@ -131,14 +136,9 @@ pub(crate) fn plan_compose_isolation_subnets(
     let mut plan = ComposeIsolationSubnetPlan::default();
     let mut assigned = Vec::new();
 
-    for requested in &input.scan.networks {
-        let requested_cidr = Ipv4Cidr::parse(&requested.subnet).ok_or_else(|| {
-            anyhow!(
-                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: fixed IPv6 Compose network subnets cannot be relocated; network `{}`; subnet {}",
-                requested.network,
-                requested.subnet
-            )
-        })?;
+    for validated in validated_requests {
+        let requested = validated.requested;
+        let requested_cidr = validated.cidr;
         let prefix = input
             .subnet_prefix
             .unwrap_or_else(|| requested_cidr.prefix());
@@ -209,8 +209,11 @@ pub(crate) fn apply_compose_isolation_subnet_plan(
     effective
 }
 
-fn validate_relocation_requests(input: &ComposeIsolationSubnetPlanInput<'_>) -> Result<()> {
+fn validate_relocation_requests<'a>(
+    input: &'a ComposeIsolationSubnetPlanInput<'_>,
+) -> Result<Vec<ValidatedRelocationRequest<'a>>> {
     let mut networks = BTreeSet::new();
+    let mut validated = Vec::with_capacity(input.scan.networks.len());
     for requested in &input.scan.networks {
         if !networks.insert(&requested.network) {
             bail!(
@@ -218,13 +221,13 @@ fn validate_relocation_requests(input: &ComposeIsolationSubnetPlanInput<'_>) -> 
                 requested.network
             );
         }
-        if Ipv4Cidr::parse(&requested.subnet).is_none() {
-            bail!(
+        let cidr = Ipv4Cidr::parse(&requested.subnet).ok_or_else(|| {
+            anyhow!(
                 "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: fixed IPv6 Compose network subnets cannot be relocated; network `{}`; subnet {}",
                 requested.network,
                 requested.subnet
-            );
-        }
+            )
+        })?;
         for (service_name, service) in input.model.services() {
             let Some(network_config) = service.network_config(&requested.network) else {
                 continue;
@@ -241,8 +244,9 @@ fn validate_relocation_requests(input: &ComposeIsolationSubnetPlanInput<'_>) -> 
                 }
             }
         }
+        validated.push(ValidatedRelocationRequest { requested, cidr });
     }
-    Ok(())
+    Ok(validated)
 }
 
 fn unavailable_subnets(

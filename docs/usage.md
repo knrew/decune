@@ -400,12 +400,23 @@ version = 1
 [compose.clone_isolation]
 enabled = true
 
+[compose.clone_isolation.networks]
+relocation = true
+subnet_pool = "10.200.0.0/16"
+subnet_prefix = 24
+
 [compose.clone_isolation.names]
 rewrite_container_names = true
 rewrite_resource_names = true
 ```
 
 `external: true` の network / volume / config / secret は共有 resource として書き換えません。固定名 volume は clone ごとに別 volume になるため、データも clone 間で分離されます。container 間通信では元の `container_name` を DNS alias として維持しますが、host 側から `docker exec <元名>` のように固定名を直接使う tool は書き換え後の名前へ更新してください。詳細は [specification.md](specification.md#composeclone_isolation) を参照してください。
+
+`[compose.clone_isolation.networks].relocation = true` にすると、固定 IPv4 IPAM subnet を `subnet_pool` 内の workspace 固有 subnet へ移します。`subnet_pool` は必須で、`subnet_prefix` を省略した場合は元 subnet の prefix 長を維持します。実際に subnet を変更する場合は Docker Compose v2.24.4 以上が必要です。IPv6、static service address、external network は relocation しません。
+
+既存 network の subnet を変更する必要があり container が接続されたままの場合は、`decune down` の後に `decune rebuild` を実行してください。別 process で複数の `decune up` を同時実行すると、preflight 後の network 作成までに同じ subnet を選ぶ場合があります。Docker 側で subnet 重複になった場合は、先に成功した起動の完了後に失敗した `decune up` を再実行してください。
+
+現時点では、元 gateway を埋め込んだ service environment 値を relocation に合わせて書き換えません。gateway を参照する外部 endpoint 契約は、relocation を有効にする前に確認してください。
 
 ## 認証情報とセキュリティ
 

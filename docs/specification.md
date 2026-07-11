@@ -824,6 +824,7 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
 
 - slot 数は `2^(subnet_prefix - pool_prefix)` とする。`subnet_prefix` 省略時は元 subnet の prefix 長を使う。
 - 初期 slot は SHA-256 の入力 `decune-clone-isolation-subnet-v1:<workspace_id>:<compose-network-key>` の先頭 8 byte を big-endian 整数として読み、slot 数で剰余を取って決める。そこから線形探索し、自 project 以外の同じ IPAM address space にある daemon network subnet、または同一 plan で割当済みの subnet と重複する slot を飛ばす。空きがなければ `compose_clone_isolation_pool_exhausted` で error にする。
+- 別 process の relocation preflight と network 作成は atomic ではない。同じ初期 slot を選ぶ複数の `decune up` を同時に実行すると、相互の network が daemon snapshot にまだ現れず、後続の Docker network 作成が subnet 重複で失敗する場合がある。その場合は、先に成功した起動の network 作成後に失敗した `decune up` を再実行し、最新の daemon snapshot から再計画する。
 - 元 IPAM config に gateway がある場合、元 subnet 内の host offset を新 subnet でも保存する。offset が新 prefix に収まらなければ `compose_clone_isolation_invalid` で error にする。元 gateway がなければ生成しない。
 - 同じ Compose project の既存 network が、対象 Compose network key に対して pool 内の非重複 subnet を保持していれば最優先で再利用する。次に state の前回割当を再利用する。通常の `up` では blocker が消えても割当を維持し、requested subnet を再度優先するのは rebuild 時だけとする。
 - 自 project の既存 network と新 plan の subnet が異なる場合、接続 container がなければ network を削除し、Compose に再作成させる。接続 container がある場合は `compose_clone_isolation_invalid` で停止し、`decune down` で project を停止してから `decune rebuild` するよう案内する。

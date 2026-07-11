@@ -92,25 +92,73 @@ pub(crate) fn allocate_ipv4_subnet_slot(
     let initial_slot = u64::from_be_bytes([
         digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
     ]) % slot_count;
+    let occupied = occupied_slot_intervals(pool, slot_size, unavailable);
+    let slot = first_free_slot(&occupied, initial_slot, slot_count)
+        .or_else(|| first_free_slot(&occupied, 0, initial_slot))?;
+    let network = u64::from(pool.network).checked_add(slot.checked_mul(slot_size)?)?;
+    let network = u32::try_from(network).ok()?;
+    let broadcast = network.checked_add(u32::try_from(slot_size - 1).ok()?)?;
+    Some(Ipv4Cidr {
+        network,
+        broadcast,
+        prefix: subnet_prefix,
+    })
+}
 
-    for offset in 0..slot_count {
-        let slot = (initial_slot + offset) % slot_count;
-        let network = u64::from(pool.network).checked_add(slot.checked_mul(slot_size)?)?;
-        let network = u32::try_from(network).ok()?;
-        let broadcast = network.checked_add(u32::try_from(slot_size - 1).ok()?)?;
-        let candidate = Ipv4Cidr {
-            network,
-            broadcast,
-            prefix: subnet_prefix,
-        };
-        if unavailable
-            .iter()
-            .all(|existing| !candidate.overlaps(*existing))
+fn occupied_slot_intervals(
+    pool: Ipv4Cidr,
+    slot_size: u64,
+    unavailable: &[Ipv4Cidr],
+) -> Vec<(u64, u64)> {
+    let pool_network = u64::from(pool.network);
+    let mut intervals = unavailable
+        .iter()
+        .filter(|existing| pool.overlaps(**existing))
+        .map(|existing| {
+            let overlap_start = u64::from(pool.network.max(existing.network));
+            let overlap_end = u64::from(pool.broadcast.min(existing.broadcast));
+            (
+                (overlap_start - pool_network) / slot_size,
+                (overlap_end - pool_network) / slot_size,
+            )
+        })
+        .collect::<Vec<_>>();
+    intervals.sort_unstable_by_key(|interval| interval.0);
+
+    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(intervals.len());
+    for interval in intervals {
+        if let Some(previous) = merged.last_mut()
+            && interval.0 <= previous.1 + 1
         {
-            return Some(candidate);
+            previous.1 = previous.1.max(interval.1);
+        } else {
+            merged.push(interval);
         }
     }
-    None
+    merged
+}
+
+fn first_free_slot(intervals: &[(u64, u64)], start: u64, end: u64) -> Option<u64> {
+    if start >= end {
+        return None;
+    }
+    let mut candidate = start;
+    for &(occupied_start, occupied_end) in intervals {
+        if occupied_end < candidate {
+            continue;
+        }
+        if occupied_start >= end {
+            break;
+        }
+        if occupied_start > candidate {
+            return Some(candidate);
+        }
+        candidate = occupied_end.checked_add(1)?;
+        if candidate >= end {
+            return None;
+        }
+    }
+    Some(candidate)
 }
 
 #[cfg(test)]
@@ -162,6 +210,27 @@ mod tests {
 
         assert_eq!(
             allocate_ipv4_subnet_slot(pool, 31, "workspace-a", "grpc", &occupied),
+            None
+        );
+    }
+
+    #[test]
+    fn slot_allocation_skips_large_occupied_interval_and_wraps() {
+        let pool = Ipv4Cidr::parse("0.0.0.0/0").unwrap();
+        let occupied = [Ipv4Cidr::parse("128.0.0.0/1").unwrap()];
+
+        assert_eq!(
+            allocate_ipv4_subnet_slot(pool, 32, "workspace-a", "grpc", &occupied),
+            Ipv4Cidr::parse("0.0.0.0/32")
+        );
+    }
+
+    #[test]
+    fn slot_allocation_reports_large_pool_exhaustion_without_scanning_slots() {
+        let pool = Ipv4Cidr::parse("0.0.0.0/0").unwrap();
+
+        assert_eq!(
+            allocate_ipv4_subnet_slot(pool, 32, "workspace-a", "grpc", &[pool]),
             None
         );
     }
