@@ -465,6 +465,9 @@ fn write_config_compose(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
         writer.field("clone_isolation", |writer| {
             writer.object("CloneIsolation", |writer| {
                 writer.field("enabled", |writer| writer.bool(clone_isolation.enabled));
+                if !clone_isolation.enabled {
+                    return;
+                }
                 writer.field("networks", |writer| {
                     writer.object("Networks", |writer| {
                         writer.field("relocation", |writer| {
@@ -1823,9 +1826,60 @@ warn_on_relocation = true
     }
 
     #[test]
-    fn compose_clone_isolation_settings_change_hash() {
+    fn compose_clone_isolation_enabled_changes_hash() {
         let disabled = resolved_config("version = 1\n");
         let enabled = resolved_config(
+            r"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+",
+        );
+
+        assert_ne!(hash_for(&disabled), hash_for(&enabled));
+    }
+
+    #[test]
+    fn disabled_compose_clone_isolation_settings_do_not_change_hash() {
+        let baseline = resolved_config("version = 1\n");
+        let configured = resolved_config(
+            r#"
+version = 1
+
+[compose.clone_isolation]
+enabled = false
+
+[compose.clone_isolation.networks]
+relocation = true
+subnet_pool = "10.200.0.0/16"
+subnet_prefix = 24
+
+[compose.clone_isolation.names]
+rewrite_container_names = false
+rewrite_resource_names = false
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "HOST_AGENT_ENDPOINT"
+value = "grpc://${decune.network.fixed_net.gateway}:50051"
+"#,
+        );
+
+        assert_eq!(hash_for(&baseline), hash_for(&configured));
+    }
+
+    #[test]
+    fn enabled_compose_clone_isolation_settings_change_hash() {
+        let baseline = resolved_config(
+            r"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+",
+        );
+        let configured = resolved_config(
             r#"
 version = 1
 
@@ -1847,7 +1901,7 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
 "#,
         );
 
-        assert_ne!(hash_for(&disabled), hash_for(&enabled));
+        assert_ne!(hash_for(&baseline), hash_for(&configured));
     }
 
     #[test]
