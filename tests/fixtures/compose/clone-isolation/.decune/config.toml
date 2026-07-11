@@ -4,8 +4,9 @@ version = 1
 enabled = true
 
 [compose.clone_isolation.networks]
-relocation  = true
-subnet_pool = "10.0.0.0/8"
+relocation = true
+# Keep the pool disjoint from the original 10.223.0.0/24 subnet so stale endpoint detection always exercises relocation.
+subnet_pool = "10.0.0.0/9"
 
 [[compose.clone_isolation.endpoints]]
 env     = "AGENT_ENDPOINT"
