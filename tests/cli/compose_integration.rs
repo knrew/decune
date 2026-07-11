@@ -339,6 +339,37 @@ fn compose_integration_clone_isolation_relocates_fixed_subnets_stably_for_two_wo
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_clone_isolation_renders_relocated_gateway_endpoint() {
+    let workspace = compose_relocated_endpoint_workspace();
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success();
+
+    let network = format!("{}_grpc", compose_project_name(workspace.path()));
+    let gateway = docker_output([
+        "network",
+        "inspect",
+        "--format",
+        "{{(index .IPAM.Config 0).Gateway}}",
+        &network,
+    ])
+    .must();
+    let endpoint =
+        compose_primary_container_output(workspace.path(), ["printenv", "HOST_AGENT_ENDPOINT"]);
+    assert_eq!(
+        endpoint.trim(),
+        format!("grpc://{}:50051/$PATH", gateway.trim())
+    );
+    assert_ne!(gateway.trim(), "10.99.0.1");
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_published_port_relocation_starts_second_workspace_and_reports_ports() {
     let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
         return;
@@ -1757,6 +1788,57 @@ fn compose_relocated_subnet_workspace() -> ComposeFixtureWorkspace {
             relocation = true
             subnet_pool = "10.240.0.0/16"
             subnet_prefix = 24
+            "#,
+        )
+        .must();
+    workspace
+}
+
+fn compose_relocated_endpoint_workspace() -> ComposeFixtureWorkspace {
+    let workspace = compose_fixed_subnet_workspace("10.99.0.0/24");
+    workspace
+        .workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: alpine:3.20
+                command: sleep infinity
+                environment:
+                  HOST_AGENT_ENDPOINT: grpc://10.99.0.1:50051
+                volumes:
+                  - ..:/workspace
+                networks:
+                  - grpc
+            networks:
+              grpc:
+                ipam:
+                  config:
+                    - subnet: "10.99.0.0/24"
+            "#,
+        )
+        .must();
+    workspace.workspace.create_dir(".decune").must();
+    workspace
+        .workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.240.0.0/16"
+            subnet_prefix = 24
+
+            [[compose.clone_isolation.endpoints]]
+            service = "app"
+            env = "HOST_AGENT_ENDPOINT"
+            value = "grpc://${decune.network.grpc.gateway}:50051/$PATH"
             "#,
         )
         .must();

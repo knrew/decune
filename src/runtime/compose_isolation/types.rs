@@ -1,3 +1,5 @@
+use std::collections::BTreeMap;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ComposeIsolationResourceKind {
     ServiceContainer,
@@ -99,6 +101,18 @@ pub(crate) struct ComposeIsolationSubnetAllocation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeIsolationEndpointDeclaration {
+    pub(crate) service: String,
+    pub(crate) env: String,
+    pub(crate) value: String,
+}
+
+#[derive(Clone, PartialEq, Eq, Default)]
+pub(crate) struct ComposeIsolationEndpointPlan {
+    pub(crate) services: BTreeMap<String, BTreeMap<String, String>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposeIsolationPersistedSubnet {
     pub(crate) network: String,
     pub(crate) requested_subnet: String,
@@ -152,5 +166,11 @@ pub(crate) enum ComposeIsolationFinding {
         requested_name: String,
         docker_resource_name: String,
         docker_project: Option<String>,
+    },
+    EndpointUnsafe {
+        service: String,
+        env: String,
+        network: String,
+        address: String,
     },
 }

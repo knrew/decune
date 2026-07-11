@@ -44,6 +44,10 @@ impl ComposeConfigModel {
         self.networks.iter()
     }
 
+    pub(crate) fn has_network(&self, network: &str) -> bool {
+        self.networks.contains_key(network)
+    }
+
     pub(crate) fn volumes(&self) -> impl Iterator<Item = (&String, &ComposeConfigResource)> {
         self.volumes.iter()
     }
@@ -158,6 +162,8 @@ pub(crate) struct ComposeConfigService {
     pub(crate) networks: BTreeMap<String, JsonValue>,
     #[serde(default)]
     pub(crate) ports: Vec<JsonValue>,
+    #[serde(default)]
+    pub(crate) environment: BTreeMap<String, JsonValue>,
 }
 
 impl ComposeConfigService {
@@ -175,6 +181,12 @@ impl ComposeConfigService {
 
     pub(crate) fn network_config(&self, network: &str) -> Option<&JsonValue> {
         self.networks.get(network)
+    }
+
+    pub(crate) fn environment_values(&self) -> impl Iterator<Item = (&String, &str)> {
+        self.environment
+            .iter()
+            .filter_map(|(name, value)| value.as_str().map(|value| (name, value)))
     }
 }
 

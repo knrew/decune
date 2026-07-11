@@ -128,6 +128,14 @@ pub(in crate::up) fn deferred_config_warnings(config: &ResolvedConfig) -> Vec<St
                 .to_owned(),
         );
     }
+    if !config.compose.clone_isolation.enabled
+        && !config.compose.clone_isolation.endpoints.is_empty()
+    {
+        warnings.push(
+            "compose.clone_isolation.endpoints is ignored because compose.clone_isolation.enabled is false; set compose.clone_isolation.enabled = true to enable endpoint rewriting."
+                .to_owned(),
+        );
+    }
     warnings.extend(unsupported_port_attribute_warnings(config));
     warnings
 }
@@ -401,6 +409,25 @@ mod tests {
         let warnings = deferred_config_warnings(&config);
 
         assert!(!warnings.iter().any(|warning| warning.contains("appPort")));
+    }
+    #[test]
+    fn deferred_config_warnings_report_endpoints_when_clone_isolation_is_disabled() {
+        let mut config = ResolvedConfig::default();
+        config.compose.clone_isolation.endpoints.push(
+            crate::config::resolved::ResolvedComposeCloneIsolationEndpoint {
+                service: "app".to_owned(),
+                env: "HOST_AGENT_ENDPOINT".to_owned(),
+                value: "grpc://${decune.network.grpc.gateway}:50051".to_owned(),
+            },
+        );
+
+        let warnings = deferred_config_warnings(&config);
+
+        assert!(warnings.iter().any(|warning| {
+            warning.contains("compose.clone_isolation.endpoints is ignored")
+                && warning.contains("compose.clone_isolation.enabled is false")
+                && warning.contains("compose.clone_isolation.enabled = true")
+        }));
     }
     #[test]
     fn deferred_config_warnings_report_unsupported_port_attributes() {
