@@ -10,9 +10,10 @@ use crate::config::{
         feature_merge_identity,
     },
     resolved::{
-        ResolvedAutoPorts, ResolvedCompose, ResolvedCredentials, ResolvedDevcontainer,
-        ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature,
-        ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
+        ResolvedAutoPorts, ResolvedCompose, ResolvedComposeCloneIsolationEndpoint,
+        ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile, ResolvedDotfileDisable,
+        ResolvedDotfileEntry, ResolvedFeature, ResolvedHooks, ResolvedMount, ResolvedPort,
+        ResolvedPorts,
     },
 };
 
@@ -126,6 +127,7 @@ struct MergeAccumulator {
     ports: Vec<MergedPort>,
     auto_ports: ResolvedAutoPorts,
     compose: ResolvedCompose,
+    compose_published_ports_relocation_explicit: bool,
     devcontainer: ResolvedDevcontainer,
     devcontainer_init: Option<bool>,
     devcontainer_privileged: Option<bool>,
@@ -268,13 +270,44 @@ impl MergeAccumulator {
         }
     }
 
-    const fn merge_compose(&mut self, compose: &crate::config::layer::LayerCompose) {
+    fn merge_compose(&mut self, compose: &crate::config::layer::LayerCompose) {
         if let Some(relocation) = compose.published_ports.relocation {
             self.compose.published_ports.relocation = relocation;
+            self.compose_published_ports_relocation_explicit = true;
         }
         if let Some(warn_on_relocation) = compose.published_ports.warn_on_relocation {
             self.compose.published_ports.warn_on_relocation = warn_on_relocation;
         }
+
+        let clone_isolation = &compose.clone_isolation;
+        if let Some(enabled) = clone_isolation.enabled {
+            self.compose.clone_isolation.enabled = enabled;
+        }
+        if let Some(relocation) = clone_isolation.networks.relocation {
+            self.compose.clone_isolation.networks.relocation = relocation;
+        }
+        if let Some(subnet_pool) = &clone_isolation.networks.subnet_pool {
+            self.compose.clone_isolation.networks.subnet_pool = Some(subnet_pool.clone());
+        }
+        if let Some(subnet_prefix) = clone_isolation.networks.subnet_prefix {
+            self.compose.clone_isolation.networks.subnet_prefix = Some(subnet_prefix);
+        }
+        if let Some(rewrite_container_names) = clone_isolation.names.rewrite_container_names {
+            self.compose.clone_isolation.names.rewrite_container_names = rewrite_container_names;
+        }
+        if let Some(rewrite_resource_names) = clone_isolation.names.rewrite_resource_names {
+            self.compose.clone_isolation.names.rewrite_resource_names = rewrite_resource_names;
+        }
+        self.compose
+            .clone_isolation
+            .endpoints
+            .extend(clone_isolation.endpoints.iter().map(|endpoint| {
+                ResolvedComposeCloneIsolationEndpoint {
+                    service: endpoint.service.clone(),
+                    env: endpoint.env.clone(),
+                    value: endpoint.value.clone(),
+                }
+            }));
     }
 
     fn merge_mount(&mut self, mount: LayerMount) {
@@ -452,6 +485,9 @@ impl MergeAccumulator {
 
     fn into_resolved(mut self) -> ResolvedConfig {
         self.apply_forward_port_attributes();
+        if !self.compose_published_ports_relocation_explicit {
+            self.compose.published_ports.relocation = self.compose.clone_isolation.enabled;
+        }
         self.devcontainer.init = self.devcontainer_init;
         self.devcontainer.privileged = self.devcontainer_privileged;
         self.ports
@@ -659,6 +695,20 @@ mod tests {
             GithubCredentialsMode::GhTokenFile
         );
         assert!(config.credentials.github.install_feature_if_missing);
+    }
+
+    #[test]
+    fn empty_input_resolves_clone_isolation_defaults() {
+        let config = resolve_config(ConfigMergeInput::default());
+        let clone_isolation = &config.compose.clone_isolation;
+
+        assert!(!clone_isolation.enabled);
+        assert!(!clone_isolation.networks.relocation);
+        assert_eq!(clone_isolation.networks.subnet_pool, None);
+        assert_eq!(clone_isolation.networks.subnet_prefix, None);
+        assert!(clone_isolation.names.rewrite_container_names);
+        assert!(clone_isolation.names.rewrite_resource_names);
+        assert!(clone_isolation.endpoints.is_empty());
     }
 
     #[test]
@@ -1948,6 +1998,7 @@ relocation = false
                         relocation: Some(true),
                         warn_on_relocation: Some(false),
                     },
+                    ..Default::default()
                 },
                 ..ConfigLayer::default()
             }),
@@ -1997,6 +2048,7 @@ relocation = true
                         relocation: Some(false),
                         ..Default::default()
                     },
+                    ..Default::default()
                 },
                 ..ConfigLayer::default()
             }),
@@ -2004,5 +2056,209 @@ relocation = true
         });
 
         assert!(!disabled_by_cli.compose.published_ports.relocation);
+    }
+
+    #[test]
+    fn compose_clone_isolation_config_resolves_with_layer_precedence() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+
+[compose.clone_isolation.networks]
+relocation = true
+subnet_pool = "10.200.0.0/16"
+
+[compose.clone_isolation.names]
+rewrite_container_names = false
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "HOST_AGENT_ENDPOINT"
+value = "grpc://${decune.network.fixed_net.gateway}:50051"
+"#,
+            )),
+            project: Some(raw_layer(
+                r"
+version = 1
+
+[compose.clone_isolation.networks]
+subnet_prefix = 24
+
+[compose.clone_isolation.names]
+rewrite_container_names = true
+rewrite_resource_names = false
+",
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        let clone_isolation = &config.compose.clone_isolation;
+        assert!(clone_isolation.enabled);
+        assert!(clone_isolation.networks.relocation);
+        assert_eq!(
+            clone_isolation.networks.subnet_pool.as_deref(),
+            Some("10.200.0.0/16")
+        );
+        assert_eq!(clone_isolation.networks.subnet_prefix, Some(24));
+        assert!(clone_isolation.names.rewrite_container_names);
+        assert!(!clone_isolation.names.rewrite_resource_names);
+        assert_eq!(clone_isolation.endpoints.len(), 1);
+        assert_eq!(clone_isolation.endpoints[0].service, "app");
+        config.validate().expect("merged config should be valid");
+    }
+
+    #[test]
+    fn clone_isolation_enables_published_port_relocation_by_default() {
+        let enabled = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+",
+            )),
+            ..ConfigMergeInput::default()
+        });
+        assert!(enabled.compose.published_ports.relocation);
+
+        let disabled_in_project = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+
+[compose.published_ports]
+relocation = false
+",
+            )),
+            ..ConfigMergeInput::default()
+        });
+        assert!(!disabled_in_project.compose.published_ports.relocation);
+
+        let disabled_globally = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r"
+version = 1
+
+[compose.published_ports]
+relocation = false
+",
+            )),
+            project: Some(raw_layer(
+                r"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+",
+            )),
+            ..ConfigMergeInput::default()
+        });
+        assert!(!disabled_globally.compose.published_ports.relocation);
+    }
+
+    #[test]
+    fn disabled_clone_isolation_ignores_inactive_invalid_settings() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.clone_isolation]
+enabled = false
+
+[compose.clone_isolation.networks]
+relocation = true
+subnet_pool = "not-a-cidr"
+subnet_prefix = 31
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "ENDPOINT"
+value = "first"
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "ENDPOINT"
+value = "second"
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        config
+            .validate()
+            .expect("disabled clone isolation settings should be inactive");
+    }
+
+    #[test]
+    fn clone_isolation_rejects_invalid_network_settings() {
+        for (settings, expected) in [
+            (
+                "relocation = true\n",
+                "subnet_pool is required when network relocation is enabled",
+            ),
+            (
+                "subnet_pool = \"not-a-cidr\"\n",
+                "subnet_pool must be a valid IPv4 CIDR",
+            ),
+            (
+                "subnet_pool = \"10.200.0.0/16\"\nsubnet_prefix = 15\n",
+                "subnet_prefix must be at least the subnet pool prefix 16",
+            ),
+            (
+                "subnet_pool = \"10.200.0.0/16\"\nsubnet_prefix = 31\n",
+                "subnet_prefix must be less than 31",
+            ),
+        ] {
+            let config = resolve_config(ConfigMergeInput {
+                project: Some(raw_layer(&format!(
+                    "version = 1\n\n[compose.clone_isolation]\nenabled = true\n\n[compose.clone_isolation.networks]\n{settings}"
+                ))),
+                ..ConfigMergeInput::default()
+            });
+
+            let message = config.validate().unwrap_err().to_string();
+            assert!(message.contains("compose_clone_isolation_invalid"));
+            assert!(message.contains(expected), "unexpected error: {message}");
+        }
+    }
+
+    #[test]
+    fn clone_isolation_rejects_duplicate_endpoint_keys() {
+        let config = resolve_config(ConfigMergeInput {
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.clone_isolation]
+enabled = true
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "ENDPOINT"
+value = "first"
+
+[[compose.clone_isolation.endpoints]]
+service = "app"
+env = "ENDPOINT"
+value = "second"
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        let message = config.validate().unwrap_err().to_string();
+        assert!(message.contains("compose_clone_isolation_invalid"));
+        assert!(message.contains("duplicate service and env pair"));
+        assert!(message.contains("service `app`"));
+        assert!(message.contains("env `ENDPOINT`"));
     }
 }

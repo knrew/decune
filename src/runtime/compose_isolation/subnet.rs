@@ -4,6 +4,7 @@ use std::net::Ipv4Addr;
 pub(crate) struct Ipv4Cidr {
     network: u32,
     broadcast: u32,
+    prefix: u8,
 }
 
 impl Ipv4Cidr {
@@ -22,7 +23,15 @@ impl Ipv4Cidr {
         };
         let network = addr & mask;
         let broadcast = network | !mask;
-        Some(Self { network, broadcast })
+        Some(Self {
+            network,
+            broadcast,
+            prefix,
+        })
+    }
+
+    pub(crate) const fn prefix(self) -> u8 {
+        self.prefix
     }
 
     pub(crate) const fn overlaps(self, other: Self) -> bool {

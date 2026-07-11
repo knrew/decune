@@ -64,6 +64,7 @@ pub(super) async fn prepare_feature_metadata_for_plan(
         .feature_metadata
         .clone_from(&feature_install.metadata_layers);
     plan.config = resolve_config(plan.config_layers.clone());
+    plan.config.validate()?;
     let static_expansion = expand_static_plan_fields(
         workspace,
         &devcontainer_file,

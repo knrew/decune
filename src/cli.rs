@@ -451,6 +451,7 @@ fn cli_config_layer(ports: Vec<ManualPort>, options: CliConfigLayerOptions) -> C
                     .or_else(|| options.no_published_port_relocation.then_some(false)),
                 ..LayerComposePublishedPorts::default()
             },
+            ..LayerCompose::default()
         },
         ..ConfigLayer::default()
     }

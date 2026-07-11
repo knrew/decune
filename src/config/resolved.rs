@@ -1,5 +1,6 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use anyhow::{Result, anyhow};
 use toml::Value;
 
 use crate::config::{
@@ -13,6 +14,7 @@ use crate::config::{
         GithubCredentialsMode, MountCreate, MountType, OnAutoForward, SshAgentMode,
     },
 };
+use crate::runtime::compose_isolation::{COMPOSE_CLONE_ISOLATION_INVALID, Ipv4Cidr};
 
 #[derive(Debug, Clone, PartialEq, Default)]
 pub(crate) struct ResolvedConfig {
@@ -100,12 +102,110 @@ impl Default for ResolvedAutoPorts {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ResolvedCompose {
     pub(crate) published_ports: ResolvedComposePublishedPorts,
+    pub(crate) clone_isolation: Box<ResolvedComposeCloneIsolation>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ResolvedComposePublishedPorts {
     pub(crate) relocation: bool,
     pub(crate) warn_on_relocation: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ResolvedComposeCloneIsolation {
+    pub(crate) enabled: bool,
+    pub(crate) networks: ResolvedComposeCloneIsolationNetworks,
+    pub(crate) names: ResolvedComposeCloneIsolationNames,
+    pub(crate) endpoints: Vec<ResolvedComposeCloneIsolationEndpoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ResolvedComposeCloneIsolationNetworks {
+    pub(crate) relocation: bool,
+    pub(crate) subnet_pool: Option<String>,
+    pub(crate) subnet_prefix: Option<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedComposeCloneIsolationNames {
+    pub(crate) rewrite_container_names: bool,
+    pub(crate) rewrite_resource_names: bool,
+}
+
+impl Default for ResolvedComposeCloneIsolationNames {
+    fn default() -> Self {
+        Self {
+            rewrite_container_names: true,
+            rewrite_resource_names: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedComposeCloneIsolationEndpoint {
+    pub(crate) service: String,
+    pub(crate) env: String,
+    pub(crate) value: String,
+}
+
+impl ResolvedConfig {
+    pub(crate) fn validate(&self) -> Result<()> {
+        self.compose.clone_isolation.validate()
+    }
+}
+
+impl ResolvedComposeCloneIsolation {
+    fn validate(&self) -> Result<()> {
+        if !self.enabled {
+            return Ok(());
+        }
+
+        let pool = match self.networks.subnet_pool.as_deref() {
+            Some(value) => Some(Ipv4Cidr::parse(value).ok_or_else(|| {
+                invalid_clone_isolation(format!(
+                    "compose.clone_isolation.networks.subnet_pool must be a valid IPv4 CIDR; got `{value}`"
+                ))
+            })?),
+            None if self.networks.relocation => {
+                return Err(invalid_clone_isolation(
+                    "compose.clone_isolation.networks.subnet_pool is required when network relocation is enabled",
+                ));
+            }
+            None => None,
+        };
+
+        if let Some(prefix) = self.networks.subnet_prefix {
+            if prefix >= 31 {
+                return Err(invalid_clone_isolation(format!(
+                    "compose.clone_isolation.networks.subnet_prefix must be less than 31; got {prefix}"
+                )));
+            }
+            if let Some(pool) = pool
+                && prefix < pool.prefix()
+            {
+                return Err(invalid_clone_isolation(format!(
+                    "compose.clone_isolation.networks.subnet_prefix must be at least the subnet pool prefix {}; got {prefix}",
+                    pool.prefix()
+                )));
+            }
+        }
+
+        let mut endpoint_keys = BTreeSet::new();
+        for endpoint in &self.endpoints {
+            if !endpoint_keys.insert((&endpoint.service, &endpoint.env)) {
+                return Err(invalid_clone_isolation(format!(
+                    "compose.clone_isolation.endpoints contains duplicate service and env pair: service `{}`; env `{}`",
+                    endpoint.service, endpoint.env
+                )));
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn invalid_clone_isolation(detail: impl std::fmt::Display) -> anyhow::Error {
+    anyhow!("{COMPOSE_CLONE_ISOLATION_INVALID}: {detail}")
 }
 
 #[derive(Debug, Clone, PartialEq)]
