@@ -8,7 +8,7 @@ services:
     networks:
       - appnet
     ports:
-      - "127.0.0.1:18080:80"
+      - 127.0.0.1:18080:80
     volumes:
       - cache:/cache
       - ../..:/workspace

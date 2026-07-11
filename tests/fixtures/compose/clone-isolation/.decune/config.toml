@@ -4,10 +4,10 @@ version = 1
 enabled = true
 
 [compose.clone_isolation.networks]
-relocation = true
+relocation  = true
 subnet_pool = "10.224.0.0/16"
 
 [[compose.clone_isolation.endpoints]]
+env     = "AGENT_ENDPOINT"
 service = "app"
-env = "AGENT_ENDPOINT"
-value = "http://${decune.network.appnet.gateway}:9000"
+value   = "http://${decune.network.appnet.gateway}:9000"
