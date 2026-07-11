@@ -1,18 +1,18 @@
-accept-comment-above-attributes              = false
-accept-comment-above-statement               = false
-allow-expect-in-tests                        = true
-allow-panic-in-tests                         = true
-allow-unwrap-in-tests                        = true
-avoid-breaking-exported-api                  = false
-check-incompatible-msrv-in-tests             = true
+accept-comment-above-attributes = false
+accept-comment-above-statement = false
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+allow-unwrap-in-tests = true
+avoid-breaking-exported-api = false
+check-incompatible-msrv-in-tests = true
 check-inconsistent-struct-field-initializers = true
-cognitive-complexity-threshold               = 25
+cognitive-complexity-threshold = 25
 disallowed-methods = [
-  { path = "std::env::temp_dir", reason = "use tempfile-backed RAII for temporary paths; stable interprocess lock paths require an explicit lint expectation" },
+  {path = "std::env::temp_dir", reason = "use tempfile-backed RAII for temporary paths; stable interprocess lock paths require an explicit lint expectation"},
 ]
-enforce-iter-loop-reborrow                   = true
-max-fn-params-bools                          = 2
-too-many-arguments-threshold                 = 7
-too-many-lines-threshold                     = 100
-type-complexity-threshold                    = 250
+enforce-iter-loop-reborrow = true
+max-fn-params-bools = 2
+too-many-arguments-threshold = 7
+too-many-lines-threshold = 100
+type-complexity-threshold = 250
 warn-unsafe-macro-metavars-in-private-macros = true
