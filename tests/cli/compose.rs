@@ -371,6 +371,67 @@ fn compose_without_clone_sensitive_config_does_not_list_networks() {
 }
 
 #[test]
+fn compose_isolation_preflight_ignores_unselected_services_and_resources() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "runServices": ["app"],
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+              unused:
+                image: alpine:3.20
+                container_name: fixed-unused
+                networks: [unused-network]
+                volumes: [unused-volume:/data]
+            networks:
+              unused-network:
+                ipam:
+                  config:
+                    - subnet: 172.28.0.0/16
+            volumes:
+              unused-volume:
+                name: fixed-unused-volume
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-ignores-unselected-isolation-resources.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_RUNTIME_DIR", host_tools.path())
+        .env("XDG_STATE_HOME", host_tools.path())
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "selected Compose up reached after isolation preflight",
+        ));
+}
+
+#[test]
 fn compose_up_unsupported_published_port_startup_failure_reports_diagnostic_code() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();

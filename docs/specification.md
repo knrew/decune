@@ -522,7 +522,7 @@ docker compose --project-name <project> --project-directory <dir> -f <file>... c
 
 ### Clone isolation preflight
 
-Compose モードの `up` / `rebuild` は、user Compose file だけから得た canonical Compose model を使い、`docker compose up -d` の前に clone isolation preflight を常時実行する。この preflight は検出のみを行い、Compose file、generated override、Docker resource name、IPAM subnet を書き換えない。
+Compose モードの `up` / `rebuild` は、user Compose file だけから得た canonical Compose model を使い、`docker compose up -d` の前に clone isolation preflight を常時実行する。`runServices` が指定されている場合、走査対象は primary service と `runServices`、Docker Compose がそれらの依存関係として展開した service、およびその service 群が使用する top-level resource に限定し、起動対象ではない service と未使用 resource は走査しない。`runServices` が指定されていない場合は Compose project 全体を走査する。この preflight は検出のみを行い、Compose file、generated override、Docker resource name、IPAM subnet を書き換えない。
 
 対象:
 

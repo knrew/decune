@@ -32,7 +32,7 @@ use crate::{
             ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
             ComposePublishedPortStartupDiagnostics, compose_port_protocol_name,
             compose_published_port_endpoint_display, compose_published_port_plan_has_relocations,
-            validate_compose_published_port_diagnostics,
+            compose_published_port_planning_input, validate_compose_published_port_diagnostics,
         },
         docker_cli::{DockerNetworkInspect, DockerSwarmResourceInspect, DockerVolumeInspect},
     },
@@ -590,7 +590,14 @@ async fn prepare_compose_startup_context(
         .user_config(source.project, &compose_service_validation)
         .await?;
     let user_model = &user_config.model;
-    run_compose_isolation_preflight(client, &project_name, user_model).await?;
+    let active_user_config = compose_introspector
+        .user_config_for_services(
+            source.project,
+            &compose_service_validation,
+            &user_lifecycle.services,
+        )
+        .await?;
+    run_compose_isolation_preflight(client, &project_name, &active_user_config.model).await?;
     let compose_primary_image = ComposePrimaryImageResolver {
         project_name: &project_name,
         service: &service,
@@ -602,13 +609,12 @@ async fn prepare_compose_startup_context(
     let compose_primary_service_user = compose_primary_service
         .as_ref()
         .and_then(|service| service.user.clone());
-    let published_port_policy_input = compose_introspector
-        .user_published_port_planning_input(
-            source.project,
-            &compose_service_validation,
-            &user_lifecycle.services,
-        )
-        .await?;
+    let published_port_policy_input = compose_published_port_planning_input(
+        &active_user_config.model,
+        &active_user_config.published_port_entries,
+        &service,
+        &user_lifecycle.services,
+    );
     validate_compose_published_port_diagnostics(&published_port_policy_input)?;
     compose_primary_image.clone_into(&mut plan.base_image);
 
