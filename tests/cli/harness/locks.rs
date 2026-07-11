@@ -34,6 +34,10 @@ fn acquire_docker_resource_lock(operation: i32) -> anyhow::Result<DockerResource
     Ok(DockerResourceLock { file })
 }
 
+#[expect(
+    clippy::disallowed_methods,
+    reason = "all CLI tests and their child processes must lock the same inode; unlinking a lock file can split concurrent lockers across different inodes"
+)]
 pub(super) fn docker_resource_lock_path() -> PathBuf {
     std::env::temp_dir().join("decune-cli-test-docker-resource.lock")
 }

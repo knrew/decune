@@ -68,6 +68,10 @@ cargo test -p decune <module_or_test_name>
 
 test から fixture を読む場合は `tests/support/support.rs` の helper を使います。fixture path と temporary workspace path は absolute path と `..` を拒否します。temporary workspace へ fixture を置く場合は `TempWorkspace::copy_fixture_dir`、`TempWorkspace::write_fixture_file`、`TempWorkspace::write_fixture_template`、`TempWorkspace::write_executable_fixture` を使ってください。
 
+test が host 側に作る一時 file / directory は、原則として `tempfile::TempDir`、`tempfile::NamedTempFile`、またはそれらを所有する共通 helper で管理します。`std::env::temp_dir()` から直接 path を組み立て、test の先頭や末尾だけで手動 cleanup する構成にはしません。一時 path を command、workspace、非同期処理へ渡す場合は、その利用が終わるまで所有者を保持してください。通常は所有者の `Drop` に cleanup を任せ、cleanup 失敗自体を test failure として確認する必要がある場合だけ `TempDir::close()` などを使います。
+
+複数 process が同じ inode を lock するための file など、process 間で安定した path が必要な場合は例外です。この場合は一時領域を test ごとに分離せず、直接 path が必要な理由と cleanup 方針を code に明記します。
+
 CLI test で fake host command を `PATH` に置く場合は、module-local helper を増やさず `tests/cli/harness.rs` の `fake_command_path`、`fake_docker_path`、`fake_path_with_commands` などを使います。
 
 Runtime 値が必要な fixture では `__HOST_PORT__` のような placeholder を置き、`write_fixture_template` で展開します。placeholder を指定したのに fixture 内に存在しない場合は test helper が失敗します。数行だけの異常系入力、assert の近くにある方が意図を読みやすい marker/config は inline のままでも構いません。

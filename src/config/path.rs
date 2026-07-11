@@ -250,11 +250,14 @@ mod tests {
     use super::*;
     use crate::config::variables::{VariableContext, VariableContextInput};
 
-    fn fixture_root(name: &str) -> PathBuf {
-        let root = env::temp_dir().join(format!("decune-path-tests-{name}-{}", std::process::id()));
-        _ = fs::remove_dir_all(&root);
+    fn fixture_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::Builder::new()
+            .prefix("decune-path-tests-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().join(name);
         fs::create_dir_all(&root).unwrap();
-        root
+        (temp, root)
     }
 
     fn variables(workspace_root: &Path) -> VariableContext {
@@ -281,7 +284,7 @@ mod tests {
 
     #[test]
     fn project_relative_path_is_workspace_relative() {
-        let root = fixture_root("project-relative");
+        let (_temp, root) = fixture_root("project-relative");
         let source = root.join("config/nvim");
         fs::create_dir_all(&source).unwrap();
         let variables = variables(&root);
@@ -293,7 +296,7 @@ mod tests {
 
     #[test]
     fn global_relative_path_is_rejected() {
-        let root = fixture_root("global-relative");
+        let (_temp, root) = fixture_root("global-relative");
         let variables = variables(&root);
         let options = HostPathOptions::new(ConfigPathOrigin::Global, &root, &variables)
             .with_home_dir(Some(root.join("home")));
@@ -308,7 +311,7 @@ mod tests {
 
     #[test]
     fn tilde_expands_to_home_directory() {
-        let root = fixture_root("tilde");
+        let (_temp, root) = fixture_root("tilde");
         let home = root.join("home");
         let source = home.join(".config/nvim");
         fs::create_dir_all(&source).unwrap();
@@ -322,7 +325,7 @@ mod tests {
 
     #[test]
     fn tilde_requires_home_directory() {
-        let root = fixture_root("tilde-no-home");
+        let (_temp, root) = fixture_root("tilde-no-home");
         let variables = variables(&root);
         let options = project_options(&root, &variables).with_home_dir(None);
 
@@ -336,7 +339,7 @@ mod tests {
 
     #[test]
     fn variables_are_expanded_before_relative_resolution() {
-        let root = fixture_root("variables");
+        let (_temp, root) = fixture_root("variables");
         let source = root.join("tools");
         fs::create_dir_all(&source).unwrap();
         let variables = variables(&root);
@@ -352,7 +355,7 @@ mod tests {
 
     #[test]
     fn create_directory_creates_only_requested_directory() {
-        let root = fixture_root("create-directory");
+        let (_temp, root) = fixture_root("create-directory");
         let variables = variables(&root);
         let source = root.join("generated/cache");
         let options = project_options(&root, &variables).with_create(PathCreate::Directory);
@@ -365,7 +368,7 @@ mod tests {
 
     #[test]
     fn read_only_create_directory_resolves_missing_path_without_creating_it() {
-        let root = fixture_root("read-only-create-directory");
+        let (_temp, root) = fixture_root("read-only-create-directory");
         let variables = variables(&root);
         let source = root.join("generated/cache");
         let options = project_options(&root, &variables).with_create(PathCreate::DirectoryReadOnly);
@@ -379,7 +382,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn read_only_create_directory_preserves_symlink_ancestor_when_requested() {
-        let root = fixture_root("read-only-create-directory-preserve-symlink");
+        let (_temp, root) = fixture_root("read-only-create-directory-preserve-symlink");
         let real = root.join("real");
         let link = root.join("linked");
         let source = link.join("generated/cache");
@@ -398,7 +401,7 @@ mod tests {
 
     #[test]
     fn read_only_create_directory_rejects_existing_file_ancestor() {
-        let root = fixture_root("read-only-create-directory-file-ancestor");
+        let (_temp, root) = fixture_root("read-only-create-directory-file-ancestor");
         let variables = variables(&root);
         let source = root.join("generated");
         fs::write(&source, b"not a directory").unwrap();
@@ -413,7 +416,7 @@ mod tests {
 
     #[test]
     fn create_directory_rejects_existing_file() {
-        let root = fixture_root("create-directory-existing-file");
+        let (_temp, root) = fixture_root("create-directory-existing-file");
         let variables = variables(&root);
         let source = root.join("generated");
         fs::write(&source, b"not a directory").unwrap();
@@ -428,7 +431,7 @@ mod tests {
 
     #[test]
     fn missing_path_without_create_is_rejected() {
-        let root = fixture_root("missing");
+        let (_temp, root) = fixture_root("missing");
         let variables = variables(&root);
         let source = root.join("missing");
 
@@ -442,7 +445,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_source_is_canonicalized_by_default() {
-        let root = fixture_root("symlink-resolve");
+        let (_temp, root) = fixture_root("symlink-resolve");
         let target = root.join("actual");
         let link = root.join("linked");
         fs::create_dir_all(&target).unwrap();
@@ -457,7 +460,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn symlink_source_can_be_preserved() {
-        let root = fixture_root("symlink-preserve");
+        let (_temp, root) = fixture_root("symlink-preserve");
         let target = root.join("actual");
         let link = root.join("linked");
         fs::create_dir_all(&target).unwrap();
@@ -474,7 +477,7 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn broken_symlink_is_rejected_with_context() {
-        let root = fixture_root("broken-symlink");
+        let (_temp, root) = fixture_root("broken-symlink");
         let link = root.join("linked");
         unix_fs::symlink(root.join("missing"), &link).unwrap();
         let variables = variables(&root);

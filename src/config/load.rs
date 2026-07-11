@@ -54,8 +54,13 @@ mod tests {
 
     use super::*;
 
-    fn config_path(name: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("decune-config-load-{name}-{}", std::process::id()))
+    fn config_path(name: &str) -> (tempfile::TempDir, std::path::PathBuf) {
+        let temp = tempfile::Builder::new()
+            .prefix("decune-config-load-")
+            .tempdir()
+            .unwrap();
+        let path = temp.path().join(format!("{name}.toml"));
+        (temp, path)
     }
 
     const SPEC_EXAMPLE_CONFIG: &str = r#"
@@ -130,8 +135,7 @@ shell = false
 
     #[test]
     fn missing_file_loads_empty_config() {
-        let path = config_path("missing");
-        _ = fs::remove_file(&path);
+        let (_temp, path) = config_path("missing");
 
         let config = load_config_file(&path).unwrap();
 
@@ -140,7 +144,7 @@ shell = false
 
     #[test]
     fn existing_empty_file_requires_version() {
-        let path = config_path("empty");
+        let (_temp, path) = config_path("empty");
         fs::write(&path, "").unwrap();
 
         let error = load_config_file(&path).unwrap_err();
@@ -151,13 +155,11 @@ shell = false
                 .contains("Missing required decune config version")
         );
         assert!(error.to_string().contains(&path.display().to_string()));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn unsupported_version_is_rejected() {
-        let path = config_path("version");
+        let (_temp, path) = config_path("version");
         fs::write(&path, "version = 2\n").unwrap();
 
         let error = load_config_file(&path).unwrap_err();
@@ -168,13 +170,11 @@ shell = false
                 .contains("Unsupported decune config version 2")
         );
         assert!(error.to_string().contains(&path.display().to_string()));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn parse_error_includes_path() {
-        let path = config_path("parse-error");
+        let (_temp, path) = config_path("parse-error");
         fs::write(&path, "version = 1\nshelll = '/bin/zsh'\n").unwrap();
 
         let error = load_config_file(&path).unwrap_err();
@@ -182,13 +182,11 @@ shell = false
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains(&path.display().to_string()));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn top_level_typo_key_is_rejected_with_key_and_path() {
-        let path = config_path("top-level-typo");
+        let (_temp, path) = config_path("top-level-typo");
         fs::write(&path, "version = 1\nshelll = '/bin/zsh'\n").unwrap();
 
         let error = load_config_file(&path).unwrap_err();
@@ -197,13 +195,11 @@ shell = false
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains(&path.display().to_string()));
         assert!(message.contains("shelll"));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn spec_example_is_loaded() {
-        let path = config_path("spec-example");
+        let (_temp, path) = config_path("spec-example");
         fs::write(&path, SPEC_EXAMPLE_CONFIG).unwrap();
 
         let config = load_config_file(&path).unwrap();
@@ -215,8 +211,6 @@ shell = false
         assert_spec_example_ports(&config);
         assert_spec_example_credentials(&config);
         assert_spec_example_hooks(&config);
-
-        _ = fs::remove_file(path);
     }
 
     fn assert_spec_example_top_level(config: &RawDecuneConfig) {
@@ -315,7 +309,7 @@ shell = false
 
     #[test]
     fn git_https_host_helper_read_only_is_accepted() {
-        let path = config_path("git-read-only");
+        let (_temp, path) = config_path("git-read-only");
         fs::write(
             &path,
             r#"
@@ -333,13 +327,11 @@ https = "host-helper-read-only"
             config.credentials.git.unwrap().https,
             Some(RawGitHttpsMode::HostHelperReadOnly)
         );
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn enabled_dotfile_requires_source() {
-        let path = config_path("dotfile-requires-source");
+        let (_temp, path) = config_path("dotfile-requires-source");
         fs::write(
             &path,
             r#"
@@ -356,13 +348,11 @@ target = ".config/nvim"
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("source"));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn enabled_mount_requires_type() {
-        let path = config_path("mount-requires-type");
+        let (_temp, path) = config_path("mount-requires-type");
         fs::write(
             &path,
             r#"
@@ -380,13 +370,11 @@ target = "/work"
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("type"));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn enabled_bind_mount_requires_source() {
-        let path = config_path("bind-mount-requires-source");
+        let (_temp, path) = config_path("bind-mount-requires-source");
         fs::write(
             &path,
             r#"
@@ -404,13 +392,11 @@ type = "bind"
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("source"));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn nested_typo_key_is_rejected() {
-        let path = config_path("nested-typo");
+        let (_temp, path) = config_path("nested-typo");
         fs::write(
             &path,
             r#"
@@ -429,13 +415,11 @@ read_olny = true
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("read_olny"));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn nested_credentials_typo_key_is_rejected() {
-        let path = config_path("nested-credentials-typo");
+        let (_temp, path) = config_path("nested-credentials-typo");
         fs::write(
             &path,
             r"
@@ -452,13 +436,11 @@ copy_usr = true
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("copy_usr"));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn nested_hook_typo_key_is_rejected() {
-        let path = config_path("nested-hook-typo");
+        let (_temp, path) = config_path("nested-hook-typo");
         fs::write(
             &path,
             r#"
@@ -476,14 +458,12 @@ wrkdir = "/work"
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("wrkdir"));
-
-        _ = fs::remove_file(path);
     }
 
     #[test]
     fn global_and_project_paths_are_loaded_independently() {
-        let global_path = config_path("global");
-        let project_path = config_path("project");
+        let (_global_temp, global_path) = config_path("global");
+        let (_project_temp, project_path) = config_path("project");
         fs::write(&global_path, "version = 1\nshell = '/bin/bash'\n").unwrap();
         fs::write(&project_path, "version = 1\nshell = '/bin/zsh'\n").unwrap();
 
@@ -492,8 +472,5 @@ wrkdir = "/work"
 
         assert_eq!(global.shell.as_deref(), Some("/bin/bash"));
         assert_eq!(project.shell.as_deref(), Some("/bin/zsh"));
-
-        _ = fs::remove_file(global_path);
-        _ = fs::remove_file(project_path);
     }
 }

@@ -1995,7 +1995,7 @@ fn decune_ports_json_with_state_home(workspace: &Path, state_home: &Path) -> Vec
     decune_ports_json_from_command(command)
 }
 
-fn decune_ports_json_from_command(mut command: assert_cmd::Command) -> Vec<Value> {
+fn decune_ports_json_from_command(mut command: TestCommand) -> Vec<Value> {
     let output = command
         .assert()
         .success()

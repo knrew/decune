@@ -7,6 +7,9 @@ avoid-breaking-exported-api                  = false
 check-incompatible-msrv-in-tests             = true
 check-inconsistent-struct-field-initializers = true
 cognitive-complexity-threshold               = 25
+disallowed-methods = [
+  { path = "std::env::temp_dir", reason = "use tempfile-backed RAII for temporary paths; stable interprocess lock paths require an explicit lint expectation" },
+]
 enforce-iter-loop-reborrow                   = true
 max-fn-params-bools                          = 2
 too-many-arguments-threshold                 = 7

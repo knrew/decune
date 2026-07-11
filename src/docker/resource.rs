@@ -172,12 +172,7 @@ fn truncate_docker_name_segment(value: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        fs,
-        path::PathBuf,
-        sync::atomic::{AtomicUsize, Ordering},
-    };
+    use std::{collections::BTreeMap, fs, path::PathBuf};
 
     use crate::workspace::Workspace;
 
@@ -187,23 +182,19 @@ mod tests {
         managed_workspace_label_filters,
     };
 
-    static NEXT_FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
-
-    fn fixture_root(name: &str) -> PathBuf {
-        let fixture_id = NEXT_FIXTURE_ID.fetch_add(1, Ordering::Relaxed);
-        let parent = std::env::temp_dir()
-            .join("decune-docker-resource-tests")
-            .join(std::process::id().to_string())
-            .join(fixture_id.to_string());
-        let root = parent.join(name);
-        _ = fs::remove_dir_all(&root);
+    fn fixture_root(name: &str) -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::Builder::new()
+            .prefix("decune-docker-resource-tests-")
+            .tempdir()
+            .unwrap();
+        let root = temp.path().join(name);
         fs::create_dir_all(&root).unwrap();
-        root
+        (temp, root)
     }
 
     #[test]
     fn resources_include_names_and_labels_from_workspace_and_config_hash() {
-        let root = fixture_root("project");
+        let (_temp, root) = fixture_root("project");
         let workspace = Workspace::resolve(&root).unwrap();
         let config_file = root.join(".devcontainer/devcontainer.json");
 
@@ -280,7 +271,7 @@ mod tests {
 
     #[test]
     fn resource_names_sanitize_workspace_basename_for_docker() {
-        let root = fixture_root("Project Name!");
+        let (_temp, root) = fixture_root("Project Name!");
         let workspace = Workspace::resolve(&root).unwrap();
 
         let resources = DockerResources::from_workspace(
@@ -301,7 +292,7 @@ mod tests {
 
     #[test]
     fn resource_names_do_not_keep_invalid_image_repository_separator_runs() {
-        let root = fixture_root("APP__Name...v2");
+        let (_temp, root) = fixture_root("APP__Name...v2");
         let workspace = Workspace::resolve(&root).unwrap();
 
         let resources = DockerResources::from_workspace(
@@ -324,7 +315,7 @@ mod tests {
     #[test]
     fn resource_names_truncate_safe_workspace_slug_to_48_chars() {
         let basename = "a".repeat(249);
-        let root = fixture_root(&basename);
+        let (_temp, root) = fixture_root(&basename);
         let workspace = Workspace::resolve(&root).unwrap();
         let safe_slug = "a".repeat(48);
 
@@ -346,8 +337,8 @@ mod tests {
 
     #[test]
     fn resource_names_keep_workspace_id_for_distinct_workspaces_with_same_slug() {
-        let first_root = fixture_root("Project Name");
-        let second_root = fixture_root("Project Name");
+        let (_first_temp, first_root) = fixture_root("Project Name");
+        let (_second_temp, second_root) = fixture_root("Project Name");
         let first = Workspace::resolve(&first_root).unwrap();
         let second = Workspace::resolve(&second_root).unwrap();
 
@@ -378,8 +369,8 @@ mod tests {
 
     #[test]
     fn fixture_roots_do_not_delete_sibling_workspaces() {
-        let first = fixture_root("first");
-        let second = fixture_root("second");
+        let (_first_temp, first) = fixture_root("first");
+        let (_second_temp, second) = fixture_root("second");
 
         assert!(first.is_dir());
         assert!(second.is_dir());
@@ -387,7 +378,7 @@ mod tests {
 
     #[test]
     fn image_repository_is_truncated_to_docker_name_limit() {
-        let root = fixture_root(&"a".repeat(249));
+        let (_temp, root) = fixture_root(&"a".repeat(249));
         let workspace = Workspace::resolve(&root).unwrap();
 
         let resources = DockerResources::from_workspace(

@@ -72,6 +72,10 @@ fn docker_resource_lock_path() -> Option<PathBuf> {
 }
 
 #[cfg(test)]
+#[expect(
+    clippy::disallowed_methods,
+    reason = "all tests in this binary must lock the same inode; unlinking a lock file can split concurrent lockers across different inodes"
+)]
 fn default_test_lock_path() -> PathBuf {
     env::temp_dir().join("decune-test-docker-resource.lock")
 }
