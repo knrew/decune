@@ -174,7 +174,7 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
                 &mut compose_project_names,
                 plan.project.project_name.clone(),
             );
-            DockerComposeCli::default()
+            let compose_remove_result = DockerComposeCli::default()
                 .down(
                     &plan.project,
                     ComposeDownOptions {
@@ -182,17 +182,26 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
                         remove_orphans: true,
                     },
                 )
-                .await?;
-            ui::done(&format!(
-                "Removed Docker Compose project: {}",
-                plan.project.project_name
-            ));
+                .await;
+            match compose_remove_result {
+                Ok(()) => {
+                    ui::done(&format!(
+                        "Removed Docker Compose project: {}",
+                        plan.project.project_name
+                    ));
+                    push_unique(
+                        &mut compose_projects_removed_by_compose,
+                        plan.project.project_name.clone(),
+                    );
+                }
+                Err(error) => {
+                    ui::warn(&format!(
+                        "Falling back to Docker labels because Docker Compose project removal failed: {error:#}"
+                    ));
+                }
+            }
 
             remove_generated_images |= plan.cleanup.workspace.remove_generated_images;
-            push_unique(
-                &mut compose_projects_removed_by_compose,
-                plan.project.project_name,
-            );
         }
         Ok(None) => {}
         Err(error) => {

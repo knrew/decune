@@ -1989,6 +1989,95 @@ fn compose_remove_removes_existing_project_when_config_files_are_missing() {
 }
 
 #[test]
+fn compose_remove_falls_back_to_labels_when_generated_override_is_stale() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    let command_log = host_tools.path().join("commands.log");
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-remove-falls-back-when-generated-override-is-stale.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let workspace_slug = workspace_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap()
+        .to_ascii_lowercase();
+    let project_name = format!("decune-{workspace_slug}-{workspace_id}");
+    let state_home = host_tools.path().join("state");
+    let state_dir = state_home.join("decune").join(&workspace_id);
+    fs::create_dir_all(&state_dir).unwrap();
+    let generated_override = state_dir.join("compose.override.yaml");
+    fs::write(
+        &generated_override,
+        r"
+        services:
+          app:
+            image: alpine:3.20
+          removed-sidecar:
+            container_name: fixed-sidecar-workspace
+            networks:
+              default:
+                aliases:
+                  - fixed-sidecar
+        ",
+    )
+    .unwrap();
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("DECUNE_FAKE_PROJECT_NAME", &project_name)
+        .env("DECUNE_FAKE_WORKSPACE_ID", &workspace_id)
+        .env("XDG_STATE_HOME", &state_home)
+        .args(["remove", "--no-confirm"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Falling back to Docker labels because Docker Compose project removal failed",
+        ))
+        .stderr(predicate::str::contains(
+            "Removed Docker Compose container: stale-app-1",
+        ))
+        .stderr(predicate::str::contains(
+            "Removed Docker Compose container: stale-sidecar-1",
+        ))
+        .stderr(predicate::str::contains(
+            "Removed Docker volume: stale_project_data",
+        ))
+        .stderr(predicate::str::contains(
+            "Removed Docker network: stale_project_default",
+        ))
+        .stderr(predicate::str::contains("Removed dev container resources"));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(commands.contains("compose"));
+    assert!(commands.contains(&generated_override.display().to_string()));
+    assert!(commands.contains("down --volumes --remove-orphans"));
+    assert!(commands.contains("rm --force --volumes compose-primary-id"));
+    assert!(commands.contains("rm --force --volumes compose-sidecar-id"));
+    assert!(commands.contains("volume rm --force stale_project_data"));
+    assert!(commands.contains("network rm stale_project_default"));
+    assert!(!state_dir.exists());
+}
+
+#[test]
 fn compose_remove_images_removes_only_decune_generated_workspace_images() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();

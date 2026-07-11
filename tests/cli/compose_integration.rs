@@ -975,9 +975,11 @@ fn compose_integration_clone_isolation_rewrites_fixed_names_for_two_workspaces()
     );
     assert!(resolved.contains("fixed-app-385"));
 
+    remove_clone_isolation_probe_service(first.path());
+
     let alpine_image_id =
         docker_output(["image", "inspect", "--format", "{{.Id}}", "alpine:3.20"]).must();
-    run_decune_remove(first.path(), &first_state_home_value, true);
+    run_decune_remove_expecting_label_fallback(first.path(), &first_state_home_value, true);
 
     assert!(docker_status(["container", "inspect", &first_container]).is_err());
     assert!(docker_status(["volume", "inspect", &first_volume]).is_err());
@@ -2030,6 +2032,49 @@ fn run_decune_remove(workspace: &Path, state_home: &str, images: bool) {
         .env("XDG_STATE_HOME", state_home)
         .assert()
         .success();
+}
+
+fn run_decune_remove_expecting_label_fallback(workspace: &Path, state_home: &str, images: bool) {
+    let mut command = decune();
+    command.args(["remove", "--no-confirm"]);
+    if images {
+        command.arg("--images");
+    }
+    command
+        .arg(workspace)
+        .env("XDG_STATE_HOME", state_home)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Falling back to Docker labels because Docker Compose project removal failed",
+        ));
+}
+
+fn remove_clone_isolation_probe_service(workspace: &Path) {
+    let compose_path = workspace.join(".devcontainer/compose.yaml");
+    let compose = fs::read_to_string(&compose_path).must();
+    let compose_without_probe = compose.replace(
+        r"  probe:
+    image: alpine:3.20
+    container_name: fixed-probe-385
+    command: sleep infinity
+    networks:
+      - appnet
+
+",
+        "",
+    );
+    assert_ne!(compose_without_probe, compose);
+    fs::write(compose_path, compose_without_probe).must();
+
+    let devcontainer_path = workspace.join(".devcontainer/devcontainer.json");
+    let devcontainer = fs::read_to_string(&devcontainer_path).must();
+    let devcontainer_without_probe = devcontainer.replace(
+        r#""runServices": ["app", "probe"]"#,
+        r#""runServices": ["app"]"#,
+    );
+    assert_ne!(devcontainer_without_probe, devcontainer);
+    fs::write(devcontainer_path, devcontainer_without_probe).must();
 }
 
 fn compose_primary_container_output<const N: usize>(
