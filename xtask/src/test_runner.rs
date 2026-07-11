@@ -3,8 +3,11 @@ use std::{path::Path, process::Command};
 use anyhow::{Context, Result, bail};
 
 use crate::{
-    command::{ChildCommand, cargo_command_with_container_tools, run_command, run_command_spec},
-    container_tools::prepare_xtask_container_tools_bundle,
+    command::{
+        ChildCommand, cargo_command_with_container_tools, run_command_spec_streaming,
+        run_command_streaming,
+    },
+    container_tools::{BuildOutputMode, prepare_xtask_container_tools_bundle},
 };
 
 const COMPOSE_CAPABILITIES: [ComposeCapabilityRequirement; 8] = [
@@ -60,16 +63,19 @@ struct ComposeCapabilityRequirement {
 pub(crate) fn compose_integration(workspace: &Path, release: bool) -> Result<()> {
     let mut docker_version = Command::new("docker");
     docker_version.arg("version");
-    run_command(
+    run_command_streaming(
         docker_version,
         "Docker CLI is required for Docker Compose integration tests",
     )?;
     compose_integration_preflight()?;
 
-    let bundle_dir = prepare_xtask_container_tools_bundle(workspace, true)?;
+    eprintln!("Preparing container tools bundle...");
+    let bundle_dir =
+        prepare_xtask_container_tools_bundle(workspace, true, BuildOutputMode::Streaming)?;
     let command = compose_integration_cargo_command(workspace, release, &bundle_dir);
 
-    run_command_spec(command, "Failed to run Docker Compose integration tests")
+    eprintln!("Running Docker Compose integration tests...");
+    run_command_spec_streaming(command, "Failed to run Docker Compose integration tests")
 }
 
 fn compose_integration_preflight() -> Result<()> {
@@ -105,10 +111,13 @@ fn compose_integration_preflight() -> Result<()> {
 }
 
 pub(crate) fn workspace_test(workspace: &Path, release: bool) -> Result<()> {
-    let bundle_dir = prepare_xtask_container_tools_bundle(workspace, true)?;
+    eprintln!("Preparing container tools bundle...");
+    let bundle_dir =
+        prepare_xtask_container_tools_bundle(workspace, true, BuildOutputMode::Streaming)?;
     let command = workspace_test_cargo_command(workspace, release, &bundle_dir);
 
-    run_command_spec(command, "Failed to run workspace tests")
+    eprintln!("Running workspace tests...");
+    run_command_spec_streaming(command, "Failed to run workspace tests")
 }
 
 fn compose_integration_cargo_command(
@@ -124,6 +133,7 @@ fn compose_integration_cargo_command(
         "--workspace",
         "--all-features",
         "--no-fail-fast",
+        "--verbose",
         "compose_integration",
         "--",
         "--ignored",
@@ -197,6 +207,7 @@ mod tests {
                 "--workspace",
                 "--all-features",
                 "--no-fail-fast",
+                "--verbose",
                 "compose_integration",
                 "--",
                 "--ignored",

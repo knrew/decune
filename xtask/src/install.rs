@@ -4,7 +4,9 @@ use anyhow::Result;
 
 use crate::{
     command::{ChildCommand, cargo_command_with_container_tools, run_command_spec},
-    container_tools::{default_xtask_container_tools_bundle_dir, prepare_container_tools_bundle},
+    container_tools::{
+        BuildOutputMode, default_xtask_container_tools_bundle_dir, prepare_container_tools_bundle,
+    },
 };
 
 pub(crate) fn install(
@@ -14,7 +16,12 @@ pub(crate) fn install(
     root: Option<&Path>,
 ) -> Result<()> {
     let plan = install_plan(workspace, locked, force, root);
-    prepare_container_tools_bundle(workspace, &plan.bundle_dir, plan.bundle_locked)?;
+    prepare_container_tools_bundle(
+        workspace,
+        &plan.bundle_dir,
+        plan.bundle_locked,
+        BuildOutputMode::Captured,
+    )?;
 
     run_command_spec(
         plan.command,
