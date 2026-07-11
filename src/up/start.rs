@@ -44,8 +44,8 @@ use crate::{
             ComposeOverrideServicePatch, ComposeProjectPlan, write_compose_override,
         },
         compose_isolation::{
-            ComposeIsolationNameRewritePlan, ComposeIsolationResourceKind,
-            ComposeIsolationSubnetPlan,
+            ComposeIsolationEndpointPlan, ComposeIsolationNameRewritePlan,
+            ComposeIsolationResourceKind, ComposeIsolationSubnetPlan,
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,

@@ -6,6 +6,8 @@ pub(crate) const COMPOSE_CLONE_ISOLATION_INVALID: &str = "compose_clone_isolatio
 pub(crate) const COMPOSE_CLONE_ISOLATION_UNSUPPORTED: &str = "compose_clone_isolation_unsupported";
 pub(crate) const COMPOSE_CLONE_ISOLATION_POOL_EXHAUSTED: &str =
     "compose_clone_isolation_pool_exhausted";
+pub(crate) const COMPOSE_CLONE_ISOLATION_ENDPOINT_UNSAFE: &str =
+    "compose_clone_isolation_endpoint_unsafe";
 
 #[derive(Debug)]
 pub(crate) enum ComposeIsolationDiagnostic {
@@ -24,6 +26,12 @@ pub(crate) enum ComposeIsolationDiagnostic {
         requested_name: String,
         docker_resource_name: String,
         docker_project: Option<String>,
+    },
+    EndpointUnsafe {
+        service: String,
+        env: String,
+        network: String,
+        address: String,
     },
 }
 
@@ -62,6 +70,17 @@ impl ComposeIsolationDiagnostic {
                 docker_resource_name: docker_resource_name.clone(),
                 docker_project: docker_project.clone(),
             },
+            ComposeIsolationFinding::EndpointUnsafe {
+                service,
+                env,
+                network,
+                address,
+            } => Self::EndpointUnsafe {
+                service: service.clone(),
+                env: env.clone(),
+                network: network.clone(),
+                address: address.clone(),
+            },
         }
     }
 }
@@ -96,6 +115,15 @@ impl std::fmt::Display for ComposeIsolationDiagnostic {
                 kind.compose_label(),
                 kind.docker_label(),
                 optional_value(docker_project.as_deref()),
+            ),
+            Self::EndpointUnsafe {
+                service,
+                env,
+                network,
+                address,
+            } => write!(
+                formatter,
+                "{COMPOSE_CLONE_ISOLATION_ENDPOINT_UNSAFE}: Docker Compose service environment contains an address from a relocated network without a matching endpoint declaration. service: `{service}`; environment variable: `{env}`; network: `{network}`; original address: {address}. Declare [[compose.clone_isolation.endpoints]] for this service and environment variable."
             ),
         }
     }

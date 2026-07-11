@@ -26,13 +26,15 @@ use crate::{
         compose_isolation::{
             ComposeIsolationDaemonSnapshot, ComposeIsolationDockerIpamConfig,
             ComposeIsolationDockerNetwork, ComposeIsolationDockerResource,
+            ComposeIsolationEndpointDeclaration, ComposeIsolationEndpointPlan,
             ComposeIsolationNameRewritePlan, ComposeIsolationNameRewritePlanInput,
             ComposeIsolationPersistedSubnet, ComposeIsolationPlanInput,
             ComposeIsolationResourceKind, ComposeIsolationScan, ComposeIsolationSubnetPlan,
             ComposeIsolationSubnetPlanInput, apply_compose_isolation_name_rewrites,
             apply_compose_isolation_subnet_plan, plan_compose_isolation,
-            plan_compose_isolation_name_rewrites, plan_compose_isolation_subnets,
-            scan_compose_isolation, validate_compose_isolation_diagnostics,
+            plan_compose_isolation_endpoints, plan_compose_isolation_name_rewrites,
+            plan_compose_isolation_subnets, scan_compose_isolation,
+            validate_compose_isolation_diagnostics,
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
@@ -301,6 +303,7 @@ struct ComposeStartupContext {
     published_port_relocation_enabled: bool,
     name_rewrite_plan: ComposeIsolationNameRewritePlan,
     subnet_plan: ComposeIsolationSubnetPlan,
+    endpoint_plan: ComposeIsolationEndpointPlan,
 }
 
 impl ComposeStartupContext {
@@ -627,7 +630,7 @@ async fn prepare_compose_startup_context(
         )
     };
     let active_user_config = active_user_config.as_ref().unwrap_or(&user_config);
-    let (name_rewrite_plan, subnet_plan) = run_compose_isolation_preflight(
+    let (name_rewrite_plan, subnet_plan, endpoint_plan) = run_compose_isolation_preflight(
         client,
         workspace,
         &project_name,
@@ -685,6 +688,7 @@ async fn prepare_compose_startup_context(
         published_port_relocation_enabled,
         name_rewrite_plan,
         subnet_plan,
+        endpoint_plan,
     })
 }
 
@@ -696,12 +700,17 @@ async fn run_compose_isolation_preflight(
     clone_isolation: &ResolvedComposeCloneIsolation,
     compose_capabilities: &ComposeCliCapabilities,
     rebuild: bool,
-) -> Result<(ComposeIsolationNameRewritePlan, ComposeIsolationSubnetPlan)> {
+) -> Result<(
+    ComposeIsolationNameRewritePlan,
+    ComposeIsolationSubnetPlan,
+    ComposeIsolationEndpointPlan,
+)> {
     let scan = scan_compose_isolation(model, project_name);
-    if scan.is_empty() {
+    if scan.is_empty() && (!clone_isolation.enabled || clone_isolation.endpoints.is_empty()) {
         return Ok((
             ComposeIsolationNameRewritePlan::default(),
             ComposeIsolationSubnetPlan::default(),
+            ComposeIsolationEndpointPlan::default(),
         ));
     }
 
@@ -731,7 +740,7 @@ async fn run_compose_isolation_preflight(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let subnet_plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+    let mut subnet_plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
         model,
         project_name,
         workspace_id: workspace.id(),
@@ -747,14 +756,34 @@ async fn run_compose_isolation_preflight(
     if !subnet_plan.allocations.is_empty() {
         compose_capabilities.ensure_compose_override_tag()?;
     }
+    let endpoint_declarations = if clone_isolation.enabled {
+        clone_isolation
+            .endpoints
+            .iter()
+            .map(|endpoint| ComposeIsolationEndpointDeclaration {
+                service: endpoint.service.clone(),
+                env: endpoint.env.clone(),
+                value: endpoint.value.clone(),
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+    let (endpoint_plan, endpoint_findings) = plan_compose_isolation_endpoints(
+        model,
+        &name_effective_scan,
+        &endpoint_declarations,
+        &mut subnet_plan,
+    )?;
     let effective_scan = apply_compose_isolation_subnet_plan(&name_effective_scan, &subnet_plan);
-    let findings = plan_compose_isolation(&ComposeIsolationPlanInput {
+    let mut findings = plan_compose_isolation(&ComposeIsolationPlanInput {
         project_name,
         scan: &effective_scan,
         daemon: &daemon,
     });
+    findings.extend(endpoint_findings);
     validate_compose_isolation_diagnostics(&findings)?;
-    Ok((name_rewrite_plan, subnet_plan))
+    Ok((name_rewrite_plan, subnet_plan, endpoint_plan))
 }
 
 async fn compose_isolation_daemon_snapshot(
@@ -1357,6 +1386,7 @@ async fn write_finalized_generated_compose_override(
             published_port_override,
             name_rewrite_plan: &context.name_rewrite_plan,
             subnet_plan: &context.subnet_plan,
+            endpoint_plan: &context.endpoint_plan,
         },
     )
     .await

@@ -119,6 +119,23 @@ impl ComposeOverridePatch {
         self
     }
 
+    pub(crate) fn service_environment(
+        mut self,
+        service_name: &str,
+        key: &str,
+        value: &str,
+    ) -> Self {
+        let service = self
+            .services
+            .entry(service_name.to_owned())
+            .or_insert_with(|| ComposeOverrideServicePatch::new(service_name));
+        service.environment.insert(
+            key.to_owned(),
+            ComposeOverrideEnvironmentValue::Literal(value.to_owned()),
+        );
+        self
+    }
+
     pub(crate) fn network_name(mut self, resource: &str, name: &str) -> Self {
         self.networks.entry(resource.to_owned()).or_default().name = Some(name.to_owned());
         self

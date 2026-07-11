@@ -6,6 +6,14 @@ pub(super) struct ComposeGeneratedOverrideRuntime<'a> {
     pub(super) published_port_override: &'a ComposePublishedPortOverride,
     pub(super) name_rewrite_plan: &'a ComposeIsolationNameRewritePlan,
     pub(super) subnet_plan: &'a ComposeIsolationSubnetPlan,
+    pub(super) endpoint_plan: &'a ComposeIsolationEndpointPlan,
+}
+
+#[derive(Clone, Copy)]
+struct ComposeIsolationOverridePlans<'a> {
+    names: &'a ComposeIsolationNameRewritePlan,
+    subnets: &'a ComposeIsolationSubnetPlan,
+    endpoints: &'a ComposeIsolationEndpointPlan,
 }
 
 pub(super) async fn write_generated_compose_override(
@@ -23,8 +31,11 @@ pub(super) async fn write_generated_compose_override(
         startup,
         runtime.service_forward,
         runtime.published_port_override,
-        runtime.name_rewrite_plan,
-        runtime.subnet_plan,
+        ComposeIsolationOverridePlans {
+            names: runtime.name_rewrite_plan,
+            subnets: runtime.subnet_plan,
+            endpoints: runtime.endpoint_plan,
+        },
     )?;
     write_compose_override(&output_path, &override_patch)
 }
@@ -155,35 +166,17 @@ fn generated_compose_override_content_with_startup(
     service_forward: &[ServiceForwardRuntime],
     published_port_override: &ComposePublishedPortOverride,
 ) -> Result<String> {
-    generated_compose_override_content_with_name_rewrites(
-        primary_service,
-        plan,
-        startup,
-        service_forward,
-        published_port_override,
-        &ComposeIsolationNameRewritePlan::default(),
-        &ComposeIsolationSubnetPlan::default(),
-    )
-}
-
-#[cfg(test)]
-fn generated_compose_override_content_with_name_rewrites(
-    primary_service: &str,
-    plan: &UpPlan,
-    startup: Option<ComposeOverrideStartup>,
-    service_forward: &[ServiceForwardRuntime],
-    published_port_override: &ComposePublishedPortOverride,
-    name_rewrite_plan: &ComposeIsolationNameRewritePlan,
-    subnet_plan: &ComposeIsolationSubnetPlan,
-) -> Result<String> {
     generated_compose_override_patch(
         primary_service,
         plan,
         startup,
         service_forward,
         published_port_override,
-        name_rewrite_plan,
-        subnet_plan,
+        ComposeIsolationOverridePlans {
+            names: &ComposeIsolationNameRewritePlan::default(),
+            subnets: &ComposeIsolationSubnetPlan::default(),
+            endpoints: &ComposeIsolationEndpointPlan::default(),
+        },
     )?
     .to_yaml()
 }
@@ -194,8 +187,7 @@ fn generated_compose_override_patch(
     startup: Option<ComposeOverrideStartup>,
     service_forward: &[ServiceForwardRuntime],
     published_port_override: &ComposePublishedPortOverride,
-    name_rewrite_plan: &ComposeIsolationNameRewritePlan,
-    subnet_plan: &ComposeIsolationSubnetPlan,
+    isolation: ComposeIsolationOverridePlans<'_>,
 ) -> Result<ComposeOverridePatch> {
     let mut service = ComposeOverrideServicePatch::new(primary_service)
         .image(&plan.image)
@@ -254,9 +246,22 @@ fn generated_compose_override_patch(
         patch = patch
             .service(ComposeOverrideServicePatch::new(service_name).ports_override(ports.clone()));
     }
-    patch = apply_compose_name_rewrites(patch, name_rewrite_plan);
-    patch = apply_compose_subnet_plan(patch, subnet_plan);
+    patch = apply_compose_name_rewrites(patch, isolation.names);
+    patch = apply_compose_subnet_plan(patch, isolation.subnets);
+    patch = apply_compose_endpoint_plan(patch, isolation.endpoints);
     Ok(patch)
+}
+
+fn apply_compose_endpoint_plan(
+    mut patch: ComposeOverridePatch,
+    endpoint_plan: &ComposeIsolationEndpointPlan,
+) -> ComposeOverridePatch {
+    for (service, environment) in &endpoint_plan.services {
+        for (key, value) in environment {
+            patch = patch.service_environment(service, key, value);
+        }
+    }
+    patch
 }
 
 fn apply_compose_subnet_plan(

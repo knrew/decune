@@ -556,6 +556,147 @@ fn compose_clone_isolation_relocates_fixed_subnet_after_occupied_initial_slot() 
 }
 
 #[test]
+fn compose_clone_isolation_rejects_undeclared_stale_endpoint_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.200.0.0/24"
+            subnet_prefix = 25
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let (occupied, _) = two_slot_subnets(&workspace_id, "grpc");
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_ENDPOINT_RELOCATION", "1")
+        .env("DECUNE_FAKE_OCCUPIED_SUBNET", &occupied)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_clone_isolation_endpoint_unsafe")
+                .and(predicate::str::contains("service: `app`"))
+                .and(predicate::str::contains(
+                    "environment variable: `HOST_AGENT_ENDPOINT`",
+                ))
+                .and(predicate::str::contains("network: `grpc`"))
+                .and(predicate::str::contains("original address: 10.99.0.1"))
+                .and(predicate::str::contains("endpoint-plaintext-must-not-leak").not()),
+        );
+}
+
+#[test]
+fn compose_clone_isolation_renders_declared_endpoint_in_generated_override() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.200.0.0/24"
+            subnet_prefix = 25
+
+            [[compose.clone_isolation.endpoints]]
+            service = "app"
+            env = "HOST_AGENT_ENDPOINT"
+            value = "grpc://${decune.network.grpc.gateway}:50051"
+
+            [credentials.git]
+            enabled = false
+
+            [credentials.github]
+            enabled = false
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let (occupied, expected_subnet) = two_slot_subnets(&workspace_id, "grpc");
+    let expected_gateway = first_host_address(&expected_subnet);
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", state_home.path())
+        .env("XDG_RUNTIME_DIR", host_tools.path())
+        .env("DECUNE_FAKE_ENDPOINT_RELOCATION", "1")
+        .env("DECUNE_FAKE_OCCUPIED_SUBNET", &occupied)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let state_dir = state_home.path().join("decune").join(workspace_id);
+    let generated = fs::read_to_string(state_dir.join("compose.override.yaml")).unwrap();
+    assert!(generated.contains(&format!(
+        "'HOST_AGENT_ENDPOINT': 'grpc://{expected_gateway}:50051'"
+    )));
+    let state = fs::read_to_string(state_dir.join("state.toml")).unwrap();
+    assert!(!state.contains("grpc://"));
+    assert!(!state.contains("endpoint-plaintext-must-not-leak"));
+}
+
+#[test]
 fn compose_clone_isolation_without_opt_in_does_not_override_fixed_subnet() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
@@ -635,6 +776,12 @@ fn two_slot_subnets(workspace_id: &str, network: &str) -> (String, String) {
     } else {
         ("10.200.0.128/25".to_owned(), "10.200.0.0/25".to_owned())
     }
+}
+
+fn first_host_address(subnet: &str) -> String {
+    let (network, _) = subnet.split_once('/').unwrap();
+    let network = network.parse::<std::net::Ipv4Addr>().unwrap();
+    std::net::Ipv4Addr::from(u32::from(network) + 1).to_string()
 }
 
 #[test]
