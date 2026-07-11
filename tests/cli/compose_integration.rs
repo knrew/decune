@@ -378,6 +378,11 @@ fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() 
     let first_id = workspace_id(first.path());
     let second_id = workspace_id(second.path());
     assert_ne!(first_id, second_id);
+    first.workspace.write_file("clone-marker", "first\n").must();
+    second
+        .workspace
+        .write_file("clone-marker", "second\n")
+        .must();
 
     let docker_resource_lock = acquire_exclusive_docker_resource_lock().must();
     let (first_up, second_up) = thread::scope(|scope| {
@@ -400,6 +405,14 @@ fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() 
     let second_container = format!("fixed-app-388-{second_id}");
     assert!(docker_status(["container", "inspect", &first_container]).is_ok());
     assert!(docker_status(["container", "inspect", &second_container]).is_ok());
+    assert_eq!(
+        compose_primary_container_output(first.path(), ["cat", "/workspace/clone-marker"]).trim(),
+        "first"
+    );
+    assert_eq!(
+        compose_primary_container_output(second.path(), ["cat", "/workspace/clone-marker"]).trim(),
+        "second"
+    );
 
     let first_volume = format!("fixed-cache-388-{first_id}");
     let second_volume = format!("fixed-cache-388-{second_id}");
