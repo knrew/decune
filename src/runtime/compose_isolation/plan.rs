@@ -215,12 +215,6 @@ fn validate_relocation_requests<'a>(
     let mut networks = BTreeSet::new();
     let mut validated = Vec::with_capacity(input.scan.networks.len());
     for requested in &input.scan.networks {
-        if !networks.insert(&requested.network) {
-            bail!(
-                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: multiple fixed IPAM subnets on Compose network `{}` cannot be relocated",
-                requested.network
-            );
-        }
         let cidr = Ipv4Cidr::parse(&requested.subnet).ok_or_else(|| {
             anyhow!(
                 "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: fixed IPv6 Compose network subnets cannot be relocated; network `{}`; subnet {}",
@@ -228,6 +222,12 @@ fn validate_relocation_requests<'a>(
                 requested.subnet
             )
         })?;
+        if !networks.insert(&requested.network) {
+            bail!(
+                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: multiple fixed IPAM subnets on Compose network `{}` cannot be relocated",
+                requested.network
+            );
+        }
         for (service_name, service) in input.model.services() {
             let Some(network_config) = service.network_config(&requested.network) else {
                 continue;
@@ -765,6 +765,35 @@ mod tests {
     }
 
     #[test]
+    fn subnet_planner_keeps_noop_allocation_for_override_generation() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.200.1.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.1.0/24"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap();
+
+        assert_eq!(plan.allocations.len(), 1);
+        assert_eq!(plan.allocations[0].planned_subnet, "10.200.1.0/24");
+        assert!(!plan.allocations[0].relocated);
+    }
+
+    #[test]
     fn subnet_planner_rejects_static_addresses_and_ipv6() {
         let static_model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
             "services": {"app": {"image": "alpine:3.20", "networks": {
@@ -858,6 +887,54 @@ mod tests {
     }
 
     #[test]
+    fn subnet_planner_reports_ipv6_for_dual_stack_network_in_either_order() {
+        for configs in [
+            serde_json::json!([
+                {"subnet": "10.99.0.0/24"},
+                {"subnet": "fd00::/64"}
+            ]),
+            serde_json::json!([
+                {"subnet": "fd00::/64"},
+                {"subnet": "10.99.0.0/24"}
+            ]),
+        ] {
+            let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+                "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+                "networks": {"grpc": {"ipam": {"config": configs}}}
+            }))
+            .unwrap();
+            let scan = scan_compose_isolation(&model, "self-project");
+
+            let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+                model: &model,
+                project_name: "self-project",
+                workspace_id: "workspace-a",
+                scan: &scan,
+                daemon: &ComposeIsolationDaemonSnapshot::default(),
+                state: &[],
+                enabled: true,
+                relocation: true,
+                subnet_pool: Some("10.200.0.0/16"),
+                subnet_prefix: Some(24),
+                rebuild: false,
+            })
+            .unwrap_err();
+
+            assert!(
+                error
+                    .to_string()
+                    .contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED)
+            );
+            assert!(
+                error
+                    .to_string()
+                    .contains("fixed IPv6 Compose network subnets")
+            );
+            assert!(!error.to_string().contains("multiple fixed IPAM subnets"));
+        }
+    }
+
+    #[test]
     fn subnet_planner_removes_unused_stale_self_network_and_rejects_attached_one() {
         let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
             "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
@@ -894,6 +971,46 @@ mod tests {
         };
         let error = plan_compose_isolation_subnets(&input(&attached)).unwrap_err();
         assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_RECREATE_HINT)
+        );
+    }
+
+    #[test]
+    fn subnet_planner_requires_down_before_rebuild_returns_to_requested_subnet() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.200.1.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let mut existing = network("self_grpc", Some("self-project"), "10.200.2.0/24");
+        existing.compose_network = Some("grpc".to_owned());
+        existing.has_attached_containers = true;
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![existing],
+            resources: Vec::new(),
+        };
+
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: true,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(error.to_string().contains("10.200.1.0/24"));
         assert!(
             error
                 .to_string()
