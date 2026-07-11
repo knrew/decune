@@ -283,10 +283,7 @@ fn deserialize_compose_service_networks<'de, D>(
 where
     D: Deserializer<'de>,
 {
-    let Some(value) = Option::<JsonValue>::deserialize(deserializer)? else {
-        return Ok(BTreeMap::new());
-    };
-    match value {
+    match JsonValue::deserialize(deserializer)? {
         JsonValue::Object(values) => Ok(values.into_iter().collect()),
         JsonValue::Array(values) => values
             .into_iter()
@@ -337,6 +334,44 @@ fn validate_absolute_workspace_folder(workspace_folder: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_config_service_deserializes_network_shapes() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "missing": {"image": "alpine:3.20"},
+                "null": {"image": "alpine:3.20", "networks": null},
+                "list": {"image": "alpine:3.20", "networks": ["backend"]},
+                "map": {
+                    "image": "alpine:3.20",
+                    "networks": {
+                        "backend": null,
+                        "frontend": {"aliases": ["app"]}
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(model.service("missing").unwrap().networks.is_empty());
+        assert!(model.service("null").unwrap().networks.is_empty());
+        assert_eq!(
+            model
+                .service("list")
+                .unwrap()
+                .network_names()
+                .collect::<Vec<_>>(),
+            [&"backend".to_owned()]
+        );
+        assert_eq!(
+            model
+                .service("map")
+                .unwrap()
+                .network_names()
+                .collect::<Vec<_>>(),
+            [&"backend".to_owned(), &"frontend".to_owned()]
+        );
+    }
 
     #[test]
     fn compose_config_model_preserves_service_user() {

@@ -8,6 +8,12 @@ services:
     volumes:
       - cache:/cache
       - ../..:/workspace
+    configs:
+      - source: app-config
+        target: /app-config
+    secrets:
+      - source: app-secret
+        target: app-secret
   probe:
     image: alpine:3.20
     command: sleep infinity
@@ -15,8 +21,19 @@ services:
       - appnet
 
 networks:
-  appnet: {}
+  appnet:
+    name: fixed-network-385
 
 volumes:
   cache:
     name: fixed-cache-385
+
+configs:
+  app-config:
+    name: fixed-config-385
+    file: ./app-config.txt
+
+secrets:
+  app-secret:
+    name: fixed-secret-385
+    file: ./app-secret.txt

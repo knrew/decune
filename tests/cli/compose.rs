@@ -2023,11 +2023,35 @@ fn compose_remove_images_removes_only_decune_generated_workspace_images() {
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_repository = workspace_image_repository(&workspace_root);
+    let state_home = host_tools.path().join("state");
+    let generated_override = state_home
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("compose.override.yaml");
+    fs::create_dir_all(generated_override.parent().unwrap()).unwrap();
+    fs::write(
+        &generated_override,
+        r#"
+        services:
+          app:
+            image: "decune/workspace:generated"
+            command: ["sleep", "infinity"]
+            volumes:
+              - type: bind
+                source: /tmp/decune-workspace
+                target: /workspace
+        volumes:
+          cache:
+            name: "fixed-cache-workspace"
+        "#,
+    )
+    .unwrap();
 
     decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_IMAGE_REPOSITORY", &image_repository)
+        .env("XDG_STATE_HOME", &state_home)
         .args(["remove", "--no-confirm", "--images"])
         .arg(&workspace_root)
         .assert()
@@ -2041,6 +2065,7 @@ fn compose_remove_images_removes_only_decune_generated_workspace_images() {
 
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(commands.contains("compose"));
+    assert!(commands.contains(&generated_override.display().to_string()));
     assert!(commands.contains("down --volumes --remove-orphans"));
     assert!(commands.contains(&format!(
         "image ls --all --format json {image_repository}:*"
