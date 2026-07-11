@@ -172,6 +172,10 @@ impl ComposeConfigService {
     pub(crate) fn network_names(&self) -> impl Iterator<Item = &String> {
         self.networks.keys()
     }
+
+    pub(crate) fn network_config(&self, network: &str) -> Option<&JsonValue> {
+        self.networks.get(network)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]

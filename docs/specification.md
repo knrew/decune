@@ -818,7 +818,19 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
 
 `endpoints.value` では `${decune.network.<compose-network-key>.gateway}` と `${decune.network.<compose-network-key>.subnet}` の 2 形式を clone isolation 専用 placeholder として予約する。これは一般の decune config 変数展開とは別に扱い、Compose network key の存在確認と展開は endpoint rewrite の preflight で行う。
 
-不正な有効設定は `compose_clone_isolation_invalid` diagnostic で error にする。network subnet / endpoint の実際の書き換えは段階的に追加され、この設定を読む各機能が実装されるまでは挙動を変更しない。
+不正な有効設定は `compose_clone_isolation_invalid` diagnostic で error にする。endpoint の実際の書き換えは後続 phase で追加する。
+
+`enabled = true` かつ `networks.relocation = true` の固定 IPv4 subnet relocation は次の契約に従う。
+
+- slot 数は `2^(subnet_prefix - pool_prefix)` とする。`subnet_prefix` 省略時は元 subnet の prefix 長を使う。
+- 初期 slot は SHA-256 の入力 `decune-clone-isolation-subnet-v1:<workspace_id>:<compose-network-key>` の先頭 8 byte を big-endian 整数として読み、slot 数で剰余を取って決める。そこから線形探索し、自 project 以外の同じ IPAM address space にある daemon network subnet、または同一 plan で割当済みの subnet と重複する slot を飛ばす。空きがなければ `compose_clone_isolation_pool_exhausted` で error にする。
+- 元 IPAM config に gateway がある場合、元 subnet 内の host offset を新 subnet でも保存する。offset が新 prefix に収まらなければ `compose_clone_isolation_invalid` で error にする。元 gateway がなければ生成しない。
+- 同じ Compose project の既存 network が、対象 Compose network key に対して pool 内の非重複 subnet を保持していれば最優先で再利用する。次に state の前回割当を再利用する。通常の `up` では blocker が消えても割当を維持し、requested subnet を再度優先するのは rebuild 時だけとする。
+- 自 project の既存 network と新 plan の subnet が異なる場合、接続 container がなければ network を削除し、Compose に再作成させる。接続 container がある場合は `compose_clone_isolation_invalid` で停止し、project を停止して `decune rebuild` するよう案内する。
+- generated Compose override は top-level `networks.<key>.ipam.config: !override` で IPAM config list を置換し、network の `driver` など IPAM 以外の user 設定は変更しない。Compose `!override` tag のため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose は error にする。
+- `external: true` network は検出・書き換えの対象外とする。固定 IPv6 subnet、および対象 network に接続する service の `ipv4_address` / `ipv6_address` / `link_local_ips` は v1 では remap せず、`compose_clone_isolation_unsupported` で error にする。
+
+現 phase では gateway に依存する service environment 値を書き換えない。`networks.relocation = true` にすると、元 gateway を値に埋め込んだ environment は古い address のまま起動しうる。対応する `[[compose.clone_isolation.endpoints]]` の展開と stale 検出が実装されるまでは、利用者が外部 endpoint 契約を確認する必要がある。
 
 `enabled = true` の name rewrite は generated Compose override に次の規則で出力する。
 
@@ -1045,13 +1057,15 @@ Compose モードでは上記 label を primary service に追加する。明示
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
-config hash には、resolved metadata/config、Feature lock、relevant CLI options、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose モードの user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、Compose published port relocation により生成される service `ports` override、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose モードでは user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
+config hash には、resolved metadata/config、Feature lock、relevant CLI options、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose モードの user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、Compose published port relocation により生成される service `ports` override、clone isolation network relocation により生成される subnet / gateway、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose モードでは user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
 
-clone isolation name rewrite により生成される container/resource name と、元 `container_name` のために生成される network alias は relocation 結果値なので、generated override semantic hash input には含めない。
+clone isolation name rewrite により生成される container/resource name、元 `container_name` のために生成される network alias、network relocation により生成される subnet / gateway は relocation 結果値なので、generated override semantic hash input には含めない。
 
 state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 marker と `devcontainer.json` path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 
 Compose published port relocation では、requested endpoint、planned endpoint、`relocated`、起動時に Docker inspect で観測した actual binding を表示補助 metadata として state に記録する。この metadata は現在有効な Docker binding の正本ではない。
+
+Compose clone isolation network relocation では、Compose network key ごとの requested subnet、planned subnet、planned gateway、`relocated` を表示補助 metadata として state に記録する。現在有効な subnet の正本は Docker network inspect とする。
 
 `last_used_at` は `decune up` / `decune rebuild` が workspace を利用可能にした成功時だけ `unix:<seconds>` 形式で更新し、`created_at` / `last_started_at` から推測しない。`last_used_at` がない state の last-used 表示は unknown / `-` とする。`status`、`ports`、`down`、`remove` / `rm`、`clean` は state の last-used 情報を更新しない。
 

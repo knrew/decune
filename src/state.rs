@@ -28,6 +28,8 @@ pub(crate) struct WorkspaceState {
     pub(crate) compose_project_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) published_ports: Vec<PublishedPortRuntimeState>,
+    #[serde(default, skip_serializing_if = "CloneIsolationRuntimeState::is_empty")]
+    pub(crate) clone_isolation: CloneIsolationRuntimeState,
     pub(crate) created_at: String,
     pub(crate) last_started_at: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -50,6 +52,36 @@ pub(crate) struct PublishedPortRuntimeState {
     #[serde(default)]
     pub(crate) actual_bindings: Vec<PublishedPortActualBinding>,
     pub(crate) relocated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloneIsolationRuntimeState {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) networks: Vec<CloneIsolationNetworkRuntimeState>,
+}
+
+impl CloneIsolationRuntimeState {
+    pub(crate) const fn is_empty(&self) -> bool {
+        self.networks.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CloneIsolationNetworkRuntimeState {
+    pub(crate) network: String,
+    pub(crate) requested_subnet: String,
+    pub(crate) planned_subnet: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) planned_gateway: Option<String>,
+    pub(crate) relocated: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ComposeRuntimeState {
+    pub(crate) published_ports: Vec<PublishedPortRuntimeState>,
+    pub(crate) clone_isolation: CloneIsolationRuntimeState,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -262,22 +294,22 @@ pub(crate) fn sync_state_with_container_and_compose_project(
     compose_project_name: Option<String>,
     default_lifecycle: LifecycleState,
 ) -> Result<WorkspaceState> {
-    sync_state_with_container_and_compose_project_and_published_ports(
+    sync_state_with_container_and_compose_runtime(
         state_dir,
         workspace_root,
         container,
         compose_project_name,
-        Vec::new(),
+        ComposeRuntimeState::default(),
         default_lifecycle,
     )
 }
 
-pub(crate) fn sync_state_with_container_and_compose_project_and_published_ports(
+pub(crate) fn sync_state_with_container_and_compose_runtime(
     state_dir: impl AsRef<Path>,
     workspace_root: &Path,
     container: StateContainerSnapshot,
     compose_project_name: Option<String>,
-    published_ports: Vec<PublishedPortRuntimeState>,
+    compose_runtime: ComposeRuntimeState,
     default_lifecycle: LifecycleState,
 ) -> Result<WorkspaceState> {
     let state_dir = state_dir.as_ref();
@@ -302,7 +334,7 @@ pub(crate) fn sync_state_with_container_and_compose_project_and_published_ports(
         workspace_root,
         container,
         compose_project_name,
-        published_ports,
+        compose_runtime,
         StateMetadata {
             lifecycle,
             created_at,
@@ -320,23 +352,23 @@ pub(crate) fn write_reused_state_for_container(
     existing: &WorkspaceState,
     refresh_last_started_at: bool,
 ) -> Result<WorkspaceState> {
-    write_reused_state_for_container_with_published_ports(
+    write_reused_state_for_container_with_compose_runtime(
         state_dir,
         workspace_root,
         container,
         compose_project_name,
-        Vec::new(),
+        ComposeRuntimeState::default(),
         existing,
         refresh_last_started_at,
     )
 }
 
-pub(crate) fn write_reused_state_for_container_with_published_ports(
+pub(crate) fn write_reused_state_for_container_with_compose_runtime(
     state_dir: impl AsRef<Path>,
     workspace_root: &Path,
     container: StateContainerSnapshot,
     compose_project_name: Option<String>,
-    published_ports: Vec<PublishedPortRuntimeState>,
+    compose_runtime: ComposeRuntimeState,
     existing: &WorkspaceState,
     refresh_last_started_at: bool,
 ) -> Result<WorkspaceState> {
@@ -351,7 +383,7 @@ pub(crate) fn write_reused_state_for_container_with_published_ports(
         workspace_root,
         container,
         compose_project_name,
-        published_ports,
+        compose_runtime,
         StateMetadata {
             lifecycle: existing.lifecycle,
             created_at: existing.created_at.clone(),
@@ -366,7 +398,7 @@ fn write_state_for_container_with_metadata(
     workspace_root: &Path,
     container: StateContainerSnapshot,
     compose_project_name: Option<String>,
-    published_ports: Vec<PublishedPortRuntimeState>,
+    compose_runtime: ComposeRuntimeState,
     metadata: StateMetadata,
 ) -> Result<WorkspaceState> {
     let state_dir = state_dir.as_ref();
@@ -378,7 +410,8 @@ fn write_state_for_container_with_metadata(
         config_hash: container.config_hash,
         config_file: container.config_file,
         compose_project_name,
-        published_ports,
+        published_ports: compose_runtime.published_ports,
+        clone_isolation: compose_runtime.clone_isolation,
         created_at: metadata.created_at,
         last_started_at: metadata.last_started_at,
         last_used_at: metadata.last_used_at,
@@ -526,14 +559,15 @@ mod tests {
     use std::{fs, path::Path};
 
     use super::{
-        LifecycleState, OnCreateLifecycleState, PostCreateLifecycleState,
-        PublishedPortActualBinding, PublishedPortEndpointState, PublishedPortHostIpKind,
-        PublishedPortRuntimeState, PublishedPortRuntimeType, PublishedPortSource,
-        PublishedPortTarget, StateContainerSnapshot, UpdateContentLifecycleState, load_state_file,
-        mark_state_used, reconcile_state_without_container, remove_state_runtime_dirs,
-        state_file_path, sync_state_with_container, sync_state_with_container_and_compose_project,
-        sync_state_with_container_and_compose_project_and_published_ports,
-        write_reused_state_for_container, write_state_file,
+        CloneIsolationRuntimeState, ComposeRuntimeState, LifecycleState, OnCreateLifecycleState,
+        PostCreateLifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
+        PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
+        PublishedPortSource, PublishedPortTarget, StateContainerSnapshot,
+        UpdateContentLifecycleState, load_state_file, mark_state_used,
+        reconcile_state_without_container, remove_state_runtime_dirs, state_file_path,
+        sync_state_with_container, sync_state_with_container_and_compose_project,
+        sync_state_with_container_and_compose_runtime, write_reused_state_for_container,
+        write_state_file,
     };
 
     #[derive(Debug, Clone, Copy)]
@@ -722,7 +756,7 @@ mod tests {
                 false,
             ),
         ];
-        let state = sync_state_with_container_and_compose_project_and_published_ports(
+        let state = sync_state_with_container_and_compose_runtime(
             &state_dir,
             Path::new("/workspace/project"),
             StateContainerSnapshot {
@@ -732,7 +766,10 @@ mod tests {
                 config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
             },
             Some("decune-project-abc123".to_owned()),
-            published_ports.clone(),
+            ComposeRuntimeState {
+                published_ports: published_ports.clone(),
+                clone_isolation: CloneIsolationRuntimeState::default(),
+            },
             LifecycleState::default(),
         )
         .unwrap();

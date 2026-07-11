@@ -40,10 +40,13 @@ use crate::{
     },
     runtime::{
         compose_cli::{
-            ComposeConfigService, ComposeOverridePatch, ComposeOverrideServicePatch,
-            ComposeProjectPlan, write_compose_override,
+            ComposeConfigService, ComposeOverrideNetworkIpamConfig, ComposeOverridePatch,
+            ComposeOverrideServicePatch, ComposeProjectPlan, write_compose_override,
         },
-        compose_isolation::{ComposeIsolationNameRewritePlan, ComposeIsolationResourceKind},
+        compose_isolation::{
+            ComposeIsolationNameRewritePlan, ComposeIsolationResourceKind,
+            ComposeIsolationSubnetPlan,
+        },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
             ComposePublishedPortOverride, ComposePublishedPortPlan,
@@ -126,9 +129,9 @@ use reuse::{
     start_stopped_existing_container,
 };
 use state_sync::{
-    reusable_lifecycle_state, started_up_container, started_up_container_with_state,
-    state_compose_project_name, state_container_snapshot, sync_started_compose_state,
-    write_reused_started_state,
+    ComposeStateSyncInput, reusable_lifecycle_state, started_up_container,
+    started_up_container_with_state, state_compose_project_name, state_container_snapshot,
+    sync_started_compose_state, write_reused_started_state,
 };
 
 pub(in crate::up) async fn ensure_container_started(

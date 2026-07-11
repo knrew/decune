@@ -996,6 +996,8 @@ pub(crate) struct DockerNetworkInspect {
     pub(crate) name: Option<String>,
     pub(crate) scope: Option<String>,
     pub(crate) labels: Option<BTreeMap<String, String>>,
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_map")]
+    pub(crate) containers: BTreeMap<String, serde_json::Value>,
     #[serde(rename = "IPAM")]
     pub(crate) ipam: Option<DockerNetworkIpam>,
 }
@@ -1016,6 +1018,17 @@ where
     T: Deserialize<'de>,
 {
     Ok(Option::<Vec<T>>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_null_as_empty_map<'de, D, K, V>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<K, V>, D::Error>
+where
+    D: Deserializer<'de>,
+    K: Deserialize<'de> + Ord,
+    V: Deserialize<'de>,
+{
+    Ok(Option::<BTreeMap<K, V>>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]

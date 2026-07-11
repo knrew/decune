@@ -1,4 +1,6 @@
-use std::net::Ipv4Addr;
+use std::{fmt, net::Ipv4Addr};
+
+use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Ipv4Cidr {
@@ -37,6 +39,76 @@ impl Ipv4Cidr {
     pub(crate) const fn overlaps(self, other: Self) -> bool {
         self.network <= other.broadcast && other.network <= self.broadcast
     }
+
+    pub(crate) const fn contains(self, other: Self) -> bool {
+        self.network <= other.network && other.broadcast <= self.broadcast
+    }
+
+    pub(crate) const fn network(self) -> u32 {
+        self.network
+    }
+
+    pub(crate) const fn contains_address(self, address: Ipv4Addr) -> bool {
+        let address = u32::from_be_bytes(address.octets());
+        self.network <= address && address <= self.broadcast
+    }
+
+    pub(crate) fn address_at_offset(self, offset: u32) -> Option<Ipv4Addr> {
+        let address = self.network.checked_add(offset)?;
+        (address <= self.broadcast).then_some(Ipv4Addr::from(address))
+    }
+}
+
+impl fmt::Display for Ipv4Cidr {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}/{}",
+            Ipv4Addr::from(self.network),
+            self.prefix
+        )
+    }
+}
+
+const SUBNET_HASH_VERSION: &str = "decune-clone-isolation-subnet-v1";
+
+pub(crate) fn allocate_ipv4_subnet_slot(
+    pool: Ipv4Cidr,
+    subnet_prefix: u8,
+    workspace_id: &str,
+    compose_network: &str,
+    unavailable: &[Ipv4Cidr],
+) -> Option<Ipv4Cidr> {
+    if subnet_prefix < pool.prefix || subnet_prefix > 32 {
+        return None;
+    }
+    let prefix_difference = u32::from(subnet_prefix - pool.prefix);
+    let slot_count = 1_u64.checked_shl(prefix_difference)?;
+    let slot_size = 1_u64.checked_shl(32 - u32::from(subnet_prefix))?;
+    let input = format!("{SUBNET_HASH_VERSION}:{workspace_id}:{compose_network}");
+    let digest = Sha256::digest(input.as_bytes());
+    let initial_slot = u64::from_be_bytes([
+        digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7],
+    ]) % slot_count;
+
+    for offset in 0..slot_count {
+        let slot = (initial_slot + offset) % slot_count;
+        let network = u64::from(pool.network).checked_add(slot.checked_mul(slot_size)?)?;
+        let network = u32::try_from(network).ok()?;
+        let broadcast = network.checked_add(u32::try_from(slot_size - 1).ok()?)?;
+        let candidate = Ipv4Cidr {
+            network,
+            broadcast,
+            prefix: subnet_prefix,
+        };
+        if unavailable
+            .iter()
+            .all(|existing| !candidate.overlaps(*existing))
+        {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -61,6 +133,34 @@ mod tests {
             !Ipv4Cidr::parse("10.0.0.0/25")
                 .unwrap()
                 .overlaps(Ipv4Cidr::parse("10.0.0.128/25").unwrap())
+        );
+    }
+
+    #[test]
+    fn slot_allocation_is_deterministic_and_skips_unavailable_subnets() {
+        let pool = Ipv4Cidr::parse("10.200.0.0/16").unwrap();
+        let first = allocate_ipv4_subnet_slot(pool, 24, "workspace-a", "grpc", &[]).unwrap();
+        assert_eq!(
+            allocate_ipv4_subnet_slot(pool, 24, "workspace-a", "grpc", &[]),
+            Some(first)
+        );
+
+        let next = allocate_ipv4_subnet_slot(pool, 24, "workspace-a", "grpc", &[first]).unwrap();
+        assert_ne!(next, first);
+        assert!(pool.contains(next));
+    }
+
+    #[test]
+    fn slot_allocation_reports_pool_exhaustion() {
+        let pool = Ipv4Cidr::parse("10.200.0.0/30").unwrap();
+        let occupied = [
+            Ipv4Cidr::parse("10.200.0.0/31").unwrap(),
+            Ipv4Cidr::parse("10.200.0.2/31").unwrap(),
+        ];
+
+        assert_eq!(
+            allocate_ipv4_subnet_slot(pool, 31, "workspace-a", "grpc", &occupied),
+            None
         );
     }
 }
