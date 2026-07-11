@@ -1,7 +1,92 @@
-use crate::runtime::compose_isolation::{
-    ComposeIsolationDaemonSnapshot, ComposeIsolationDockerNetwork, ComposeIsolationFinding,
-    ComposeIsolationNetworkRequest, ComposeIsolationScan, Ipv4Cidr,
+use crate::runtime::{
+    compose_cli::ComposeConfigModel,
+    compose_isolation::{
+        ComposeIsolationDaemonSnapshot, ComposeIsolationDockerNetwork, ComposeIsolationFinding,
+        ComposeIsolationNameRewritePlan, ComposeIsolationNetworkRequest,
+        ComposeIsolationResourceKind, ComposeIsolationResourceNameRewrite, ComposeIsolationScan,
+        ComposeIsolationServiceNameRewrite, Ipv4Cidr,
+    },
 };
+
+pub(crate) struct ComposeIsolationNameRewritePlanInput<'a> {
+    pub(crate) model: &'a ComposeConfigModel,
+    pub(crate) scan: &'a ComposeIsolationScan,
+    pub(crate) workspace_id: &'a str,
+    pub(crate) enabled: bool,
+    pub(crate) rewrite_container_names: bool,
+    pub(crate) rewrite_resource_names: bool,
+}
+
+pub(crate) fn plan_compose_isolation_name_rewrites(
+    input: &ComposeIsolationNameRewritePlanInput<'_>,
+) -> ComposeIsolationNameRewritePlan {
+    if !input.enabled {
+        return ComposeIsolationNameRewritePlan::default();
+    }
+
+    let mut plan = ComposeIsolationNameRewritePlan::default();
+    for fixed in &input.scan.fixed_names {
+        let rewritten_name = format!("{}-{}", fixed.name, input.workspace_id);
+        match fixed.kind {
+            ComposeIsolationResourceKind::ServiceContainer if input.rewrite_container_names => {
+                let networks = input
+                    .model
+                    .service(&fixed.resource)
+                    .map(|service| service.network_names().cloned().collect())
+                    .unwrap_or_default();
+                plan.services.push(ComposeIsolationServiceNameRewrite {
+                    service: fixed.resource.clone(),
+                    original_name: fixed.name.clone(),
+                    rewritten_name,
+                    networks,
+                });
+            }
+            ComposeIsolationResourceKind::Network
+            | ComposeIsolationResourceKind::Volume
+            | ComposeIsolationResourceKind::Config
+            | ComposeIsolationResourceKind::Secret
+                if input.rewrite_resource_names =>
+            {
+                plan.resources.push(ComposeIsolationResourceNameRewrite {
+                    kind: fixed.kind,
+                    resource: fixed.resource.clone(),
+                    original_name: fixed.name.clone(),
+                    rewritten_name,
+                });
+            }
+            ComposeIsolationResourceKind::ServiceContainer
+            | ComposeIsolationResourceKind::Network
+            | ComposeIsolationResourceKind::Volume
+            | ComposeIsolationResourceKind::Config
+            | ComposeIsolationResourceKind::Secret => {}
+        }
+    }
+    plan
+}
+
+pub(crate) fn apply_compose_isolation_name_rewrites(
+    scan: &ComposeIsolationScan,
+    plan: &ComposeIsolationNameRewritePlan,
+) -> ComposeIsolationScan {
+    let mut effective = scan.clone();
+    for fixed in &mut effective.fixed_names {
+        let rewritten = if fixed.kind == ComposeIsolationResourceKind::ServiceContainer {
+            plan.services
+                .iter()
+                .find(|rewrite| rewrite.service == fixed.resource)
+                .map(|rewrite| &rewrite.rewritten_name)
+        } else {
+            plan.resources
+                .iter()
+                .find(|rewrite| rewrite.kind == fixed.kind && rewrite.resource == fixed.resource)
+                .map(|rewrite| &rewrite.rewritten_name)
+        };
+        if let Some(rewritten) = rewritten {
+            fixed.name.clone_from(rewritten);
+        }
+    }
+    effective
+}
 
 pub(crate) struct ComposeIsolationPlanInput<'a> {
     pub(crate) project_name: &'a str,
@@ -137,8 +222,130 @@ mod tests {
     use crate::runtime::compose_isolation::{
         ComposeIsolationDockerIpamConfig, ComposeIsolationDockerNetwork,
         ComposeIsolationDockerResource, ComposeIsolationFixedNameRequest,
-        ComposeIsolationNetworkRequest, ComposeIsolationResourceKind,
+        ComposeIsolationNetworkRequest, ComposeIsolationResourceKind, scan_compose_isolation,
     };
+
+    #[test]
+    fn plans_workspace_scoped_name_rewrites_and_aliases() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "container_name": "fixed-app",
+                    "networks": {"backend": null, "frontend": null}
+                }
+            },
+            "networks": {
+                "backend": {"name": "fixed-backend"},
+                "frontend": {"name": "shared-frontend", "external": true}
+            },
+            "volumes": {
+                "cache": {"name": "fixed-cache"},
+                "shared": {"name": "shared-cache", "external": true}
+            },
+            "configs": {"app": {"name": "fixed-config"}},
+            "secrets": {"app": {"name": "fixed-secret"}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let plan = plan_compose_isolation_name_rewrites(&ComposeIsolationNameRewritePlanInput {
+            model: &model,
+            scan: &scan,
+            workspace_id: "abc123def456",
+            enabled: true,
+            rewrite_container_names: true,
+            rewrite_resource_names: true,
+        });
+
+        assert_eq!(plan.services.len(), 1);
+        assert_eq!(plan.services[0].service, "app");
+        assert_eq!(plan.services[0].original_name, "fixed-app");
+        assert_eq!(plan.services[0].rewritten_name, "fixed-app-abc123def456");
+        assert_eq!(plan.services[0].networks, ["backend", "frontend"]);
+        assert_eq!(plan.resources.len(), 4);
+        assert!(plan.resources.iter().any(|rewrite| {
+            rewrite.kind == ComposeIsolationResourceKind::Volume
+                && rewrite.resource == "cache"
+                && rewrite.rewritten_name == "fixed-cache-abc123def456"
+        }));
+        assert!(
+            !plan
+                .resources
+                .iter()
+                .any(|rewrite| rewrite.resource == "shared" || rewrite.resource == "frontend")
+        );
+
+        let effective = apply_compose_isolation_name_rewrites(&scan, &plan);
+        assert!(effective.fixed_names.iter().any(|fixed| {
+            fixed.kind == ComposeIsolationResourceKind::ServiceContainer
+                && fixed.name == "fixed-app-abc123def456"
+        }));
+        assert!(effective.fixed_names.iter().any(|fixed| {
+            fixed.kind == ComposeIsolationResourceKind::Volume
+                && fixed.name == "fixed-cache-abc123def456"
+        }));
+    }
+
+    #[test]
+    fn name_rewrite_plan_is_empty_without_clone_isolation_opt_in() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {"image": "alpine:3.20", "container_name": "fixed-app"}
+            },
+            "volumes": {"cache": {"name": "fixed-cache"}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let plan = plan_compose_isolation_name_rewrites(&ComposeIsolationNameRewritePlanInput {
+            model: &model,
+            scan: &scan,
+            workspace_id: "abc123def456",
+            enabled: false,
+            rewrite_container_names: true,
+            rewrite_resource_names: true,
+        });
+
+        assert!(plan.services.is_empty());
+        assert!(plan.resources.is_empty());
+        assert_eq!(apply_compose_isolation_name_rewrites(&scan, &plan), scan);
+    }
+
+    #[test]
+    fn name_rewrite_policies_control_container_and_resource_names_independently() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {"image": "alpine:3.20", "container_name": "fixed-app"}
+            },
+            "volumes": {"cache": {"name": "fixed-cache"}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let input = |rewrite_container_names, rewrite_resource_names| {
+            plan_compose_isolation_name_rewrites(&ComposeIsolationNameRewritePlanInput {
+                model: &model,
+                scan: &scan,
+                workspace_id: "abc123def456",
+                enabled: true,
+                rewrite_container_names,
+                rewrite_resource_names,
+            })
+        };
+
+        let resources_only = input(false, true);
+        assert!(resources_only.services.is_empty());
+        assert_eq!(resources_only.resources.len(), 1);
+        assert_eq!(resources_only.resources[0].original_name, "fixed-cache");
+        assert_eq!(
+            resources_only.resources[0].rewritten_name,
+            "fixed-cache-abc123def456"
+        );
+
+        let containers_only = input(true, false);
+        assert_eq!(containers_only.services.len(), 1);
+        assert!(containers_only.resources.is_empty());
+    }
 
     #[test]
     fn detects_overlapping_subnet_and_excludes_self_project() {

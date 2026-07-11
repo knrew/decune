@@ -921,6 +921,7 @@ fn is_no_such_docker_resource_only(
                 || line == format!("no such object: {resource_ref}")
                 || line == format!("{resource_kind} {resource_ref} not found")
                 || line == format!("{resource_kind} {resource_ref}: not found")
+                || line == format!("get {resource_ref}: no such {resource_kind}")
         });
         if !resource_not_found {
             return false;
@@ -1592,6 +1593,17 @@ mod tests {
         assert!(super::is_no_such_docker_resource_only(
             &missing_object,
             "network",
+            &requested
+        ));
+
+        let missing_volume = runtime_output(
+            b"",
+            b"Error response from daemon: get removed: no such volume\n",
+            1,
+        );
+        assert!(super::is_no_such_docker_resource_only(
+            &missing_volume,
+            "volume",
             &requested
         ));
 

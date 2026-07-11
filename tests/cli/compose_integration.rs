@@ -889,6 +889,114 @@ fn compose_integration_generated_override_is_valid_final_compose_config() {
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_clone_isolation_rewrites_fixed_names_for_two_workspaces() {
+    let first = compose_fixture_workspace("clone-isolation-fixed-names");
+    let second = compose_fixture_workspace("clone-isolation-fixed-names");
+    let first_state_home = support::TempWorkspace::new().unwrap();
+    let second_state_home = support::TempWorkspace::new().unwrap();
+    let first_state_home_value = first_state_home.path().to_string_lossy().into_owned();
+    let second_state_home_value = second_state_home.path().to_string_lossy().into_owned();
+    let first_id = workspace_id(first.path());
+    let second_id = workspace_id(second.path());
+    assert_ne!(first_id, second_id);
+
+    run_decune_up_detach(first.path(), &[("XDG_STATE_HOME", &first_state_home_value)]);
+    run_decune_up_detach(
+        second.path(),
+        &[("XDG_STATE_HOME", &second_state_home_value)],
+    );
+
+    let first_container = format!("fixed-app-385-{first_id}");
+    let second_container = format!("fixed-app-385-{second_id}");
+    let container_names = docker_output([
+        "ps",
+        "--filter",
+        "name=fixed-app-385-",
+        "--format",
+        "{{.Names}}",
+    ])
+    .must();
+    let container_names = container_names.lines().collect::<Vec<_>>();
+    assert!(container_names.contains(&first_container.as_str()));
+    assert!(container_names.contains(&second_container.as_str()));
+
+    let first_volume = format!("fixed-cache-385-{first_id}");
+    let second_volume = format!("fixed-cache-385-{second_id}");
+    let volume_names = docker_output([
+        "volume",
+        "ls",
+        "--filter",
+        "name=fixed-cache-385-",
+        "--format",
+        "{{.Name}}",
+    ])
+    .must();
+    let volume_names = volume_names.lines().collect::<Vec<_>>();
+    assert!(volume_names.contains(&first_volume.as_str()));
+    assert!(volume_names.contains(&second_volume.as_str()));
+
+    let first_network = format!("fixed-network-385-{first_id}");
+    let second_network = format!("fixed-network-385-{second_id}");
+    assert!(docker_status(["network", "inspect", &first_network]).is_ok());
+    assert!(docker_status(["network", "inspect", &second_network]).is_ok());
+
+    for (workspace, state_home, workspace_id) in [
+        (first.path(), first_state_home.path(), first_id.as_str()),
+        (second.path(), second_state_home.path(), second_id.as_str()),
+    ] {
+        let config = final_compose_config_json(workspace, state_home);
+        for (pointer, original_name) in [
+            ("/networks/appnet/name", "fixed-network-385"),
+            ("/volumes/cache/name", "fixed-cache-385"),
+            ("/configs/app-config/name", "fixed-config-385"),
+            ("/secrets/app-secret/name", "fixed-secret-385"),
+        ] {
+            let expected_name = format!("{original_name}-{workspace_id}");
+            assert_eq!(
+                config.pointer(pointer).and_then(Value::as_str),
+                Some(expected_name.as_str()),
+                "unexpected final Compose resource name at {pointer}: {config:#?}"
+            );
+        }
+        assert_eq!(
+            compose_primary_container_output(workspace, ["cat", "/app-config"]).trim(),
+            "clone-isolation-config"
+        );
+        assert_eq!(
+            compose_primary_container_output(workspace, ["cat", "/run/secrets/app-secret"]).trim(),
+            "clone-isolation-secret"
+        );
+    }
+
+    let resolved = compose_service_container_output(
+        first.path(),
+        "probe",
+        ["getent", "hosts", "fixed-app-385"],
+    );
+    assert!(resolved.contains("fixed-app-385"));
+
+    remove_clone_isolation_probe_service(first.path());
+
+    let alpine_image_id =
+        docker_output(["image", "inspect", "--format", "{{.Id}}", "alpine:3.20"]).must();
+    run_decune_remove_expecting_label_fallback(first.path(), &first_state_home_value, true);
+
+    assert!(docker_status(["container", "inspect", &first_container]).is_err());
+    assert!(docker_status(["volume", "inspect", &first_volume]).is_err());
+    assert!(docker_status(["network", "inspect", &first_network]).is_err());
+    assert!(docker_status(["container", "inspect", &second_container]).is_ok());
+    assert!(docker_status(["volume", "inspect", &second_volume]).is_ok());
+    assert!(docker_status(["network", "inspect", &second_network]).is_ok());
+    assert_eq!(
+        docker_output(["image", "inspect", "--format", "{{.Id}}", "alpine:3.20"]).must(),
+        alpine_image_id
+    );
+
+    run_decune_remove(second.path(), &second_state_home_value, false);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_multi_file_merge_applies_override() {
     let workspace = compose_fixture_workspace("multi-file");
 
@@ -1911,6 +2019,62 @@ fn run_decune_up_detach(workspace: &Path, envs: &[(&str, &str)]) {
         .success()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("Started dev container"));
+}
+
+fn run_decune_remove(workspace: &Path, state_home: &str, images: bool) {
+    let mut command = decune();
+    command.args(["remove", "--no-confirm"]);
+    if images {
+        command.arg("--images");
+    }
+    command
+        .arg(workspace)
+        .env("XDG_STATE_HOME", state_home)
+        .assert()
+        .success();
+}
+
+fn run_decune_remove_expecting_label_fallback(workspace: &Path, state_home: &str, images: bool) {
+    let mut command = decune();
+    command.args(["remove", "--no-confirm"]);
+    if images {
+        command.arg("--images");
+    }
+    command
+        .arg(workspace)
+        .env("XDG_STATE_HOME", state_home)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(
+            "Falling back to Docker labels because Docker Compose project removal failed",
+        ));
+}
+
+fn remove_clone_isolation_probe_service(workspace: &Path) {
+    let compose_path = workspace.join(".devcontainer/compose.yaml");
+    let compose = fs::read_to_string(&compose_path).must();
+    let compose_without_probe = compose.replace(
+        r"  probe:
+    image: alpine:3.20
+    container_name: fixed-probe-385
+    command: sleep infinity
+    networks:
+      - appnet
+
+",
+        "",
+    );
+    assert_ne!(compose_without_probe, compose);
+    fs::write(compose_path, compose_without_probe).must();
+
+    let devcontainer_path = workspace.join(".devcontainer/devcontainer.json");
+    let devcontainer = fs::read_to_string(&devcontainer_path).must();
+    let devcontainer_without_probe = devcontainer.replace(
+        r#""runServices": ["app", "probe"]"#,
+        r#""runServices": ["app"]"#,
+    );
+    assert_ne!(devcontainer_without_probe, devcontainer);
+    fs::write(devcontainer_path, devcontainer_without_probe).must();
 }
 
 fn compose_primary_container_output<const N: usize>(

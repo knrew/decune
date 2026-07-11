@@ -1,22 +1,28 @@
 use super::*;
 
+pub(super) struct ComposeGeneratedOverrideRuntime<'a> {
+    pub(super) compose_primary_service: Option<&'a ComposeConfigService>,
+    pub(super) service_forward: &'a [ServiceForwardRuntime],
+    pub(super) published_port_override: &'a ComposePublishedPortOverride,
+    pub(super) name_rewrite_plan: &'a ComposeIsolationNameRewritePlan,
+}
+
 pub(super) async fn write_generated_compose_override(
     client: &DockerClient,
     project: &ComposeProjectPlan,
     primary_service: &str,
     plan: &UpPlan,
-    compose_primary_service: Option<&ComposeConfigService>,
-    service_forward: &[ServiceForwardRuntime],
-    published_port_override: &ComposePublishedPortOverride,
+    runtime: ComposeGeneratedOverrideRuntime<'_>,
 ) -> Result<()> {
     let output_path = project.generated_override_path();
-    let startup = compose_override_startup(client, plan, compose_primary_service).await?;
+    let startup = compose_override_startup(client, plan, runtime.compose_primary_service).await?;
     let override_patch = generated_compose_override_patch(
         primary_service,
         plan,
         startup,
-        service_forward,
-        published_port_override,
+        runtime.service_forward,
+        runtime.published_port_override,
+        runtime.name_rewrite_plan,
     )?;
     write_compose_override(&output_path, &override_patch)
 }
@@ -147,12 +153,32 @@ fn generated_compose_override_content_with_startup(
     service_forward: &[ServiceForwardRuntime],
     published_port_override: &ComposePublishedPortOverride,
 ) -> Result<String> {
+    generated_compose_override_content_with_name_rewrites(
+        primary_service,
+        plan,
+        startup,
+        service_forward,
+        published_port_override,
+        &ComposeIsolationNameRewritePlan::default(),
+    )
+}
+
+#[cfg(test)]
+fn generated_compose_override_content_with_name_rewrites(
+    primary_service: &str,
+    plan: &UpPlan,
+    startup: Option<ComposeOverrideStartup>,
+    service_forward: &[ServiceForwardRuntime],
+    published_port_override: &ComposePublishedPortOverride,
+    name_rewrite_plan: &ComposeIsolationNameRewritePlan,
+) -> Result<String> {
     generated_compose_override_patch(
         primary_service,
         plan,
         startup,
         service_forward,
         published_port_override,
+        name_rewrite_plan,
     )?
     .to_yaml()
 }
@@ -163,6 +189,7 @@ fn generated_compose_override_patch(
     startup: Option<ComposeOverrideStartup>,
     service_forward: &[ServiceForwardRuntime],
     published_port_override: &ComposePublishedPortOverride,
+    name_rewrite_plan: &ComposeIsolationNameRewritePlan,
 ) -> Result<ComposeOverridePatch> {
     let mut service = ComposeOverrideServicePatch::new(primary_service)
         .image(&plan.image)
@@ -221,7 +248,40 @@ fn generated_compose_override_patch(
         patch = patch
             .service(ComposeOverrideServicePatch::new(service_name).ports_override(ports.clone()));
     }
+    patch = apply_compose_name_rewrites(patch, name_rewrite_plan);
     Ok(patch)
+}
+
+fn apply_compose_name_rewrites(
+    mut patch: ComposeOverridePatch,
+    name_rewrite_plan: &ComposeIsolationNameRewritePlan,
+) -> ComposeOverridePatch {
+    for rewrite in &name_rewrite_plan.services {
+        patch = patch.service_container_name(
+            &rewrite.service,
+            &rewrite.rewritten_name,
+            &rewrite.original_name,
+            &rewrite.networks,
+        );
+    }
+    for rewrite in &name_rewrite_plan.resources {
+        patch = match rewrite.kind {
+            ComposeIsolationResourceKind::Network => {
+                patch.network_name(&rewrite.resource, &rewrite.rewritten_name)
+            }
+            ComposeIsolationResourceKind::Volume => {
+                patch.volume_name(&rewrite.resource, &rewrite.rewritten_name)
+            }
+            ComposeIsolationResourceKind::Config => {
+                patch.config_name(&rewrite.resource, &rewrite.rewritten_name)
+            }
+            ComposeIsolationResourceKind::Secret => {
+                patch.secret_name(&rewrite.resource, &rewrite.rewritten_name)
+            }
+            ComposeIsolationResourceKind::ServiceContainer => patch,
+        };
+    }
+    patch
 }
 
 pub(super) fn attach_compose_interpolation_env_to_plan(plan: &mut UpPlan) {

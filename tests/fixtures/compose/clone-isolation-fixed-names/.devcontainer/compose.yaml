@@ -1,0 +1,40 @@
+services:
+  app:
+    image: alpine:3.20
+    container_name: fixed-app-385
+    command: sleep infinity
+    networks:
+      - appnet
+    volumes:
+      - cache:/cache
+      - ../..:/workspace
+    configs:
+      - source: app-config
+        target: /app-config
+    secrets:
+      - source: app-secret
+        target: app-secret
+  probe:
+    image: alpine:3.20
+    container_name: fixed-probe-385
+    command: sleep infinity
+    networks:
+      - appnet
+
+networks:
+  appnet:
+    name: fixed-network-385
+
+volumes:
+  cache:
+    name: fixed-cache-385
+
+configs:
+  app-config:
+    name: fixed-config-385
+    file: ./app-config.txt
+
+secrets:
+  app-secret:
+    name: fixed-secret-385
+    file: ./app-secret.txt

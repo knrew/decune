@@ -154,6 +154,8 @@ pub(crate) struct ComposeConfigService {
     pub(crate) command: Option<Vec<String>>,
     #[serde(default)]
     pub(crate) container_name: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_compose_service_networks")]
+    pub(crate) networks: BTreeMap<String, JsonValue>,
     #[serde(default)]
     pub(crate) ports: Vec<JsonValue>,
 }
@@ -165,6 +167,10 @@ impl ComposeConfigService {
 
     pub(crate) fn uses_host_network(&self) -> bool {
         self.network_mode.as_deref() == Some("host")
+    }
+
+    pub(crate) fn network_names(&self) -> impl Iterator<Item = &String> {
+        self.networks.keys()
     }
 }
 
@@ -271,6 +277,36 @@ where
     }
 }
 
+fn deserialize_compose_service_networks<'de, D>(
+    deserializer: D,
+) -> std::result::Result<BTreeMap<String, JsonValue>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    match JsonValue::deserialize(deserializer)? {
+        JsonValue::Object(values) => Ok(values.into_iter().collect()),
+        JsonValue::Array(values) => values
+            .into_iter()
+            .map(|value| match value {
+                JsonValue::String(network) => Ok((network, JsonValue::Null)),
+                other @ (JsonValue::Null
+                | JsonValue::Bool(_)
+                | JsonValue::Number(_)
+                | JsonValue::Array(_)
+                | JsonValue::Object(_)) => Err(de::Error::custom(format!(
+                    "Docker Compose service networks list must contain only strings: {other}"
+                ))),
+            })
+            .collect(),
+        JsonValue::Null => Ok(BTreeMap::new()),
+        other @ (JsonValue::Bool(_) | JsonValue::Number(_) | JsonValue::String(_)) => {
+            Err(de::Error::custom(format!(
+                "Docker Compose service networks must be an object or string array: {other}"
+            )))
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct ComposeServiceValidation<'a> {
     pub(crate) primary_service: &'a str,
@@ -298,6 +334,44 @@ fn validate_absolute_workspace_folder(workspace_folder: &str) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compose_config_service_deserializes_network_shapes() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "missing": {"image": "alpine:3.20"},
+                "null": {"image": "alpine:3.20", "networks": null},
+                "list": {"image": "alpine:3.20", "networks": ["backend"]},
+                "map": {
+                    "image": "alpine:3.20",
+                    "networks": {
+                        "backend": null,
+                        "frontend": {"aliases": ["app"]}
+                    }
+                }
+            }
+        }))
+        .unwrap();
+
+        assert!(model.service("missing").unwrap().networks.is_empty());
+        assert!(model.service("null").unwrap().networks.is_empty());
+        assert_eq!(
+            model
+                .service("list")
+                .unwrap()
+                .network_names()
+                .collect::<Vec<_>>(),
+            [&"backend".to_owned()]
+        );
+        assert_eq!(
+            model
+                .service("map")
+                .unwrap()
+                .network_names()
+                .collect::<Vec<_>>(),
+            [&"backend".to_owned(), &"frontend".to_owned()]
+        );
+    }
 
     #[test]
     fn compose_config_model_preserves_service_user() {

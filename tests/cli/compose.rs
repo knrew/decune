@@ -328,6 +328,161 @@ fn compose_fixed_volume_name_conflict_reports_diagnostic_code_before_compose_up(
 }
 
 #[test]
+fn compose_clone_isolation_opt_in_rewrites_fixed_names_in_generated_override() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                container_name: fixed-app
+                networks: [default]
+                volumes: [cache:/cache]
+            volumes:
+              cache:
+                name: fixed-cache
+            ",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let rewritten_container = format!("fixed-app-{workspace_id}");
+    let rewritten_volume = format!("fixed-cache-{workspace_id}");
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", state_home.path())
+        .env("DECUNE_FAKE_EXPECTED_CONTAINER_NAME", &rewritten_container)
+        .env("DECUNE_FAKE_EXPECTED_VOLUME_NAME", &rewritten_volume)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let override_file = state_home
+        .path()
+        .join("decune")
+        .join(&workspace_id)
+        .join("compose.override.yaml");
+    let generated = fs::read_to_string(override_file).unwrap();
+    assert!(generated.contains(&format!("container_name: '{rewritten_container}'")));
+    assert!(generated.contains("'default':\n        aliases:\n          - 'fixed-app'"));
+    assert!(generated.contains(&format!(
+        "volumes:\n  'cache':\n    name: '{rewritten_volume}'"
+    )));
+}
+
+#[test]
+fn compose_clone_isolation_without_opt_in_does_not_rewrite_fixed_names() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    let state_home = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                container_name: fixed-app
+                networks: [default]
+                volumes: [cache:/cache]
+            volumes:
+              cache:
+                name: fixed-cache
+            ",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = false
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("XDG_STATE_HOME", state_home.path())
+        .env("DECUNE_FAKE_EXPECTED_CONTAINER_NAME", "fixed-app")
+        .env("DECUNE_FAKE_EXPECTED_VOLUME_NAME", "fixed-cache")
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    let override_file = state_home
+        .path()
+        .join("decune")
+        .join(workspace_id)
+        .join("compose.override.yaml");
+    let generated = fs::read_to_string(override_file).unwrap();
+    assert!(!generated.contains("container_name:"));
+    assert!(!generated.contains("volumes:\n  'cache':\n    name:"));
+}
+
+#[test]
 fn compose_reports_all_fixed_resource_name_conflicts_before_compose_up() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
@@ -1834,6 +1989,95 @@ fn compose_remove_removes_existing_project_when_config_files_are_missing() {
 }
 
 #[test]
+fn compose_remove_falls_back_to_labels_when_generated_override_is_stale() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    let command_log = host_tools.path().join("commands.log");
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-remove-falls-back-when-generated-override-is-stale.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let workspace_slug = workspace_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap()
+        .to_ascii_lowercase();
+    let project_name = format!("decune-{workspace_slug}-{workspace_id}");
+    let state_home = host_tools.path().join("state");
+    let state_dir = state_home.join("decune").join(&workspace_id);
+    fs::create_dir_all(&state_dir).unwrap();
+    let generated_override = state_dir.join("compose.override.yaml");
+    fs::write(
+        &generated_override,
+        r"
+        services:
+          app:
+            image: alpine:3.20
+          removed-sidecar:
+            container_name: fixed-sidecar-workspace
+            networks:
+              default:
+                aliases:
+                  - fixed-sidecar
+        ",
+    )
+    .unwrap();
+
+    decune_with_fake_container_tools(&host_tools)
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("DECUNE_FAKE_PROJECT_NAME", &project_name)
+        .env("DECUNE_FAKE_WORKSPACE_ID", &workspace_id)
+        .env("XDG_STATE_HOME", &state_home)
+        .args(["remove", "--no-confirm"])
+        .arg(&workspace_root)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Falling back to Docker labels because Docker Compose project removal failed",
+        ))
+        .stderr(predicate::str::contains(
+            "Removed Docker Compose container: stale-app-1",
+        ))
+        .stderr(predicate::str::contains(
+            "Removed Docker Compose container: stale-sidecar-1",
+        ))
+        .stderr(predicate::str::contains(
+            "Removed Docker volume: stale_project_data",
+        ))
+        .stderr(predicate::str::contains(
+            "Removed Docker network: stale_project_default",
+        ))
+        .stderr(predicate::str::contains("Removed dev container resources"));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(commands.contains("compose"));
+    assert!(commands.contains(&generated_override.display().to_string()));
+    assert!(commands.contains("down --volumes --remove-orphans"));
+    assert!(commands.contains("rm --force --volumes compose-primary-id"));
+    assert!(commands.contains("rm --force --volumes compose-sidecar-id"));
+    assert!(commands.contains("volume rm --force stale_project_data"));
+    assert!(commands.contains("network rm stale_project_default"));
+    assert!(!state_dir.exists());
+}
+
+#[test]
 fn compose_remove_images_removes_only_decune_generated_workspace_images() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
@@ -1868,11 +2112,35 @@ fn compose_remove_images_removes_only_decune_generated_workspace_images() {
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
     let image_repository = workspace_image_repository(&workspace_root);
+    let state_home = host_tools.path().join("state");
+    let generated_override = state_home
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("compose.override.yaml");
+    fs::create_dir_all(generated_override.parent().unwrap()).unwrap();
+    fs::write(
+        &generated_override,
+        r#"
+        services:
+          app:
+            image: "decune/workspace:generated"
+            command: ["sleep", "infinity"]
+            volumes:
+              - type: bind
+                source: /tmp/decune-workspace
+                target: /workspace
+        volumes:
+          cache:
+            name: "fixed-cache-workspace"
+        "#,
+    )
+    .unwrap();
 
     decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .env("DECUNE_FAKE_IMAGE_REPOSITORY", &image_repository)
+        .env("XDG_STATE_HOME", &state_home)
         .args(["remove", "--no-confirm", "--images"])
         .arg(&workspace_root)
         .assert()
@@ -1886,6 +2154,7 @@ fn compose_remove_images_removes_only_decune_generated_workspace_images() {
 
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(commands.contains("compose"));
+    assert!(commands.contains(&generated_override.display().to_string()));
     assert!(commands.contains("down --volumes --remove-orphans"));
     assert!(commands.contains(&format!(
         "image ls --all --format json {image_repository}:*"

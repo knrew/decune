@@ -174,7 +174,7 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
                 &mut compose_project_names,
                 plan.project.project_name.clone(),
             );
-            DockerComposeCli::default()
+            let compose_remove_result = DockerComposeCli::default()
                 .down(
                     &plan.project,
                     ComposeDownOptions {
@@ -182,17 +182,26 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
                         remove_orphans: true,
                     },
                 )
-                .await?;
-            ui::done(&format!(
-                "Removed Docker Compose project: {}",
-                plan.project.project_name
-            ));
+                .await;
+            match compose_remove_result {
+                Ok(()) => {
+                    ui::done(&format!(
+                        "Removed Docker Compose project: {}",
+                        plan.project.project_name
+                    ));
+                    push_unique(
+                        &mut compose_projects_removed_by_compose,
+                        plan.project.project_name.clone(),
+                    );
+                }
+                Err(error) => {
+                    ui::warn(&format!(
+                        "Falling back to Docker labels because Docker Compose project removal failed: {error:#}"
+                    ));
+                }
+            }
 
             remove_generated_images |= plan.cleanup.workspace.remove_generated_images;
-            push_unique(
-                &mut compose_projects_removed_by_compose,
-                plan.project.project_name,
-            );
         }
         Ok(None) => {}
         Err(error) => {
@@ -811,7 +820,19 @@ async fn compose_lifecycle_plan(
         anyhow::bail!("workspaceFolder must not be empty");
     }
 
-    let command_plan = compose_project.command_plan_without_generated_override();
+    let generated_override_path = compose_project.generated_override_path();
+    let use_generated_override = matches!(command, ComposeLifecycleCommand::Remove { .. })
+        && generated_override_path.try_exists().with_context(|| {
+            format!(
+                "Failed to inspect Docker Compose generated override: {}",
+                generated_override_path.display()
+            )
+        })?;
+    let command_plan = if use_generated_override {
+        compose_project.command_plan_with_generated_override()
+    } else {
+        compose_project.command_plan_without_generated_override()
+    };
     let lifecycle = match command {
         ComposeLifecycleCommand::Down => ComposeLifecyclePlan::down(command_plan),
         ComposeLifecycleCommand::Remove { images } => {
@@ -1112,6 +1133,57 @@ mod tests {
             file.file_name()
                 .is_some_and(|name| name == Path::new("compose.yaml"))
         }));
+    }
+
+    #[test]
+    fn compose_remove_lifecycle_includes_existing_generated_override() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace_root = temp.path().join("workspace");
+        let config_dir = workspace_root.join(".devcontainer");
+        fs::create_dir_all(&config_dir).unwrap();
+        fs::write(
+            config_dir.join("devcontainer.json"),
+            r#"{"dockerComposeFile":"compose.yaml","service":"app"}"#,
+        )
+        .unwrap();
+        fs::write(
+            config_dir.join("compose.yaml"),
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+        let workspace = Workspace::resolve(&workspace_root).unwrap();
+        sync_state_with_container(
+            workspace.paths().state_dir(),
+            workspace.root(),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "alpine:3.20".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: Some(config_dir.join("devcontainer.json").display().to_string()),
+            },
+            LifecycleState::default(),
+        )
+        .unwrap();
+        let generated_override = workspace.paths().state_dir().join("compose.override.yaml");
+        fs::write(&generated_override, "services: {}\n").unwrap();
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let plan = runtime
+            .block_on(async {
+                super::compose_lifecycle_plan(
+                    &workspace,
+                    super::ComposeLifecycleCommand::Remove { images: false },
+                    &DockerClient::connect_from_env(),
+                )
+                .await
+            })
+            .unwrap()
+            .unwrap();
+
+        assert!(plan.project.files.contains(&generated_override));
     }
 
     #[test]

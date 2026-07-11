@@ -522,7 +522,7 @@ docker compose --project-name <project> --project-directory <dir> -f <file>... c
 
 ### Clone isolation preflight
 
-Compose モードの `up` / `rebuild` は、user Compose file だけから得た canonical Compose model を使い、`docker compose up -d` の前に clone isolation preflight を常時実行する。`runServices` が指定されている場合、走査対象は primary service と `runServices`、Docker Compose がそれらの依存関係として展開した service、およびその service 群が使用する top-level resource に限定し、起動対象ではない service と未使用 resource は走査しない。`runServices` が指定されていない場合は Compose project 全体を走査する。この preflight は検出のみを行い、Compose file、generated override、Docker resource name、IPAM subnet を書き換えない。
+Compose モードの `up` / `rebuild` は、user Compose file だけから得た canonical Compose model を使い、`docker compose up -d` の前に clone isolation preflight を常時実行する。`runServices` が指定されている場合、走査対象は primary service と `runServices`、Docker Compose がそれらの依存関係として展開した service、およびその service 群が使用する top-level resource に限定し、起動対象ではない service と未使用 resource は走査しない。`runServices` が指定されていない場合は Compose project 全体を走査する。preflight 自体は user Compose file を変更しない。`[compose.clone_isolation]` の name rewrite が有効な対象だけは generated override で workspace 固有名へ書き換え、衝突照合にも書き換え後の名前を使う。opt-in が無い対象と固定 subnet は検出のみを行う。
 
 対象:
 
@@ -553,6 +553,7 @@ Compose モードで decune 固有機能を適用するため、state/runtime di
 - primary service image を decune generated local image に差し替える場合、元 Compose service の `pull_policy` を引き継いで registry pull しないよう、generated override で `pull_policy: never` を明示する。
 - `containerEnv`、`containerUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles mount、credential/runtime mount を primary service に追加する。
 - `overrideCommand = true` の場合、primary service command を keepalive command に差し替える。
+- clone isolation の name rewrite が有効な場合、対象 service の `container_name` と top-level resource の `name` を workspace 固有名へ書き換え、元の container name を network alias として追加する。
 - secret value は override file に書かない。GitHub token は host runtime file を bind mount し、token value 自体は file content にのみ存在する。
 
 Generated override file は user の `dockerComposeFile` より後に `-f` で渡す。計画作成時の検証、primary service/container 解決、config hash に含める canonical Compose model は user の `dockerComposeFile` だけを `docker compose config --format json` で正規化した model とする。Generated override 自体は Compose YAML として decune が生成し、hash には final canonical model ではなく generated override semantic hash input として別に含める。
@@ -817,7 +818,18 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
 
 `endpoints.value` では `${decune.network.<compose-network-key>.gateway}` と `${decune.network.<compose-network-key>.subnet}` の 2 形式を clone isolation 専用 placeholder として予約する。これは一般の decune config 変数展開とは別に扱い、Compose network key の存在確認と展開は endpoint rewrite の preflight で行う。
 
-不正な有効設定は `compose_clone_isolation_invalid` diagnostic で error にする。network / name / endpoint の実際の書き換えは段階的に追加され、この設定を読む各機能が実装されるまでは、`enabled` による published port relocation の既定値切り替えを除いて挙動を変更しない。
+不正な有効設定は `compose_clone_isolation_invalid` diagnostic で error にする。network subnet / endpoint の実際の書き換えは段階的に追加され、この設定を読む各機能が実装されるまでは挙動を変更しない。
+
+`enabled = true` の name rewrite は generated Compose override に次の規則で出力する。
+
+- `names.rewrite_container_names = true` のとき、service の明示的な `container_name: <name>` を `<name>-<workspace_id>` にする。`workspace_id` は canonical workspace path から算出する 12 桁 lowercase hex である。
+- 書き換え対象 service が接続するすべての Compose network に元の `container_name` を network alias として追加する。user Compose file が service network を短縮 list 形式で指定していても、generated override の map 形式と Docker Compose の merge により alias を追加する。
+- `names.rewrite_resource_names = true` のとき、top-level `networks` / `volumes` / `configs` / `secrets` の明示的な `name: <name>` を `<name>-<workspace_id>` にする。
+- `external: true` の top-level resource は共有契約を維持し、書き換えない。
+
+固定名 volume の書き換えは、clone ごとに別 volume を使いデータを分離する。元の `container_name` を指定して Compose project 外から実行する `docker exec <name>` などの tool は、書き換え後の名前へ追随する必要がある。Compose network 内から元名を使う接続は上記 alias で維持する。
+
+name rewrite の結果値である書き換え後の container/resource name と、元 `container_name` のために生成する network alias は generated override semantic hash input に含めない。これらは workspace id と canonical Compose model から決定的に導出される relocation 結果値として扱う。name rewrite policy 自体と user Compose file の元名は従来どおり config hash input に含める。
 
 ### `[compose.published_ports]`
 
@@ -1034,6 +1046,8 @@ Compose モードでは上記 label を primary service に追加する。明示
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
 config hash には、resolved metadata/config、Feature lock、relevant CLI options、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose モードの user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、Compose published port relocation により生成される service `ports` override、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose モードでは user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
+
+clone isolation name rewrite により生成される container/resource name と、元 `container_name` のために生成される network alias は relocation 結果値なので、generated override semantic hash input には含めない。
 
 state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 marker と `devcontainer.json` path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 

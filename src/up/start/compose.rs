@@ -3,7 +3,10 @@ use std::collections::BTreeSet;
 use anyhow::{Result, bail};
 
 use crate::{
-    config::{layer::LayerDevcontainerCompose, resolved::ResolvedDevcontainerSource},
+    config::{
+        layer::LayerDevcontainerCompose,
+        resolved::{ResolvedComposeCloneIsolation, ResolvedDevcontainerSource},
+    },
     devcontainer::lifecycle::LifecycleRunPath,
     docker::{
         client::DockerClient,
@@ -23,8 +26,11 @@ use crate::{
         compose_isolation::{
             ComposeIsolationDaemonSnapshot, ComposeIsolationDockerIpamConfig,
             ComposeIsolationDockerNetwork, ComposeIsolationDockerResource,
+            ComposeIsolationNameRewritePlan, ComposeIsolationNameRewritePlanInput,
             ComposeIsolationPlanInput, ComposeIsolationResourceKind, ComposeIsolationScan,
-            plan_compose_isolation, scan_compose_isolation, validate_compose_isolation_diagnostics,
+            apply_compose_isolation_name_rewrites, plan_compose_isolation,
+            plan_compose_isolation_name_rewrites, scan_compose_isolation,
+            validate_compose_isolation_diagnostics,
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
@@ -55,12 +61,13 @@ use crate::{
 };
 
 use super::{
-    CredentialRuntime, ExistingContainerReusePolicy, ImagePreparation, StartedUpContainer,
-    add_credential_runtime_mounts, attach_compose_interpolation_env_to_plan,
-    compose_service_forward_requires_recreate, container_tool_platform_for_plan,
-    ensure_container_running_after_start, list_compose_primary_containers,
-    list_compose_project_containers, list_existing_compose_project_published_ports,
-    prepare_image_for_create, should_reuse_existing_container, started_up_container_with_state,
+    ComposeGeneratedOverrideRuntime, CredentialRuntime, ExistingContainerReusePolicy,
+    ImagePreparation, StartedUpContainer, add_credential_runtime_mounts,
+    attach_compose_interpolation_env_to_plan, compose_service_forward_requires_recreate,
+    container_tool_platform_for_plan, ensure_container_running_after_start,
+    list_compose_primary_containers, list_compose_project_containers,
+    list_existing_compose_project_published_ports, prepare_image_for_create,
+    should_reuse_existing_container, started_up_container_with_state,
     startup_verification_for_plan, sync_started_compose_state,
     warn_on_compose_published_port_relocations, write_generated_compose_override,
 };
@@ -282,6 +289,7 @@ struct ComposeStartupContext {
     existing_compose_containers: Vec<UpContainerSummary>,
     existing_project_published_ports: Vec<ComposePublishedPortReservation>,
     published_port_relocation_enabled: bool,
+    name_rewrite_plan: ComposeIsolationNameRewritePlan,
 }
 
 impl ComposeStartupContext {
@@ -606,7 +614,14 @@ async fn prepare_compose_startup_context(
         )
     };
     let active_user_config = active_user_config.as_ref().unwrap_or(&user_config);
-    run_compose_isolation_preflight(client, &project_name, &active_user_config.model).await?;
+    let name_rewrite_plan = run_compose_isolation_preflight(
+        client,
+        &project_name,
+        &active_user_config.model,
+        workspace.id(),
+        &plan.config.compose.clone_isolation,
+    )
+    .await?;
     let compose_primary_image = ComposePrimaryImageResolver {
         project_name: &project_name,
         service: &service,
@@ -653,6 +668,7 @@ async fn prepare_compose_startup_context(
         existing_compose_containers,
         existing_project_published_ports,
         published_port_relocation_enabled,
+        name_rewrite_plan,
     })
 }
 
@@ -660,20 +676,33 @@ async fn run_compose_isolation_preflight(
     client: &DockerClient,
     project_name: &str,
     model: &ComposeConfigModel,
-) -> Result<()> {
+    workspace_id: &str,
+    clone_isolation: &ResolvedComposeCloneIsolation,
+) -> Result<ComposeIsolationNameRewritePlan> {
     let scan = scan_compose_isolation(model, project_name);
     if scan.is_empty() {
-        return Ok(());
+        return Ok(ComposeIsolationNameRewritePlan::default());
     }
 
-    let daemon = compose_isolation_daemon_snapshot(client, &scan).await?;
+    let name_rewrite_plan =
+        plan_compose_isolation_name_rewrites(&ComposeIsolationNameRewritePlanInput {
+            model,
+            scan: &scan,
+            workspace_id,
+            enabled: clone_isolation.enabled,
+            rewrite_container_names: clone_isolation.names.rewrite_container_names,
+            rewrite_resource_names: clone_isolation.names.rewrite_resource_names,
+        });
+    let effective_scan = apply_compose_isolation_name_rewrites(&scan, &name_rewrite_plan);
+
+    let daemon = compose_isolation_daemon_snapshot(client, &effective_scan).await?;
     let findings = plan_compose_isolation(&ComposeIsolationPlanInput {
         project_name,
-        scan: &scan,
+        scan: &effective_scan,
         daemon: &daemon,
     });
     validate_compose_isolation_diagnostics(&findings)?;
-    Ok(())
+    Ok(name_rewrite_plan)
 }
 
 async fn compose_isolation_daemon_snapshot(
@@ -1235,9 +1264,12 @@ async fn write_finalized_generated_compose_override(
         source.project,
         &source.compose.service,
         plan,
-        context.compose_primary_service.as_ref(),
-        credentials.service_forward(),
-        published_port_override,
+        ComposeGeneratedOverrideRuntime {
+            compose_primary_service: context.compose_primary_service.as_ref(),
+            service_forward: credentials.service_forward(),
+            published_port_override,
+            name_rewrite_plan: &context.name_rewrite_plan,
+        },
     )
     .await
 }
