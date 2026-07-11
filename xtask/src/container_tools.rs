@@ -39,16 +39,12 @@ const PLATFORMS: [ContainerToolPlatform; 2] = [
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BuildOutputMode {
+pub(crate) enum BuildOutputMode {
     Captured,
     Streaming,
 }
 
-pub(crate) fn build_container_tools(workspace: &Path, out: &Path, locked: bool) -> Result<()> {
-    build_container_tools_with_output(workspace, out, locked, BuildOutputMode::Captured)
-}
-
-fn build_container_tools_with_output(
+pub(crate) fn build_container_tools(
     workspace: &Path,
     out: &Path,
     locked: bool,
@@ -158,26 +154,25 @@ fn build_platform(
         "Failed to run cargo build for container tools target {}",
         platform.rust_target
     );
-    let (status, stdout, stderr, streamed) = match output_mode {
+    let (status, stdout, stderr) = match output_mode {
         BuildOutputMode::Captured => {
             let output = command.output().with_context(|| context.clone())?;
-            (output.status, output.stdout, output.stderr, false)
+            (output.status, Some(output.stdout), output.stderr)
         }
         BuildOutputMode::Streaming => {
             eprintln!("Building container tools for {}...", platform.rust_target);
             let output = stream_command_stderr(command, &context)?;
-            (output.status, Vec::new(), output.stderr, true)
+            (output.status, None, output.stderr)
         }
     };
-    finish_build_platform(platform, status, &stdout, &stderr, streamed)
+    finish_build_platform(platform, status, stdout.as_deref(), &stderr)
 }
 
 fn finish_build_platform(
     platform: ContainerToolPlatform,
     status: ExitStatus,
-    stdout: &[u8],
+    stdout: Option<&[u8]>,
     stderr: &[u8],
-    streamed: bool,
 ) -> Result<()> {
     if status.success() {
         return Ok(());
@@ -192,18 +187,18 @@ fn finish_build_platform(
             platform.rust_target
         );
     }
-    if streamed {
-        bail!(
+    match stdout {
+        Some(stdout) => bail!(
+            "Failed to build decune container tools for {}.\nstdout:\n{}\nstderr:\n{}",
+            platform.rust_target,
+            String::from_utf8_lossy(stdout),
+            stderr
+        ),
+        None => bail!(
             "Failed to build decune container tools for {}: command exited with {status}",
             platform.rust_target
-        );
+        ),
     }
-    bail!(
-        "Failed to build decune container tools for {}.\nstdout:\n{}\nstderr:\n{}",
-        platform.rust_target,
-        String::from_utf8_lossy(stdout),
-        stderr
-    );
 }
 
 pub(crate) fn check_container_tools(dir: &Path) -> Result<Manifest> {
@@ -289,23 +284,10 @@ pub(crate) fn check_container_tools(dir: &Path) -> Result<Manifest> {
 pub(crate) fn prepare_xtask_container_tools_bundle(
     workspace: &Path,
     locked: bool,
+    output_mode: BuildOutputMode,
 ) -> Result<PathBuf> {
     let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
-    prepare_container_tools_bundle(workspace, &bundle_dir, locked)?;
-    Ok(bundle_dir)
-}
-
-pub(crate) fn prepare_xtask_container_tools_bundle_streaming(
-    workspace: &Path,
-    locked: bool,
-) -> Result<PathBuf> {
-    let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
-    prepare_container_tools_bundle_with_output(
-        workspace,
-        &bundle_dir,
-        locked,
-        BuildOutputMode::Streaming,
-    )?;
+    prepare_container_tools_bundle(workspace, &bundle_dir, locked, output_mode)?;
     Ok(bundle_dir)
 }
 
@@ -313,22 +295,9 @@ pub(crate) fn prepare_container_tools_bundle(
     workspace: &Path,
     bundle_dir: &Path,
     locked: bool,
-) -> Result<()> {
-    prepare_container_tools_bundle_with_output(
-        workspace,
-        bundle_dir,
-        locked,
-        BuildOutputMode::Captured,
-    )
-}
-
-fn prepare_container_tools_bundle_with_output(
-    workspace: &Path,
-    bundle_dir: &Path,
-    locked: bool,
     output_mode: BuildOutputMode,
 ) -> Result<()> {
-    build_container_tools_with_output(workspace, bundle_dir, locked, output_mode)?;
+    build_container_tools(workspace, bundle_dir, locked, output_mode)?;
     check_container_tools(bundle_dir)?;
     Ok(())
 }

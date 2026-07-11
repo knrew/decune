@@ -193,4 +193,27 @@ mod tests {
         assert!(message.contains("Test command failed"));
         assert!(message.contains('7'));
     }
+
+    #[test]
+    fn stream_command_stderr_captures_stderr_on_failure() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo err message >&2; exit 3"]);
+
+        let output = stream_command_stderr(command, "test context").unwrap();
+
+        assert!(!output.status.success());
+        assert_eq!(output.status.code(), Some(3));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("err message"));
+    }
+
+    #[test]
+    fn stream_command_stderr_captures_stderr_on_success() {
+        let mut command = Command::new("sh");
+        command.args(["-c", "echo ok >&2"]);
+
+        let output = stream_command_stderr(command, "test context").unwrap();
+
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stderr).contains("ok"));
+    }
 }

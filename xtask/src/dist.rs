@@ -13,7 +13,9 @@ use tempfile::TempDir;
 
 use crate::{
     command::{ChildCommand, cargo_command_with_container_tools, run_command_spec},
-    container_tools::{check_container_tools, prepare_xtask_container_tools_bundle},
+    container_tools::{
+        BuildOutputMode, check_container_tools, prepare_xtask_container_tools_bundle,
+    },
     hash::sha256_file,
     paths::{resolve_dist_dir, target_dir, workspace_relative},
 };
@@ -32,7 +34,7 @@ pub(crate) fn dist(
             check_container_tools(&bundle_dir)?;
             bundle_dir
         }
-        None => prepare_xtask_container_tools_bundle(workspace, locked)?,
+        None => prepare_xtask_container_tools_bundle(workspace, locked, BuildOutputMode::Captured)?,
     };
 
     let command = dist_build_command(workspace, target, locked, &bundle_dir);

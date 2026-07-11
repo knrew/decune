@@ -14,7 +14,8 @@ use clap::Parser;
 use crate::{
     cli::{Args, XtaskCommand},
     container_tools::{
-        build_container_tools, check_container_tools, resolve_container_tools_bundle_arg,
+        BuildOutputMode, build_container_tools, check_container_tools,
+        resolve_container_tools_bundle_arg,
     },
     dist::{checksum, dist, release_manifest},
     install::install,
@@ -29,7 +30,7 @@ fn main() -> Result<()> {
     match args.command {
         XtaskCommand::BuildContainerTools { out, locked } => {
             let out = resolve_container_tools_bundle_arg(&workspace, out.as_deref());
-            build_container_tools(&workspace, &out, locked)
+            build_container_tools(&workspace, &out, locked, BuildOutputMode::Captured)
         }
         XtaskCommand::CheckContainerTools { dir } => {
             let dir = resolve_container_tools_bundle_arg(&workspace, dir.as_deref());

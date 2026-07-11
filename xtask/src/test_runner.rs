@@ -7,7 +7,7 @@ use crate::{
         ChildCommand, cargo_command_with_container_tools, run_command_spec_streaming,
         run_command_streaming,
     },
-    container_tools::prepare_xtask_container_tools_bundle_streaming,
+    container_tools::{BuildOutputMode, prepare_xtask_container_tools_bundle},
 };
 
 const COMPOSE_CAPABILITIES: [ComposeCapabilityRequirement; 8] = [
@@ -70,7 +70,8 @@ pub(crate) fn compose_integration(workspace: &Path, release: bool) -> Result<()>
     compose_integration_preflight()?;
 
     eprintln!("Preparing container tools bundle...");
-    let bundle_dir = prepare_xtask_container_tools_bundle_streaming(workspace, true)?;
+    let bundle_dir =
+        prepare_xtask_container_tools_bundle(workspace, true, BuildOutputMode::Streaming)?;
     let command = compose_integration_cargo_command(workspace, release, &bundle_dir);
 
     eprintln!("Running Docker Compose integration tests...");
@@ -111,7 +112,8 @@ fn compose_integration_preflight() -> Result<()> {
 
 pub(crate) fn workspace_test(workspace: &Path, release: bool) -> Result<()> {
     eprintln!("Preparing container tools bundle...");
-    let bundle_dir = prepare_xtask_container_tools_bundle_streaming(workspace, true)?;
+    let bundle_dir =
+        prepare_xtask_container_tools_bundle(workspace, true, BuildOutputMode::Streaming)?;
     let command = workspace_test_cargo_command(workspace, release, &bundle_dir);
 
     eprintln!("Running workspace tests...");
