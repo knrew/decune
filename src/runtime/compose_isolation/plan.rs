@@ -15,6 +15,8 @@ use crate::runtime::{
     },
 };
 
+const COMPOSE_CLONE_ISOLATION_RECREATE_HINT: &str = "Run decune down, then decune rebuild.";
+
 pub(crate) struct ComposeIsolationNameRewritePlanInput<'a> {
     pub(crate) model: &'a ComposeConfigModel,
     pub(crate) scan: &'a ComposeIsolationScan,
@@ -363,7 +365,7 @@ fn networks_to_recreate(
             }
             if network.has_attached_containers {
                 bail!(
-                    "{COMPOSE_CLONE_ISOLATION_INVALID}: Docker network `{}` for Compose network `{}` must be recreated with subnet {}, but containers are still attached. Run decune rebuild after stopping the Compose project.",
+                    "{COMPOSE_CLONE_ISOLATION_INVALID}: Docker network `{}` for Compose network `{}` must be recreated with subnet {}, but containers are still attached. {COMPOSE_CLONE_ISOLATION_RECREATE_HINT}",
                     network.name,
                     allocation.network,
                     allocation.planned_subnet
@@ -558,6 +560,48 @@ mod tests {
                 .address_at_offset(1)
                 .map(|address| address.to_string())
         );
+    }
+
+    #[test]
+    fn gateway_relocation_rejects_gateway_outside_requested_subnet() {
+        let requested = ComposeIsolationNetworkRequest {
+            network: "grpc".to_owned(),
+            driver: None,
+            ipam_driver: None,
+            subnet: "10.99.0.0/24".to_owned(),
+            gateway: Some("10.99.1.1".to_owned()),
+        };
+
+        let error = relocate_gateway(
+            &requested,
+            Ipv4Cidr::parse(&requested.subnet).unwrap(),
+            Ipv4Cidr::parse("10.200.0.0/24").unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(error.to_string().contains("outside requested subnet"));
+    }
+
+    #[test]
+    fn gateway_relocation_rejects_offset_that_does_not_fit_narrower_subnet() {
+        let requested = ComposeIsolationNetworkRequest {
+            network: "grpc".to_owned(),
+            driver: None,
+            ipam_driver: None,
+            subnet: "10.99.0.0/24".to_owned(),
+            gateway: Some("10.99.0.200".to_owned()),
+        };
+
+        let error = relocate_gateway(
+            &requested,
+            Ipv4Cidr::parse(&requested.subnet).unwrap(),
+            Ipv4Cidr::parse("10.200.0.0/25").unwrap(),
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(error.to_string().contains("does not fit planned subnet"));
     }
 
     #[test]
@@ -775,6 +819,41 @@ mod tests {
     }
 
     #[test]
+    fn subnet_planner_rejects_multiple_fixed_subnets_on_one_network() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [
+                {"subnet": "10.99.0.0/24"},
+                {"subnet": "10.99.1.0/24"}
+            ]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED)
+        );
+        assert!(error.to_string().contains("multiple fixed IPAM subnets"));
+    }
+
+    #[test]
     fn subnet_planner_removes_unused_stale_self_network_and_rejects_attached_one() {
         let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
             "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
@@ -811,7 +890,11 @@ mod tests {
         };
         let error = plan_compose_isolation_subnets(&input(&attached)).unwrap_err();
         assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
-        assert!(error.to_string().contains("decune rebuild"));
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_RECREATE_HINT)
+        );
     }
 
     #[test]

@@ -82,6 +82,8 @@ pub(crate) fn allocate_ipv4_subnet_slot(
     if subnet_prefix < pool.prefix || subnet_prefix > 32 {
         return None;
     }
+    // Valid CIDR prefixes and the normalized pool keep these calculations within IPv4 space;
+    // checked arithmetic keeps the allocator total if those invariants change.
     let prefix_difference = u32::from(subnet_prefix - pool.prefix);
     let slot_count = 1_u64.checked_shl(prefix_difference)?;
     let slot_size = 1_u64.checked_shl(32 - u32::from(subnet_prefix))?;

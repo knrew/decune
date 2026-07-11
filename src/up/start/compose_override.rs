@@ -266,10 +266,10 @@ fn apply_compose_subnet_plan(
     for allocation in &subnet_plan.allocations {
         patch = patch.network_ipam_override(
             &allocation.network,
-            vec![ComposeOverrideNetworkIpamConfig {
+            ComposeOverrideNetworkIpamConfig {
                 subnet: allocation.planned_subnet.clone(),
                 gateway: allocation.planned_gateway.clone(),
-            }],
+            },
         );
     }
     patch

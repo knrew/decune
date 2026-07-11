@@ -1267,7 +1267,7 @@ async fn remove_stale_compose_isolation_networks(
             .await
             .with_context(|| {
                 format!(
-                    "Failed to recreate Docker network `{network}` for Compose clone isolation. Stop attached containers and run decune rebuild."
+                    "Failed to recreate Docker network `{network}` for Compose clone isolation. Run decune down, then decune rebuild."
                 )
             })?;
     }

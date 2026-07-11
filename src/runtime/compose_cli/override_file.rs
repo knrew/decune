@@ -127,12 +127,12 @@ impl ComposeOverridePatch {
     pub(crate) fn network_ipam_override(
         mut self,
         resource: &str,
-        configs: Vec<ComposeOverrideNetworkIpamConfig>,
+        config: ComposeOverrideNetworkIpamConfig,
     ) -> Self {
         self.networks
             .entry(resource.to_owned())
             .or_default()
-            .ipam_config_override = configs;
+            .ipam_config_override = vec![config];
         self
     }
 
@@ -945,10 +945,10 @@ mod tests {
             .network_name("grpc", "fixed-grpc-workspace")
             .network_ipam_override(
                 "grpc",
-                vec![ComposeOverrideNetworkIpamConfig {
+                ComposeOverrideNetworkIpamConfig {
                     subnet: "10.200.42.0/24".to_owned(),
                     gateway: Some("10.200.42.1".to_owned()),
-                }],
+                },
             );
 
         let yaml = patch.to_yaml().unwrap();
