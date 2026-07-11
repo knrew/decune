@@ -1,0 +1,26 @@
+services:
+  app:
+    image: alpine:3.20
+    container_name: fixed-app-388
+    command: sleep infinity
+    environment:
+      AGENT_ENDPOINT: http://10.223.0.1:9000
+    networks:
+      - appnet
+    ports:
+      - "127.0.0.1:18080:80"
+    volumes:
+      - cache:/cache
+      - ../..:/workspace
+
+networks:
+  appnet:
+    name: fixed-network-388
+    ipam:
+      config:
+        - subnet: 10.223.0.0/24
+          gateway: 10.223.0.1
+
+volumes:
+  cache:
+    name: fixed-cache-388

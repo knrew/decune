@@ -43,6 +43,7 @@
 - primary service: Dev Container `service` property で選ばれた Compose service。decune は shell attach、lifecycle command、Features、dotfiles、credentials、UID/GID sync、automatic port forwarding をこの service に適用する。
 - sidecar service: primary service 以外の Compose service。
 - generated Compose override: decune が state/runtime area に生成する Compose override file。利用者は編集しない。
+- clone isolation: 同じ Docker Compose-based workspace の複数 clone を同一 Docker daemon 上で同時利用するため、clone-sensitive な published port、固定名、固定 subnet、endpoint を workspace ごとに分離する opt-in 機能。
 - clone isolation preflight: Compose モードで別 clone / 別 workspace の同時起動時に衝突しうる固定 subnet / resource name と、relocation 後も environment に残る旧 network address を `docker compose up` の前に検出する処理。name / subnet / endpoint rewrite が有効な対象は書き換え後の値で照合し、それ以外は検出のみを行う。
 
 ## ネットワーク用語
@@ -51,6 +52,8 @@
 - published port: Docker が host port と container port を publish する設定。image/Dockerfile モードでは Dev Container `appPort`、Compose モードでは Compose service `ports` で指定する。
 - requested endpoint: 利用者設定や Compose file が要求した host 側 endpoint。
 - planned endpoint: decune が起動前に割り当てる予定の host 側 endpoint。Compose published port relocation では requested endpoint と異なる場合がある。
+- subnet pool: clone isolation が固定 IPv4 subnet の workspace 固有 relocation 先を選ぶために利用する IPv4 CIDR 範囲。
+- endpoint 契約: 固定 network address を参照する service environment を、Compose network key と relocation 後の gateway / subnet placeholder に明示的に対応付ける `[[compose.clone_isolation.endpoints]]` 宣言。
 - actual binding: Docker が実際に publish している host 側 binding。
 - availability probe: host port の空き状況を確認するために decune process が行う TCP bind probe。
 - unprobeable: availability probe が権限などの理由で空き・占有を判別できない状態。occupied や available とは区別する。

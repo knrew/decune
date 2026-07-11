@@ -12,6 +12,7 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 - `decune ports` で実行中の port forwarding と Docker published port の host 側の利用状況を確認
 - `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
 - image-based / Dockerfile-based / Docker Compose-based の Dev Container 構成を起動
+- Compose clone isolation により、固定 published port・固定名・固定 IPv4 subnet・宣言済み endpoint を workspace ごとに分離
 - Dev Container Features、dotfiles、Git/GitHub 認証情報転送、ポートフォワーディング、Linux UID/GID 同期を適用
 - global と project の decune TOML 設定を重ね合わせ
 - GitHub Releases のビルド済みアーカイブ配布

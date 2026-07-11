@@ -395,9 +395,9 @@ Compose published port 関連の代表的な diagnostic code と対処は次の�
 
 decune port forwarding と、Dev Container `appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error です。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧に表示されます。
 
-## Compose clone isolation
+## 複数クローンの同時利用 (Compose clone isolation)
 
-同じ Compose-based workspace の複数 clone を同時起動すると、明示的な `container_name` や top-level resource の `name` が Compose project name の scope を外れて衝突します。`.decune/config.toml` で `[compose.clone_isolation].enabled = true` にすると、既定でこれらを `<元名>-<workspace_id>` へ書き換えます。
+同じ Compose-based workspace の複数 clone を同時起動すると、固定 published port、固定 subnet、明示的な `container_name`、top-level resource の `name` が衝突することがあります。各 clone に同じ `.decune/config.toml` を置き、clone isolation を opt-in します。
 
 ```toml
 version = 1
@@ -407,24 +407,23 @@ enabled = true
 
 [compose.clone_isolation.networks]
 relocation = true
-subnet_pool = "10.200.0.0/16"
-subnet_prefix = 24
-
-[compose.clone_isolation.names]
-rewrite_container_names = true
-rewrite_resource_names = true
+subnet_pool = "10.224.0.0/16"
 
 [[compose.clone_isolation.endpoints]]
 service = "app"
-env = "HOST_AGENT_ENDPOINT"
-value = "grpc://${decune.network.grpc.gateway}:50051"
+env = "AGENT_ENDPOINT"
+value = "http://${decune.network.appnet.gateway}:9000"
 ```
 
-`external: true` の network / volume / config / secret は共有 resource として書き換えません。固定名 volume は clone ごとに別 volume になるため、データも clone 間で分離されます。container 間通信では元の `container_name` を DNS alias として維持しますが、host 側から `docker exec <元名>` のように固定名を直接使う tool は書き換え後の名前へ更新してください。詳細は [specification.md](specification.md#composeclone_isolation) を参照してください。
+有効化すると、fixed TCP published port は空いている host port へ relocation され、固定名と固定 IPv4 subnet は workspace ごとの値になります。Compose project name と既定命名の network / volume は opt-in の有無にかかわらず workspace scope です。固定名 volume は clone ごとに別 volume になるため、データも clone 間で分離されます。container 間通信では元の `container_name` を DNS alias として維持しますが、host 側から `docker exec <元名>` のように固定名を直接使う tool は書き換え後の名前へ更新してください。詳細は [specification.md](specification.md#clone-isolation) を参照してください。
 
 `[compose.clone_isolation.networks].relocation = true` にすると、固定 IPv4 IPAM subnet を `subnet_pool` 内の workspace 固有 subnet へ移します。`subnet_pool` は必須で、`subnet_prefix` を省略した場合は元 subnet の prefix 長を維持します。固定 IPv4 subnet を検出した場合は、割り当て結果が元 subnet と同じでも generated override に Compose `!override` tag を使うため、Docker Compose v2.24.4 以上が必要です。IPv6、static service address、external network は relocation しません。
 
 固定 gateway や subnet を service の environment に埋め込む構成では、`[[compose.clone_isolation.endpoints]]` で対象 service・環境変数・値 template を宣言してください。`${decune.network.<network-key>.gateway}` と `.subnet` は relocation 後の値へ展開され、その他の `$` は Compose の host environment interpolation を行わず literal として container に渡されます。endpoint を宣言したまま `[compose.clone_isolation].enabled = false` にすると、宣言を無効として扱い warning を表示します。clone isolation は有効でも `[compose.clone_isolation.networks].relocation = false` のまま placeholder を参照すると、network relocation を有効にする hint 付きの `compose_clone_isolation_invalid` error になります。実際に relocate した network に接続する service、または `network_mode: service:<service>` で接続を継承する service では、endpoint render 後も旧 gateway / subnet 基底 address が environment に残ると、`decune up` は `compose_clone_isolation_endpoint_unsafe` で起動前に停止します。1つの environment から複数の relocated network を参照する場合は、各 network の旧 address を対応する placeholder へ置き換えてください。v1 の stale 検出対象は environment のみで、`extra_hosts`、command、config file 内の address は利用者が追随させる必要があります。
+
+制限として、`external: true` の resource は共有契約を維持して書き換えません。IPv6 subnet と `ipv4_address` / `ipv6_address` / `link_local_ips` は relocation せず、該当する構成では起動前に停止します。`extra_hosts`、command、config file 内の旧 network address は自動検出・書き換えの対象外です。
+
+起動に失敗した場合は diagnostic code を確認します。`compose_fixed_name_conflict` と `compose_network_subnet_overlap` は衝突相手を、`compose_clone_isolation_unsupported` は static address / IPv6 などの制限を、`compose_clone_isolation_endpoint_unsafe` は宣言されていない旧 endpoint 参照を示します。`compose_clone_isolation_invalid` と `compose_clone_isolation_pool_exhausted` は設定または subnet pool を見直してください。各 code の判定条件は [specification.md の Clone isolation](specification.md#clone-isolation) を参照してください。
 
 既存 network の subnet を変更する必要があり container が接続されたままの場合は、`decune down` の後に `decune rebuild` を実行してください。別 process で複数の `decune up` を同時実行すると、preflight 後の network 作成までに同じ subnet を選ぶ場合があります。Docker 側で subnet 重複になった場合は、先に成功した起動の完了後に失敗した `decune up` を再実行してください。
 
