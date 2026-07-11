@@ -16,7 +16,7 @@ if [ "${1:-}" = compose ]; then
       ;;
   esac
 fi
-if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ] && [ "${3:-}" = fixed-cache ]; then
+if [ "${1:-}" = volume ] && [ "${2:-}" = inspect ] && [ "${3:-}" = -- ] && [ "${4:-}" = fixed-cache ]; then
   printf '[{"Name":"fixed-cache","Labels":{"com.docker.compose.project":"other-project"}}]\n'
   exit 0
 fi

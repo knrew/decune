@@ -11,7 +11,7 @@ use crate::{
         dotfiles::materialize_dotfile_skeletons,
         image::{PullPolicy, ensure_image, image_container_tool_platform},
         ports::{HostPortReservation, host_port_reservations_conflict},
-        resource::{compose_project_name_from_labels, non_empty_trimmed},
+        resource::compose_project_name_from_labels,
     },
     runtime::{
         compose_cli::{
@@ -36,7 +36,9 @@ use crate::{
         },
         docker_cli::{DockerNetworkInspect, DockerSwarmResourceInspect, DockerVolumeInspect},
     },
-    state, ui,
+    state,
+    text::non_empty_trimmed,
+    ui,
     up::{
         build::plan_requires_final_image_layer,
         existing::{self, decide_existing_container},
@@ -745,12 +747,13 @@ fn add_compose_isolation_network(
         .and_then(compose_project_name_from_labels);
     let ipam_configs = network
         .ipam
+        .as_ref()
         .map(|ipam| {
             ipam.config
-                .into_iter()
+                .iter()
                 .map(|config| ComposeIsolationDockerIpamConfig {
-                    subnet: config.subnet,
-                    gateway: config.gateway,
+                    subnet: config.subnet.clone(),
+                    gateway: config.gateway.clone(),
                 })
                 .collect()
         })
@@ -758,6 +761,9 @@ fn add_compose_isolation_network(
     snapshot.networks.push(ComposeIsolationDockerNetwork {
         name: name.clone(),
         compose_project: compose_project.clone(),
+        driver: network.driver,
+        scope: network.scope,
+        ipam_driver: network.ipam.and_then(|ipam| ipam.driver),
         ipam_configs,
     });
     snapshot.resources.push(ComposeIsolationDockerResource {

@@ -192,7 +192,7 @@ impl DockerCli {
         self.inspect_resource_if_present(
             "inspect Docker container",
             container,
-            docker_cmd(["container", "inspect", container]),
+            docker_cmd(["container", "inspect", "--", container]),
             "container",
             false,
         )
@@ -548,7 +548,7 @@ impl DockerCli {
         self.inspect_resource_if_present(
             "inspect Docker volume",
             volume,
-            docker_cmd(["volume", "inspect", volume]),
+            docker_cmd(["volume", "inspect", "--", volume]),
             "volume",
             false,
         )
@@ -562,7 +562,7 @@ impl DockerCli {
         self.inspect_resource_if_present(
             "inspect Docker config",
             config,
-            docker_cmd(["config", "inspect", config]),
+            docker_cmd(["config", "inspect", "--", config]),
             "config",
             true,
         )
@@ -576,7 +576,7 @@ impl DockerCli {
         self.inspect_resource_if_present(
             "inspect Docker secret",
             secret,
-            docker_cmd(["secret", "inspect", secret]),
+            docker_cmd(["secret", "inspect", "--", secret]),
             "secret",
             true,
         )
@@ -976,6 +976,8 @@ pub(crate) struct DockerVolumeInspect {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct DockerNetworkInspect {
     pub(crate) name: Option<String>,
+    pub(crate) driver: Option<String>,
+    pub(crate) scope: Option<String>,
     pub(crate) labels: Option<BTreeMap<String, String>>,
     #[serde(rename = "IPAM")]
     pub(crate) ipam: Option<DockerNetworkIpam>,
@@ -984,6 +986,7 @@ pub(crate) struct DockerNetworkInspect {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct DockerNetworkIpam {
+    pub(crate) driver: Option<String>,
     #[serde(default, deserialize_with = "deserialize_null_as_empty_vec")]
     pub(crate) config: Vec<DockerNetworkIpamConfig>,
 }
@@ -1244,8 +1247,8 @@ mod tests {
     fn list_network_inspects_uses_ids_and_accepts_missing_network_partial_output() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(runtime_output(
-                br#"{"Name":"other_net","Labels":{"com.docker.compose.project":"other"},"IPAM":{"Config":[{"Subnet":"172.28.0.0/16","Gateway":"172.28.0.1"}]}}
-{"Name":"host","Labels":{},"IPAM":{"Config":null}}
+                br#"{"Name":"other_net","Driver":"bridge","Scope":"local","Labels":{"com.docker.compose.project":"other"},"IPAM":{"Driver":"default","Config":[{"Subnet":"172.28.0.0/16","Gateway":"172.28.0.1"}]}}
+{"Name":"host","Driver":"host","Scope":"local","Labels":{},"IPAM":{"Driver":"default","Config":null}}
 "#,
                 b"Error: No such network: removed\n",
                 1,
@@ -1262,6 +1265,15 @@ mod tests {
 
         assert_eq!(networks.len(), 2);
         assert_eq!(networks[0].name.as_deref(), Some("other_net"));
+        assert_eq!(networks[0].driver.as_deref(), Some("bridge"));
+        assert_eq!(networks[0].scope.as_deref(), Some("local"));
+        assert_eq!(
+            networks[0]
+                .ipam
+                .as_ref()
+                .and_then(|ipam| ipam.driver.as_deref()),
+            Some("default")
+        );
         assert_eq!(
             networks[0]
                 .ipam
@@ -1502,7 +1514,69 @@ mod tests {
         assert_eq!(volume.name.as_deref(), Some("fixed-cache"));
         assert_eq!(
             runner.commands()[0].args_vec(),
-            ["volume", "inspect", "fixed-cache"]
+            ["volume", "inspect", "--", "fixed-cache"]
+        );
+    }
+
+    #[test]
+    fn optional_resource_inspects_separate_option_like_names_from_flags() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(runtime_output(
+                b"",
+                b"Error: No such container: --fixed\n",
+                1,
+            )),
+            Ok(runtime_output(b"", b"Error: No such volume: --fixed\n", 1)),
+            Ok(runtime_output(b"", b"Error: no such config: --fixed\n", 1)),
+            Ok(runtime_output(b"", b"Error: no such secret: --fixed\n", 1)),
+        ]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        assert!(
+            runtime
+                .block_on(client.inspect_container_if_present("--fixed"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            runtime
+                .block_on(client.inspect_volume_if_present("--fixed"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            runtime
+                .block_on(client.inspect_config_if_present("--fixed"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            runtime
+                .block_on(client.inspect_secret_if_present("--fixed"))
+                .unwrap()
+                .is_none()
+        );
+
+        let commands = runner.commands();
+        assert_eq!(
+            commands[0].args_vec(),
+            ["container", "inspect", "--", "--fixed"]
+        );
+        assert_eq!(
+            commands[1].args_vec(),
+            ["volume", "inspect", "--", "--fixed"]
+        );
+        assert_eq!(
+            commands[2].args_vec(),
+            ["config", "inspect", "--", "--fixed"]
+        );
+        assert_eq!(
+            commands[3].args_vec(),
+            ["secret", "inspect", "--", "--fixed"]
         );
     }
 

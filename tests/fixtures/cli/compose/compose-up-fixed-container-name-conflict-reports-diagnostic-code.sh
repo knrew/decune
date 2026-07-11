@@ -16,7 +16,7 @@ if [ "${1:-}" = compose ]; then
       ;;
   esac
 fi
-if [ "${1:-}" = container ] && [ "${2:-}" = inspect ] && [ "${3:-}" = fixed-app ]; then
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ] && [ "${3:-}" = -- ] && [ "${4:-}" = fixed-app ]; then
   printf '[{"Id":"other-container-id","Name":"/fixed-app","Config":{"Env":[],"Labels":{"com.docker.compose.project":"other-project"}},"State":{"Running":true}}]\n'
   exit 0
 fi

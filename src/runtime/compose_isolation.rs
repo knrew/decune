@@ -9,8 +9,8 @@ pub(crate) use plan::{ComposeIsolationPlanInput, plan_compose_isolation};
 pub(crate) use scan::scan_compose_isolation;
 pub(crate) use subnet::Ipv4Cidr;
 pub(crate) use types::{
-    ComposeIsolationClassification, ComposeIsolationDaemonSnapshot,
-    ComposeIsolationDockerIpamConfig, ComposeIsolationDockerNetwork,
-    ComposeIsolationDockerResource, ComposeIsolationFinding, ComposeIsolationFixedNameRequest,
-    ComposeIsolationNetworkRequest, ComposeIsolationResourceKind, ComposeIsolationScan,
+    ComposeIsolationDaemonSnapshot, ComposeIsolationDockerIpamConfig,
+    ComposeIsolationDockerNetwork, ComposeIsolationDockerResource, ComposeIsolationFinding,
+    ComposeIsolationFixedNameRequest, ComposeIsolationNetworkRequest, ComposeIsolationResourceKind,
+    ComposeIsolationScan,
 };

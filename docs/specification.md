@@ -534,7 +534,11 @@ Compose モードの `up` / `rebuild` は、user Compose file だけから得た
 
 既存 Docker resource との照合では、`com.docker.compose.project` label が現在の decune Compose project name と一致する resource を自 project とみなし、衝突相手から除外する。label が無い resource は他 resource として扱い、衝突相手に含める。
 
+固定 IPv4 subnet の重複は、同じ IPAM driver かつ同じ IPAM address space に属する network 間だけを衝突として扱う。IPAM driver 未指定は `default` とみなす。Compose network の既定 driver、`bridge`、`macvlan`、`ipvlan` は local address space、`overlay` は global address space とみなし、既存 Docker network の `Scope` が `local` なら local、`swarm` または `global` なら global とみなす。custom network driver、欠落した `Scope`、未知の `Scope` など address space を確定できない metadata は、実際の衝突を見逃さないため保守的に比較対象へ含める。
+
 固定名が同種の既存 Docker resource と衝突する場合、`compose_fixed_name_conflict` diagnostic で error にする。診断 message には Compose 側の resource、要求した subnet/name、衝突相手の Docker resource name、衝突相手の `com.docker.compose.project` label があればその値を含める。
+
+複数の衝突を検出した場合、preflight は最初の 1 件だけでなく、検出したすべての diagnostic を 1 回の error にまとめて報告する。
 
 canonical Compose model に上記の clone-sensitive 構成が 1 つも無い場合、decune は clone isolation preflight のための Docker daemon resource 照会を行わない。
 

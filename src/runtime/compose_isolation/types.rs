@@ -1,15 +1,3 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[expect(
-    dead_code,
-    reason = "Clone isolation later phases reuse all classification variants; phase 1 only emits daemon conflicts."
-)]
-pub(crate) enum ComposeIsolationClassification {
-    AlreadyScoped,
-    RewriteSafe,
-    RewriteUnsafe,
-    DaemonConflict,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ComposeIsolationResourceKind {
     ServiceContainer,
@@ -60,6 +48,8 @@ impl ComposeIsolationScan {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposeIsolationNetworkRequest {
     pub(crate) network: String,
+    pub(crate) driver: Option<String>,
+    pub(crate) ipam_driver: Option<String>,
     pub(crate) subnet: String,
     pub(crate) gateway: Option<String>,
 }
@@ -81,6 +71,9 @@ pub(crate) struct ComposeIsolationDaemonSnapshot {
 pub(crate) struct ComposeIsolationDockerNetwork {
     pub(crate) name: String,
     pub(crate) compose_project: Option<String>,
+    pub(crate) driver: Option<String>,
+    pub(crate) scope: Option<String>,
+    pub(crate) ipam_driver: Option<String>,
     pub(crate) ipam_configs: Vec<ComposeIsolationDockerIpamConfig>,
 }
 
@@ -100,7 +93,6 @@ pub(crate) struct ComposeIsolationDockerResource {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum ComposeIsolationFinding {
     NetworkSubnetOverlap {
-        classification: ComposeIsolationClassification,
         compose_network: String,
         requested_subnet: String,
         requested_gateway: Option<String>,
@@ -110,7 +102,6 @@ pub(crate) enum ComposeIsolationFinding {
         docker_gateway: Option<String>,
     },
     FixedNameConflict {
-        classification: ComposeIsolationClassification,
         kind: ComposeIsolationResourceKind,
         compose_resource: String,
         requested_name: String,

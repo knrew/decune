@@ -5,10 +5,11 @@ use crate::{
         container::{ContainerInspect, ContainerPortBinding},
         resource::{
             COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL, compose_project_name_from_labels,
-            managed_workspace_id_from_container, non_empty_trimmed, workspace_path_from_labels,
+            managed_workspace_id_from_container, workspace_path_from_labels,
         },
     },
     state::{PublishedPortEndpointState, PublishedPortRuntimeState},
+    text::non_empty_trimmed,
 };
 
 use super::{

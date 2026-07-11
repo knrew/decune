@@ -12,6 +12,7 @@ mod runtime;
 mod state;
 mod status;
 mod terminal;
+mod text;
 mod ui;
 mod up;
 mod version;

@@ -8,7 +8,7 @@ if [ "${1:-}" = network ] || [ "${1:-}" = volume ] || [ "${1:-}" = secret ] || [
   echo "docker resource inspection should not include unselected Compose resources" >&2
   exit 92
 fi
-if [ "${1:-}" = container ] && [ "${2:-}" = inspect ] && [ "${3:-}" = fixed-unused ]; then
+if [ "${1:-}" = container ] && [ "${2:-}" = inspect ] && [ "${4:-}" = fixed-unused ]; then
   echo "docker container inspection should not include an unselected Compose service" >&2
   exit 92
 fi

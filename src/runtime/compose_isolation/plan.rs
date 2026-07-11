@@ -1,6 +1,6 @@
 use crate::runtime::compose_isolation::{
-    ComposeIsolationClassification, ComposeIsolationDaemonSnapshot, ComposeIsolationFinding,
-    ComposeIsolationScan, Ipv4Cidr,
+    ComposeIsolationDaemonSnapshot, ComposeIsolationDockerNetwork, ComposeIsolationFinding,
+    ComposeIsolationNetworkRequest, ComposeIsolationScan, Ipv4Cidr,
 };
 
 pub(crate) struct ComposeIsolationPlanInput<'a> {
@@ -28,6 +28,9 @@ fn plan_subnet_overlaps(input: &ComposeIsolationPlanInput<'_>) -> Vec<ComposeIso
             if is_self_project(network.compose_project.as_deref(), input.project_name) {
                 continue;
             }
+            if !uses_same_ipam_address_space(requested, network) {
+                continue;
+            }
             for existing_config in &network.ipam_configs {
                 let Some(existing_subnet_text) = existing_config.subnet.as_deref() else {
                     continue;
@@ -37,7 +40,6 @@ fn plan_subnet_overlaps(input: &ComposeIsolationPlanInput<'_>) -> Vec<ComposeIso
                 };
                 if requested_subnet.overlaps(existing_subnet) {
                     findings.push(ComposeIsolationFinding::NetworkSubnetOverlap {
-                        classification: ComposeIsolationClassification::DaemonConflict,
                         compose_network: requested.network.clone(),
                         requested_subnet: requested.subnet.clone(),
                         requested_gateway: requested.gateway.clone(),
@@ -66,7 +68,6 @@ fn plan_fixed_name_conflicts(
                 continue;
             }
             findings.push(ComposeIsolationFinding::FixedNameConflict {
-                classification: ComposeIsolationClassification::DaemonConflict,
                 kind: fixed.kind,
                 compose_resource: fixed.resource.clone(),
                 requested_name: fixed.name.clone(),
@@ -76,6 +77,54 @@ fn plan_fixed_name_conflicts(
         }
     }
     findings
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum IpamAddressSpace {
+    Local,
+    Global,
+}
+
+fn uses_same_ipam_address_space(
+    requested: &ComposeIsolationNetworkRequest,
+    existing: &ComposeIsolationDockerNetwork,
+) -> bool {
+    if effective_ipam_driver(requested.ipam_driver.as_deref())
+        != effective_ipam_driver(existing.ipam_driver.as_deref())
+    {
+        return false;
+    }
+
+    match (
+        requested_address_space(requested.driver.as_deref()),
+        existing_address_space(existing.scope.as_deref()),
+    ) {
+        (Some(requested), Some(existing)) => requested == existing,
+        _ => true,
+    }
+}
+
+fn effective_ipam_driver(driver: Option<&str>) -> &str {
+    driver
+        .map(str::trim)
+        .filter(|driver| !driver.is_empty())
+        .unwrap_or("default")
+}
+
+fn requested_address_space(driver: Option<&str>) -> Option<IpamAddressSpace> {
+    match driver.map(str::trim).filter(|driver| !driver.is_empty()) {
+        None | Some("bridge" | "macvlan" | "ipvlan") => Some(IpamAddressSpace::Local),
+        Some("overlay") => Some(IpamAddressSpace::Global),
+        Some(_) => None,
+    }
+}
+
+fn existing_address_space(scope: Option<&str>) -> Option<IpamAddressSpace> {
+    match scope.map(str::trim).filter(|scope| !scope.is_empty()) {
+        Some("local") => Some(IpamAddressSpace::Local),
+        Some("swarm" | "global") => Some(IpamAddressSpace::Global),
+        None | Some(_) => None,
+    }
 }
 
 fn is_self_project(compose_project: Option<&str>, project_name: &str) -> bool {
@@ -96,6 +145,8 @@ mod tests {
         let scan = ComposeIsolationScan {
             networks: vec![ComposeIsolationNetworkRequest {
                 network: "grpc".to_owned(),
+                driver: None,
+                ipam_driver: None,
                 subnet: "172.28.0.0/16".to_owned(),
                 gateway: Some("172.28.0.1".to_owned()),
             }],
@@ -135,6 +186,8 @@ mod tests {
         let scan = ComposeIsolationScan {
             networks: vec![ComposeIsolationNetworkRequest {
                 network: "v6".to_owned(),
+                driver: None,
+                ipam_driver: None,
                 subnet: "fd00::/64".to_owned(),
                 gateway: None,
             }],
@@ -208,6 +261,45 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn compares_only_compatible_known_ipam_address_spaces() {
+        let mut requested = ComposeIsolationNetworkRequest {
+            network: "app".to_owned(),
+            driver: None,
+            ipam_driver: None,
+            subnet: "172.28.0.0/16".to_owned(),
+            gateway: None,
+        };
+        let mut existing = network("existing", None, "172.28.0.0/16");
+
+        assert!(uses_same_ipam_address_space(&requested, &existing));
+
+        existing.scope = Some("swarm".to_owned());
+        assert!(!uses_same_ipam_address_space(&requested, &existing));
+
+        requested.driver = Some("overlay".to_owned());
+        assert!(uses_same_ipam_address_space(&requested, &existing));
+
+        existing.ipam_driver = Some("custom".to_owned());
+        assert!(!uses_same_ipam_address_space(&requested, &existing));
+    }
+
+    #[test]
+    fn conservatively_compares_unknown_network_scope_metadata() {
+        let requested = ComposeIsolationNetworkRequest {
+            network: "app".to_owned(),
+            driver: Some("custom-network-driver".to_owned()),
+            ipam_driver: Some("custom-ipam".to_owned()),
+            subnet: "172.28.0.0/16".to_owned(),
+            gateway: None,
+        };
+        let mut existing = network("existing", None, "172.28.0.0/16");
+        existing.scope = None;
+        existing.ipam_driver = Some("custom-ipam".to_owned());
+
+        assert!(uses_same_ipam_address_space(&requested, &existing));
+    }
+
     fn network(
         name: &str,
         compose_project: Option<&str>,
@@ -216,6 +308,9 @@ mod tests {
         ComposeIsolationDockerNetwork {
             name: name.to_owned(),
             compose_project: compose_project.map(str::to_owned),
+            driver: Some("bridge".to_owned()),
+            scope: Some("local".to_owned()),
+            ipam_driver: Some("default".to_owned()),
             ipam_configs: vec![ComposeIsolationDockerIpamConfig {
                 subnet: Some(subnet.to_owned()),
                 gateway: None,

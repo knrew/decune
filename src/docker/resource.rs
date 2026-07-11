@@ -1,6 +1,9 @@
 use std::collections::BTreeMap;
 
-use crate::workspace::{Workspace, is_valid_workspace_id};
+use crate::{
+    text::non_empty_trimmed,
+    workspace::{Workspace, is_valid_workspace_id},
+};
 
 const MANAGED_LABEL: &str = "decune.managed";
 const WORKSPACE_LABEL: &str = "decune.workspace";
@@ -121,11 +124,6 @@ pub(crate) fn compose_project_name_from_labels(
         .get(COMPOSE_PROJECT_LABEL)
         .and_then(|project_name| non_empty_trimmed(project_name))
         .map(str::to_owned)
-}
-
-pub(crate) fn non_empty_trimmed(value: &str) -> Option<&str> {
-    let value = value.trim();
-    if value.is_empty() { None } else { Some(value) }
 }
 
 fn labels(entries: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, String> {

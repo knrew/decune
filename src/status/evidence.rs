@@ -10,11 +10,12 @@ use crate::{
         resource::{
             COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL, compose_project_name_from_labels,
             config_hash_from_labels, managed_workspace_id_from_container,
-            managed_workspace_id_from_labels, non_empty_trimmed, workspace_path_from_labels,
+            managed_workspace_id_from_labels, workspace_path_from_labels,
         },
     },
     runtime::docker_cli::{DockerCli, DockerVolumeInspect},
     state::{WorkspaceState, container_ids_match, load_state_file},
+    text::non_empty_trimmed,
     up::{ForwardingResolution, build_read_only_up_plan_with_forwarding_resolution},
     workspace::{Workspace, is_valid_workspace_id},
 };

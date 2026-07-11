@@ -179,6 +179,8 @@ pub(crate) struct ComposeConfigResource {
     #[serde(default)]
     pub(crate) name: Option<String>,
     #[serde(default)]
+    pub(crate) driver: Option<String>,
+    #[serde(default)]
     pub(crate) external: ComposeConfigExternal,
     #[serde(default)]
     pub(crate) ipam: Option<ComposeConfigIpam>,
@@ -186,6 +188,8 @@ pub(crate) struct ComposeConfigResource {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
 pub(crate) struct ComposeConfigIpam {
+    #[serde(default)]
+    pub(crate) driver: Option<String>,
     #[serde(default)]
     pub(crate) config: Vec<ComposeConfigIpamConfig>,
 }

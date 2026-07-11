@@ -1,5 +1,4 @@
 use crate::{
-    docker::resource::non_empty_trimmed,
     runtime::{
         compose_cli::{ComposeConfigModel, ComposeConfigResource},
         compose_isolation::{
@@ -7,6 +6,7 @@ use crate::{
             ComposeIsolationResourceKind, ComposeIsolationScan,
         },
     },
+    text::non_empty_trimmed,
 };
 
 pub(crate) fn scan_compose_isolation(
@@ -62,6 +62,8 @@ fn scan_networks(model: &ComposeConfigModel, project_name: &str, scan: &mut Comp
                 if let Some(subnet) = config.subnet.as_deref().and_then(non_empty_trimmed) {
                     scan.networks.push(ComposeIsolationNetworkRequest {
                         network: network_name.clone(),
+                        driver: network.driver.clone(),
+                        ipam_driver: ipam.driver.clone(),
                         subnet: subnet.to_owned(),
                         gateway: config
                             .gateway
@@ -142,7 +144,9 @@ mod tests {
             "networks": {
                 "grpc": {
                     "name": "fixed-grpc",
+                    "driver": "bridge",
                     "ipam": {
+                        "driver": "default",
                         "config": [
                             {"subnet": "172.28.0.0/16", "gateway": "172.28.0.1"}
                         ]
@@ -151,6 +155,12 @@ mod tests {
             },
             "volumes": {
                 "cache": {"name": "fixed-cache"}
+            },
+            "configs": {
+                "app": {"name": "fixed-config"}
+            },
+            "secrets": {
+                "app": {"name": "fixed-secret"}
             }
         }));
 
@@ -158,9 +168,11 @@ mod tests {
 
         assert_eq!(scan.networks.len(), 1);
         assert_eq!(scan.networks[0].network, "grpc");
+        assert_eq!(scan.networks[0].driver.as_deref(), Some("bridge"));
+        assert_eq!(scan.networks[0].ipam_driver.as_deref(), Some("default"));
         assert_eq!(scan.networks[0].subnet, "172.28.0.0/16");
         assert_eq!(scan.networks[0].gateway.as_deref(), Some("172.28.0.1"));
-        assert_eq!(scan.fixed_names.len(), 3);
+        assert_eq!(scan.fixed_names.len(), 5);
         assert!(scan.fixed_names.iter().any(|name| name.kind
             == ComposeIsolationResourceKind::ServiceContainer
             && name.resource == "app"
@@ -178,6 +190,20 @@ mod tests {
                 .any(|name| name.kind == ComposeIsolationResourceKind::Volume
                     && name.resource == "cache"
                     && name.name == "fixed-cache")
+        );
+        assert!(
+            scan.fixed_names
+                .iter()
+                .any(|name| name.kind == ComposeIsolationResourceKind::Config
+                    && name.resource == "app"
+                    && name.name == "fixed-config")
+        );
+        assert!(
+            scan.fixed_names
+                .iter()
+                .any(|name| name.kind == ComposeIsolationResourceKind::Secret
+                    && name.resource == "app"
+                    && name.name == "fixed-secret")
         );
     }
 

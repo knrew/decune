@@ -328,6 +328,72 @@ fn compose_fixed_volume_name_conflict_reports_diagnostic_code_before_compose_up(
 }
 
 #[test]
+fn compose_reports_all_fixed_resource_name_conflicts_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                networks: [app]
+                configs: [app]
+                secrets: [app]
+            networks:
+              app:
+                name: fixed-network
+            configs:
+              app:
+                name: fixed-config
+            secrets:
+              app:
+                name: fixed-secret
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-reports-all-fixed-resource-name-conflicts.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    decune()
+        .env("PATH", &fake_path)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains(
+                "Docker Compose clone isolation preflight detected 3 conflicts:",
+            )
+            .and(predicate::str::contains("network `app`"))
+            .and(predicate::str::contains("requested name: `fixed-network`"))
+            .and(predicate::str::contains("config `app`"))
+            .and(predicate::str::contains("requested name: `fixed-config`"))
+            .and(predicate::str::contains("secret `app`"))
+            .and(predicate::str::contains("requested name: `fixed-secret`"))
+            .and(predicate::str::contains("compose up should not run").not()),
+        );
+}
+
+#[test]
 fn compose_without_clone_sensitive_config_does_not_list_networks() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();

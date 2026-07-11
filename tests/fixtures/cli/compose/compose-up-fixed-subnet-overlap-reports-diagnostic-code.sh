@@ -21,7 +21,7 @@ if [ "${1:-}" = network ] && [ "${2:-}" = ls ]; then
   exit 0
 fi
 if [ "${1:-}" = network ] && [ "${2:-}" = inspect ]; then
-  printf '[{"Name":"other_grpc","Labels":{"com.docker.compose.project":"other-project"},"IPAM":{"Config":[{"Subnet":"172.28.10.0/24","Gateway":"172.28.10.1"}]}}]\n'
+  printf '{"Name":"other_grpc","Driver":"bridge","Scope":"local","Labels":{"com.docker.compose.project":"other-project"},"IPAM":{"Driver":"default","Config":[{"Subnet":"172.28.10.0/24","Gateway":"172.28.10.1"}]}}\n'
   exit 0
 fi
 echo "unexpected fake docker command: $*" >&2
