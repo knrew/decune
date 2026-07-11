@@ -24,10 +24,16 @@ struct EndpointPlaceholder {
     kind: EndpointValueKind,
 }
 
+/// Plans endpoint environment overrides and may extend `subnet_plan` as part of that plan.
+///
+/// When a `.gateway` placeholder references an allocation whose source IPAM omitted a gateway,
+/// this derives the first host address from the planned subnet and records it as the allocation's
+/// explicit planned gateway.
 pub(crate) fn plan_compose_isolation_endpoints(
     model: &ComposeConfigModel,
     scan: &ComposeIsolationScan,
     declarations: &[ComposeIsolationEndpointDeclaration],
+    network_relocation_enabled: bool,
     subnet_plan: &mut ComposeIsolationSubnetPlan,
 ) -> Result<(ComposeIsolationEndpointPlan, Vec<ComposeIsolationFinding>)> {
     let mut endpoint_plan = ComposeIsolationEndpointPlan::default();
@@ -52,12 +58,21 @@ pub(crate) fn plan_compose_isolation_endpoints(
                 );
             }
             let allocation = endpoint_allocation(subnet_plan, &placeholder.network).ok_or_else(|| {
-                anyhow!(
-                    "{COMPOSE_CLONE_ISOLATION_INVALID}: endpoint declaration references Compose network `{}` that is not a network relocation target; service `{}`; environment variable `{}`",
-                    placeholder.network,
-                    declaration.service,
-                    declaration.env
-                )
+                if network_relocation_enabled {
+                    anyhow!(
+                        "{COMPOSE_CLONE_ISOLATION_INVALID}: endpoint declaration references Compose network `{}` that is not a network relocation target; service `{}`; environment variable `{}`",
+                        placeholder.network,
+                        declaration.service,
+                        declaration.env
+                    )
+                } else {
+                    anyhow!(
+                        "{COMPOSE_CLONE_ISOLATION_INVALID}: endpoint declaration cannot render Compose network `{}` because network relocation is disabled; set compose.clone_isolation.networks.relocation = true; service `{}`; environment variable `{}`",
+                        placeholder.network,
+                        declaration.service,
+                        declaration.env
+                    )
+                }
             })?;
             let replacement = match placeholder.kind {
                 EndpointValueKind::Subnet => allocation.planned_subnet.clone(),
@@ -333,6 +348,7 @@ mod tests {
             &[declaration(
                 "grpc://${decune.network.fixed_net.gateway}:50051/${decune.network.fixed_net.subnet}",
             )],
+            true,
             &mut subnet_plan,
         )
         .unwrap();
@@ -353,6 +369,7 @@ mod tests {
             &model,
             &scan(None),
             &[declaration("${decune.network.fixed_net.gateway}")],
+            true,
             &mut subnet_plan,
         )
         .unwrap();
@@ -382,6 +399,7 @@ mod tests {
                 &model,
                 &scan(None),
                 &[declaration(value)],
+                true,
                 &mut subnet_plan,
             )
             .err()
@@ -394,6 +412,7 @@ mod tests {
             &model,
             &scan(None),
             &[declaration("${decune.network.fixed_net.gateway}")],
+            true,
             &mut no_allocations,
         )
         .err()
@@ -404,12 +423,29 @@ mod tests {
                 .contains("not a network relocation target")
         );
 
+        let error = plan_compose_isolation_endpoints(
+            &model,
+            &scan(None),
+            &[declaration("${decune.network.fixed_net.gateway}")],
+            false,
+            &mut ComposeIsolationSubnetPlan::default(),
+        )
+        .err()
+        .unwrap();
+        assert!(error.to_string().contains("network relocation is disabled"));
+        assert!(
+            error
+                .to_string()
+                .contains("compose.clone_isolation.networks.relocation = true")
+        );
+
         let mut declaration = declaration("${decune.network.fixed_net.gateway}");
         declaration.service = "missing".to_owned();
         let error = plan_compose_isolation_endpoints(
             &model,
             &scan(None),
             &[declaration],
+            true,
             &mut subnet_plan(true, None),
         )
         .err()
@@ -430,6 +466,7 @@ mod tests {
             &model,
             &scan(Some("10.99.0.1")),
             &[],
+            true,
             &mut subnet_plan,
         )
         .unwrap();
@@ -453,7 +490,8 @@ mod tests {
         let mut subnet_plan = subnet_plan(true, Some("10.200.42.1"));
 
         let (_, findings) =
-            plan_compose_isolation_endpoints(&model, &scan(None), &[], &mut subnet_plan).unwrap();
+            plan_compose_isolation_endpoints(&model, &scan(None), &[], true, &mut subnet_plan)
+                .unwrap();
 
         assert!(matches!(
             findings.as_slice(),
@@ -474,15 +512,21 @@ mod tests {
             &model,
             &scan(Some("10.99.0.1")),
             std::slice::from_ref(&endpoint),
+            true,
             &mut relocated,
         )
         .unwrap();
         assert!(covered_findings.is_empty());
 
         let mut unchanged = subnet_plan(false, Some("10.99.0.1"));
-        let (_, unchanged_findings) =
-            plan_compose_isolation_endpoints(&model, &scan(Some("10.99.0.1")), &[], &mut unchanged)
-                .unwrap();
+        let (_, unchanged_findings) = plan_compose_isolation_endpoints(
+            &model,
+            &scan(Some("10.99.0.1")),
+            &[],
+            true,
+            &mut unchanged,
+        )
+        .unwrap();
         assert!(unchanged_findings.is_empty());
     }
 
@@ -544,7 +588,8 @@ mod tests {
             declaration("grpc://${decune.network.fixed_net.gateway}:50051/failover/10.100.0.1");
 
         let (endpoint_plan, findings) =
-            plan_compose_isolation_endpoints(&model, &scan, &[endpoint], &mut subnet_plan).unwrap();
+            plan_compose_isolation_endpoints(&model, &scan, &[endpoint], true, &mut subnet_plan)
+                .unwrap();
 
         assert_eq!(
             endpoint_plan.services["app"]["HOST_AGENT_ENDPOINT"],
@@ -568,6 +613,7 @@ mod tests {
             &model,
             &scan(Some("10.99.0.1")),
             &[declaration("grpc://replacement.invalid:50051")],
+            true,
             &mut subnet_plan,
         )
         .unwrap();
@@ -607,6 +653,7 @@ mod tests {
             &model,
             &scan(Some("10.99.0.1")),
             &[],
+            true,
             &mut subnet_plan,
         )
         .unwrap();

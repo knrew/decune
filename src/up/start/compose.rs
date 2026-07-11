@@ -773,6 +773,7 @@ async fn run_compose_isolation_preflight(
         model,
         &name_effective_scan,
         &endpoint_declarations,
+        clone_isolation.networks.relocation,
         &mut subnet_plan,
     )?;
     let effective_scan = apply_compose_isolation_subnet_plan(&name_effective_scan, &subnet_plan);

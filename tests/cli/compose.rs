@@ -758,7 +758,67 @@ fn compose_clone_isolation_renders_declared_endpoint_in_generated_override() {
 }
 
 #[test]
-fn compose_clone_isolation_without_opt_in_does_not_override_fixed_subnet() {
+fn compose_clone_isolation_endpoint_reports_disabled_network_relocation() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = false
+
+            [[compose.clone_isolation.endpoints]]
+            service = "app"
+            env = "HOST_AGENT_ENDPOINT"
+            value = "grpc://${decune.network.grpc.gateway}:50051"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_ENDPOINT_RELOCATION", "1")
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_clone_isolation_invalid")
+                .and(predicate::str::contains("network relocation is disabled"))
+                .and(predicate::str::contains(
+                    "compose.clone_isolation.networks.relocation = true",
+                )),
+        );
+}
+
+#[test]
+fn disabled_compose_clone_isolation_warns_for_endpoint_and_does_not_override_fixed_subnet() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     let state_home = support::TempWorkspace::new().unwrap();
@@ -790,6 +850,11 @@ fn compose_clone_isolation_without_opt_in_does_not_override_fixed_subnet() {
             subnet_pool = "10.200.0.0/24"
             subnet_prefix = 25
 
+            [[compose.clone_isolation.endpoints]]
+            service = "app"
+            env = "HOST_AGENT_ENDPOINT"
+            value = "grpc://${decune.network.grpc.gateway}:50051"
+
             [credentials.git]
             enabled = false
 
@@ -813,7 +878,10 @@ fn compose_clone_isolation_without_opt_in_does_not_override_fixed_subnet() {
         .args(["up", "--detach"])
         .arg(&workspace_root)
         .assert()
-        .success();
+        .success()
+        .stderr(predicate::str::contains(
+            "compose.clone_isolation.endpoints is ignored because compose.clone_isolation.enabled is false",
+        ));
 
     let generated = fs::read_to_string(
         state_home

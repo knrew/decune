@@ -787,7 +787,7 @@ Compose モードの automatic forwarding は primary service の container を�
 
 ### `[compose.clone_isolation]`
 
-同じ Compose-based workspace を複数の clone から同時起動するための opt-in 設定。`enabled` は master gate で、既定は false。false の場合、下位 table や `endpoints` が指定されていても無効として扱い、その内容は検証しない。
+同じ Compose-based workspace を複数の clone から同時起動するための opt-in 設定。`enabled` は master gate で、既定は false。false の場合、下位 table や `endpoints` が指定されていても無効として扱い、その内容は検証しない。ただし `endpoints` が 1 個以上あれば、無効な宣言を無言で無視せず warning を表示する。
 
 ```toml
 [compose.clone_isolation]
@@ -816,7 +816,7 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
 - `names.rewrite_resource_names`: 既定 true。top-level `name` を持つ `networks` / `volumes` / `configs` / `secrets` を workspace 固有名へ書き換える対象とする。
 - `endpoints`: 0 個以上。`service` は環境変数を設定する Compose service、`env` は環境変数名、`value` は値 template。同一 `service` + `env` の重複宣言は error。
 
-`endpoints.value` では `${decune.network.<compose-network-key>.gateway}` と `${decune.network.<compose-network-key>.subnet}` の 2 形式を clone isolation 専用 placeholder として予約する。これは一般の decune config 変数展開とは別に扱う。endpoint rewrite preflight は service と Compose network key の存在、および参照先 network が固定 IPv4 subnet relocation の対象であることを検証し、placeholder を planned gateway または CIDR 表記の planned subnet へ文字列置換する。未知または未終端の decune placeholder、存在しない service / network、relocation 対象でない network への参照は `compose_clone_isolation_invalid` で error にする。decune placeholder 以外の `$` は literal として container environment へ渡し、Compose の host environment interpolation は適用しない。
+`endpoints.value` では `${decune.network.<compose-network-key>.gateway}` と `${decune.network.<compose-network-key>.subnet}` の 2 形式を clone isolation 専用 placeholder として予約する。これは一般の decune config 変数展開とは別に扱う。endpoint rewrite preflight は service と Compose network key の存在、および参照先 network が固定 IPv4 subnet relocation の対象であることを検証し、placeholder を planned gateway または CIDR 表記の planned subnet へ文字列置換する。未知または未終端の decune placeholder、存在しない service / network、relocation 対象でない network への参照は `compose_clone_isolation_invalid` で error にする。`enabled = true` でも `networks.relocation = false` のまま placeholder を参照した場合は、network relocation を有効にする設定 hint を付けて同じ diagnostic で error にする。decune placeholder 以外の `$` は literal として container environment へ渡し、Compose の host environment interpolation は適用しない。
 
 render 後の値は generated override の `services.<service>.environment.<env>` に map 形式で書き込み、Compose の後勝ち map merge により user Compose file の値を置き換える。`!override` tag は使わない。元 IPAM config に gateway がなく `.gateway` placeholder が参照された場合に限り、planned subnet の先頭 host address を明示 gateway として network IPAM override に追加し、その値を render する。
 
