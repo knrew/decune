@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -31,7 +31,6 @@ pub(crate) fn plan_compose_isolation_endpoints(
     subnet_plan: &mut ComposeIsolationSubnetPlan,
 ) -> Result<(ComposeIsolationEndpointPlan, Vec<ComposeIsolationFinding>)> {
     let mut endpoint_plan = ComposeIsolationEndpointPlan::default();
-    let mut covered = BTreeSet::new();
 
     for declaration in declarations {
         if !model.has_service(&declaration.service) {
@@ -71,13 +70,10 @@ pub(crate) fn plan_compose_isolation_endpoints(
             .entry(declaration.service.clone())
             .or_default()
             .insert(declaration.env.clone(), rendered);
-        covered.insert((declaration.service.clone(), declaration.env.clone()));
     }
 
-    Ok((
-        endpoint_plan,
-        stale_endpoint_findings(model, scan, subnet_plan, &covered),
-    ))
+    let findings = stale_endpoint_findings(model, scan, subnet_plan, &endpoint_plan);
+    Ok((endpoint_plan, findings))
 }
 
 fn endpoint_allocation<'a>(
@@ -158,7 +154,7 @@ fn stale_endpoint_findings(
     model: &ComposeConfigModel,
     scan: &ComposeIsolationScan,
     subnet_plan: &ComposeIsolationSubnetPlan,
-    covered: &BTreeSet<(String, String)>,
+    endpoint_plan: &ComposeIsolationEndpointPlan,
 ) -> Vec<ComposeIsolationFinding> {
     let mut findings = BTreeSet::new();
     for allocation in subnet_plan
@@ -182,15 +178,26 @@ fn stale_endpoint_findings(
             addresses.insert(gateway.clone());
         }
         for (service_name, service) in model.services() {
-            for (env, value) in service.environment_values() {
-                if covered.contains(&(service_name.clone(), env.clone())) {
-                    continue;
-                }
+            if !service_uses_network(model, service_name, &allocation.network) {
+                continue;
+            }
+            let mut environment = service
+                .environment_values()
+                .map(|(env, value)| (env.as_str(), value))
+                .collect::<BTreeMap<_, _>>();
+            if let Some(overrides) = endpoint_plan.services.get(service_name) {
+                environment.extend(
+                    overrides
+                        .iter()
+                        .map(|(env, value)| (env.as_str(), value.as_str())),
+                );
+            }
+            for (env, value) in environment {
                 for address in &addresses {
                     if contains_address_token(value, address) {
                         findings.insert((
                             service_name.clone(),
-                            env.clone(),
+                            env.to_owned(),
                             allocation.network.clone(),
                             address.clone(),
                         ));
@@ -210,6 +217,35 @@ fn stale_endpoint_findings(
             },
         )
         .collect()
+}
+
+fn service_uses_network(model: &ComposeConfigModel, service: &str, network: &str) -> bool {
+    service_uses_network_inner(model, service, network, &mut BTreeSet::new())
+}
+
+fn service_uses_network_inner(
+    model: &ComposeConfigModel,
+    service_name: &str,
+    network: &str,
+    visited: &mut BTreeSet<String>,
+) -> bool {
+    if !visited.insert(service_name.to_owned()) {
+        return false;
+    }
+    let Some(service) = model.service(service_name) else {
+        return false;
+    };
+    if service.network_names().any(|name| name == network) {
+        return true;
+    }
+    let Some(shared_service) = service
+        .network_mode
+        .as_deref()
+        .and_then(|mode| mode.strip_prefix("service:"))
+    else {
+        return false;
+    };
+    service_uses_network_inner(model, shared_service, network, visited)
 }
 
 fn contains_address_token(value: &str, address: &str) -> bool {
@@ -237,7 +273,8 @@ mod tests {
             "services": {
                 "app": {
                     "image": "alpine:3.20",
-                    "environment": environment
+                    "environment": environment,
+                    "networks": ["fixed_net"]
                 }
             },
             "networks": {
@@ -426,7 +463,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_detection_skips_covered_environment_and_unrelocated_network() {
+    fn stale_detection_uses_rendered_environment_and_skips_unrelocated_network() {
         let model = model(&serde_json::json!({
             "HOST_AGENT_ENDPOINT": "grpc://10.99.0.1:50051"
         }));
@@ -447,5 +484,141 @@ mod tests {
             plan_compose_isolation_endpoints(&model, &scan(Some("10.99.0.1")), &[], &mut unchanged)
                 .unwrap();
         assert!(unchanged_findings.is_empty());
+    }
+
+    #[test]
+    fn stale_detection_checks_all_connected_networks_after_endpoint_rendering() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "networks": ["fixed_net", "other_net"],
+                    "environment": {}
+                }
+            },
+            "networks": {
+                "fixed_net": {},
+                "other_net": {}
+            }
+        }))
+        .unwrap();
+        let scan = ComposeIsolationScan {
+            networks: vec![
+                ComposeIsolationNetworkRequest {
+                    network: "fixed_net".to_owned(),
+                    driver: None,
+                    ipam_driver: None,
+                    subnet: "10.99.0.0/24".to_owned(),
+                    gateway: Some("10.99.0.1".to_owned()),
+                },
+                ComposeIsolationNetworkRequest {
+                    network: "other_net".to_owned(),
+                    driver: None,
+                    ipam_driver: None,
+                    subnet: "10.100.0.0/24".to_owned(),
+                    gateway: Some("10.100.0.1".to_owned()),
+                },
+            ],
+            fixed_names: Vec::new(),
+        };
+        let mut subnet_plan = ComposeIsolationSubnetPlan {
+            allocations: vec![
+                ComposeIsolationSubnetAllocation {
+                    network: "fixed_net".to_owned(),
+                    requested_subnet: "10.99.0.0/24".to_owned(),
+                    planned_subnet: "10.200.42.0/24".to_owned(),
+                    planned_gateway: Some("10.200.42.1".to_owned()),
+                    relocated: true,
+                },
+                ComposeIsolationSubnetAllocation {
+                    network: "other_net".to_owned(),
+                    requested_subnet: "10.100.0.0/24".to_owned(),
+                    planned_subnet: "10.200.43.0/24".to_owned(),
+                    planned_gateway: Some("10.200.43.1".to_owned()),
+                    relocated: true,
+                },
+            ],
+            networks_to_remove: Vec::new(),
+        };
+        let endpoint =
+            declaration("grpc://${decune.network.fixed_net.gateway}:50051/failover/10.100.0.1");
+
+        let (endpoint_plan, findings) =
+            plan_compose_isolation_endpoints(&model, &scan, &[endpoint], &mut subnet_plan).unwrap();
+
+        assert_eq!(
+            endpoint_plan.services["app"]["HOST_AGENT_ENDPOINT"],
+            "grpc://10.200.42.1:50051/failover/10.100.0.1"
+        );
+        assert!(matches!(
+            findings.as_slice(),
+            [ComposeIsolationFinding::EndpointUnsafe { network, address, .. }]
+                if network == "other_net" && address == "10.100.0.1"
+        ));
+    }
+
+    #[test]
+    fn stale_detection_uses_endpoint_override_instead_of_original_environment() {
+        let model = model(&serde_json::json!({
+            "HOST_AGENT_ENDPOINT": "grpc://10.99.0.1:50051"
+        }));
+        let mut subnet_plan = subnet_plan(true, Some("10.200.42.1"));
+
+        let (_, findings) = plan_compose_isolation_endpoints(
+            &model,
+            &scan(Some("10.99.0.1")),
+            &[declaration("grpc://replacement.invalid:50051")],
+            &mut subnet_plan,
+        )
+        .unwrap();
+
+        assert!(findings.is_empty());
+    }
+
+    #[test]
+    fn stale_detection_only_scans_services_using_the_relocated_network() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "connected": {
+                    "image": "alpine:3.20",
+                    "networks": ["fixed_net"],
+                    "environment": {"CONNECTED": "grpc://10.99.0.1:50051"}
+                },
+                "shared": {
+                    "image": "alpine:3.20",
+                    "network_mode": "service:connected",
+                    "environment": {"SHARED": "grpc://10.99.0.1:50051"}
+                },
+                "unrelated": {
+                    "image": "alpine:3.20",
+                    "networks": ["other_net"],
+                    "environment": {"UNRELATED": "grpc://10.99.0.1:50051"}
+                }
+            },
+            "networks": {
+                "fixed_net": {},
+                "other_net": {}
+            }
+        }))
+        .unwrap();
+        let mut subnet_plan = subnet_plan(true, Some("10.200.42.1"));
+
+        let (_, findings) = plan_compose_isolation_endpoints(
+            &model,
+            &scan(Some("10.99.0.1")),
+            &[],
+            &mut subnet_plan,
+        )
+        .unwrap();
+
+        let services = findings
+            .iter()
+            .filter_map(|finding| match finding {
+                ComposeIsolationFinding::EndpointUnsafe { service, .. } => Some(service.as_str()),
+                ComposeIsolationFinding::NetworkSubnetOverlap { .. }
+                | ComposeIsolationFinding::FixedNameConflict { .. } => None,
+            })
+            .collect::<BTreeSet<_>>();
+        assert_eq!(services, BTreeSet::from(["connected", "shared"]));
     }
 }

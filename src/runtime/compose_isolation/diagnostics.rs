@@ -123,7 +123,7 @@ impl std::fmt::Display for ComposeIsolationDiagnostic {
                 address,
             } => write!(
                 formatter,
-                "{COMPOSE_CLONE_ISOLATION_ENDPOINT_UNSAFE}: Docker Compose service environment contains an address from a relocated network without a matching endpoint declaration. service: `{service}`; environment variable: `{env}`; network: `{network}`; original address: {address}. Declare [[compose.clone_isolation.endpoints]] for this service and environment variable."
+                "{COMPOSE_CLONE_ISOLATION_ENDPOINT_UNSAFE}: Docker Compose service environment contains an original address from a relocated network after endpoint rendering. service: `{service}`; environment variable: `{env}`; network: `{network}`; original address: {address}. Replace the original address with the matching decune network placeholder in [[compose.clone_isolation.endpoints]] for this service and environment variable."
             ),
         }
     }

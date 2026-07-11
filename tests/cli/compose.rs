@@ -619,6 +619,67 @@ fn compose_clone_isolation_rejects_undeclared_stale_endpoint_before_compose_up()
 }
 
 #[test]
+fn compose_clone_isolation_rejects_stale_address_left_by_multi_network_endpoint() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.200.0.0/16"
+            subnet_prefix = 25
+
+            [[compose.clone_isolation.endpoints]]
+            service = "app"
+            env = "HOST_AGENT_ENDPOINT"
+            value = "grpc://${decune.network.grpc.gateway}:50051/failover/10.100.0.1"
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_MULTI_ENDPOINT_RELOCATION", "1")
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_clone_isolation_endpoint_unsafe")
+                .and(predicate::str::contains("service: `app`"))
+                .and(predicate::str::contains("network: `metrics`"))
+                .and(predicate::str::contains("original address: 10.100.0.1")),
+        );
+}
+
+#[test]
 fn compose_clone_isolation_renders_declared_endpoint_in_generated_override() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();

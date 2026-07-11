@@ -60,6 +60,7 @@ pub(crate) struct ComposeOverrideNetworkIpamConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum ComposeOverrideEnvironmentValue {
     Literal(String),
+    Uninterpolated(String),
     Interpolated {
         placeholder: String,
         redactions: Vec<String>,
@@ -131,7 +132,7 @@ impl ComposeOverridePatch {
             .or_insert_with(|| ComposeOverrideServicePatch::new(service_name));
         service.environment.insert(
             key.to_owned(),
-            ComposeOverrideEnvironmentValue::Literal(value.to_owned()),
+            ComposeOverrideEnvironmentValue::Uninterpolated(value.to_owned()),
         );
         self
     }
@@ -572,6 +573,9 @@ fn append_yaml_environment(
         match value {
             ComposeOverrideEnvironmentValue::Literal(value) => {
                 content.push_str(&yaml_quote(value));
+            }
+            ComposeOverrideEnvironmentValue::Uninterpolated(value) => {
+                content.push_str(&yaml_quote(&value.replace('$', "$$")));
             }
             ComposeOverrideEnvironmentValue::Interpolated { placeholder, .. } => {
                 content.push_str(&yaml_quote(&format!("${{{placeholder}}}")));
@@ -1050,5 +1054,19 @@ mod tests {
 
         assert!(yaml.contains("'NPM_TOKEN': '${DECUNE_CONTAINER_ENV_NPM_TOKEN}'"));
         assert!(!yaml.contains("secret-token"));
+    }
+
+    #[test]
+    fn compose_override_service_environment_escapes_compose_interpolation() {
+        let patch = ComposeOverridePatch::new(ComposeOverrideServicePatch::new("app"))
+            .service_environment(
+                "app",
+                "HOST_AGENT_ENDPOINT",
+                "grpc://10.0.0.1/$PATH/${HOST}",
+            );
+
+        let yaml = patch.to_yaml().unwrap();
+
+        assert!(yaml.contains("'HOST_AGENT_ENDPOINT': 'grpc://10.0.0.1/$$PATH/$${HOST}'"));
     }
 }

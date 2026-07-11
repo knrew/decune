@@ -7,7 +7,9 @@ fi
 if [ "${1:-}" = compose ]; then
   case " $* " in
     *" config --format json "*)
-      if [ -n "${DECUNE_FAKE_ENDPOINT_RELOCATION:-}" ]; then
+      if [ -n "${DECUNE_FAKE_MULTI_ENDPOINT_RELOCATION:-}" ]; then
+        printf '{"services":{"app":{"image":"alpine:3.20","environment":{},"networks":{"grpc":null,"metrics":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25","gateway":"10.99.0.1"}]}},"metrics":{"ipam":{"config":[{"subnet":"10.100.0.0/25","gateway":"10.100.0.1"}]}}}}\n'
+      elif [ -n "${DECUNE_FAKE_ENDPOINT_RELOCATION:-}" ]; then
         printf '{"services":{"app":{"image":"alpine:3.20","environment":{"HOST_AGENT_ENDPOINT":"grpc://10.99.0.1:50051?credential=endpoint-plaintext-must-not-leak"},"networks":{"grpc":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25","gateway":"10.99.0.1"}]}}}}\n'
       elif [ -n "${DECUNE_FAKE_SUBNET_RELOCATION:-}" ]; then
         printf '{"services":{"app":{"image":"alpine:3.20","networks":{"grpc":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25","gateway":"10.99.0.1"}]}}}}\n'

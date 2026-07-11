@@ -361,7 +361,10 @@ fn compose_integration_clone_isolation_renders_relocated_gateway_endpoint() {
     .must();
     let endpoint =
         compose_primary_container_output(workspace.path(), ["printenv", "HOST_AGENT_ENDPOINT"]);
-    assert_eq!(endpoint.trim(), format!("grpc://{}:50051", gateway.trim()));
+    assert_eq!(
+        endpoint.trim(),
+        format!("grpc://{}:50051/$PATH", gateway.trim())
+    );
     assert_ne!(gateway.trim(), "10.99.0.1");
 }
 
@@ -1835,7 +1838,7 @@ fn compose_relocated_endpoint_workspace() -> ComposeFixtureWorkspace {
             [[compose.clone_isolation.endpoints]]
             service = "app"
             env = "HOST_AGENT_ENDPOINT"
-            value = "grpc://${decune.network.grpc.gateway}:50051"
+            value = "grpc://${decune.network.grpc.gateway}:50051/$PATH"
             "#,
         )
         .must();
