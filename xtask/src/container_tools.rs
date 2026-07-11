@@ -4,7 +4,7 @@ use std::{
     fs, io,
     os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
-    process::Command,
+    process::{Command, ExitStatus},
 };
 
 use anyhow::{Context, Result, bail};
@@ -12,6 +12,7 @@ use serde::{Deserialize, Serialize};
 use tempfile::TempDir;
 
 use crate::{
+    command::stream_command_stderr,
     hash::sha256_file,
     paths::{target_dir, workspace_relative},
 };
@@ -37,7 +38,22 @@ const PLATFORMS: [ContainerToolPlatform; 2] = [
     },
 ];
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BuildOutputMode {
+    Captured,
+    Streaming,
+}
+
 pub(crate) fn build_container_tools(workspace: &Path, out: &Path, locked: bool) -> Result<()> {
+    build_container_tools_with_output(workspace, out, locked, BuildOutputMode::Captured)
+}
+
+fn build_container_tools_with_output(
+    workspace: &Path,
+    out: &Path,
+    locked: bool,
+    output_mode: BuildOutputMode,
+) -> Result<()> {
     let out = workspace_relative(workspace, out);
     let temp_parent = out
         .parent()
@@ -60,7 +76,7 @@ pub(crate) fn build_container_tools(workspace: &Path, out: &Path, locked: bool) 
 
     let mut entries = Vec::new();
     for platform in PLATFORMS {
-        build_platform(workspace, platform, locked)?;
+        build_platform(workspace, platform, locked, output_mode)?;
         let platform_dir = temp.path().join(platform.id);
         fs::create_dir_all(&platform_dir).with_context(|| {
             format!(
@@ -115,7 +131,12 @@ pub(crate) fn build_container_tools(workspace: &Path, out: &Path, locked: bool) 
     Ok(())
 }
 
-fn build_platform(workspace: &Path, platform: ContainerToolPlatform, locked: bool) -> Result<()> {
+fn build_platform(
+    workspace: &Path,
+    platform: ContainerToolPlatform,
+    locked: bool,
+    output_mode: BuildOutputMode,
+) -> Result<()> {
     let mut command = Command::new("cargo");
     command
         .current_dir(workspace)
@@ -133,16 +154,35 @@ fn build_platform(workspace: &Path, platform: ContainerToolPlatform, locked: boo
     if platform.rust_target == "aarch64-unknown-linux-musl" {
         command.env("CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER", "rust-lld");
     }
-    let output = command.output().with_context(|| {
-        format!(
-            "Failed to run cargo build for container tools target {}",
-            platform.rust_target
-        )
-    })?;
-    if output.status.success() {
+    let context = format!(
+        "Failed to run cargo build for container tools target {}",
+        platform.rust_target
+    );
+    let (status, stdout, stderr, streamed) = match output_mode {
+        BuildOutputMode::Captured => {
+            let output = command.output().with_context(|| context.clone())?;
+            (output.status, output.stdout, output.stderr, false)
+        }
+        BuildOutputMode::Streaming => {
+            eprintln!("Building container tools for {}...", platform.rust_target);
+            let output = stream_command_stderr(command, &context)?;
+            (output.status, Vec::new(), output.stderr, true)
+        }
+    };
+    finish_build_platform(platform, status, &stdout, &stderr, streamed)
+}
+
+fn finish_build_platform(
+    platform: ContainerToolPlatform,
+    status: ExitStatus,
+    stdout: &[u8],
+    stderr: &[u8],
+    streamed: bool,
+) -> Result<()> {
+    if status.success() {
         return Ok(());
     }
-    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stderr = String::from_utf8_lossy(stderr);
     if stderr.contains("can't find crate for `std`")
         || stderr.contains("target may not be installed")
         || stderr.contains("is not installed")
@@ -152,10 +192,16 @@ fn build_platform(workspace: &Path, platform: ContainerToolPlatform, locked: boo
             platform.rust_target
         );
     }
+    if streamed {
+        bail!(
+            "Failed to build decune container tools for {}: command exited with {status}",
+            platform.rust_target
+        );
+    }
     bail!(
         "Failed to build decune container tools for {}.\nstdout:\n{}\nstderr:\n{}",
         platform.rust_target,
-        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(stdout),
         stderr
     );
 }
@@ -249,12 +295,40 @@ pub(crate) fn prepare_xtask_container_tools_bundle(
     Ok(bundle_dir)
 }
 
+pub(crate) fn prepare_xtask_container_tools_bundle_streaming(
+    workspace: &Path,
+    locked: bool,
+) -> Result<PathBuf> {
+    let bundle_dir = default_xtask_container_tools_bundle_dir(workspace);
+    prepare_container_tools_bundle_with_output(
+        workspace,
+        &bundle_dir,
+        locked,
+        BuildOutputMode::Streaming,
+    )?;
+    Ok(bundle_dir)
+}
+
 pub(crate) fn prepare_container_tools_bundle(
     workspace: &Path,
     bundle_dir: &Path,
     locked: bool,
 ) -> Result<()> {
-    build_container_tools(workspace, bundle_dir, locked)?;
+    prepare_container_tools_bundle_with_output(
+        workspace,
+        bundle_dir,
+        locked,
+        BuildOutputMode::Captured,
+    )
+}
+
+fn prepare_container_tools_bundle_with_output(
+    workspace: &Path,
+    bundle_dir: &Path,
+    locked: bool,
+    output_mode: BuildOutputMode,
+) -> Result<()> {
+    build_container_tools_with_output(workspace, bundle_dir, locked, output_mode)?;
     check_container_tools(bundle_dir)?;
     Ok(())
 }

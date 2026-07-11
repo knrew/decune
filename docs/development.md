@@ -83,6 +83,8 @@ cargo run --locked -p xtask -- workspace-test
 cargo run --locked -p xtask -- compose-integration
 ```
 
+これらの command は container tools の build と `cargo test --verbose` の進捗を逐次出力します。test 本体の標準出力は Rust test harness の既定どおり capture され、失敗時に表示されます。
+
 Compose integration test だけを実行する場合:
 
 ```sh
