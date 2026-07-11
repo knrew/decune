@@ -424,16 +424,29 @@ fn compose_without_clone_sensitive_config_does_not_list_networks() {
         &host_tools,
         "cli/compose/compose-up-without-clone-sensitive-config-does-not-list-networks.sh",
     );
+    let command_log = host_tools.path().join("commands.log");
     let workspace_root = workspace.path().canonicalize().unwrap();
 
     decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
         .args(["up", "--detach"])
         .arg(&workspace_root)
         .assert()
         .success()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains("Started dev container"));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    // One config validates the preliminary plan and one prepares startup context. The latter
+    // must not be repeated when the lifecycle targets the whole Compose project.
+    assert_eq!(
+        commands
+            .lines()
+            .filter(|command| command.contains(" config --format json"))
+            .count(),
+        2
+    );
 }
 
 #[test]

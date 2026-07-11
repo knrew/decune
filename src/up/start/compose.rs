@@ -592,13 +592,20 @@ async fn prepare_compose_startup_context(
         .user_config(source.project, &compose_service_validation)
         .await?;
     let user_model = &user_config.model;
-    let active_user_config = compose_introspector
-        .user_config_for_services(
-            source.project,
-            &compose_service_validation,
-            &user_lifecycle.services,
+    let active_user_config = if user_lifecycle.services.is_empty() {
+        None
+    } else {
+        Some(
+            compose_introspector
+                .user_config_for_services(
+                    source.project,
+                    &compose_service_validation,
+                    &user_lifecycle.services,
+                )
+                .await?,
         )
-        .await?;
+    };
+    let active_user_config = active_user_config.as_ref().unwrap_or(&user_config);
     run_compose_isolation_preflight(client, &project_name, &active_user_config.model).await?;
     let compose_primary_image = ComposePrimaryImageResolver {
         project_name: &project_name,
@@ -761,7 +768,6 @@ fn add_compose_isolation_network(
     snapshot.networks.push(ComposeIsolationDockerNetwork {
         name: name.clone(),
         compose_project: compose_project.clone(),
-        driver: network.driver,
         scope: network.scope,
         ipam_driver: network.ipam.and_then(|ipam| ipam.driver),
         ipam_configs,

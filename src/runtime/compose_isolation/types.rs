@@ -71,7 +71,6 @@ pub(crate) struct ComposeIsolationDaemonSnapshot {
 pub(crate) struct ComposeIsolationDockerNetwork {
     pub(crate) name: String,
     pub(crate) compose_project: Option<String>,
-    pub(crate) driver: Option<String>,
     pub(crate) scope: Option<String>,
     pub(crate) ipam_driver: Option<String>,
     pub(crate) ipam_configs: Vec<ComposeIsolationDockerIpamConfig>,

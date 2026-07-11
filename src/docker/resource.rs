@@ -126,6 +126,16 @@ pub(crate) fn compose_project_name_from_labels(
         .map(str::to_owned)
 }
 
+pub(crate) fn compose_service_name_from_labels(
+    labels: &BTreeMap<String, String>,
+) -> Option<String> {
+    compose_project_name_from_labels(labels)?;
+    labels
+        .get(COMPOSE_SERVICE_LABEL)
+        .and_then(|service_name| non_empty_trimmed(service_name))
+        .map(str::to_owned)
+}
+
 fn labels(entries: impl IntoIterator<Item = (&'static str, String)>) -> BTreeMap<String, String> {
     entries
         .into_iter()
@@ -163,6 +173,7 @@ fn truncate_docker_name_segment(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use std::{
+        collections::BTreeMap,
         fs,
         path::PathBuf,
         sync::atomic::{AtomicUsize, Ordering},
@@ -170,7 +181,11 @@ mod tests {
 
     use crate::workspace::Workspace;
 
-    use super::{DockerResources, managed_workspace_label_filters};
+    use super::{
+        COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL, DockerResources,
+        compose_project_name_from_labels, compose_service_name_from_labels,
+        managed_workspace_label_filters,
+    };
 
     static NEXT_FIXTURE_ID: AtomicUsize = AtomicUsize::new(0);
 
@@ -231,6 +246,36 @@ mod tests {
             resources.labels["devcontainer.config_file"],
             config_file.display().to_string()
         );
+    }
+
+    #[test]
+    fn compose_label_names_are_trimmed_and_require_non_empty_values() {
+        let labels = BTreeMap::from([
+            (COMPOSE_PROJECT_LABEL.to_owned(), "  project  ".to_owned()),
+            (COMPOSE_SERVICE_LABEL.to_owned(), "  app  ".to_owned()),
+        ]);
+        assert_eq!(
+            compose_project_name_from_labels(&labels).as_deref(),
+            Some("project")
+        );
+        assert_eq!(
+            compose_service_name_from_labels(&labels).as_deref(),
+            Some("app")
+        );
+
+        for labels in [
+            BTreeMap::from([(COMPOSE_SERVICE_LABEL.to_owned(), "app".to_owned())]),
+            BTreeMap::from([
+                (COMPOSE_PROJECT_LABEL.to_owned(), "  ".to_owned()),
+                (COMPOSE_SERVICE_LABEL.to_owned(), "app".to_owned()),
+            ]),
+            BTreeMap::from([
+                (COMPOSE_PROJECT_LABEL.to_owned(), "project".to_owned()),
+                (COMPOSE_SERVICE_LABEL.to_owned(), "  ".to_owned()),
+            ]),
+        ] {
+            assert_eq!(compose_service_name_from_labels(&labels), None);
+        }
     }
 
     #[test]

@@ -308,7 +308,6 @@ mod tests {
         ComposeIsolationDockerNetwork {
             name: name.to_owned(),
             compose_project: compose_project.map(str::to_owned),
-            driver: Some("bridge".to_owned()),
             scope: Some("local".to_owned()),
             ipam_driver: Some("default".to_owned()),
             ipam_configs: vec![ComposeIsolationDockerIpamConfig {

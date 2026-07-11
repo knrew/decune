@@ -633,7 +633,9 @@ impl DockerCli {
 
         let inspect_command = build_inspect_command(&resource_refs);
         let output = self.runner.run_capture(inspect_command.clone()).await?;
-        if output.exit_code != 0 && !is_no_such_docker_resource_only(&output, resource_kind) {
+        if output.exit_code != 0
+            && !is_no_such_docker_resource_only(&output, resource_kind, &resource_refs)
+        {
             ensure_success(inspect_action, target, &inspect_command, &output)?;
         }
         parse_json_sequence_output(inspect_action, target, &inspect_command, &output)
@@ -652,7 +654,8 @@ impl DockerCli {
     {
         let output = self.runner.run_capture(command.clone()).await?;
         if output.exit_code != 0 {
-            if is_no_such_docker_resource_only(&output, resource_kind) || is_not_found(&output) {
+            let resource_refs = [target.to_owned()];
+            if is_no_such_docker_resource_only(&output, resource_kind, &resource_refs) {
                 return Ok(None);
             }
             if allow_swarm_unavailable && is_swarm_resource_unavailable(&output) {
@@ -893,18 +896,32 @@ fn is_not_found(output: &RuntimeOutput) -> bool {
     stderr.contains("no such") || stderr.contains("not found")
 }
 
-fn is_no_such_docker_resource_only(output: &RuntimeOutput, resource_kind: &str) -> bool {
+fn is_no_such_docker_resource_only(
+    output: &RuntimeOutput,
+    resource_kind: &str,
+    resource_refs: &[String],
+) -> bool {
     let stderr = output.stderr_string_lossy().to_ascii_lowercase();
-    let no_such_resource = format!("no such {resource_kind}");
+    let resource_refs = resource_refs
+        .iter()
+        .map(|resource_ref| resource_ref.to_ascii_lowercase())
+        .collect::<Vec<_>>();
     let mut saw_resource_not_found = false;
     for line in stderr
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
     {
-        let resource_not_found = line.contains(&no_such_resource)
-            || line.contains("no such object")
-            || (line.contains(resource_kind) && line.contains("not found"));
+        let line = line
+            .strip_prefix("error response from daemon:")
+            .or_else(|| line.strip_prefix("error:"))
+            .map_or(line, str::trim);
+        let resource_not_found = resource_refs.iter().any(|resource_ref| {
+            line == format!("no such {resource_kind}: {resource_ref}")
+                || line == format!("no such object: {resource_ref}")
+                || line == format!("{resource_kind} {resource_ref} not found")
+                || line == format!("{resource_kind} {resource_ref}: not found")
+        });
         if !resource_not_found {
             return false;
         }
@@ -976,7 +993,6 @@ pub(crate) struct DockerVolumeInspect {
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct DockerNetworkInspect {
     pub(crate) name: Option<String>,
-    pub(crate) driver: Option<String>,
     pub(crate) scope: Option<String>,
     pub(crate) labels: Option<BTreeMap<String, String>>,
     #[serde(rename = "IPAM")]
@@ -1265,7 +1281,6 @@ mod tests {
 
         assert_eq!(networks.len(), 2);
         assert_eq!(networks[0].name.as_deref(), Some("other_net"));
-        assert_eq!(networks[0].driver.as_deref(), Some("bridge"));
         assert_eq!(networks[0].scope.as_deref(), Some("local"));
         assert_eq!(
             networks[0]
@@ -1305,6 +1320,29 @@ mod tests {
                 "{{json .}}"
             ]
         );
+    }
+
+    #[test]
+    fn list_network_inspects_rejects_unrelated_not_found_error() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(runtime_output(
+                br#"{"Name":"other_net","Scope":"local","IPAM":{"Driver":"default","Config":[]}}"#,
+                b"Error response from daemon: network plugin not found\n",
+                1,
+            )),
+            Ok(output(b"id-one\n")),
+        ]);
+        let client = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let error = runtime
+            .block_on(client.list_network_inspects())
+            .unwrap_err();
+
+        assert!(error.to_string().contains("network plugin not found"));
     }
 
     #[test]
@@ -1353,7 +1391,7 @@ mod tests {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(runtime_output(
                 br#"[{"Id":"kept-id","Name":"/kept"}]"#,
-                b"Error: No such container: removed\n",
+                b"Error: No such container: removed-id\n",
                 1,
             )),
             Ok(output(b"kept-id\nremoved-id\n")),
@@ -1519,16 +1557,67 @@ mod tests {
     }
 
     #[test]
+    fn inspect_volume_if_present_rejects_unrelated_not_found_error() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            b"",
+            b"Error response from daemon: volume driver not found\n",
+            1,
+        ))]);
+        let client = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let error = runtime
+            .block_on(client.inspect_volume_if_present("fixed-cache"))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("volume driver not found"));
+    }
+
+    #[test]
+    fn docker_resource_not_found_requires_requested_resource_only() {
+        let requested = vec!["removed".to_owned()];
+        let missing = runtime_output(
+            b"",
+            b"Error response from daemon: network removed not found\n",
+            1,
+        );
+        assert!(super::is_no_such_docker_resource_only(
+            &missing, "network", &requested
+        ));
+
+        let missing_object = runtime_output(b"", b"Error: No such object: removed\n", 1);
+        assert!(super::is_no_such_docker_resource_only(
+            &missing_object,
+            "network",
+            &requested
+        ));
+
+        for stderr in [
+            b"Error response from daemon: network plugin not found\n".as_slice(),
+            b"Error: No such network: other\n".as_slice(),
+            b"Error: No such network: removed\npermission denied\n".as_slice(),
+        ] {
+            let output = runtime_output(b"", stderr, 1);
+            assert!(!super::is_no_such_docker_resource_only(
+                &output, "network", &requested
+            ));
+        }
+    }
+
+    #[test]
     fn optional_resource_inspects_separate_option_like_names_from_flags() {
         let runner = FakeRuntimeCommand::new(vec![
+            Ok(runtime_output(b"", b"Error: no such secret: --fixed\n", 1)),
+            Ok(runtime_output(b"", b"Error: no such config: --fixed\n", 1)),
+            Ok(runtime_output(b"", b"Error: No such volume: --fixed\n", 1)),
             Ok(runtime_output(
                 b"",
                 b"Error: No such container: --fixed\n",
                 1,
             )),
-            Ok(runtime_output(b"", b"Error: No such volume: --fixed\n", 1)),
-            Ok(runtime_output(b"", b"Error: no such config: --fixed\n", 1)),
-            Ok(runtime_output(b"", b"Error: no such secret: --fixed\n", 1)),
         ]);
         let client = DockerCli::new(Arc::new(runner.clone()));
         let runtime = tokio::runtime::Builder::new_current_thread()

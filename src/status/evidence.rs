@@ -8,14 +8,13 @@ use crate::{
     docker::{
         container::ContainerInspect,
         resource::{
-            COMPOSE_PROJECT_LABEL, COMPOSE_SERVICE_LABEL, compose_project_name_from_labels,
+            compose_project_name_from_labels, compose_service_name_from_labels,
             config_hash_from_labels, managed_workspace_id_from_container,
             managed_workspace_id_from_labels, workspace_path_from_labels,
         },
     },
     runtime::docker_cli::{DockerCli, DockerVolumeInspect},
     state::{WorkspaceState, container_ids_match, load_state_file},
-    text::non_empty_trimmed,
     up::{ForwardingResolution, build_read_only_up_plan_with_forwarding_resolution},
     workspace::{Workspace, is_valid_workspace_id},
 };
@@ -309,7 +308,7 @@ fn container_evidence_from_labels(
 ) -> ContainerEvidence {
     let workspace_path = workspace_path_from_labels(labels);
     let config_hash = config_hash_from_labels(labels);
-    let service = compose_service_from_labels(labels);
+    let service = compose_service_name_from_labels(labels);
     let run_state = container_run_state(container.state.as_ref());
     let health_status = container_health_status(container.state.as_ref());
     ContainerEvidence {
@@ -474,16 +473,6 @@ const fn mode_from_source(source: Option<&ResolvedDevcontainerSource>) -> Worksp
         Some(ResolvedDevcontainerSource::Compose(_)) => WorkspaceMode::Compose,
         None => WorkspaceMode::Unknown,
     }
-}
-
-fn compose_service_from_labels(labels: &BTreeMap<String, String>) -> Option<String> {
-    labels
-        .get(COMPOSE_PROJECT_LABEL)
-        .and_then(|project| non_empty_trimmed(project))?;
-    labels
-        .get(COMPOSE_SERVICE_LABEL)
-        .and_then(|service| non_empty_trimmed(service))
-        .map(str::to_owned)
 }
 
 fn is_missing_devcontainer_metadata_error(error: &anyhow::Error) -> bool {
