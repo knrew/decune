@@ -1,5 +1,5 @@
-version = 1
 use_global_config = false
+version           = 1
 
 [credentials.git]
 enabled = false
