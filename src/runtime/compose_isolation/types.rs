@@ -56,6 +56,7 @@ pub(crate) struct ComposeIsolationNetworkRequest {
     pub(crate) gateway: Option<String>,
     pub(crate) ip_range: Option<String>,
     pub(crate) aux_addresses: BTreeMap<String, String>,
+    pub(crate) has_unrepresented_ipam_configs: bool,
     pub(crate) unsupported_ipam_fields: BTreeSet<String>,
 }
 

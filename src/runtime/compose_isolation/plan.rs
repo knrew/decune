@@ -227,6 +227,12 @@ fn validate_relocation_requests<'a>(
     let mut networks = BTreeSet::new();
     let mut validated = Vec::with_capacity(input.scan.networks.len());
     for requested in &input.scan.networks {
+        if requested.has_unrepresented_ipam_configs {
+            bail!(
+                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM config entries without subnet cannot be relocated safely",
+                requested.network
+            );
+        }
         if let Some(field) = requested.unsupported_ipam_fields.iter().next() {
             bail!(
                 "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM field `{field}` cannot be relocated safely",
@@ -736,6 +742,7 @@ mod tests {
             gateway: None,
             ip_range: Some("10.99.0.128/25".to_owned()),
             aux_addresses: BTreeMap::from([("reserved".to_owned(), "10.99.0.200".to_owned())]),
+            has_unrepresented_ipam_configs: false,
             unsupported_ipam_fields: BTreeSet::new(),
         };
         let requested_cidr = Ipv4Cidr::parse(&requested.subnet).unwrap();
@@ -787,6 +794,7 @@ mod tests {
                 gateway: None,
                 ip_range: Some(value.to_owned()),
                 aux_addresses: BTreeMap::new(),
+                has_unrepresented_ipam_configs: false,
                 unsupported_ipam_fields: BTreeSet::new(),
             };
             let error = relocate_ip_range(&requested, requested_cidr, planned).unwrap_err();
@@ -841,6 +849,44 @@ mod tests {
     }
 
     #[test]
+    fn subnet_planner_rejects_unrepresented_ipam_configs_without_printing_values() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [
+                {"subnet": "10.99.0.0/24"},
+                {
+                    "ip_range": "sensitive-range-value",
+                    "aux_addresses": {"reserved": "sensitive-address-value"}
+                }
+            ]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err();
+
+        let error = error.to_string();
+        assert!(error.contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED));
+        assert!(error.contains("network `grpc`"));
+        assert!(error.contains("IPAM config entries without subnet"));
+        assert!(!error.contains("sensitive-range-value"));
+        assert!(!error.contains("sensitive-address-value"));
+    }
+
+    #[test]
     fn existing_network_ipam_must_match_planned_range_and_aux_addresses() {
         let allocation = ComposeIsolationSubnetAllocation {
             network: "grpc".to_owned(),
@@ -879,6 +925,7 @@ mod tests {
             gateway: Some("10.99.1.1".to_owned()),
             ip_range: None,
             aux_addresses: BTreeMap::new(),
+            has_unrepresented_ipam_configs: false,
             unsupported_ipam_fields: BTreeSet::new(),
         };
 
@@ -903,6 +950,7 @@ mod tests {
             gateway: Some("10.99.0.200".to_owned()),
             ip_range: None,
             aux_addresses: BTreeMap::new(),
+            has_unrepresented_ipam_configs: false,
             unsupported_ipam_fields: BTreeSet::new(),
         };
 
@@ -1498,6 +1546,7 @@ mod tests {
                 gateway: Some("172.28.0.1".to_owned()),
                 ip_range: None,
                 aux_addresses: BTreeMap::new(),
+                has_unrepresented_ipam_configs: false,
                 unsupported_ipam_fields: BTreeSet::new(),
             }],
             fixed_names: Vec::new(),
@@ -1542,6 +1591,7 @@ mod tests {
                 gateway: None,
                 ip_range: None,
                 aux_addresses: BTreeMap::new(),
+                has_unrepresented_ipam_configs: false,
                 unsupported_ipam_fields: BTreeSet::new(),
             }],
             fixed_names: Vec::new(),
@@ -1624,6 +1674,7 @@ mod tests {
             gateway: None,
             ip_range: None,
             aux_addresses: BTreeMap::new(),
+            has_unrepresented_ipam_configs: false,
             unsupported_ipam_fields: BTreeSet::new(),
         };
         let mut existing = network("existing", None, "172.28.0.0/16");
@@ -1650,6 +1701,7 @@ mod tests {
             gateway: None,
             ip_range: None,
             aux_addresses: BTreeMap::new(),
+            has_unrepresented_ipam_configs: false,
             unsupported_ipam_fields: BTreeSet::new(),
         };
         let mut existing = network("existing", None, "172.28.0.0/16");

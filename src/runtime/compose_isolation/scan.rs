@@ -58,6 +58,13 @@ fn scan_networks(model: &ComposeConfigModel, project_name: &str, scan: &mut Comp
             continue;
         }
         if let Some(ipam) = &network.ipam {
+            let has_config_without_subnet = ipam.config.iter().any(|config| {
+                config
+                    .subnet
+                    .as_deref()
+                    .and_then(non_empty_trimmed)
+                    .is_none()
+            });
             for config in &ipam.config {
                 if let Some(subnet) = config.subnet.as_deref().and_then(non_empty_trimmed) {
                     scan.networks.push(ComposeIsolationNetworkRequest {
@@ -76,6 +83,7 @@ fn scan_networks(model: &ComposeConfigModel, project_name: &str, scan: &mut Comp
                             .and_then(non_empty_trimmed)
                             .map(str::to_owned),
                         aux_addresses: config.aux_addresses.clone(),
+                        has_unrepresented_ipam_configs: has_config_without_subnet,
                         unsupported_ipam_fields: config.additional_fields.keys().cloned().collect(),
                     });
                 }
@@ -268,5 +276,26 @@ mod tests {
         assert_eq!(scan.networks.len(), 1);
         assert_eq!(scan.networks[0].network, "default");
         assert!(scan.fixed_names.is_empty());
+    }
+
+    #[test]
+    fn marks_unrepresented_ipam_configs_as_unsupported() {
+        let model = model(json!({
+            "networks": {
+                "grpc": {
+                    "ipam": {
+                        "config": [
+                            {"subnet": "172.28.0.0/16"},
+                            {"ip_range": "172.29.0.0/16", "aux_addresses": {"reserved": "172.29.0.10"}}
+                        ]
+                    }
+                }
+            }
+        }));
+
+        let scan = scan_compose_isolation(&model, "decune-project-abc123def456");
+
+        assert_eq!(scan.networks.len(), 1);
+        assert!(scan.networks[0].has_unrepresented_ipam_configs);
     }
 }

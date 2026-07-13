@@ -313,6 +313,7 @@ mod tests {
                 gateway: gateway.map(str::to_owned),
                 ip_range: None,
                 aux_addresses: BTreeMap::new(),
+                has_unrepresented_ipam_configs: false,
                 unsupported_ipam_fields: BTreeSet::new(),
             }],
             fixed_names: Vec::new(),
@@ -561,6 +562,7 @@ mod tests {
                     gateway: Some("10.99.0.1".to_owned()),
                     ip_range: None,
                     aux_addresses: BTreeMap::new(),
+                    has_unrepresented_ipam_configs: false,
                     unsupported_ipam_fields: BTreeSet::new(),
                 },
                 ComposeIsolationNetworkRequest {
@@ -571,6 +573,7 @@ mod tests {
                     gateway: Some("10.100.0.1".to_owned()),
                     ip_range: None,
                     aux_addresses: BTreeMap::new(),
+                    has_unrepresented_ipam_configs: false,
                     unsupported_ipam_fields: BTreeSet::new(),
                 },
             ],

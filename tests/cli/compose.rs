@@ -620,6 +620,65 @@ fn compose_clone_isolation_rejects_unknown_ipam_fields_before_compose_up() {
 }
 
 #[test]
+fn compose_clone_isolation_rejects_subnetless_ipam_config_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.200.0.0/24"
+            subnet_prefix = 25
+            "#,
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_SUBNETLESS_IPAM_CONFIG", "1")
+        .args(["up", "--detach", "--no-global-config"])
+        .arg(workspace.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_clone_isolation_unsupported")
+                .and(predicate::str::contains("network `grpc`"))
+                .and(predicate::str::contains(
+                    "IPAM config entries without subnet",
+                ))
+                .and(predicate::str::contains("sensitive-range-value").not())
+                .and(predicate::str::contains("sensitive-address-value").not())
+                .and(predicate::str::contains("docker compose up must not run").not()),
+        );
+}
+
+#[test]
 fn compose_clone_isolation_rejects_undeclared_stale_endpoint_before_compose_up() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
