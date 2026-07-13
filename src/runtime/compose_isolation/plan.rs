@@ -14,8 +14,9 @@ use crate::runtime::{
         ComposeIsolationNameRewritePlan, ComposeIsolationNetworkRequest,
         ComposeIsolationPersistedSubnet, ComposeIsolationResourceKind,
         ComposeIsolationResourceNameRewrite, ComposeIsolationScan,
-        ComposeIsolationServiceNameRewrite, ComposeIsolationSubnetAllocation,
-        ComposeIsolationSubnetPlan, Ipv4Cidr, allocate_ipv4_subnet_slot,
+        ComposeIsolationServiceNameRewrite, ComposeIsolationServiceReferenceRewrite,
+        ComposeIsolationSubnetAllocation, ComposeIsolationSubnetPlan, Ipv4Cidr,
+        allocate_ipv4_subnet_slot,
     },
 };
 
@@ -74,7 +75,126 @@ pub(crate) fn plan_compose_isolation_name_rewrites(
             | ComposeIsolationResourceKind::Secret => {}
         }
     }
+    plan.service_references = plan_compose_service_reference_rewrites(input.model, &plan.services);
     plan
+}
+
+fn plan_compose_service_reference_rewrites(
+    model: &ComposeConfigModel,
+    service_rewrites: &[ComposeIsolationServiceNameRewrite],
+) -> Vec<ComposeIsolationServiceReferenceRewrite> {
+    let rewritten_names = service_rewrites
+        .iter()
+        .map(|rewrite| {
+            (
+                rewrite.original_name.as_str(),
+                rewrite.rewritten_name.as_str(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if rewritten_names.is_empty() {
+        return Vec::new();
+    }
+
+    model
+        .services()
+        .filter_map(|(service_name, service)| {
+            let network_mode = service
+                .network_mode
+                .as_deref()
+                .and_then(|value| rewrite_container_mode(value, &rewritten_names));
+            let ipc = service
+                .ipc
+                .as_deref()
+                .and_then(|value| rewrite_container_mode(value, &rewritten_names));
+            let pid = service
+                .pid
+                .as_deref()
+                .and_then(|value| rewrite_container_mode(value, &rewritten_names));
+            let volumes_from = rewrite_reference_list(
+                &service.volumes_from,
+                &rewritten_names,
+                rewrite_volumes_from_reference,
+            );
+            let external_links = rewrite_reference_list(
+                &service.external_links,
+                &rewritten_names,
+                rewrite_external_link_reference,
+            );
+
+            if network_mode.is_none()
+                && ipc.is_none()
+                && pid.is_none()
+                && volumes_from.is_none()
+                && external_links.is_none()
+            {
+                return None;
+            }
+
+            Some(ComposeIsolationServiceReferenceRewrite {
+                service: service_name.clone(),
+                network_mode,
+                ipc,
+                pid,
+                volumes_from,
+                external_links,
+            })
+        })
+        .collect()
+}
+
+fn rewrite_container_mode(value: &str, rewritten_names: &BTreeMap<&str, &str>) -> Option<String> {
+    let original_name = value.strip_prefix("container:")?;
+    rewritten_names
+        .get(original_name)
+        .map(|rewritten_name| format!("container:{rewritten_name}"))
+}
+
+fn rewrite_reference_list(
+    values: &[String],
+    rewritten_names: &BTreeMap<&str, &str>,
+    rewrite: fn(&str, &BTreeMap<&str, &str>) -> Option<String>,
+) -> Option<Vec<String>> {
+    let mut changed = false;
+    let rewritten = values
+        .iter()
+        .map(|value| {
+            rewrite(value, rewritten_names).map_or_else(
+                || value.clone(),
+                |rewritten| {
+                    changed = true;
+                    rewritten
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    changed.then_some(rewritten)
+}
+
+fn rewrite_volumes_from_reference(
+    value: &str,
+    rewritten_names: &BTreeMap<&str, &str>,
+) -> Option<String> {
+    let reference = value.strip_prefix("container:")?;
+    let (original_name, access) = reference
+        .rsplit_once(':')
+        .filter(|(_, access)| matches!(*access, "ro" | "rw"))
+        .map_or((reference, None), |(name, access)| (name, Some(access)));
+    let rewritten_name = rewritten_names.get(original_name)?;
+    let access = access.map_or(String::new(), |access| format!(":{access}"));
+    Some(format!("container:{rewritten_name}{access}"))
+}
+
+fn rewrite_external_link_reference(
+    value: &str,
+    rewritten_names: &BTreeMap<&str, &str>,
+) -> Option<String> {
+    let (original_name, alias) = value
+        .split_once(':')
+        .map_or((value, None), |(name, alias)| (name, Some(alias)));
+    let rewritten_name = rewritten_names.get(original_name)?;
+    let alias = alias.map_or(String::new(), |alias| format!(":{alias}"));
+    Some(format!("{rewritten_name}{alias}"))
 }
 
 pub(crate) fn apply_compose_isolation_name_rewrites(
@@ -1595,6 +1715,126 @@ mod tests {
     }
 
     #[test]
+    fn plans_exact_internal_container_name_reference_rewrites() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "container_name": "fixed-app"
+                },
+                "db": {
+                    "image": "alpine:3.20",
+                    "container_name": "fixed-db"
+                },
+                "sidecar": {
+                    "image": "alpine:3.20",
+                    "network_mode": "container:fixed-app",
+                    "ipc": "container:fixed-app",
+                    "pid": "container:fixed-db",
+                    "volumes_from": [
+                        "container:fixed-app",
+                        "container:fixed-db:ro",
+                        "container:external:rw",
+                        "app:ro"
+                    ],
+                    "external_links": [
+                        "fixed-app:app-alias",
+                        "external:external-alias"
+                    ]
+                },
+                "external": {
+                    "image": "alpine:3.20",
+                    "network_mode": "container:external",
+                    "ipc": "service:app",
+                    "pid": "host",
+                    "volumes_from": ["container:fixed-app-copy"],
+                    "external_links": ["fixed-app-copy:copy-alias"]
+                }
+            }
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let plan = plan_compose_isolation_name_rewrites(&ComposeIsolationNameRewritePlanInput {
+            model: &model,
+            scan: &scan,
+            workspace_id: "abc123def456",
+            enabled: true,
+            rewrite_container_names: true,
+            rewrite_resource_names: true,
+        });
+
+        assert_eq!(plan.service_references.len(), 1);
+        let rewrite = &plan.service_references[0];
+        assert_eq!(rewrite.service, "sidecar");
+        assert_eq!(
+            rewrite.network_mode.as_deref(),
+            Some("container:fixed-app-abc123def456")
+        );
+        assert_eq!(
+            rewrite.ipc.as_deref(),
+            Some("container:fixed-app-abc123def456")
+        );
+        assert_eq!(
+            rewrite.pid.as_deref(),
+            Some("container:fixed-db-abc123def456")
+        );
+        assert_eq!(
+            rewrite.volumes_from.as_deref(),
+            Some(
+                [
+                    "container:fixed-app-abc123def456".to_owned(),
+                    "container:fixed-db-abc123def456:ro".to_owned(),
+                    "container:external:rw".to_owned(),
+                    "app:ro".to_owned(),
+                ]
+                .as_slice()
+            )
+        );
+        assert_eq!(
+            rewrite.external_links.as_deref(),
+            Some(
+                [
+                    "fixed-app-abc123def456:app-alias".to_owned(),
+                    "external:external-alias".to_owned(),
+                ]
+                .as_slice()
+            )
+        );
+        assert!(plan.requires_override_tag());
+    }
+
+    #[test]
+    fn scalar_container_name_reference_rewrites_do_not_require_override_tag() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "container_name": "fixed-app"
+                },
+                "sidecar": {
+                    "image": "alpine:3.20",
+                    "network_mode": "container:fixed-app"
+                }
+            }
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let plan = plan_compose_isolation_name_rewrites(&ComposeIsolationNameRewritePlanInput {
+            model: &model,
+            scan: &scan,
+            workspace_id: "abc123def456",
+            enabled: true,
+            rewrite_container_names: true,
+            rewrite_resource_names: true,
+        });
+
+        assert_eq!(plan.service_references.len(), 1);
+        assert!(!plan.requires_override_tag());
+    }
+
+    #[test]
     fn name_rewrite_plan_is_empty_without_clone_isolation_opt_in() {
         let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
             "services": {
@@ -1615,6 +1855,7 @@ mod tests {
         });
 
         assert!(plan.services.is_empty());
+        assert!(plan.service_references.is_empty());
         assert!(plan.resources.is_empty());
         assert_eq!(apply_compose_isolation_name_rewrites(&scan, &plan), scan);
     }

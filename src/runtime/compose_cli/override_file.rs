@@ -27,6 +27,9 @@ pub(crate) struct ComposeOverrideServicePatch {
     name: String,
     image: Option<String>,
     container_name: Option<String>,
+    network_mode: Option<String>,
+    ipc: Option<String>,
+    pid: Option<String>,
     pull_policy: Option<String>,
     labels: BTreeMap<String, String>,
     environment: BTreeMap<String, ComposeOverrideEnvironmentValue>,
@@ -37,6 +40,8 @@ pub(crate) struct ComposeOverrideServicePatch {
     security_opt: Vec<String>,
     mounts: Vec<ComposeOverrideMount>,
     network_aliases: BTreeMap<String, BTreeSet<String>>,
+    volumes_from_override: Option<Vec<String>>,
+    external_links_override: Option<Vec<String>>,
     ports_override: Vec<ComposeOverridePortEntry>,
     entrypoint: Vec<String>,
     command: Vec<String>,
@@ -119,6 +124,27 @@ impl ComposeOverridePatch {
                 .or_default()
                 .insert(original_name.to_owned());
         }
+        self
+    }
+
+    pub(crate) fn service_container_references(
+        mut self,
+        service_name: &str,
+        network_mode: Option<&str>,
+        ipc: Option<&str>,
+        pid: Option<&str>,
+        volumes_from: Option<&[String]>,
+        external_links: Option<&[String]>,
+    ) -> Self {
+        let service = self
+            .services
+            .entry(service_name.to_owned())
+            .or_insert_with(|| ComposeOverrideServicePatch::new(service_name));
+        service.network_mode = network_mode.map(str::to_owned);
+        service.ipc = ipc.map(str::to_owned);
+        service.pid = pid.map(str::to_owned);
+        service.volumes_from_override = volumes_from.map(<[String]>::to_vec);
+        service.external_links_override = external_links.map(<[String]>::to_vec);
         self
     }
 
@@ -208,6 +234,9 @@ impl ComposeOverrideServicePatch {
             name: name.into(),
             image: None,
             container_name: None,
+            network_mode: None,
+            ipc: None,
+            pid: None,
             pull_policy: None,
             labels: BTreeMap::new(),
             environment: BTreeMap::new(),
@@ -218,6 +247,8 @@ impl ComposeOverrideServicePatch {
             security_opt: Vec::new(),
             mounts: Vec::new(),
             network_aliases: BTreeMap::new(),
+            volumes_from_override: None,
+            external_links_override: None,
             ports_override: Vec::new(),
             entrypoint: Vec::new(),
             command: Vec::new(),
@@ -359,6 +390,15 @@ impl ComposeOverrideServicePatch {
         if let Some(container_name) = &self.container_name {
             append_yaml_scalar(content, 4, "container_name", container_name);
         }
+        if let Some(network_mode) = &self.network_mode {
+            append_yaml_scalar(content, 4, "network_mode", network_mode);
+        }
+        if let Some(ipc) = &self.ipc {
+            append_yaml_scalar(content, 4, "ipc", ipc);
+        }
+        if let Some(pid) = &self.pid {
+            append_yaml_scalar(content, 4, "pid", pid);
+        }
         if let Some(pull_policy) = &self.pull_policy {
             append_yaml_scalar(content, 4, "pull_policy", pull_policy);
         }
@@ -377,6 +417,18 @@ impl ComposeOverrideServicePatch {
         append_yaml_string_list(content, 4, "security_opt", &self.security_opt);
         append_yaml_mounts(content, 4, &self.mounts);
         append_yaml_network_aliases(content, 4, &self.network_aliases);
+        append_yaml_string_list_override(
+            content,
+            4,
+            "volumes_from",
+            self.volumes_from_override.as_deref(),
+        );
+        append_yaml_string_list_override(
+            content,
+            4,
+            "external_links",
+            self.external_links_override.as_deref(),
+        );
         append_yaml_ports_override(content, 4, &self.ports_override);
         append_yaml_string_list(content, 4, "entrypoint", &self.entrypoint);
         append_yaml_string_list(content, 4, "command", &self.command);
@@ -598,6 +650,30 @@ fn append_yaml_string_list(content: &mut String, indent: usize, key: &str, value
     append_indent(content, indent);
     content.push_str(key);
     content.push_str(":\n");
+    for value in values {
+        append_indent(content, indent + 2);
+        content.push_str("- ");
+        content.push_str(&yaml_quote(value));
+        content.push('\n');
+    }
+}
+
+fn append_yaml_string_list_override(
+    content: &mut String,
+    indent: usize,
+    key: &str,
+    values: Option<&[String]>,
+) {
+    let Some(values) = values else {
+        return;
+    };
+    append_indent(content, indent);
+    content.push_str(key);
+    if values.is_empty() {
+        content.push_str(": !override []\n");
+        return;
+    }
+    content.push_str(": !override\n");
     for value in values {
         append_indent(content, indent + 2);
         content.push_str("- ");
@@ -962,6 +1038,45 @@ mod tests {
                 "secrets:\n",
                 "  'app-secret':\n",
                 "    name: 'fixed-secret-abc123def456'\n",
+            )
+        );
+    }
+
+    #[test]
+    fn compose_override_yaml_rewrites_internal_container_name_references() {
+        let patch = ComposeOverridePatch::new(ComposeOverrideServicePatch::new("app"))
+            .service_container_references(
+                "sidecar",
+                Some("container:fixed-app-abc123def456"),
+                Some("container:fixed-app-abc123def456"),
+                Some("container:fixed-app-abc123def456"),
+                Some(&[
+                    "container:fixed-app-abc123def456:ro".to_owned(),
+                    "container:external:rw".to_owned(),
+                ]),
+                Some(&[
+                    "fixed-app-abc123def456:app-alias".to_owned(),
+                    "external:external-alias".to_owned(),
+                ]),
+            );
+
+        let yaml = patch.to_yaml().unwrap();
+
+        assert_eq!(
+            yaml,
+            concat!(
+                "services:\n",
+                "  'app':\n",
+                "  'sidecar':\n",
+                "    network_mode: 'container:fixed-app-abc123def456'\n",
+                "    ipc: 'container:fixed-app-abc123def456'\n",
+                "    pid: 'container:fixed-app-abc123def456'\n",
+                "    volumes_from: !override\n",
+                "      - 'container:fixed-app-abc123def456:ro'\n",
+                "      - 'container:external:rw'\n",
+                "    external_links: !override\n",
+                "      - 'fixed-app-abc123def456:app-alias'\n",
+                "      - 'external:external-alias'\n",
             )
         );
     }

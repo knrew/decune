@@ -24,17 +24,18 @@ use crate::{
             ComposeServiceValidation, ComposeUpOptions, DockerComposeCli,
         },
         compose_isolation::{
-            ComposeIsolationDaemonSnapshot, ComposeIsolationDockerIpamConfig,
-            ComposeIsolationDockerNetwork, ComposeIsolationDockerResource,
-            ComposeIsolationEndpointDeclaration, ComposeIsolationEndpointPlan,
-            ComposeIsolationNameRewritePlan, ComposeIsolationNameRewritePlanInput,
-            ComposeIsolationPersistedSubnet, ComposeIsolationPlanInput,
-            ComposeIsolationResourceKind, ComposeIsolationScan, ComposeIsolationSubnetPlan,
-            ComposeIsolationSubnetPlanInput, apply_compose_isolation_name_rewrites,
-            apply_compose_isolation_subnet_plan, finalize_compose_isolation_subnet_plan,
-            plan_compose_isolation, plan_compose_isolation_endpoints,
-            plan_compose_isolation_name_rewrites, plan_compose_isolation_subnets,
-            scan_compose_isolation, validate_compose_isolation_diagnostics,
+            COMPOSE_CLONE_ISOLATION_UNSUPPORTED, ComposeIsolationDaemonSnapshot,
+            ComposeIsolationDockerIpamConfig, ComposeIsolationDockerNetwork,
+            ComposeIsolationDockerResource, ComposeIsolationEndpointDeclaration,
+            ComposeIsolationEndpointPlan, ComposeIsolationNameRewritePlan,
+            ComposeIsolationNameRewritePlanInput, ComposeIsolationPersistedSubnet,
+            ComposeIsolationPlanInput, ComposeIsolationResourceKind, ComposeIsolationScan,
+            ComposeIsolationSubnetPlan, ComposeIsolationSubnetPlanInput,
+            apply_compose_isolation_name_rewrites, apply_compose_isolation_subnet_plan,
+            finalize_compose_isolation_subnet_plan, plan_compose_isolation,
+            plan_compose_isolation_endpoints, plan_compose_isolation_name_rewrites,
+            plan_compose_isolation_subnets, scan_compose_isolation,
+            validate_compose_isolation_diagnostics,
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
@@ -723,6 +724,13 @@ async fn run_compose_isolation_preflight(
             rewrite_container_names: clone_isolation.names.rewrite_container_names,
             rewrite_resource_names: clone_isolation.names.rewrite_resource_names,
         });
+    if name_rewrite_plan.requires_override_tag()
+        && let Err(error) = compose_capabilities.ensure_compose_override_tag_for(
+            "Compose clone isolation container-reference list rewrite",
+        )
+    {
+        bail!("{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: {error}");
+    }
     let name_effective_scan = apply_compose_isolation_name_rewrites(&scan, &name_rewrite_plan);
 
     let daemon = compose_isolation_daemon_snapshot(client, &name_effective_scan).await?;

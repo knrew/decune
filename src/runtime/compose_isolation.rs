@@ -25,5 +25,6 @@ pub(crate) use types::{
     ComposeIsolationFixedNameRequest, ComposeIsolationNameRewritePlan,
     ComposeIsolationNetworkRequest, ComposeIsolationPersistedSubnet, ComposeIsolationResourceKind,
     ComposeIsolationResourceNameRewrite, ComposeIsolationScan, ComposeIsolationServiceNameRewrite,
-    ComposeIsolationSubnetAllocation, ComposeIsolationSubnetPlan,
+    ComposeIsolationServiceReferenceRewrite, ComposeIsolationSubnetAllocation,
+    ComposeIsolationSubnetPlan,
 };

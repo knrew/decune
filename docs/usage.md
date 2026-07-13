@@ -415,7 +415,9 @@ env = "AGENT_ENDPOINT"
 value = "http://${decune.network.appnet.gateway}:9000"
 ```
 
-有効化すると、fixed TCP published port は空いている host port へ relocation され、固定名と固定 IPv4 subnet は workspace ごとの値になります。Compose project name と既定命名の network / volume は opt-in の有無にかかわらず workspace scope です。固定名 volume は clone ごとに別 volume になるため、データも clone 間で分離されます。container 間通信では元の `container_name` を DNS alias として維持しますが、host 側から `docker exec <元名>` のように固定名を直接使う tool は書き換え後の名前へ更新してください。詳細は [specification.md](specification.md#clone-isolation) を参照してください。
+有効化すると、fixed TCP published port は空いている host port へ relocation され、固定名と固定 IPv4 subnet は workspace ごとの値になります。Compose project name と既定命名の network / volume は opt-in の有無にかかわらず workspace scope です。固定名 volume は clone ごとに別 volume になるため、データも clone 間で分離されます。container 間通信では元の `container_name` を DNS alias として維持し、`network_mode` / `ipc` / `pid` / `volumes_from` / `external_links` が書き換え対象の固定 container name を参照していれば、同じ workspace 固有名へ追随させます。service 名による参照と外部 container への参照は変更しません。host 側から `docker exec <元名>` のように固定名を直接使う tool は書き換え後の名前へ更新してください。詳細は [specification.md](specification.md#clone-isolation) を参照してください。
+
+`volumes_from` または `external_links` の参照を書き換える構成では、list を安全に完全置換するため Docker Compose v2.24.4 以上が必要です。`network_mode` / `ipc` / `pid` の参照だけを書き換える構成には、この追加要件はありません。
 
 `[compose.clone_isolation.networks].relocation = true` にすると、固定 IPv4 IPAM subnet を `subnet_pool` 内の workspace 固有 subnet へ移します。`subnet_pool` は必須で、`subnet_prefix` を省略した場合は元 subnet の prefix 長を維持します。元 IPAM config の `gateway`、`ip_range`、`aux_addresses` は元 subnet 内の offset を保って新 subnet へ移します。`subnet_prefix` を狭めた結果、range や address を収容できない場合は起動前に error になります。固定 IPv4 subnet を検出した場合は、割り当て結果が元 subnet と同じでも generated override に Compose `!override` tag を使うため、Docker Compose v2.24.4 以上が必要です。IPv6、static service address、external network は relocation しません。未知の IPAM config field、または固定 subnet entry と混在する `subnet` のない config entry は黙って破棄せず、`compose_clone_isolation_unsupported` で停止します。未知 field が複数ある場合は、値を含めず field 名を一度に列挙します。
 
