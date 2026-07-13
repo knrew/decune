@@ -114,19 +114,23 @@ impl ComposeCliCapabilities {
     }
 
     pub(crate) fn ensure_compose_override_tag(&self) -> Result<()> {
+        self.ensure_compose_override_tag_for("Compose override-based relocation")
+    }
+
+    pub(crate) fn ensure_compose_override_tag_for(&self, operation: &str) -> Result<()> {
         let Some(version) = self
             .version_short
             .as_deref()
             .and_then(parse_compose_version)
         else {
             bail!(
-                "Compose override-based relocation requires Docker Compose v2.24.4 or newer; failed to determine Docker Compose version"
+                "{operation} requires Docker Compose v2.24.4 or newer; failed to determine Docker Compose version"
             );
         };
 
         if version < Self::COMPOSE_OVERRIDE_TAG_MIN_VERSION {
             bail!(
-                "Compose override-based relocation requires Docker Compose v2.24.4 or newer; detected Docker Compose v{}.{}.{}",
+                "{operation} requires Docker Compose v2.24.4 or newer; detected Docker Compose v{}.{}.{}",
                 version.0,
                 version.1,
                 version.2
@@ -183,6 +187,26 @@ mod tests {
         };
 
         capabilities.ensure_compose_override_tag().unwrap();
+    }
+
+    #[test]
+    fn compose_capability_override_tag_error_names_the_requested_operation() {
+        let capabilities = ComposeCliCapabilities {
+            version_short: Some("2.23.3".to_owned()),
+            ..valid_compose_capabilities()
+        };
+
+        let error = capabilities
+            .ensure_compose_override_tag_for(
+                "Compose clone isolation container-reference list rewrite",
+            )
+            .unwrap_err();
+
+        assert!(
+            error.to_string().contains(
+                "Compose clone isolation container-reference list rewrite requires Docker Compose v2.24.4 or newer"
+            )
+        );
     }
 
     #[test]

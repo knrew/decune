@@ -372,7 +372,7 @@ fn compose_integration_clone_isolation_renders_relocated_gateway_endpoint() {
 }
 
 #[test]
-#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() {
     let first = compose_fixture_workspace("clone-isolation");
     let second = compose_fixture_workspace("clone-isolation");
@@ -398,6 +398,15 @@ fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() 
     finish_clone_isolation_fixture_up(first.path(), &first_container_tools_dir, first_up);
     finish_clone_isolation_fixture_up(second.path(), &second_container_tools_dir, second_up);
 
+    assert_eq!(
+        running_services(&compose_project_containers(first.path()).must()),
+        vec!["app", "link-ref", "namespace-ref"]
+    );
+    assert_eq!(
+        running_services(&compose_project_containers(second.path()).must()),
+        vec!["app", "link-ref", "namespace-ref"]
+    );
+
     let first_ports = compose_service_published_host_ports(first.path(), "app", "80/tcp");
     let second_ports = compose_service_published_host_ports(second.path(), "app", "80/tcp");
     assert_eq!(first_ports.len(), 1);
@@ -421,19 +430,7 @@ fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() 
     let second_volume = format!("fixed-cache-388-{second_id}");
     assert!(docker_status(["volume", "inspect", &first_volume]).is_ok());
     assert!(docker_status(["volume", "inspect", &second_volume]).is_ok());
-    compose_primary_container_output(first.path(), ["sh", "-c", "echo first > /cache/owner"]);
-    assert_eq!(
-        compose_primary_container_output(first.path(), ["cat", "/cache/owner"]).trim(),
-        "first"
-    );
-    assert_eq!(
-        compose_primary_container_output(
-            second.path(),
-            ["sh", "-c", "test ! -e /cache/owner && echo isolated"],
-        )
-        .trim(),
-        "isolated"
-    );
+    assert_clone_isolation_container_references(first.path(), second.path());
 
     let first_network = format!("fixed-network-388-{first_id}");
     let second_network = format!("fixed-network-388-{second_id}");
@@ -2359,6 +2356,48 @@ fn finish_clone_isolation_fixture_up(
         "clone isolation startup did not report success: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn assert_clone_isolation_container_references(first: &Path, second: &Path) {
+    compose_primary_container_output(first, ["sh", "-c", "echo first > /cache/owner"]);
+    assert_eq!(
+        compose_primary_container_output(first, ["cat", "/cache/owner"]).trim(),
+        "first"
+    );
+    assert_eq!(
+        compose_primary_container_output(
+            second,
+            ["sh", "-c", "test ! -e /cache/owner && echo isolated"],
+        )
+        .trim(),
+        "isolated"
+    );
+    assert_eq!(
+        compose_service_container_output(first, "namespace-ref", ["cat", "/cache/owner"]).trim(),
+        "first"
+    );
+
+    for namespace in ["net", "ipc", "pid"] {
+        let path = format!("/proc/self/ns/{namespace}");
+        let first_app_namespace =
+            compose_primary_container_output(first, ["readlink", path.as_str()]);
+        let first_ref_namespace =
+            compose_service_container_output(first, "namespace-ref", ["readlink", path.as_str()]);
+        let second_app_namespace =
+            compose_primary_container_output(second, ["readlink", path.as_str()]);
+        let second_ref_namespace =
+            compose_service_container_output(second, "namespace-ref", ["readlink", path.as_str()]);
+        assert_eq!(first_ref_namespace.trim(), first_app_namespace.trim());
+        assert_eq!(second_ref_namespace.trim(), second_app_namespace.trim());
+        assert_ne!(first_app_namespace.trim(), second_app_namespace.trim());
+    }
+
+    let first_link =
+        compose_service_container_output(first, "link-ref", ["getent", "hosts", "app-link"]);
+    let second_link =
+        compose_service_container_output(second, "link-ref", ["getent", "hosts", "app-link"]);
+    assert!(!first_link.trim().is_empty());
+    assert!(!second_link.trim().is_empty());
 }
 
 fn remove_clone_isolation_endpoint_declaration(workspace: &Path) {

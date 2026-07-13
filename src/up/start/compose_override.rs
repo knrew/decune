@@ -294,6 +294,18 @@ fn apply_compose_name_rewrites(
             &rewrite.networks,
         );
     }
+    for rewrite in &name_rewrite_plan.service_references {
+        patch = patch.service_container_references(
+            &rewrite.service,
+            ComposeOverrideContainerReferences {
+                network_mode: rewrite.network_mode.as_deref(),
+                ipc: rewrite.ipc.as_deref(),
+                pid: rewrite.pid.as_deref(),
+                volumes_from: rewrite.volumes_from.as_deref(),
+                external_links: rewrite.external_links.as_deref(),
+            },
+        );
+    }
     for rewrite in &name_rewrite_plan.resources {
         patch = match rewrite.kind {
             ComposeIsolationResourceKind::Network => {

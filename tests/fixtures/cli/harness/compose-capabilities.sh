@@ -1,11 +1,11 @@
 #!/bin/sh
 case " $* " in
   *" version --short "*)
-    printf '2.40.0\n'
+    printf '%s\n' "${DECUNE_FAKE_COMPOSE_VERSION_SHORT:-2.40.0}"
     exit 0
     ;;
   *" version "*)
-    printf 'Docker Compose version v2.40.0\n'
+    printf 'Docker Compose version v%s\n' "${DECUNE_FAKE_COMPOSE_VERSION_SHORT:-2.40.0}"
     exit 0
     ;;
   *" config --help "*)

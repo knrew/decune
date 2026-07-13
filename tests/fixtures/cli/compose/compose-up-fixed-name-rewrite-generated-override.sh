@@ -18,12 +18,15 @@ if [ "${1:-}" = compose ]; then
       elif [ -n "${DECUNE_FAKE_SUBNET_RELOCATION:-}" ]; then
         printf '{"services":{"app":{"image":"alpine:3.20","networks":{"grpc":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25","gateway":"10.99.0.1","ip_range":"10.99.0.64/26","aux_addresses":{"reserved":"10.99.0.10"}}]}}}}\n'
       else
-        printf '{"services":{"app":{"image":"alpine:3.20","container_name":"fixed-app","networks":{"default":null},"volumes":["cache:/cache"]}},"volumes":{"cache":{"name":"fixed-cache"}}}\n'
+        printf '{"services":{"app":{"image":"alpine:3.20","container_name":"fixed-app","networks":{"default":null},"volumes":["cache:/cache"]},"sidecar":{"image":"alpine:3.20","network_mode":"container:fixed-app","ipc":"container:fixed-app","pid":"container:fixed-app","volumes_from":["container:fixed-app:ro"],"external_links":["fixed-app:app-alias"]}},"volumes":{"cache":{"name":"fixed-cache"}}}\n'
       fi
       exit 0
       ;;
     *" up -d "*)
-      if [ -n "${DECUNE_FAKE_UNKNOWN_IPAM_FIELD:-}" ] || [ -n "${DECUNE_FAKE_SUBNETLESS_IPAM_CONFIG:-}" ]; then
+      if [ -n "${DECUNE_FAKE_COMPOSE_UP_MUST_NOT_RUN:-}" ]; then
+        echo "docker compose up must not run" >&2
+        exit 95
+      elif [ -n "${DECUNE_FAKE_UNKNOWN_IPAM_FIELD:-}" ] || [ -n "${DECUNE_FAKE_SUBNETLESS_IPAM_CONFIG:-}" ]; then
         echo "docker compose up must not run for unsupported IPAM fields" >&2
         exit 92
       fi
@@ -67,6 +70,12 @@ if [ "${1:-}" = exec ]; then
 fi
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   printf '[{"Id":"sha256:alpine","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
+  exit 0
+fi
+if [ "${1:-}" = image ] && [ "${2:-}" = rm ]; then
+  exit 0
+fi
+if [ "${1:-}" = build ]; then
   exit 0
 fi
 if [ "${1:-}" = ps ]; then

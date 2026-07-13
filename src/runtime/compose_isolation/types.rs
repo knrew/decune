@@ -70,7 +70,19 @@ pub(crate) struct ComposeIsolationFixedNameRequest {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ComposeIsolationNameRewritePlan {
     pub(crate) services: Vec<ComposeIsolationServiceNameRewrite>,
+    pub(crate) service_references: Vec<ComposeIsolationServiceReferenceRewrite>,
     pub(crate) resources: Vec<ComposeIsolationResourceNameRewrite>,
+}
+
+impl ComposeIsolationNameRewritePlan {
+    /// Whether any `volumes_from` / `external_links` list must be replaced via
+    /// the Compose `!override` tag. Scalar reference rewrites
+    /// (`network_mode` / `ipc` / `pid`) never need the tag.
+    pub(crate) fn requires_reference_list_override_tag(&self) -> bool {
+        self.service_references
+            .iter()
+            .any(|rewrite| rewrite.volumes_from.is_some() || rewrite.external_links.is_some())
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +91,16 @@ pub(crate) struct ComposeIsolationServiceNameRewrite {
     pub(crate) original_name: String,
     pub(crate) rewritten_name: String,
     pub(crate) networks: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposeIsolationServiceReferenceRewrite {
+    pub(crate) service: String,
+    pub(crate) network_mode: Option<String>,
+    pub(crate) ipc: Option<String>,
+    pub(crate) pid: Option<String>,
+    pub(crate) volumes_from: Option<Vec<String>>,
+    pub(crate) external_links: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

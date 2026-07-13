@@ -357,6 +357,13 @@ fn compose_clone_isolation_opt_in_rewrites_fixed_names_in_generated_override() {
                 container_name: fixed-app
                 networks: [default]
                 volumes: [cache:/cache]
+              sidecar:
+                image: alpine:3.20
+                network_mode: container:fixed-app
+                ipc: container:fixed-app
+                pid: container:fixed-app
+                volumes_from: [container:fixed-app:ro]
+                external_links: [fixed-app:app-alias]
             volumes:
               cache:
                 name: fixed-cache
@@ -406,6 +413,15 @@ fn compose_clone_isolation_opt_in_rewrites_fixed_names_in_generated_override() {
     assert!(generated.contains(&format!(
         "volumes:\n  'cache':\n    name: '{rewritten_volume}'"
     )));
+    assert!(generated.contains(&format!("network_mode: 'container:{rewritten_container}'")));
+    assert!(generated.contains(&format!("ipc: 'container:{rewritten_container}'")));
+    assert!(generated.contains(&format!("pid: 'container:{rewritten_container}'")));
+    assert!(generated.contains(&format!(
+        "volumes_from: !override\n      - 'container:{rewritten_container}:ro'"
+    )));
+    assert!(generated.contains(&format!(
+        "external_links: !override\n      - '{rewritten_container}:app-alias'"
+    )));
 }
 
 #[test]
@@ -437,6 +453,13 @@ fn compose_clone_isolation_without_opt_in_does_not_rewrite_fixed_names() {
                 container_name: fixed-app
                 networks: [default]
                 volumes: [cache:/cache]
+              sidecar:
+                image: alpine:3.20
+                network_mode: container:fixed-app
+                ipc: container:fixed-app
+                pid: container:fixed-app
+                volumes_from: [container:fixed-app:ro]
+                external_links: [fixed-app:app-alias]
             volumes:
               cache:
                 name: fixed-cache
@@ -481,6 +504,72 @@ fn compose_clone_isolation_without_opt_in_does_not_rewrite_fixed_names() {
     let generated = fs::read_to_string(override_file).unwrap();
     assert!(!generated.contains("container_name:"));
     assert!(!generated.contains("volumes:\n  'cache':\n    name:"));
+    assert!(!generated.contains("network_mode:"));
+    assert!(!generated.contains("volumes_from:"));
+    assert!(!generated.contains("external_links:"));
+}
+
+#[test]
+fn compose_clone_isolation_list_reference_rewrite_requires_compose_v2_24_4() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r"
+            services:
+              app:
+                image: alpine:3.20
+                container_name: fixed-app
+              sidecar:
+                image: alpine:3.20
+                volumes_from: [container:fixed-app:ro]
+            ",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+            ",
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let rewritten_container = format!("fixed-app-{}", workspace_id(&workspace_root));
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMPOSE_VERSION_SHORT", "2.24.3")
+        .env("DECUNE_FAKE_COMPOSE_UP_MUST_NOT_RUN", "1")
+        .env("DECUNE_FAKE_EXPECTED_CONTAINER_NAME", &rewritten_container)
+        .args(["up", "--detach"])
+        .arg(&workspace_root)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_clone_isolation_unsupported")
+                .and(predicate::str::contains(
+                    "Compose clone isolation container-reference list rewrite requires Docker Compose v2.24.4 or newer",
+                ))
+                .and(predicate::str::contains("docker compose up must not run").not()),
+        );
 }
 
 #[test]

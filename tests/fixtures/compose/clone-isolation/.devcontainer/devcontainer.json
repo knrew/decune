@@ -2,6 +2,7 @@
   "name": "compose-clone-isolation",
   "dockerComposeFile": "compose.yaml",
   "service": "app",
+  "runServices": ["app", "namespace-ref", "link-ref"],
   "workspaceFolder": "/workspace",
   "overrideCommand": true,
   "updateRemoteUserUID": false

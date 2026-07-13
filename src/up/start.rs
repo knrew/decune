@@ -40,8 +40,9 @@ use crate::{
     },
     runtime::{
         compose_cli::{
-            ComposeConfigService, ComposeOverrideNetworkIpamConfig, ComposeOverridePatch,
-            ComposeOverrideServicePatch, ComposeProjectPlan, write_compose_override,
+            ComposeConfigService, ComposeOverrideContainerReferences,
+            ComposeOverrideNetworkIpamConfig, ComposeOverridePatch, ComposeOverrideServicePatch,
+            ComposeProjectPlan, write_compose_override,
         },
         compose_isolation::{
             ComposeIsolationEndpointPlan, ComposeIsolationNameRewritePlan,

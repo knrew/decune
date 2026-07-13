@@ -19,8 +19,8 @@ pub(crate) use config::{
 };
 pub(crate) use introspector::ComposeIntrospector;
 pub(crate) use override_file::{
-    ComposeOverrideNetworkIpamConfig, ComposeOverridePatch, ComposeOverridePortEntry,
-    ComposeOverrideServicePatch, write_compose_override,
+    ComposeOverrideContainerReferences, ComposeOverrideNetworkIpamConfig, ComposeOverridePatch,
+    ComposeOverridePortEntry, ComposeOverrideServicePatch, write_compose_override,
 };
 pub(crate) use project_plan::ComposeProjectPlan;
 pub(crate) use ps::ComposePsContainer;

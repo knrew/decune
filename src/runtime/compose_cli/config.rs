@@ -149,6 +149,10 @@ pub(crate) struct ComposeConfigService {
     #[serde(default)]
     pub(crate) network_mode: Option<String>,
     #[serde(default)]
+    pub(crate) ipc: Option<String>,
+    #[serde(default)]
+    pub(crate) pid: Option<String>,
+    #[serde(default)]
     pub(crate) scale: Option<u64>,
     #[serde(default)]
     pub(crate) deploy: ComposeConfigDeploy,
@@ -164,6 +168,10 @@ pub(crate) struct ComposeConfigService {
     pub(crate) ports: Vec<JsonValue>,
     #[serde(default)]
     pub(crate) environment: BTreeMap<String, JsonValue>,
+    #[serde(default)]
+    pub(crate) volumes_from: Vec<String>,
+    #[serde(default)]
+    pub(crate) external_links: Vec<String>,
 }
 
 impl ComposeConfigService {
@@ -412,6 +420,42 @@ mod tests {
                 .service("app")
                 .and_then(|service| service.user.as_deref()),
             Some("1001:1002")
+        );
+    }
+
+    #[test]
+    fn compose_config_model_preserves_container_name_reference_fields() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "sidecar": {
+                    "image": "alpine:3.20",
+                    "network_mode": "container:fixed-app",
+                    "ipc": "container:fixed-app",
+                    "pid": "container:fixed-app",
+                    "volumes_from": [
+                        "container:fixed-app:ro",
+                        "external-service:rw"
+                    ],
+                    "external_links": [
+                        "fixed-app:app-alias",
+                        "external-service:external-alias"
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+
+        let service = model.service("sidecar").unwrap();
+        assert_eq!(service.network_mode.as_deref(), Some("container:fixed-app"));
+        assert_eq!(service.ipc.as_deref(), Some("container:fixed-app"));
+        assert_eq!(service.pid.as_deref(), Some("container:fixed-app"));
+        assert_eq!(
+            service.volumes_from,
+            ["container:fixed-app:ro", "external-service:rw"]
+        );
+        assert_eq!(
+            service.external_links,
+            ["fixed-app:app-alias", "external-service:external-alias"]
         );
     }
 

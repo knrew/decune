@@ -3,6 +3,7 @@ services:
     image: alpine:3.20
     container_name: fixed-app-388
     command: sleep infinity
+    ipc: shareable
     environment:
       AGENT_ENDPOINT: http://10.223.0.1:9000
     networks:
@@ -12,6 +13,27 @@ services:
     volumes:
       - cache:/cache
       - ..:/workspace
+
+  namespace-ref:
+    image: alpine:3.20
+    command: sleep infinity
+    depends_on:
+      - app
+    network_mode: container:fixed-app-388
+    ipc: container:fixed-app-388
+    pid: container:fixed-app-388
+    volumes_from:
+      - container:fixed-app-388:ro
+
+  link-ref:
+    image: alpine:3.20
+    command: sleep infinity
+    depends_on:
+      - app
+    external_links:
+      - fixed-app-388:app-link
+    networks:
+      - appnet
 
 networks:
   appnet:
