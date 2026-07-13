@@ -29,7 +29,7 @@ license      = "MIT"
 publish      = false
 repository   = "https://github.com/knrew/decune"
 rust-version = "1.96"
-version      = "0.3.1"
+version      = "0.3.2"
 
 # Blank lines are intentional: taplo sorts keys within each block, and the
 # blocks keep explicit lint choices near their Clippy group.
