@@ -613,7 +613,10 @@ fn compose_clone_isolation_rejects_unknown_ipam_fields_before_compose_up() {
         .stderr(
             predicate::str::contains("compose_clone_isolation_unsupported")
                 .and(predicate::str::contains("network `grpc`"))
-                .and(predicate::str::contains("field `future_field`"))
+                .and(predicate::str::contains(
+                    "fields `alpha_field`, `future_field`",
+                ))
+                .and(predicate::str::contains("alpha-field-value-must-not-leak").not())
                 .and(predicate::str::contains("future-field-value-must-not-leak").not())
                 .and(predicate::str::contains("docker compose up must not run").not()),
         );

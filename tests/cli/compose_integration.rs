@@ -2324,7 +2324,7 @@ fn run_clone_isolation_fixture_up(
     container_tools_dir: &Path,
 ) -> std::process::Output {
     decune()
-        .args(["up", "--detach", "--no-global-config"])
+        .args(["up", "--detach"])
         .arg(workspace)
         .env("DECUNE_CONTAINER_TOOLS_DIR", container_tools_dir)
         .env_remove("DECUNE_DOCKER_RESOURCE_LOCK")

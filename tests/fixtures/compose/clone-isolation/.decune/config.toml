@@ -1,6 +1,8 @@
+# Keep this integration fixture independent from host-global features and hooks.
 use_global_config = false
 version           = 1
 
+# Credential forwarding is enabled by default independently of global config loading.
 [credentials.git]
 enabled = false
 

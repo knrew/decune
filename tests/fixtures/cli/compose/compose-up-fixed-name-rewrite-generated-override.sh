@@ -10,7 +10,7 @@ if [ "${1:-}" = compose ]; then
       if [ -n "${DECUNE_FAKE_SUBNETLESS_IPAM_CONFIG:-}" ]; then
         printf '{"services":{"app":{"image":"alpine:3.20","networks":{"grpc":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25"},{"ip_range":"sensitive-range-value","aux_addresses":{"reserved":"sensitive-address-value"}}]}}}}\n'
       elif [ -n "${DECUNE_FAKE_UNKNOWN_IPAM_FIELD:-}" ]; then
-        printf '{"services":{"app":{"image":"alpine:3.20","networks":{"grpc":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25","future_field":"future-field-value-must-not-leak"}]}}}}\n'
+        printf '{"services":{"app":{"image":"alpine:3.20","networks":{"grpc":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25","alpha_field":"alpha-field-value-must-not-leak","future_field":"future-field-value-must-not-leak"}]}}}}\n'
       elif [ -n "${DECUNE_FAKE_MULTI_ENDPOINT_RELOCATION:-}" ]; then
         printf '{"services":{"app":{"image":"alpine:3.20","environment":{},"networks":{"grpc":null,"metrics":null}}},"networks":{"grpc":{"ipam":{"config":[{"subnet":"10.99.0.0/25","gateway":"10.99.0.1"}]}},"metrics":{"ipam":{"config":[{"subnet":"10.100.0.0/25","gateway":"10.100.0.1"}]}}}}\n'
       elif [ -n "${DECUNE_FAKE_ENDPOINT_RELOCATION:-}" ]; then

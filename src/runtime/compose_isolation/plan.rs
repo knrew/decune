@@ -196,8 +196,15 @@ pub(crate) fn plan_compose_isolation_subnets(
         });
     }
 
-    plan.networks_to_remove = networks_to_recreate(input, &plan.allocations)?;
     Ok(plan)
+}
+
+pub(crate) fn finalize_compose_isolation_subnet_plan(
+    input: &ComposeIsolationSubnetPlanInput<'_>,
+    plan: &mut ComposeIsolationSubnetPlan,
+) -> Result<()> {
+    plan.networks_to_remove = networks_to_recreate(input, &plan.allocations)?;
+    Ok(())
 }
 
 pub(crate) fn apply_compose_isolation_subnet_plan(
@@ -233,9 +240,21 @@ fn validate_relocation_requests<'a>(
                 requested.network
             );
         }
-        if let Some(field) = requested.unsupported_ipam_fields.iter().next() {
+        if !requested.unsupported_ipam_fields.is_empty() {
+            let fields = requested
+                .unsupported_ipam_fields
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if requested.unsupported_ipam_fields.len() == 1 {
+                bail!(
+                    "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM field {fields} cannot be relocated safely",
+                    requested.network
+                );
+            }
             bail!(
-                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM field `{field}` cannot be relocated safely",
+                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM fields {fields} cannot be relocated safely",
                 requested.network
             );
         }
@@ -655,8 +674,9 @@ mod tests {
     use super::*;
     use crate::runtime::compose_isolation::{
         ComposeIsolationDockerNetwork, ComposeIsolationDockerResource,
-        ComposeIsolationFixedNameRequest, ComposeIsolationNetworkRequest,
-        ComposeIsolationPersistedSubnet, ComposeIsolationResourceKind, allocate_ipv4_subnet_slot,
+        ComposeIsolationEndpointDeclaration, ComposeIsolationFixedNameRequest,
+        ComposeIsolationNetworkRequest, ComposeIsolationPersistedSubnet,
+        ComposeIsolationResourceKind, allocate_ipv4_subnet_slot, plan_compose_isolation_endpoints,
         scan_compose_isolation,
     };
 
@@ -818,18 +838,19 @@ mod tests {
             "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
             "networks": {"grpc": {"ipam": {"config": [{
                 "subnet": "10.99.0.0/24",
-                "future_field": "sensitive-field-value"
+                "alpha_field": "sensitive-alpha-value",
+                "future_field": "sensitive-future-value"
             }]}}}
         }))
         .unwrap();
-        let scan = scan_compose_isolation(&model, "self-project");
-
+        let mut scan = scan_compose_isolation(&model, "self-project");
+        let daemon = ComposeIsolationDaemonSnapshot::default();
         let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
             model: &model,
             project_name: "self-project",
             workspace_id: "workspace-a",
             scan: &scan,
-            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            daemon: &daemon,
             state: &[],
             enabled: true,
             relocation: true,
@@ -837,15 +858,32 @@ mod tests {
             subnet_prefix: Some(24),
             rebuild: false,
         })
-        .unwrap_err();
+        .unwrap_err()
+        .to_string();
 
-        assert!(
-            error
-                .to_string()
-                .contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED)
-        );
-        assert!(error.to_string().contains("future_field"));
-        assert!(!error.to_string().contains("sensitive-field-value"));
+        assert!(error.contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED));
+        assert!(error.contains("IPAM fields `alpha_field`, `future_field`"));
+        assert!(!error.contains("sensitive-alpha-value"));
+        assert!(!error.contains("sensitive-future-value"));
+
+        scan.networks[0].unsupported_ipam_fields = BTreeSet::from(["future_field".to_owned()]);
+        let single_field_error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(single_field_error.contains("IPAM field `future_field`"));
+        assert!(!single_field_error.contains("IPAM fields"));
     }
 
     #[test]
@@ -1318,7 +1356,9 @@ mod tests {
             subnet_prefix: Some(24),
             rebuild: false,
         };
-        let plan = plan_compose_isolation_subnets(&input(&daemon)).unwrap();
+        let daemon_input = input(&daemon);
+        let mut plan = plan_compose_isolation_subnets(&daemon_input).unwrap();
+        finalize_compose_isolation_subnet_plan(&daemon_input, &mut plan).unwrap();
         assert_eq!(plan.networks_to_remove, ["self_grpc"]);
 
         existing.has_attached_containers = true;
@@ -1326,7 +1366,10 @@ mod tests {
             networks: vec![existing],
             resources: Vec::new(),
         };
-        let error = plan_compose_isolation_subnets(&input(&attached)).unwrap_err();
+        let attached_input = input(&attached);
+        let mut attached_plan = plan_compose_isolation_subnets(&attached_input).unwrap();
+        let error = finalize_compose_isolation_subnet_plan(&attached_input, &mut attached_plan)
+            .unwrap_err();
         assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
         assert!(
             error
@@ -1354,7 +1397,7 @@ mod tests {
             resources: Vec::new(),
         };
 
-        let plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+        let input = ComposeIsolationSubnetPlanInput {
             model: &model,
             project_name: "self-project",
             workspace_id: "workspace-a",
@@ -1366,11 +1409,86 @@ mod tests {
             subnet_pool: Some("10.200.0.0/16"),
             subnet_prefix: Some(24),
             rebuild: false,
-        })
-        .unwrap();
+        };
+        let mut plan = plan_compose_isolation_subnets(&input).unwrap();
+        finalize_compose_isolation_subnet_plan(&input, &mut plan).unwrap();
 
         assert_eq!(plan.allocations[0].planned_subnet, "10.200.42.0/24");
         assert_eq!(plan.networks_to_remove, ["self_grpc"]);
+    }
+
+    #[test]
+    fn subnet_plan_finalization_checks_gateway_synthesized_for_endpoint() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "environment": {},
+                    "networks": {"grpc": null}
+                }
+            },
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.99.0.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let mut existing = network("self_grpc", Some("self-project"), "10.200.42.0/24");
+        existing.compose_network = Some("grpc".to_owned());
+        existing.ipam_configs[0].gateway = Some("10.200.42.254".to_owned());
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![existing],
+            resources: Vec::new(),
+        };
+        let endpoint = ComposeIsolationEndpointDeclaration {
+            service: "app".to_owned(),
+            env: "HOST_AGENT_ENDPOINT".to_owned(),
+            value: "grpc://${decune.network.grpc.gateway}:50051".to_owned(),
+        };
+        let input = |daemon| ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        };
+
+        let daemon_input = input(&daemon);
+        let mut plan = plan_compose_isolation_subnets(&daemon_input).unwrap();
+        assert!(plan.allocations[0].planned_gateway.is_none());
+        plan_compose_isolation_endpoints(
+            &model,
+            &scan,
+            std::slice::from_ref(&endpoint),
+            true,
+            &mut plan,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.allocations[0].planned_gateway.as_deref(),
+            Some("10.200.42.1")
+        );
+        finalize_compose_isolation_subnet_plan(&daemon_input, &mut plan).unwrap();
+        assert_eq!(plan.networks_to_remove, ["self_grpc"]);
+
+        let mut attached = daemon.clone();
+        attached.networks[0].has_attached_containers = true;
+        let attached_input = input(&attached);
+        let mut attached_plan = plan_compose_isolation_subnets(&attached_input).unwrap();
+        plan_compose_isolation_endpoints(&model, &scan, &[endpoint], true, &mut attached_plan)
+            .unwrap();
+        let error = finalize_compose_isolation_subnet_plan(&attached_input, &mut attached_plan)
+            .unwrap_err();
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_RECREATE_HINT)
+        );
     }
 
     #[test]
@@ -1389,7 +1507,7 @@ mod tests {
             resources: Vec::new(),
         };
 
-        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+        let input = ComposeIsolationSubnetPlanInput {
             model: &model,
             project_name: "self-project",
             workspace_id: "workspace-a",
@@ -1401,8 +1519,9 @@ mod tests {
             subnet_pool: Some("10.200.0.0/16"),
             subnet_prefix: Some(24),
             rebuild: true,
-        })
-        .unwrap_err();
+        };
+        let mut plan = plan_compose_isolation_subnets(&input).unwrap();
+        let error = finalize_compose_isolation_subnet_plan(&input, &mut plan).unwrap_err();
 
         assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
         assert!(error.to_string().contains("10.200.1.0/24"));
