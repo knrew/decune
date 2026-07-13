@@ -75,7 +75,10 @@ pub(crate) struct ComposeIsolationNameRewritePlan {
 }
 
 impl ComposeIsolationNameRewritePlan {
-    pub(crate) fn requires_override_tag(&self) -> bool {
+    /// Whether any `volumes_from` / `external_links` list must be replaced via
+    /// the Compose `!override` tag. Scalar reference rewrites
+    /// (`network_mode` / `ipc` / `pid`) never need the tag.
+    pub(crate) fn requires_reference_list_override_tag(&self) -> bool {
         self.service_references
             .iter()
             .any(|rewrite| rewrite.volumes_from.is_some() || rewrite.external_links.is_some())

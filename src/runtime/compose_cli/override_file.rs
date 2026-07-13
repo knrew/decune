@@ -22,6 +22,18 @@ pub(crate) struct ComposeOverridePatch {
     forbidden_secret_values: Vec<String>,
 }
 
+/// Exact container-name references of one service to rewrite in the generated
+/// override. `None` leaves the corresponding field untouched; list fields
+/// replace the whole user list via the Compose `!override` tag.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct ComposeOverrideContainerReferences<'a> {
+    pub(crate) network_mode: Option<&'a str>,
+    pub(crate) ipc: Option<&'a str>,
+    pub(crate) pid: Option<&'a str>,
+    pub(crate) volumes_from: Option<&'a [String]>,
+    pub(crate) external_links: Option<&'a [String]>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposeOverrideServicePatch {
     name: String,
@@ -130,21 +142,17 @@ impl ComposeOverridePatch {
     pub(crate) fn service_container_references(
         mut self,
         service_name: &str,
-        network_mode: Option<&str>,
-        ipc: Option<&str>,
-        pid: Option<&str>,
-        volumes_from: Option<&[String]>,
-        external_links: Option<&[String]>,
+        references: ComposeOverrideContainerReferences<'_>,
     ) -> Self {
         let service = self
             .services
             .entry(service_name.to_owned())
             .or_insert_with(|| ComposeOverrideServicePatch::new(service_name));
-        service.network_mode = network_mode.map(str::to_owned);
-        service.ipc = ipc.map(str::to_owned);
-        service.pid = pid.map(str::to_owned);
-        service.volumes_from_override = volumes_from.map(<[String]>::to_vec);
-        service.external_links_override = external_links.map(<[String]>::to_vec);
+        service.network_mode = references.network_mode.map(str::to_owned);
+        service.ipc = references.ipc.map(str::to_owned);
+        service.pid = references.pid.map(str::to_owned);
+        service.volumes_from_override = references.volumes_from.map(<[String]>::to_vec);
+        service.external_links_override = references.external_links.map(<[String]>::to_vec);
         self
     }
 
@@ -1047,17 +1055,19 @@ mod tests {
         let patch = ComposeOverridePatch::new(ComposeOverrideServicePatch::new("app"))
             .service_container_references(
                 "sidecar",
-                Some("container:fixed-app-abc123def456"),
-                Some("container:fixed-app-abc123def456"),
-                Some("container:fixed-app-abc123def456"),
-                Some(&[
-                    "container:fixed-app-abc123def456:ro".to_owned(),
-                    "container:external:rw".to_owned(),
-                ]),
-                Some(&[
-                    "fixed-app-abc123def456:app-alias".to_owned(),
-                    "external:external-alias".to_owned(),
-                ]),
+                ComposeOverrideContainerReferences {
+                    network_mode: Some("container:fixed-app-abc123def456"),
+                    ipc: Some("container:fixed-app-abc123def456"),
+                    pid: Some("container:fixed-app-abc123def456"),
+                    volumes_from: Some(&[
+                        "container:fixed-app-abc123def456:ro".to_owned(),
+                        "container:external:rw".to_owned(),
+                    ]),
+                    external_links: Some(&[
+                        "fixed-app-abc123def456:app-alias".to_owned(),
+                        "external:external-alias".to_owned(),
+                    ]),
+                },
             );
 
         let yaml = patch.to_yaml().unwrap();
@@ -1077,6 +1087,32 @@ mod tests {
                 "    external_links: !override\n",
                 "      - 'fixed-app-abc123def456:app-alias'\n",
                 "      - 'external:external-alias'\n",
+            )
+        );
+    }
+
+    #[test]
+    fn compose_override_yaml_clears_reference_lists_with_empty_override() {
+        let patch = ComposeOverridePatch::new(ComposeOverrideServicePatch::new("app"))
+            .service_container_references(
+                "sidecar",
+                ComposeOverrideContainerReferences {
+                    volumes_from: Some(&[]),
+                    external_links: Some(&[]),
+                    ..ComposeOverrideContainerReferences::default()
+                },
+            );
+
+        let yaml = patch.to_yaml().unwrap();
+
+        assert_eq!(
+            yaml,
+            concat!(
+                "services:\n",
+                "  'app':\n",
+                "  'sidecar':\n",
+                "    volumes_from: !override []\n",
+                "    external_links: !override []\n",
             )
         );
     }

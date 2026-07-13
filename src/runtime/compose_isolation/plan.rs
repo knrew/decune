@@ -1801,7 +1801,7 @@ mod tests {
                 .as_slice()
             )
         );
-        assert!(plan.requires_override_tag());
+        assert!(plan.requires_reference_list_override_tag());
     }
 
     #[test]
@@ -1831,7 +1831,7 @@ mod tests {
         });
 
         assert_eq!(plan.service_references.len(), 1);
-        assert!(!plan.requires_override_tag());
+        assert!(!plan.requires_reference_list_override_tag());
     }
 
     #[test]

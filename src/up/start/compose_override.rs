@@ -297,11 +297,13 @@ fn apply_compose_name_rewrites(
     for rewrite in &name_rewrite_plan.service_references {
         patch = patch.service_container_references(
             &rewrite.service,
-            rewrite.network_mode.as_deref(),
-            rewrite.ipc.as_deref(),
-            rewrite.pid.as_deref(),
-            rewrite.volumes_from.as_deref(),
-            rewrite.external_links.as_deref(),
+            ComposeOverrideContainerReferences {
+                network_mode: rewrite.network_mode.as_deref(),
+                ipc: rewrite.ipc.as_deref(),
+                pid: rewrite.pid.as_deref(),
+                volumes_from: rewrite.volumes_from.as_deref(),
+                external_links: rewrite.external_links.as_deref(),
+            },
         );
     }
     for rewrite in &name_rewrite_plan.resources {

@@ -724,7 +724,7 @@ async fn run_compose_isolation_preflight(
             rewrite_container_names: clone_isolation.names.rewrite_container_names,
             rewrite_resource_names: clone_isolation.names.rewrite_resource_names,
         });
-    if name_rewrite_plan.requires_override_tag()
+    if name_rewrite_plan.requires_reference_list_override_tag()
         && let Err(error) = compose_capabilities.ensure_compose_override_tag_for(
             "Compose clone isolation container-reference list rewrite",
         )
