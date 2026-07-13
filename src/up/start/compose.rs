@@ -31,10 +31,10 @@ use crate::{
             ComposeIsolationPersistedSubnet, ComposeIsolationPlanInput,
             ComposeIsolationResourceKind, ComposeIsolationScan, ComposeIsolationSubnetPlan,
             ComposeIsolationSubnetPlanInput, apply_compose_isolation_name_rewrites,
-            apply_compose_isolation_subnet_plan, plan_compose_isolation,
-            plan_compose_isolation_endpoints, plan_compose_isolation_name_rewrites,
-            plan_compose_isolation_subnets, scan_compose_isolation,
-            validate_compose_isolation_diagnostics,
+            apply_compose_isolation_subnet_plan, finalize_compose_isolation_subnet_plan,
+            plan_compose_isolation, plan_compose_isolation_endpoints,
+            plan_compose_isolation_name_rewrites, plan_compose_isolation_subnets,
+            scan_compose_isolation, validate_compose_isolation_diagnostics,
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
@@ -740,7 +740,7 @@ async fn run_compose_isolation_preflight(
                 .collect::<Vec<_>>()
         })
         .unwrap_or_default();
-    let mut subnet_plan = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+    let subnet_plan_input = ComposeIsolationSubnetPlanInput {
         model,
         project_name,
         workspace_id: workspace.id(),
@@ -752,7 +752,8 @@ async fn run_compose_isolation_preflight(
         subnet_pool: clone_isolation.networks.subnet_pool.as_deref(),
         subnet_prefix: clone_isolation.networks.subnet_prefix,
         rebuild,
-    })?;
+    };
+    let mut subnet_plan = plan_compose_isolation_subnets(&subnet_plan_input)?;
     if !subnet_plan.allocations.is_empty() {
         compose_capabilities.ensure_compose_override_tag()?;
     }
@@ -776,6 +777,9 @@ async fn run_compose_isolation_preflight(
         clone_isolation.networks.relocation,
         &mut subnet_plan,
     )?;
+    // Endpoint planning may synthesize an explicit gateway, so compare existing Docker
+    // networks only after every planned IPAM field has reached its final value.
+    finalize_compose_isolation_subnet_plan(&subnet_plan_input, &mut subnet_plan)?;
     let effective_scan = apply_compose_isolation_subnet_plan(&name_effective_scan, &subnet_plan);
     let mut findings = plan_compose_isolation(&ComposeIsolationPlanInput {
         project_name,
@@ -879,6 +883,8 @@ fn add_compose_isolation_network(
                 .map(|config| ComposeIsolationDockerIpamConfig {
                     subnet: config.subnet.clone(),
                     gateway: config.gateway.clone(),
+                    ip_range: config.ip_range.clone(),
+                    auxiliary_addresses: config.auxiliary_addresses.clone(),
                 })
                 .collect()
         })

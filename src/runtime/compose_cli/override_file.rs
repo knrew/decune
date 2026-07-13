@@ -55,6 +55,8 @@ struct ComposeOverrideNetworkPatch {
 pub(crate) struct ComposeOverrideNetworkIpamConfig {
     pub(crate) subnet: String,
     pub(crate) gateway: Option<String>,
+    pub(crate) ip_range: Option<String>,
+    pub(crate) aux_addresses: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -524,9 +526,13 @@ fn append_yaml_networks(
             content.push_str("- subnet: ");
             content.push_str(&yaml_quote(&config.subnet));
             content.push('\n');
+            if let Some(ip_range) = &config.ip_range {
+                append_yaml_scalar(content, 10, "ip_range", ip_range);
+            }
             if let Some(gateway) = &config.gateway {
                 append_yaml_scalar(content, 10, "gateway", gateway);
             }
+            append_yaml_map(content, 10, "aux_addresses", &config.aux_addresses);
         }
     }
 }
@@ -969,20 +975,32 @@ mod tests {
                 ComposeOverrideNetworkIpamConfig {
                     subnet: "10.200.42.0/24".to_owned(),
                     gateway: Some("10.200.42.1".to_owned()),
+                    ip_range: Some("10.200.42.128/25".to_owned()),
+                    aux_addresses: BTreeMap::from([
+                        ("reserved-a".to_owned(), "10.200.42.10".to_owned()),
+                        ("reserved-b".to_owned(), "10.200.42.11".to_owned()),
+                    ]),
                 },
             );
 
         let yaml = patch.to_yaml().unwrap();
 
-        assert!(yaml.contains(concat!(
-            "networks:\n",
-            "  'grpc':\n",
-            "    name: 'fixed-grpc-workspace'\n",
-            "    ipam:\n",
-            "      config: !override\n",
-            "        - subnet: '10.200.42.0/24'\n",
-            "          gateway: '10.200.42.1'\n",
-        )));
+        assert!(
+            yaml.contains(concat!(
+                "networks:\n",
+                "  'grpc':\n",
+                "    name: 'fixed-grpc-workspace'\n",
+                "    ipam:\n",
+                "      config: !override\n",
+                "        - subnet: '10.200.42.0/24'\n",
+                "          ip_range: '10.200.42.128/25'\n",
+                "          gateway: '10.200.42.1'\n",
+                "          aux_addresses:\n",
+                "            'reserved-a': '10.200.42.10'\n",
+                "            'reserved-b': '10.200.42.11'\n",
+            )),
+            "{yaml}"
+        );
     }
 
     #[test]

@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, net::Ipv4Addr};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::{IpAddr, Ipv4Addr},
+};
 
 use anyhow::{Result, anyhow, bail};
 
@@ -7,9 +10,10 @@ use crate::runtime::{
     compose_isolation::{
         COMPOSE_CLONE_ISOLATION_INVALID, COMPOSE_CLONE_ISOLATION_POOL_EXHAUSTED,
         COMPOSE_CLONE_ISOLATION_UNSUPPORTED, ComposeIsolationDaemonSnapshot,
-        ComposeIsolationDockerNetwork, ComposeIsolationFinding, ComposeIsolationNameRewritePlan,
-        ComposeIsolationNetworkRequest, ComposeIsolationPersistedSubnet,
-        ComposeIsolationResourceKind, ComposeIsolationResourceNameRewrite, ComposeIsolationScan,
+        ComposeIsolationDockerIpamConfig, ComposeIsolationDockerNetwork, ComposeIsolationFinding,
+        ComposeIsolationNameRewritePlan, ComposeIsolationNetworkRequest,
+        ComposeIsolationPersistedSubnet, ComposeIsolationResourceKind,
+        ComposeIsolationResourceNameRewrite, ComposeIsolationScan,
         ComposeIsolationServiceNameRewrite, ComposeIsolationSubnetAllocation,
         ComposeIsolationSubnetPlan, Ipv4Cidr, allocate_ipv4_subnet_slot,
     },
@@ -178,18 +182,29 @@ pub(crate) fn plan_compose_isolation_subnets(
                 )
             })?;
         let planned_gateway = relocate_gateway(requested, requested_cidr, planned)?;
+        let planned_ip_range = relocate_ip_range(requested, requested_cidr, planned)?;
+        let planned_aux_addresses = relocate_aux_addresses(requested, requested_cidr, planned)?;
         assigned.push(planned);
         plan.allocations.push(ComposeIsolationSubnetAllocation {
             network: requested.network.clone(),
             requested_subnet: requested.subnet.clone(),
             planned_subnet: planned.to_string(),
             planned_gateway,
+            planned_ip_range,
+            planned_aux_addresses,
             relocated: planned != requested_cidr,
         });
     }
 
-    plan.networks_to_remove = networks_to_recreate(input, &plan.allocations)?;
     Ok(plan)
+}
+
+pub(crate) fn finalize_compose_isolation_subnet_plan(
+    input: &ComposeIsolationSubnetPlanInput<'_>,
+    plan: &mut ComposeIsolationSubnetPlan,
+) -> Result<()> {
+    plan.networks_to_remove = networks_to_recreate(input, &plan.allocations)?;
+    Ok(())
 }
 
 pub(crate) fn apply_compose_isolation_subnet_plan(
@@ -204,6 +219,10 @@ pub(crate) fn apply_compose_isolation_subnet_plan(
         }) {
             requested.subnet.clone_from(&allocation.planned_subnet);
             requested.gateway.clone_from(&allocation.planned_gateway);
+            requested.ip_range.clone_from(&allocation.planned_ip_range);
+            requested
+                .aux_addresses
+                .clone_from(&allocation.planned_aux_addresses);
         }
     }
     effective
@@ -215,6 +234,30 @@ fn validate_relocation_requests<'a>(
     let mut networks = BTreeSet::new();
     let mut validated = Vec::with_capacity(input.scan.networks.len());
     for requested in &input.scan.networks {
+        if requested.has_unrepresented_ipam_configs {
+            bail!(
+                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM config entries without subnet cannot be relocated safely",
+                requested.network
+            );
+        }
+        if !requested.unsupported_ipam_fields.is_empty() {
+            let fields = requested
+                .unsupported_ipam_fields
+                .iter()
+                .map(|field| format!("`{field}`"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            if requested.unsupported_ipam_fields.len() == 1 {
+                bail!(
+                    "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM field {fields} cannot be relocated safely",
+                    requested.network
+                );
+            }
+            bail!(
+                "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM fields {fields} cannot be relocated safely",
+                requested.network
+            );
+        }
         let cidr = Ipv4Cidr::parse(&requested.subnet).ok_or_else(|| {
             anyhow!(
                 "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: fixed IPv6 Compose network subnets cannot be relocated; network `{}`; subnet {}",
@@ -350,6 +393,98 @@ fn relocate_gateway(
     Ok(Some(planned_gateway.to_string()))
 }
 
+fn relocate_ip_range(
+    requested: &ComposeIsolationNetworkRequest,
+    requested_cidr: Ipv4Cidr,
+    planned: Ipv4Cidr,
+) -> Result<Option<String>> {
+    let Some(ip_range) = requested.ip_range.as_deref() else {
+        return Ok(None);
+    };
+    let requested_range = Ipv4Cidr::parse(ip_range).ok_or_else(|| {
+        let is_ipv6 = ip_range
+            .split_once('/')
+            .and_then(|(address, _)| address.parse::<IpAddr>().ok())
+            .is_some_and(|address| address.is_ipv6());
+        let code = if is_ipv6 {
+            COMPOSE_CLONE_ISOLATION_UNSUPPORTED
+        } else {
+            COMPOSE_CLONE_ISOLATION_INVALID
+        };
+        anyhow!(
+            "{code}: Compose network `{}` IPAM field `ip_range` is not a relocatable IPv4 CIDR",
+            requested.network
+        )
+    })?;
+    if !requested_cidr.contains(requested_range) {
+        bail!(
+            "{COMPOSE_CLONE_ISOLATION_INVALID}: Compose network `{}` IPAM field `ip_range` is outside its requested subnet",
+            requested.network
+        );
+    }
+    let offset = requested_range.network() - requested_cidr.network();
+    let Some(planned_address) = planned.address_at_offset(offset) else {
+        bail!(
+            "{COMPOSE_CLONE_ISOLATION_INVALID}: Compose network `{}` IPAM field `ip_range` does not fit the planned subnet; choose a subnet_prefix that preserves the requested range offset",
+            requested.network
+        );
+    };
+    let planned_range = Ipv4Cidr::parse(&format!(
+        "{planned_address}/{}",
+        requested_range.prefix()
+    ))
+    .filter(|range| range.network() == u32::from(planned_address) && planned.contains(*range))
+    .ok_or_else(|| {
+        anyhow!(
+            "{COMPOSE_CLONE_ISOLATION_INVALID}: Compose network `{}` IPAM field `ip_range` does not fit the planned subnet; choose a subnet_prefix that preserves the requested range offset",
+            requested.network
+        )
+    })?;
+    Ok(Some(planned_range.to_string()))
+}
+
+fn relocate_aux_addresses(
+    requested: &ComposeIsolationNetworkRequest,
+    requested_cidr: Ipv4Cidr,
+    planned: Ipv4Cidr,
+) -> Result<BTreeMap<String, String>> {
+    requested
+        .aux_addresses
+        .iter()
+        .map(|(name, address)| {
+            let address = match address.parse::<IpAddr>() {
+                Ok(IpAddr::V4(address)) => address,
+                Ok(IpAddr::V6(_)) => {
+                    bail!(
+                        "{COMPOSE_CLONE_ISOLATION_UNSUPPORTED}: Compose network `{}` IPAM field `aux_addresses` contains a non-IPv4 address that cannot be relocated",
+                        requested.network
+                    );
+                }
+                Err(_) => {
+                    bail!(
+                        "{COMPOSE_CLONE_ISOLATION_INVALID}: Compose network `{}` IPAM field `aux_addresses` contains an invalid IP address",
+                        requested.network
+                    );
+                }
+            };
+            if !requested_cidr.contains_address(address) {
+                bail!(
+                    "{COMPOSE_CLONE_ISOLATION_INVALID}: Compose network `{}` IPAM field `aux_addresses` contains an address outside its requested subnet",
+                    requested.network
+                );
+            }
+            let offset = u32::from(address) - requested_cidr.network();
+            let planned_address = planned.address_at_offset(offset).ok_or_else(|| {
+                anyhow!(
+                    "{COMPOSE_CLONE_ISOLATION_INVALID}: Compose network `{}` IPAM field `aux_addresses` does not fit the planned subnet; choose a subnet_prefix that preserves every requested address offset",
+                    requested.network
+                )
+            })?;
+            Ok((name.clone(), planned_address.to_string()))
+        })
+        .collect()
+}
+
 fn networks_to_recreate(
     input: &ComposeIsolationSubnetPlanInput<'_>,
     allocations: &[ComposeIsolationSubnetAllocation],
@@ -363,7 +498,7 @@ fn networks_to_recreate(
             let matches_plan = network
                 .ipam_configs
                 .iter()
-                .any(|config| config.subnet.as_deref() == Some(allocation.planned_subnet.as_str()));
+                .any(|config| docker_ipam_matches_allocation(config, allocation));
             if matches_plan {
                 continue;
             }
@@ -379,6 +514,31 @@ fn networks_to_recreate(
         }
     }
     Ok(removals.into_iter().collect())
+}
+
+fn docker_ipam_matches_allocation(
+    config: &ComposeIsolationDockerIpamConfig,
+    allocation: &ComposeIsolationSubnetAllocation,
+) -> bool {
+    let subnet_matches = config.subnet.as_deref().and_then(Ipv4Cidr::parse)
+        == Ipv4Cidr::parse(&allocation.planned_subnet);
+    let gateway_matches = allocation
+        .planned_gateway
+        .as_deref()
+        .is_none_or(|planned| config.gateway.as_deref().map(str::trim) == Some(planned));
+    let ip_range_matches = allocation.planned_ip_range.as_deref().map_or_else(
+        || {
+            config
+                .ip_range
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        },
+        |planned| config.ip_range.as_deref().and_then(Ipv4Cidr::parse) == Ipv4Cidr::parse(planned),
+    );
+    subnet_matches
+        && gateway_matches
+        && ip_range_matches
+        && config.auxiliary_addresses == allocation.planned_aux_addresses
 }
 
 pub(crate) struct ComposeIsolationPlanInput<'a> {
@@ -513,10 +673,11 @@ fn is_self_project(compose_project: Option<&str>, project_name: &str) -> bool {
 mod tests {
     use super::*;
     use crate::runtime::compose_isolation::{
-        ComposeIsolationDockerIpamConfig, ComposeIsolationDockerNetwork,
-        ComposeIsolationDockerResource, ComposeIsolationFixedNameRequest,
+        ComposeIsolationDockerNetwork, ComposeIsolationDockerResource,
+        ComposeIsolationEndpointDeclaration, ComposeIsolationFixedNameRequest,
         ComposeIsolationNetworkRequest, ComposeIsolationPersistedSubnet,
-        ComposeIsolationResourceKind, allocate_ipv4_subnet_slot, scan_compose_isolation,
+        ComposeIsolationResourceKind, allocate_ipv4_subnet_slot, plan_compose_isolation_endpoints,
+        scan_compose_isolation,
     };
 
     #[test]
@@ -524,7 +685,13 @@ mod tests {
         let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
             "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
             "networks": {"grpc": {"ipam": {"config": [{
-                "subnet": "10.99.0.0/24", "gateway": "10.99.0.1"
+                "subnet": "10.99.0.0/24",
+                "gateway": "10.99.0.1",
+                "ip_range": "10.99.0.128/25",
+                "aux_addresses": {
+                    "reserved-a": "10.99.0.10",
+                    "reserved-b": "10.99.0.11"
+                }
             }]}}}
         }))
         .unwrap();
@@ -564,6 +731,226 @@ mod tests {
                 .address_at_offset(1)
                 .map(|address| address.to_string())
         );
+        assert_eq!(
+            plan.allocations[0].planned_ip_range,
+            planned
+                .address_at_offset(128)
+                .map(|address| format!("{address}/25"))
+        );
+        assert_eq!(
+            plan.allocations[0].planned_aux_addresses,
+            BTreeMap::from([
+                (
+                    "reserved-a".to_owned(),
+                    planned.address_at_offset(10).unwrap().to_string(),
+                ),
+                (
+                    "reserved-b".to_owned(),
+                    planned.address_at_offset(11).unwrap().to_string(),
+                ),
+            ])
+        );
+    }
+
+    #[test]
+    fn ipam_field_relocation_rejects_ranges_and_addresses_that_do_not_fit() {
+        let requested = ComposeIsolationNetworkRequest {
+            network: "grpc".to_owned(),
+            driver: None,
+            ipam_driver: None,
+            subnet: "10.99.0.0/24".to_owned(),
+            gateway: None,
+            ip_range: Some("10.99.0.128/25".to_owned()),
+            aux_addresses: BTreeMap::from([("reserved".to_owned(), "10.99.0.200".to_owned())]),
+            has_unrepresented_ipam_configs: false,
+            unsupported_ipam_fields: BTreeSet::new(),
+        };
+        let requested_cidr = Ipv4Cidr::parse(&requested.subnet).unwrap();
+        let planned = Ipv4Cidr::parse("10.200.0.0/25").unwrap();
+
+        let range_error = relocate_ip_range(&requested, requested_cidr, planned).unwrap_err();
+        assert!(
+            range_error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_INVALID)
+        );
+        assert!(range_error.to_string().contains("ip_range"));
+        assert!(!range_error.to_string().contains("10.99.0.128"));
+
+        let aux_error = relocate_aux_addresses(&requested, requested_cidr, planned).unwrap_err();
+        assert!(
+            aux_error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_INVALID)
+        );
+        assert!(aux_error.to_string().contains("aux_addresses"));
+        assert!(!aux_error.to_string().contains("10.99.0.200"));
+
+        let mut outside = requested;
+        outside.ip_range = Some("10.99.1.0/24".to_owned());
+        outside.aux_addresses.clear();
+        let outside_error = relocate_ip_range(&outside, requested_cidr, planned).unwrap_err();
+        assert!(
+            outside_error
+                .to_string()
+                .contains("outside its requested subnet")
+        );
+        assert!(!outside_error.to_string().contains("10.99.1.0"));
+    }
+
+    #[test]
+    fn ipam_field_relocation_distinguishes_ipv6_from_invalid_values() {
+        let requested_cidr = Ipv4Cidr::parse("10.99.0.0/24").unwrap();
+        let planned = Ipv4Cidr::parse("10.200.0.0/24").unwrap();
+        for (value, expected_code) in [
+            ("fd00::/64", COMPOSE_CLONE_ISOLATION_UNSUPPORTED),
+            ("not-a-cidr", COMPOSE_CLONE_ISOLATION_INVALID),
+        ] {
+            let mut requested = ComposeIsolationNetworkRequest {
+                network: "grpc".to_owned(),
+                driver: None,
+                ipam_driver: None,
+                subnet: requested_cidr.to_string(),
+                gateway: None,
+                ip_range: Some(value.to_owned()),
+                aux_addresses: BTreeMap::new(),
+                has_unrepresented_ipam_configs: false,
+                unsupported_ipam_fields: BTreeSet::new(),
+            };
+            let error = relocate_ip_range(&requested, requested_cidr, planned).unwrap_err();
+            assert!(error.to_string().contains(expected_code));
+            assert!(!error.to_string().contains(value));
+
+            requested.ip_range = None;
+            requested.aux_addresses.insert(
+                "reserved".to_owned(),
+                value.trim_end_matches("/64").to_owned(),
+            );
+            let error = relocate_aux_addresses(&requested, requested_cidr, planned).unwrap_err();
+            assert!(error.to_string().contains(expected_code));
+            assert!(!error.to_string().contains(value.trim_end_matches("/64")));
+        }
+    }
+
+    #[test]
+    fn subnet_planner_rejects_unknown_ipam_fields_without_printing_values() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{
+                "subnet": "10.99.0.0/24",
+                "alpha_field": "sensitive-alpha-value",
+                "future_field": "sensitive-future-value"
+            }]}}}
+        }))
+        .unwrap();
+        let mut scan = scan_compose_isolation(&model, "self-project");
+        let daemon = ComposeIsolationDaemonSnapshot::default();
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err()
+        .to_string();
+
+        assert!(error.contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED));
+        assert!(error.contains("IPAM fields `alpha_field`, `future_field`"));
+        assert!(!error.contains("sensitive-alpha-value"));
+        assert!(!error.contains("sensitive-future-value"));
+
+        scan.networks[0].unsupported_ipam_fields = BTreeSet::from(["future_field".to_owned()]);
+        let single_field_error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(single_field_error.contains("IPAM field `future_field`"));
+        assert!(!single_field_error.contains("IPAM fields"));
+    }
+
+    #[test]
+    fn subnet_planner_rejects_unrepresented_ipam_configs_without_printing_values() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [
+                {"subnet": "10.99.0.0/24"},
+                {
+                    "ip_range": "sensitive-range-value",
+                    "aux_addresses": {"reserved": "sensitive-address-value"}
+                }
+            ]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+
+        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &ComposeIsolationDaemonSnapshot::default(),
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        })
+        .unwrap_err();
+
+        let error = error.to_string();
+        assert!(error.contains(COMPOSE_CLONE_ISOLATION_UNSUPPORTED));
+        assert!(error.contains("network `grpc`"));
+        assert!(error.contains("IPAM config entries without subnet"));
+        assert!(!error.contains("sensitive-range-value"));
+        assert!(!error.contains("sensitive-address-value"));
+    }
+
+    #[test]
+    fn existing_network_ipam_must_match_planned_range_and_aux_addresses() {
+        let allocation = ComposeIsolationSubnetAllocation {
+            network: "grpc".to_owned(),
+            requested_subnet: "10.99.0.0/24".to_owned(),
+            planned_subnet: "10.200.42.0/24".to_owned(),
+            planned_gateway: Some("10.200.42.1".to_owned()),
+            planned_ip_range: Some("10.200.42.128/25".to_owned()),
+            planned_aux_addresses: BTreeMap::from([(
+                "reserved".to_owned(),
+                "10.200.42.10".to_owned(),
+            )]),
+            relocated: true,
+        };
+        let mut existing = ComposeIsolationDockerIpamConfig {
+            subnet: Some("10.200.42.0/24".to_owned()),
+            gateway: Some("10.200.42.1".to_owned()),
+            ip_range: Some("10.200.42.128/25".to_owned()),
+            auxiliary_addresses: allocation.planned_aux_addresses.clone(),
+        };
+
+        assert!(docker_ipam_matches_allocation(&existing, &allocation));
+        existing.ip_range = None;
+        assert!(!docker_ipam_matches_allocation(&existing, &allocation));
+        existing.ip_range = allocation.planned_ip_range.clone();
+        existing.auxiliary_addresses.clear();
+        assert!(!docker_ipam_matches_allocation(&existing, &allocation));
     }
 
     #[test]
@@ -574,6 +961,10 @@ mod tests {
             ipam_driver: None,
             subnet: "10.99.0.0/24".to_owned(),
             gateway: Some("10.99.1.1".to_owned()),
+            ip_range: None,
+            aux_addresses: BTreeMap::new(),
+            has_unrepresented_ipam_configs: false,
+            unsupported_ipam_fields: BTreeSet::new(),
         };
 
         let error = relocate_gateway(
@@ -595,6 +986,10 @@ mod tests {
             ipam_driver: None,
             subnet: "10.99.0.0/24".to_owned(),
             gateway: Some("10.99.0.200".to_owned()),
+            ip_range: None,
+            aux_addresses: BTreeMap::new(),
+            has_unrepresented_ipam_configs: false,
+            unsupported_ipam_fields: BTreeSet::new(),
         };
 
         let error = relocate_gateway(
@@ -961,7 +1356,9 @@ mod tests {
             subnet_prefix: Some(24),
             rebuild: false,
         };
-        let plan = plan_compose_isolation_subnets(&input(&daemon)).unwrap();
+        let daemon_input = input(&daemon);
+        let mut plan = plan_compose_isolation_subnets(&daemon_input).unwrap();
+        finalize_compose_isolation_subnet_plan(&daemon_input, &mut plan).unwrap();
         assert_eq!(plan.networks_to_remove, ["self_grpc"]);
 
         existing.has_attached_containers = true;
@@ -969,7 +1366,123 @@ mod tests {
             networks: vec![existing],
             resources: Vec::new(),
         };
-        let error = plan_compose_isolation_subnets(&input(&attached)).unwrap_err();
+        let attached_input = input(&attached);
+        let mut attached_plan = plan_compose_isolation_subnets(&attached_input).unwrap();
+        let error = finalize_compose_isolation_subnet_plan(&attached_input, &mut attached_plan)
+            .unwrap_err();
+        assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
+        assert!(
+            error
+                .to_string()
+                .contains(COMPOSE_CLONE_ISOLATION_RECREATE_HINT)
+        );
+    }
+
+    #[test]
+    fn subnet_planner_recreates_self_network_missing_planned_ipam_fields() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {"app": {"image": "alpine:3.20", "networks": {"grpc": null}}},
+            "networks": {"grpc": {"ipam": {"config": [{
+                "subnet": "10.99.0.0/24",
+                "ip_range": "10.99.0.128/25",
+                "aux_addresses": {"reserved": "10.99.0.10"}
+            }]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let mut existing = network("self_grpc", Some("self-project"), "10.200.42.0/24");
+        existing.compose_network = Some("grpc".to_owned());
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![existing],
+            resources: Vec::new(),
+        };
+
+        let input = ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon: &daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        };
+        let mut plan = plan_compose_isolation_subnets(&input).unwrap();
+        finalize_compose_isolation_subnet_plan(&input, &mut plan).unwrap();
+
+        assert_eq!(plan.allocations[0].planned_subnet, "10.200.42.0/24");
+        assert_eq!(plan.networks_to_remove, ["self_grpc"]);
+    }
+
+    #[test]
+    fn subnet_plan_finalization_checks_gateway_synthesized_for_endpoint() {
+        let model: ComposeConfigModel = serde_json::from_value(serde_json::json!({
+            "services": {
+                "app": {
+                    "image": "alpine:3.20",
+                    "environment": {},
+                    "networks": {"grpc": null}
+                }
+            },
+            "networks": {"grpc": {"ipam": {"config": [{"subnet": "10.99.0.0/24"}]}}}
+        }))
+        .unwrap();
+        let scan = scan_compose_isolation(&model, "self-project");
+        let mut existing = network("self_grpc", Some("self-project"), "10.200.42.0/24");
+        existing.compose_network = Some("grpc".to_owned());
+        existing.ipam_configs[0].gateway = Some("10.200.42.254".to_owned());
+        let daemon = ComposeIsolationDaemonSnapshot {
+            networks: vec![existing],
+            resources: Vec::new(),
+        };
+        let endpoint = ComposeIsolationEndpointDeclaration {
+            service: "app".to_owned(),
+            env: "HOST_AGENT_ENDPOINT".to_owned(),
+            value: "grpc://${decune.network.grpc.gateway}:50051".to_owned(),
+        };
+        let input = |daemon| ComposeIsolationSubnetPlanInput {
+            model: &model,
+            project_name: "self-project",
+            workspace_id: "workspace-a",
+            scan: &scan,
+            daemon,
+            state: &[],
+            enabled: true,
+            relocation: true,
+            subnet_pool: Some("10.200.0.0/16"),
+            subnet_prefix: Some(24),
+            rebuild: false,
+        };
+
+        let daemon_input = input(&daemon);
+        let mut plan = plan_compose_isolation_subnets(&daemon_input).unwrap();
+        assert!(plan.allocations[0].planned_gateway.is_none());
+        plan_compose_isolation_endpoints(
+            &model,
+            &scan,
+            std::slice::from_ref(&endpoint),
+            true,
+            &mut plan,
+        )
+        .unwrap();
+        assert_eq!(
+            plan.allocations[0].planned_gateway.as_deref(),
+            Some("10.200.42.1")
+        );
+        finalize_compose_isolation_subnet_plan(&daemon_input, &mut plan).unwrap();
+        assert_eq!(plan.networks_to_remove, ["self_grpc"]);
+
+        let mut attached = daemon.clone();
+        attached.networks[0].has_attached_containers = true;
+        let attached_input = input(&attached);
+        let mut attached_plan = plan_compose_isolation_subnets(&attached_input).unwrap();
+        plan_compose_isolation_endpoints(&model, &scan, &[endpoint], true, &mut attached_plan)
+            .unwrap();
+        let error = finalize_compose_isolation_subnet_plan(&attached_input, &mut attached_plan)
+            .unwrap_err();
         assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
         assert!(
             error
@@ -994,7 +1507,7 @@ mod tests {
             resources: Vec::new(),
         };
 
-        let error = plan_compose_isolation_subnets(&ComposeIsolationSubnetPlanInput {
+        let input = ComposeIsolationSubnetPlanInput {
             model: &model,
             project_name: "self-project",
             workspace_id: "workspace-a",
@@ -1006,8 +1519,9 @@ mod tests {
             subnet_pool: Some("10.200.0.0/16"),
             subnet_prefix: Some(24),
             rebuild: true,
-        })
-        .unwrap_err();
+        };
+        let mut plan = plan_compose_isolation_subnets(&input).unwrap();
+        let error = finalize_compose_isolation_subnet_plan(&input, &mut plan).unwrap_err();
 
         assert!(error.to_string().contains(COMPOSE_CLONE_ISOLATION_INVALID));
         assert!(error.to_string().contains("10.200.1.0/24"));
@@ -1149,6 +1663,10 @@ mod tests {
                 ipam_driver: None,
                 subnet: "172.28.0.0/16".to_owned(),
                 gateway: Some("172.28.0.1".to_owned()),
+                ip_range: None,
+                aux_addresses: BTreeMap::new(),
+                has_unrepresented_ipam_configs: false,
+                unsupported_ipam_fields: BTreeSet::new(),
             }],
             fixed_names: Vec::new(),
         };
@@ -1190,6 +1708,10 @@ mod tests {
                 ipam_driver: None,
                 subnet: "fd00::/64".to_owned(),
                 gateway: None,
+                ip_range: None,
+                aux_addresses: BTreeMap::new(),
+                has_unrepresented_ipam_configs: false,
+                unsupported_ipam_fields: BTreeSet::new(),
             }],
             fixed_names: Vec::new(),
         };
@@ -1269,6 +1791,10 @@ mod tests {
             ipam_driver: None,
             subnet: "172.28.0.0/16".to_owned(),
             gateway: None,
+            ip_range: None,
+            aux_addresses: BTreeMap::new(),
+            has_unrepresented_ipam_configs: false,
+            unsupported_ipam_fields: BTreeSet::new(),
         };
         let mut existing = network("existing", None, "172.28.0.0/16");
 
@@ -1292,6 +1818,10 @@ mod tests {
             ipam_driver: Some("custom-ipam".to_owned()),
             subnet: "172.28.0.0/16".to_owned(),
             gateway: None,
+            ip_range: None,
+            aux_addresses: BTreeMap::new(),
+            has_unrepresented_ipam_configs: false,
+            unsupported_ipam_fields: BTreeSet::new(),
         };
         let mut existing = network("existing", None, "172.28.0.0/16");
         existing.scope = None;
@@ -1314,6 +1844,8 @@ mod tests {
             ipam_configs: vec![ComposeIsolationDockerIpamConfig {
                 subnet: Some(subnet.to_owned()),
                 gateway: None,
+                ip_range: None,
+                auxiliary_addresses: BTreeMap::new(),
             }],
             has_attached_containers: false,
         }

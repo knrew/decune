@@ -58,6 +58,13 @@ fn scan_networks(model: &ComposeConfigModel, project_name: &str, scan: &mut Comp
             continue;
         }
         if let Some(ipam) = &network.ipam {
+            let has_config_without_subnet = ipam.config.iter().any(|config| {
+                config
+                    .subnet
+                    .as_deref()
+                    .and_then(non_empty_trimmed)
+                    .is_none()
+            });
             for config in &ipam.config {
                 if let Some(subnet) = config.subnet.as_deref().and_then(non_empty_trimmed) {
                     scan.networks.push(ComposeIsolationNetworkRequest {
@@ -70,6 +77,14 @@ fn scan_networks(model: &ComposeConfigModel, project_name: &str, scan: &mut Comp
                             .as_deref()
                             .and_then(non_empty_trimmed)
                             .map(str::to_owned),
+                        ip_range: config
+                            .ip_range
+                            .as_deref()
+                            .and_then(non_empty_trimmed)
+                            .map(str::to_owned),
+                        aux_addresses: config.aux_addresses.clone(),
+                        has_unrepresented_ipam_configs: has_config_without_subnet,
+                        unsupported_ipam_fields: config.additional_fields.keys().cloned().collect(),
                     });
                 }
             }
@@ -124,6 +139,8 @@ fn scoped_resource_name(project_name: &str, resource_name: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use serde_json::json;
 
     use super::*;
@@ -148,7 +165,16 @@ mod tests {
                     "ipam": {
                         "driver": "default",
                         "config": [
-                            {"subnet": "172.28.0.0/16", "gateway": "172.28.0.1"}
+                            {
+                                "subnet": "172.28.0.0/16",
+                                "gateway": "172.28.0.1",
+                                "ip_range": "172.28.128.0/17",
+                                "aux_addresses": {
+                                    "reserved-a": "172.28.0.10",
+                                    "reserved-b": "172.28.0.11"
+                                },
+                                "future_field": {"value": "must-not-leak"}
+                            }
                         ]
                     }
                 }
@@ -172,6 +198,21 @@ mod tests {
         assert_eq!(scan.networks[0].ipam_driver.as_deref(), Some("default"));
         assert_eq!(scan.networks[0].subnet, "172.28.0.0/16");
         assert_eq!(scan.networks[0].gateway.as_deref(), Some("172.28.0.1"));
+        assert_eq!(
+            scan.networks[0].ip_range.as_deref(),
+            Some("172.28.128.0/17")
+        );
+        assert_eq!(
+            scan.networks[0].aux_addresses,
+            BTreeMap::from([
+                ("reserved-a".to_owned(), "172.28.0.10".to_owned()),
+                ("reserved-b".to_owned(), "172.28.0.11".to_owned()),
+            ])
+        );
+        assert_eq!(
+            scan.networks[0].unsupported_ipam_fields,
+            BTreeSet::from(["future_field".to_owned()])
+        );
         assert_eq!(scan.fixed_names.len(), 5);
         assert!(scan.fixed_names.iter().any(|name| name.kind
             == ComposeIsolationResourceKind::ServiceContainer
@@ -235,5 +276,26 @@ mod tests {
         assert_eq!(scan.networks.len(), 1);
         assert_eq!(scan.networks[0].network, "default");
         assert!(scan.fixed_names.is_empty());
+    }
+
+    #[test]
+    fn marks_unrepresented_ipam_configs_as_unsupported() {
+        let model = model(json!({
+            "networks": {
+                "grpc": {
+                    "ipam": {
+                        "config": [
+                            {"subnet": "172.28.0.0/16"},
+                            {"ip_range": "172.29.0.0/16", "aux_addresses": {"reserved": "172.29.0.10"}}
+                        ]
+                    }
+                }
+            }
+        }));
+
+        let scan = scan_compose_isolation(&model, "decune-project-abc123def456");
+
+        assert_eq!(scan.networks.len(), 1);
+        assert!(scan.networks[0].has_unrepresented_ipam_configs);
     }
 }

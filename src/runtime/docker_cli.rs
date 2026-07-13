@@ -1036,6 +1036,10 @@ where
 pub(crate) struct DockerNetworkIpamConfig {
     pub(crate) subnet: Option<String>,
     pub(crate) gateway: Option<String>,
+    #[serde(rename = "IPRange")]
+    pub(crate) ip_range: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_null_as_empty_map")]
+    pub(crate) auxiliary_addresses: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -1277,7 +1281,7 @@ mod tests {
     fn list_network_inspects_uses_ids_and_accepts_missing_network_partial_output() {
         let runner = FakeRuntimeCommand::new(vec![
             Ok(runtime_output(
-                br#"{"Name":"other_net","Driver":"bridge","Scope":"local","Labels":{"com.docker.compose.project":"other"},"IPAM":{"Driver":"default","Config":[{"Subnet":"172.28.0.0/16","Gateway":"172.28.0.1"}]}}
+                br#"{"Name":"other_net","Driver":"bridge","Scope":"local","Labels":{"com.docker.compose.project":"other"},"IPAM":{"Driver":"default","Config":[{"Subnet":"172.28.0.0/16","Gateway":"172.28.0.1","IPRange":"172.28.128.0/17","AuxiliaryAddresses":{"reserved":"172.28.0.10"}}]}}
 {"Name":"host","Driver":"host","Scope":"local","Labels":{},"IPAM":{"Driver":"default","Config":null}}
 "#,
                 b"Error: No such network: removed\n",
@@ -1310,6 +1314,19 @@ mod tests {
                 .and_then(|ipam| ipam.config.first())
                 .and_then(|config| config.subnet.as_deref()),
             Some("172.28.0.0/16")
+        );
+        let ipam_config = networks[0]
+            .ipam
+            .as_ref()
+            .and_then(|ipam| ipam.config.first())
+            .unwrap();
+        assert_eq!(ipam_config.ip_range.as_deref(), Some("172.28.128.0/17"));
+        assert_eq!(
+            ipam_config
+                .auxiliary_addresses
+                .get("reserved")
+                .map(String::as_str),
+            Some("172.28.0.10")
         );
         assert!(
             networks[1]
