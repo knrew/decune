@@ -538,7 +538,7 @@ fn compose_clone_isolation_relocates_fixed_subnet_after_occupied_initial_slot() 
         .env("XDG_RUNTIME_DIR", host_tools.path())
         .env("DECUNE_FAKE_SUBNET_RELOCATION", "1")
         .env("DECUNE_FAKE_OCCUPIED_SUBNET", &occupied)
-        .args(["up", "--detach"])
+        .args(["up", "--detach", "--no-global-config"])
         .arg(&workspace_root)
         .assert()
         .success()
@@ -549,10 +549,74 @@ fn compose_clone_isolation_relocates_fixed_subnet_after_occupied_initial_slot() 
     let generated = fs::read_to_string(state_dir.join("compose.override.yaml")).unwrap();
     assert!(generated.contains("config: !override"));
     assert!(generated.contains(&format!("subnet: '{expected}'")));
+    assert!(generated.contains(&format!(
+        "ip_range: '{}/26'",
+        address_at_offset(&expected, 64)
+    )));
+    assert!(generated.contains(&format!(
+        "'reserved': '{}'",
+        address_at_offset(&expected, 10)
+    )));
     assert!(!generated.contains(&format!("subnet: '{occupied}'")));
     let state = fs::read_to_string(state_dir.join("state.toml")).unwrap();
     assert!(state.contains("[[clone_isolation.networks]]"));
     assert!(state.contains(&format!("planned_subnet = \"{expected}\"")));
+}
+
+#[test]
+fn compose_clone_isolation_rejects_unknown_ipam_fields_before_compose_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let host_tools = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"{"dockerComposeFile":"compose.yaml","service":"app","overrideCommand":true}"#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            "services:\n  app:\n    image: alpine:3.20\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+
+            [compose.clone_isolation]
+            enabled = true
+
+            [compose.clone_isolation.networks]
+            relocation = true
+            subnet_pool = "10.200.0.0/24"
+            subnet_prefix = 25
+            "#,
+        )
+        .unwrap();
+    let fake_path = fake_docker_path(
+        &host_tools,
+        "cli/compose/compose-up-fixed-name-rewrite-generated-override.sh",
+    );
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_UNKNOWN_IPAM_FIELD", "1")
+        .args(["up", "--detach", "--no-global-config"])
+        .arg(workspace.path())
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_clone_isolation_unsupported")
+                .and(predicate::str::contains("network `grpc`"))
+                .and(predicate::str::contains("field `future_field`"))
+                .and(predicate::str::contains("future-field-value-must-not-leak").not())
+                .and(predicate::str::contains("docker compose up must not run").not()),
+        );
 }
 
 #[test]
@@ -908,9 +972,13 @@ fn two_slot_subnets(workspace_id: &str, network: &str) -> (String, String) {
 }
 
 fn first_host_address(subnet: &str) -> String {
+    address_at_offset(subnet, 1)
+}
+
+fn address_at_offset(subnet: &str, offset: u32) -> String {
     let (network, _) = subnet.split_once('/').unwrap();
     let network = network.parse::<std::net::Ipv4Addr>().unwrap();
-    std::net::Ipv4Addr::from(u32::from(network) + 1).to_string()
+    std::net::Ipv4Addr::from(u32::from(network) + offset).to_string()
 }
 
 #[test]

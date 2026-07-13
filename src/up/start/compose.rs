@@ -879,6 +879,8 @@ fn add_compose_isolation_network(
                 .map(|config| ComposeIsolationDockerIpamConfig {
                     subnet: config.subnet.clone(),
                     gateway: config.gateway.clone(),
+                    ip_range: config.ip_range.clone(),
+                    auxiliary_addresses: config.auxiliary_addresses.clone(),
                 })
                 .collect()
         })

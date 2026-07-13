@@ -20,6 +20,9 @@ networks:
       config:
         - subnet: 10.223.0.0/24
           gateway: 10.223.0.1
+          ip_range: 10.223.0.128/25
+          aux_addresses:
+            reserved: 10.223.0.10
 
 volumes:
   cache:

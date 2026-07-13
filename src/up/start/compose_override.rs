@@ -274,6 +274,8 @@ fn apply_compose_subnet_plan(
             ComposeOverrideNetworkIpamConfig {
                 subnet: allocation.planned_subnet.clone(),
                 gateway: allocation.planned_gateway.clone(),
+                ip_range: allocation.planned_ip_range.clone(),
+                aux_addresses: allocation.planned_aux_addresses.clone(),
             },
         );
     }

@@ -1,4 +1,7 @@
-use std::{fs, net::TcpListener, path::Path, process::Command, thread, time::Duration};
+use std::{
+    collections::BTreeMap, fs, net::TcpListener, path::Path, process::Command, thread,
+    time::Duration,
+};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -434,13 +437,9 @@ fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() 
 
     let first_network = format!("fixed-network-388-{first_id}");
     let second_network = format!("fixed-network-388-{second_id}");
-    let (first_subnet, first_gateway) = compose_network_subnet_and_gateway(&first_network);
-    let (second_subnet, second_gateway) = compose_network_subnet_and_gateway(&second_network);
-    assert!(first_subnet.starts_with("10."));
-    assert!(first_subnet.ends_with("/24"));
-    assert!(second_subnet.starts_with("10."));
-    assert!(second_subnet.ends_with("/24"));
-    assert_ne!(first_subnet, second_subnet);
+    let first_ipam = assert_relocated_clone_isolation_ipam(&first_network);
+    let second_ipam = assert_relocated_clone_isolation_ipam(&second_network);
+    assert_ne!(first_ipam.subnet, second_ipam.subnet);
 
     let first_endpoint =
         compose_primary_container_output(first.path(), ["printenv", "AGENT_ENDPOINT"]);
@@ -448,12 +447,21 @@ fn compose_integration_clone_isolation_starts_two_fixture_copies_concurrently() 
         compose_primary_container_output(second.path(), ["printenv", "AGENT_ENDPOINT"]);
     assert_eq!(
         first_endpoint.trim(),
-        format!("http://{first_gateway}:9000")
+        format!("http://{}:9000", first_ipam.gateway)
     );
     assert_eq!(
         second_endpoint.trim(),
-        format!("http://{second_gateway}:9000")
+        format!("http://{}:9000", second_ipam.gateway)
     );
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(first.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &first_container_tools_dir)
+        .env_remove("DECUNE_DOCKER_RESOURCE_LOCK")
+        .assert()
+        .success();
+    assert_eq!(compose_network_ipam_details(&first_network), first_ipam);
 
     drop(docker_resource_lock);
 }
@@ -2316,7 +2324,7 @@ fn run_clone_isolation_fixture_up(
     container_tools_dir: &Path,
 ) -> std::process::Output {
     decune()
-        .args(["up", "--detach"])
+        .args(["up", "--detach", "--no-global-config"])
         .arg(workspace)
         .env("DECUNE_CONTAINER_TOOLS_DIR", container_tools_dir)
         .env_remove("DECUNE_DOCKER_RESOURCE_LOCK")
@@ -2485,27 +2493,49 @@ fn compose_service_published_host_ports(
     host_ports
 }
 
-fn compose_network_subnet_and_gateway(network: &str) -> (String, String) {
-    let output = docker_output([
-        "network",
-        "inspect",
-        "--format",
-        "{{(index .IPAM.Config 0).Subnet}} {{(index .IPAM.Config 0).Gateway}}",
-        network,
-    ])
-    .must();
-    let mut fields = output.split_whitespace();
-    let subnet = fields
-        .next()
-        .must_msg(format_args!("network subnet was missing: {network}"));
-    let gateway = fields
-        .next()
-        .must_msg(format_args!("network gateway was missing: {network}"));
-    assert!(
-        fields.next().is_none(),
-        "unexpected network IPAM output for {network}: {output}"
+#[derive(Debug, PartialEq, Eq)]
+struct ComposeNetworkIpamDetails {
+    subnet: String,
+    gateway: String,
+    ip_range: String,
+    auxiliary_addresses: BTreeMap<String, String>,
+}
+
+fn compose_network_ipam_details(network: &str) -> ComposeNetworkIpamDetails {
+    let output = docker_output(["network", "inspect", network]).must();
+    let inspect = serde_json::from_str::<Vec<Value>>(&output).must();
+    let config = inspect
+        .first()
+        .and_then(|network| network.pointer("/IPAM/Config/0"))
+        .must_msg(format_args!("network IPAM config was missing: {network}"));
+    ComposeNetworkIpamDetails {
+        subnet: config["Subnet"].as_str().must().to_owned(),
+        gateway: config["Gateway"].as_str().must().to_owned(),
+        ip_range: config["IPRange"].as_str().must().to_owned(),
+        auxiliary_addresses: serde_json::from_value(config["AuxiliaryAddresses"].clone()).must(),
+    }
+}
+
+fn assert_relocated_clone_isolation_ipam(network: &str) -> ComposeNetworkIpamDetails {
+    let ipam = compose_network_ipam_details(network);
+    assert!(ipam.subnet.starts_with("10."));
+    assert!(ipam.subnet.ends_with("/24"));
+    assert_eq!(
+        ipam.ip_range,
+        format!("{}/25", ipv4_address_at_offset(&ipam.subnet, 128))
     );
-    (subnet.to_owned(), gateway.to_owned())
+    let expected_aux = ipv4_address_at_offset(&ipam.subnet, 10);
+    assert_eq!(
+        ipam.auxiliary_addresses.get("reserved").map(String::as_str),
+        Some(expected_aux.as_str())
+    );
+    ipam
+}
+
+fn ipv4_address_at_offset(subnet: &str, offset: u32) -> String {
+    let (network, _) = subnet.split_once('/').must();
+    let network = network.parse::<std::net::Ipv4Addr>().must();
+    std::net::Ipv4Addr::from(u32::from(network) + offset).to_string()
 }
 
 fn decune_ports_json(workspace: &Path) -> Vec<Value> {

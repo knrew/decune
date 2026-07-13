@@ -1,4 +1,11 @@
 version = 1
+use_global_config = false
+
+[credentials.git]
+enabled = false
+
+[credentials.github]
+enabled = false
 
 [compose.clone_isolation]
 enabled = true

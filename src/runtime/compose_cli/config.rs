@@ -222,6 +222,12 @@ pub(crate) struct ComposeConfigIpamConfig {
     pub(crate) subnet: Option<String>,
     #[serde(default)]
     pub(crate) gateway: Option<String>,
+    #[serde(default)]
+    pub(crate) ip_range: Option<String>,
+    #[serde(default)]
+    pub(crate) aux_addresses: BTreeMap<String, String>,
+    #[serde(flatten)]
+    pub(crate) additional_fields: BTreeMap<String, JsonValue>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

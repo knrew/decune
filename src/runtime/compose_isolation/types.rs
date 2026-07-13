@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum ComposeIsolationResourceKind {
@@ -54,6 +54,9 @@ pub(crate) struct ComposeIsolationNetworkRequest {
     pub(crate) ipam_driver: Option<String>,
     pub(crate) subnet: String,
     pub(crate) gateway: Option<String>,
+    pub(crate) ip_range: Option<String>,
+    pub(crate) aux_addresses: BTreeMap<String, String>,
+    pub(crate) unsupported_ipam_fields: BTreeSet<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -97,6 +100,8 @@ pub(crate) struct ComposeIsolationSubnetAllocation {
     pub(crate) requested_subnet: String,
     pub(crate) planned_subnet: String,
     pub(crate) planned_gateway: Option<String>,
+    pub(crate) planned_ip_range: Option<String>,
+    pub(crate) planned_aux_addresses: BTreeMap<String, String>,
     pub(crate) relocated: bool,
 }
 
@@ -140,6 +145,8 @@ pub(crate) struct ComposeIsolationDockerNetwork {
 pub(crate) struct ComposeIsolationDockerIpamConfig {
     pub(crate) subnet: Option<String>,
     pub(crate) gateway: Option<String>,
+    pub(crate) ip_range: Option<String>,
+    pub(crate) auxiliary_addresses: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
