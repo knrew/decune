@@ -19,17 +19,7 @@
 
 2. release PR で標準検証を通します。
 
-   ```sh
-   cargo fmt --all --check
-   cargo clippy --workspace --all-features --all-targets
-   cargo run --locked -p xtask -- workspace-test
-   cargo run --locked -p xtask -- compose-integration
-   cargo run --locked -p xtask -- release-preflight --tag v0.1.0 --version 0.1.0
-   ```
-
-   Docker / Compose integration test を実行できない環境では、未実行範囲を PR と最終報告に明記します。
-
-3. release PR を merge し、default branch の CI が成功していることを確認します。
+3. release PR を merge します。
 
 4. release commit に tag を作成して push します。
 
