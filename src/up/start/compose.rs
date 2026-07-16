@@ -39,11 +39,12 @@ use crate::{
         },
         compose_ports::{
             ComposePortProtocol, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
-            ComposePublishedPortOverride, ComposePublishedPortPlan, ComposePublishedPortPlanEntry,
-            ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
-            ComposePublishedPortStartupDiagnostics, compose_port_protocol_name,
-            compose_published_port_endpoint_display, compose_published_port_plan_has_relocations,
-            compose_published_port_planning_input, validate_compose_published_port_diagnostics,
+            ComposePublishedPortMapping, ComposePublishedPortOverride, ComposePublishedPortPlan,
+            ComposePublishedPortPlanEntry, ComposePublishedPortPlanningInput,
+            ComposePublishedPortReservation, ComposePublishedPortStartupDiagnostics,
+            compose_port_protocol_name, compose_published_port_endpoint_display,
+            compose_published_port_plan_has_relocations, compose_published_port_planning_input,
+            resolve_compose_published_port_mappings, validate_compose_published_port_diagnostics,
         },
         docker_cli::{DockerNetworkInspect, DockerSwarmResourceInspect, DockerVolumeInspect},
     },
@@ -72,7 +73,8 @@ use super::{
     compose_service_forward_requires_recreate, container_tool_platform_for_plan,
     ensure_container_running_after_start, list_compose_primary_containers,
     list_compose_project_containers, list_existing_compose_project_published_ports,
-    prepare_image_for_create, should_reuse_existing_container, started_up_container_with_state,
+    list_external_running_container_published_ports, prepare_image_for_create,
+    should_reuse_existing_container, started_up_container_with_state,
     startup_verification_for_plan, sync_started_compose_state,
     warn_on_compose_published_port_relocations, write_generated_compose_override,
 };
@@ -301,10 +303,19 @@ struct ComposeStartupContext {
     existing_compose_project_containers: Vec<UpContainerSummary>,
     existing_compose_containers: Vec<UpContainerSummary>,
     existing_project_published_ports: Vec<ComposePublishedPortReservation>,
-    published_port_relocation_enabled: bool,
+    published_port_mappings: Vec<ComposePublishedPortMapping>,
+    external_host_reservations: Vec<HostPortReservation>,
+    published_port_planning_enabled: bool,
     name_rewrite_plan: ComposeIsolationNameRewritePlan,
     subnet_plan: ComposeIsolationSubnetPlan,
     endpoint_plan: ComposeIsolationEndpointPlan,
+}
+
+struct ComposePrimaryServiceMetadata {
+    image: String,
+    has_build: bool,
+    user: Option<String>,
+    service: Option<ComposeConfigService>,
 }
 
 impl ComposeStartupContext {
@@ -312,15 +323,13 @@ impl ComposeStartupContext {
         &self,
         preserve_existing_bindings: bool,
     ) -> Option<ComposePublishedPortFinalization<'_>> {
-        let existing_project_published_ports = if preserve_existing_bindings {
-            self.existing_project_published_ports.as_slice()
-        } else {
-            &[]
-        };
-        self.published_port_relocation_enabled
+        self.published_port_planning_enabled
             .then_some(ComposePublishedPortFinalization {
                 input: &self.published_port_policy_input,
-                existing_project_published_ports,
+                mappings: &self.published_port_mappings,
+                existing_project_published_ports: &self.existing_project_published_ports,
+                preserve_existing_bindings,
+                external_host_reservations: &self.external_host_reservations,
             })
     }
 }
@@ -617,19 +626,13 @@ async fn prepare_compose_startup_context(
         .user_config(source.project, &compose_service_validation)
         .await?;
     let user_model = &user_config.model;
-    let active_user_config = if user_lifecycle.services.is_empty() {
-        None
-    } else {
-        Some(
-            compose_introspector
-                .user_config_for_services(
-                    source.project,
-                    &compose_service_validation,
-                    &user_lifecycle.services,
-                )
-                .await?,
-        )
-    };
+    let active_user_config = active_compose_user_config(
+        &compose_introspector,
+        source.project,
+        &compose_service_validation,
+        &user_lifecycle,
+    )
+    .await?;
     let active_user_config = active_user_config.as_ref().unwrap_or(&user_config);
     let (name_rewrite_plan, subnet_plan, endpoint_plan) = run_compose_isolation_preflight(
         client,
@@ -641,17 +644,7 @@ async fn prepare_compose_startup_context(
         options.reuse.rebuild,
     )
     .await?;
-    let compose_primary_image = ComposePrimaryImageResolver {
-        project_name: &project_name,
-        service: &service,
-    }
-    .resolve(user_model)?;
-    let primary_service_has_build = compose_primary_image.has_build;
-    let compose_primary_image = compose_primary_image.base_image;
-    let compose_primary_service = user_model.service(&service).cloned();
-    let compose_primary_service_user = compose_primary_service
-        .as_ref()
-        .and_then(|service| service.user.clone());
+    let primary_service = compose_primary_service_metadata(user_model, &project_name, &service)?;
     let published_port_policy_input = compose_published_port_planning_input(
         &active_user_config.model,
         &active_user_config.published_port_entries,
@@ -659,38 +652,100 @@ async fn prepare_compose_startup_context(
         &user_lifecycle.services,
     );
     validate_compose_published_port_diagnostics(&published_port_policy_input)?;
-    compose_primary_image.clone_into(&mut plan.base_image);
+    let published_port_mappings = resolve_compose_published_port_mappings(
+        &user_config.model,
+        &published_port_policy_input,
+        &plan.config.compose.published_ports.mappings,
+    )?;
+    primary_service.image.clone_into(&mut plan.base_image);
 
     let existing_compose_project_containers =
         list_compose_project_containers(client, workspace.id(), &project_name).await?;
     let existing_compose_containers =
         list_compose_primary_containers(client, workspace.id(), &project_name, &service).await?;
-    let published_port_relocation_enabled = plan.config.compose.published_ports.relocation;
-    let existing_project_published_ports =
-        if published_port_relocation_enabled && !existing_compose_project_containers.is_empty() {
-            list_existing_compose_project_published_ports(client, &project_name).await?
-        } else {
-            Vec::new()
-        };
+    let published_port_planning_enabled =
+        plan.config.compose.published_ports.relocation || !published_port_mappings.is_empty();
+    let (existing_project_published_ports, external_host_reservations) =
+        list_compose_published_port_reservations(
+            client,
+            &project_name,
+            published_port_planning_enabled,
+        )
+        .await?;
 
     Ok(ComposeStartupContext {
         cli,
         compose_capabilities,
         user_lifecycle,
         user_config,
-        compose_primary_image,
-        primary_service_has_build,
-        compose_primary_service_user,
-        compose_primary_service,
+        compose_primary_image: primary_service.image,
+        primary_service_has_build: primary_service.has_build,
+        compose_primary_service_user: primary_service.user,
+        compose_primary_service: primary_service.service,
         published_port_policy_input,
         existing_compose_project_containers,
         existing_compose_containers,
         existing_project_published_ports,
-        published_port_relocation_enabled,
+        published_port_mappings,
+        external_host_reservations,
+        published_port_planning_enabled,
         name_rewrite_plan,
         subnet_plan,
         endpoint_plan,
     })
+}
+
+fn compose_primary_service_metadata(
+    model: &ComposeConfigModel,
+    project_name: &str,
+    service_name: &str,
+) -> Result<ComposePrimaryServiceMetadata> {
+    let image = ComposePrimaryImageResolver {
+        project_name,
+        service: service_name,
+    }
+    .resolve(model)?;
+    let service = model.service(service_name).cloned();
+    let user = service.as_ref().and_then(|service| service.user.clone());
+    Ok(ComposePrimaryServiceMetadata {
+        image: image.base_image,
+        has_build: image.has_build,
+        user,
+        service,
+    })
+}
+
+async fn active_compose_user_config(
+    introspector: &ComposeIntrospector,
+    project: &ComposeProjectPlan,
+    validation: &ComposeServiceValidation<'_>,
+    lifecycle: &ComposeLifecyclePlan,
+) -> Result<Option<ComposeConfigOutput>> {
+    if lifecycle.services.is_empty() {
+        return Ok(None);
+    }
+    introspector
+        .user_config_for_services(project, validation, &lifecycle.services)
+        .await
+        .map(Some)
+}
+
+async fn list_compose_published_port_reservations(
+    client: &DockerClient,
+    project_name: &str,
+    enabled: bool,
+) -> Result<(
+    Vec<ComposePublishedPortReservation>,
+    Vec<HostPortReservation>,
+)> {
+    if !enabled {
+        return Ok((Vec::new(), Vec::new()));
+    }
+
+    Ok((
+        list_existing_compose_project_published_ports(client, project_name).await?,
+        list_external_running_container_published_ports(client, project_name).await?,
+    ))
 }
 
 async fn run_compose_isolation_preflight(
@@ -1498,7 +1553,8 @@ const fn compose_startup_diagnostics<'a>(
     ComposePublishedPortStartupDiagnostics {
         input,
         plan: published_port_plan,
-        relocation_enabled: plan.config.compose.published_ports.relocation,
+        relocation_enabled: plan.config.compose.published_ports.relocation
+            || !published_port_plan.entries.is_empty(),
     }
 }
 

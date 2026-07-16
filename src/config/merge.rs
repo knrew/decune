@@ -11,9 +11,9 @@ use crate::config::{
     },
     resolved::{
         ResolvedAutoPorts, ResolvedCompose, ResolvedComposeCloneIsolationEndpoint,
-        ResolvedCredentials, ResolvedDevcontainer, ResolvedDotfile, ResolvedDotfileDisable,
-        ResolvedDotfileEntry, ResolvedFeature, ResolvedHooks, ResolvedMount, ResolvedPort,
-        ResolvedPorts,
+        ResolvedComposePublishedPortMapping, ResolvedCredentials, ResolvedDevcontainer,
+        ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature,
+        ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
     },
 };
 
@@ -278,6 +278,33 @@ impl MergeAccumulator {
         if let Some(warn_on_relocation) = compose.published_ports.warn_on_relocation {
             self.compose.published_ports.warn_on_relocation = warn_on_relocation;
         }
+        for mapping in &compose.published_ports.mappings {
+            if !mapping.enabled {
+                remove_by_identity(&mut self.compose.published_ports.mappings, |existing| {
+                    existing.service == mapping.service
+                        && existing.target == mapping.target
+                        && existing.protocol == mapping.protocol
+                });
+                continue;
+            }
+            if let Some(host) = mapping.host {
+                replace_by_identity(
+                    &mut self.compose.published_ports.mappings,
+                    ResolvedComposePublishedPortMapping {
+                        service: mapping.service.clone(),
+                        target: mapping.target,
+                        protocol: mapping.protocol,
+                        host,
+                        host_ip: mapping.host_ip.clone(),
+                    },
+                    |left, right| {
+                        left.service == right.service
+                            && left.target == right.target
+                            && left.protocol == right.protocol
+                    },
+                );
+            }
+        }
 
         let clone_isolation = &compose.clone_isolation;
         if let Some(enabled) = clone_isolation.enabled {
@@ -492,6 +519,16 @@ impl MergeAccumulator {
         self.devcontainer.privileged = self.devcontainer_privileged;
         self.ports
             .sort_by_key(|entry| std::cmp::Reverse(entry.source_priority));
+        self.compose
+            .published_ports
+            .mappings
+            .sort_by(|left, right| {
+                (&left.service, left.protocol, left.target).cmp(&(
+                    &right.service,
+                    right.protocol,
+                    right.target,
+                ))
+            });
 
         ResolvedConfig {
             shell: self.shell,
@@ -1997,6 +2034,7 @@ relocation = false
                     published_ports: crate::config::layer::LayerComposePublishedPorts {
                         relocation: Some(true),
                         warn_on_relocation: Some(false),
+                        ..Default::default()
                     },
                     ..Default::default()
                 },
@@ -2007,6 +2045,60 @@ relocation = false
 
         assert!(config.compose.published_ports.relocation);
         assert!(!config.compose.published_ports.warn_on_relocation);
+    }
+
+    #[test]
+    fn compose_published_port_mappings_use_identity_based_layer_precedence() {
+        let config = resolve_config(ConfigMergeInput {
+            global: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 1502
+host_ip = "127.0.0.1"
+
+[[compose.published_ports.mappings]]
+service = "worker"
+target = 8080
+host = 18080
+"#,
+            )),
+            project: Some(raw_layer(
+                r#"
+version = 1
+
+[compose.published_ports]
+
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 2502
+
+[[compose.published_ports.mappings]]
+service = "worker"
+target = 8080
+enabled = false
+"#,
+            )),
+            ..ConfigMergeInput::default()
+        });
+
+        assert_eq!(
+            config.compose.published_ports.mappings,
+            vec![ResolvedComposePublishedPortMapping {
+                service: "app".to_owned(),
+                target: 502,
+                protocol: PortProtocol::Tcp,
+                host: 2502,
+                host_ip: None,
+            }]
+        );
+        assert!(!config.compose.published_ports.relocation);
     }
 
     #[test]

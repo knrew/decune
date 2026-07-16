@@ -69,6 +69,15 @@ pub(crate) struct ComposePublishedPortPlanningInput {
     pub(crate) port_entries: Vec<ComposePortEntry>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposePublishedPortMapping {
+    pub(crate) service: String,
+    pub(crate) port_entry_index: usize,
+    pub(crate) target_port: u16,
+    pub(crate) protocol: ComposePortProtocol,
+    pub(crate) endpoint: ComposePublishedPortEndpoint,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ComposePublishedPortPlan {
     pub(crate) entries: Vec<ComposePublishedPortPlanEntry>,
@@ -135,6 +144,7 @@ pub(crate) enum ComposePublishedPortHostIp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposePublishedPortAllocationReason {
     Available,
+    Mapping,
     Reserved,
     Unavailable,
 }

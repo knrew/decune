@@ -52,6 +52,7 @@
 - published port: Docker が host port と container port を publish する設定。image/Dockerfile モードでは Dev Container `appPort`、Compose モードでは Compose service `ports` で指定する。
 - requested endpoint: 利用者設定や Compose file が要求した host 側 endpoint。
 - planned endpoint: decune が起動前に割り当てる予定の host 側 endpoint。Compose published port relocation では requested endpoint と異なる場合がある。
+- explicit published port mapping: `[[compose.published_ports.mappings]]` で `service + protocol + target` に対応する planned host endpoint を明示する設定。automatic relocation policy とは独立して適用する。
 - subnet pool: clone isolation が固定 IPv4 subnet の workspace 固有 relocation 先を選ぶために利用する IPv4 CIDR 範囲。
 - endpoint 契約: 固定 network address を参照する service environment を、Compose network key と relocation 後の gateway / subnet placeholder に明示的に対応付ける `[[compose.clone_isolation.endpoints]]` 宣言。
 - actual binding: Docker が実際に publish している host 側 binding。

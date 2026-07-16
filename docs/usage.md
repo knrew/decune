@@ -220,7 +220,7 @@ decune ports --all --json
 
 decune が管理している workspace について、現在有効な host 側 port の利用状況を表示します。`forwardPorts`、decune `[[ports]]`、CLI `-p`、automatic forwarding による port forwarding と、image/Dockerfile モードの `appPort`、Compose サービス `ports` による Docker published port を同じ一覧で確認できます。`TYPE` は `forwarded` または `published` です。
 
-通常出力では単一 workspace で `LOCAL`、`TYPE`、`TARGET`、`SOURCE`、`REQUESTED`、`STATE`、`LABEL` を表示します。`--all` では `WORKSPACE` と `ID` も表示します。host port が使用中で forwarding が別 port に fallback した場合や、Compose published port relocation によって requested endpoint の host port と planned endpoint の host port が異なる場合は、`REQUESTED` に要求 endpoint を表示します。
+通常出力では単一 workspace で `LOCAL`、`TYPE`、`TARGET`、`SOURCE`、`REQUESTED`、`STATE`、`LABEL` を表示します。`--all` では `WORKSPACE` と `ID` も表示します。host port が使用中で forwarding が別 port に fallback した場合や、Compose published port mapping/relocation によって requested endpoint と planned endpoint が異なる場合は、`REQUESTED` に要求 endpoint を表示します。host IP だけが異なる場合も `STATE=relocated` です。
 
 Compose published port で host IP が省略されている場合、通常出力では `LOCAL` や `REQUESTED` を `*:<port>` と表示し、explicit `0.0.0.0` と区別します。relocated published port は `STATE` に `relocated` を表示します。
 
@@ -317,6 +317,13 @@ on_auto_forward = "notify"
 relocation = false
 warn_on_relocation = false
 
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+protocol = "tcp"
+host = 1502
+host_ip = "127.0.0.1"
+
 [compose.clone_isolation]
 enabled = false
 
@@ -362,9 +369,26 @@ Docker Compose-based 構成では Docker published port を Compose サービス
 
 `[compose.published_ports].warn_on_relocation = true` にすると、relocation により requested endpoint とは別の planned endpoint を使う場合に、起動時に warning を表示します。既定では warning を出しません。warning を無効にしていても、relocated published port は `decune ports` の `STATE`、`REQUESTED`、JSON 出力で確認できます。既存 Compose project の published binding を変更するために container 再作成が必要な場合は、この設定に関係なく warning を表示し、自動的に再作成して起動を継続します。
 
+特定の fixed TCP published port を常に同じ host endpoint へ割り当てる場合は、`[[compose.published_ports.mappings]]` を使います。mapping は `relocation = false` でも適用されます。
+
+```toml
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+protocol = "tcp" # 省略時も tcp
+host = 1502
+host_ip = "127.0.0.1" # 省略時は Compose ports の host IP を継承
+```
+
+identity は `service + protocol + target` です。global mapping は project config の同一 identity で置換でき、project 側で `enabled = false` を指定すると削除できます。enabled mapping の `host` は必須です。mapping を追加・変更・削除すると config hash が変わるため、既存 project へ反映するときは `decune rebuild` を使ってください。`host_ip` だけの変更も endpoint relocation として扱い、rebuild で container を再作成します。
+
+mapping は active な Compose service の fixed TCP published port 1件に一意に対応する必要があります。存在しない service、対応 entry なし、同じ target の複数 entry、UDP/range/container-only entry は `compose_published_port_mapping_invalid` になります。desired endpoint が別の forwarding、running Docker container、同じ計画の published port、または host process と衝突した場合は `compose_published_port_mapping_conflict` になり、自動で別 port へ fallback しません。
+
 relocation の対象は fixed TCP の Compose published port だけです。たとえば `3000:3000` や `127.0.0.1:3000:3000` は relocation 対象です。UDP、range、host port を省略した port entry は relocation 対象外です。たとえば `3000:3000/udp`、`3000-3005:3000-3005`、`3000` は relocation されません。
 
-privileged port など decune process が権限上 TCP bind probe できない published host port は、requested port や同じ Compose project の既存 binding としては維持し、relocation 先候補としては使いません。実際に他 process や container が使っていた場合は、Docker/Compose 起動時の published port collision diagnostic になります。
+mapping または relocation が有効な場合、decune は接続先 Docker daemon の running container が持つ actual TCP published binding を予約として扱い、requested port と relocation candidate の両方から除外します。現在の Compose project 自身は除外し、同 project 内の binding は既存 binding として扱います。IPv4/IPv6 wildcard の衝突規則は forwarding と共通です。
+
+privileged port など decune process が権限上 TCP bind probe できない published host port は、requested port や同じ Compose project の既存 binding としては維持し、relocation 先候補としては使いません。Docker actual binding reservation で検出できない host process が使用していた場合は、Docker/Compose 起動時の published port collision diagnostic になります。
 
 同じ Compose project に既存 container がある場合、decune は同一 service / protocol / target port の既存 published binding を requested port より優先して維持します。いったん `3000` から `3001` に relocate された binding は、`3000` を塞いでいた process が終了しても `decune up` では `3001` のまま維持されます。requested port へ戻すには `decune rebuild` を実行します。
 
@@ -376,7 +400,7 @@ replica 数が 2 以上の service が fixed TCP published host port を持つ�
 
 invalid host IP、malformed port syntax、想定外の availability probe error などは simple collision とは区別し、decune が判定できる場合は `compose_published_port_invalid` error として表示します。
 
-relocation により実際に host port を変更する場合は、generated Compose override で Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要です。version 判定不能または古い Compose では起動前に error になります。
+mapping または relocation により実際に host port か host IP を変更する場合は、generated Compose override で Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要です。version 判定不能または古い Compose では起動前に error になります。
 
 relocation は最終的な `forwardPorts` / decune `[[ports]]` / CLI `-p` の host port 予約も考慮します。同じ Compose project が前回 relocation で使っている同じ Compose service の published host port は、再作成時に再利用できるものとして扱います。
 
@@ -392,6 +416,8 @@ Compose published port 関連の代表的な diagnostic code と対処は次の�
 - `compose_published_port_unsupported`: startup failure が、host endpoint を安全に照合できる範囲で relocation 対象外 entry に関係しています。UDP、range、`network_mode: host` などの Compose `ports` を確認してください。
 - `compose_published_port_invalid`: invalid host IP、malformed port syntax、想定外の availability probe error など、simple collision ではない状態です。Compose `ports` の記述を確認してください。
 - `compose_published_port_multi_replica_unsupported`: replica 数が 2 以上の service が fixed TCP published host port を持っています。container-only port、明示的に分けた複数 service、Compose port range、または replica 数 1 を使ってください。
+- `compose_published_port_mapping_invalid`: mapping が active service の fixed TCP published port に一意に対応しません。`service`、`target`、`protocol` と Compose `ports` を確認してください。
+- `compose_published_port_mapping_conflict`: mapping の desired endpoint が使用中または予約済みです。使用中の forwarding、process、container、workspace を停止するか、mapping の `host` / `host_ip` を変更してください。automatic relocation へは fallback しません。
 
 decune port forwarding と、Dev Container `appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error です。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧に表示されます。
 

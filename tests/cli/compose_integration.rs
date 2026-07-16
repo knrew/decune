@@ -601,6 +601,123 @@ fn compose_integration_published_port_relocation_starts_second_workspace_and_rep
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_explicit_published_port_mapping_applies_without_relocation_and_recreates_for_host_ip_change()
+ {
+    let Some(listeners) = reserved_localhost_port_block_with_room(2, 0) else {
+        return;
+    };
+    let requested_port = listeners[0].local_addr().unwrap().port();
+    let mapped_port = requested_port + 1;
+    drop(listeners);
+    let workspace = compose_published_primary_workspace(requested_port);
+    let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
+    write_compose_published_port_mapping(workspace.path(), mapped_port, "0.0.0.0");
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    assert_eq!(
+        compose_service_published_bindings(workspace.path(), "app", "3000/tcp"),
+        vec![("0.0.0.0".to_owned(), mapped_port)]
+    );
+    let first_id = compose_project_containers(workspace.path())
+        .unwrap()
+        .into_iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist")
+        .id;
+
+    write_compose_published_port_mapping(workspace.path(), mapped_port, "127.0.0.1");
+    decune()
+        .args(["rebuild", "--detach"])
+        .arg(workspace.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Started dev container"));
+
+    assert_eq!(
+        compose_service_published_bindings(workspace.path(), "app", "3000/tcp"),
+        vec![("127.0.0.1".to_owned(), mapped_port)]
+    );
+    let second_id = compose_project_containers(workspace.path())
+        .unwrap()
+        .into_iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some("app")
+        })
+        .expect("primary Compose service container should exist")
+        .id;
+    assert_ne!(
+        second_id, first_id,
+        "host-IP-only mapping change must recreate"
+    );
+
+    let ports = decune_ports_json(workspace.path());
+    let published = ports
+        .iter()
+        .find(|port| port["type"] == "published" && port["service"] == "app")
+        .unwrap_or_else(|| panic!("mapped app port was not reported: {ports:#?}"));
+    assert_eq!(published["requested"]["host_port"], requested_port);
+    assert_eq!(published["planned"]["host_ip"], "127.0.0.1");
+    assert_eq!(published["planned"]["host_port"], mapped_port);
+    assert_eq!(published["relocated"], true);
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
+fn compose_integration_explicit_mapping_reports_conflict_with_other_running_container() {
+    let Some(listeners) = reserved_localhost_port_block_with_room(2, 0) else {
+        return;
+    };
+    let mapped_port = listeners[0].local_addr().unwrap().port();
+    let requested_port = mapped_port + 1;
+    drop(listeners);
+    let owner = compose_published_primary_workspace(mapped_port);
+    let mapped = compose_published_primary_workspace(requested_port);
+    let owner_tools = fake_container_tools_bundle(&owner.workspace);
+    let mapped_tools = fake_container_tools_bundle(&mapped.workspace);
+    write_compose_published_port_mapping(mapped.path(), mapped_port, "127.0.0.1");
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(owner.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &owner_tools)
+        .assert()
+        .success();
+
+    decune()
+        .args(["up", "--detach"])
+        .arg(mapped.path())
+        .env("DECUNE_CONTAINER_TOOLS_DIR", &mapped_tools)
+        .assert()
+        .failure()
+        .stdout(predicate::str::is_empty())
+        .stderr(
+            predicate::str::contains("compose_published_port_mapping_conflict")
+                .and(predicate::str::contains(format!("127.0.0.1:{mapped_port}")))
+                .and(predicate::str::contains("do not fall back")),
+        );
+
+    assert!(
+        compose_project_containers(mapped.path())
+            .unwrap()
+            .is_empty(),
+        "mapping conflict must fail before Docker Compose creates containers"
+    );
+}
+
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_published_port_relocation_recreates_stopped_project_when_binding_must_move()
 {
     let Some(requested_listener) = reserved_localhost_port_with_room_for_relocation() else {
@@ -1853,6 +1970,28 @@ fn compose_published_primary_workspace(host_port: u16) -> ComposeFixtureWorkspac
     ComposeFixtureWorkspace { workspace }
 }
 
+fn write_compose_published_port_mapping(workspace: &Path, host: u16, host_ip: &str) {
+    fs::create_dir_all(workspace.join(".decune")).must();
+    fs::write(
+        workspace.join(".decune/config.toml"),
+        format!(
+            r#"
+            version = 1
+
+            [compose.published_ports]
+
+            [[compose.published_ports.mappings]]
+            service = "app"
+            target = 3000
+            protocol = "tcp"
+            host = {host}
+            host_ip = "{host_ip}"
+            "#
+        ),
+    )
+    .must();
+}
+
 fn compose_fixed_subnet_workspace(subnet: &str) -> ComposeFixtureWorkspace {
     match compose_integration_readiness() {
         ComposeIntegrationDecision::Run => {}
@@ -2530,6 +2669,47 @@ fn compose_service_published_host_ports(
     host_ports.sort_unstable();
     host_ports.dedup();
     host_ports
+}
+
+fn compose_service_published_bindings(
+    workspace: &Path,
+    service: &str,
+    container_port_key: &str,
+) -> Vec<(String, u16)> {
+    let containers = compose_project_containers(workspace).must();
+    let container_id = containers
+        .iter()
+        .find(|container| {
+            compose_label(&container.labels, "com.docker.compose.service") == Some(service)
+        })
+        .must_msg(format_args!(
+            "Compose service container was not found: {service}"
+        ))
+        .id
+        .as_str();
+    let output = docker_output(["container", "inspect", container_id]).must();
+    let inspect = serde_json::from_str::<Vec<Value>>(&output).must();
+    let ports = inspect
+        .first()
+        .and_then(|container| container.pointer("/NetworkSettings/Ports"))
+        .and_then(Value::as_object)
+        .and_then(|ports| ports.get(container_port_key))
+        .and_then(Value::as_array)
+        .must_msg(format_args!(
+            "published port binding was not found: {container_port_key}"
+        ));
+
+    let mut bindings = ports
+        .iter()
+        .filter_map(|binding| {
+            let host_ip = binding.get("HostIp")?.as_str()?;
+            let host_port = binding.get("HostPort")?.as_str()?.parse::<u16>().ok()?;
+            Some((host_ip.to_owned(), host_port))
+        })
+        .collect::<Vec<_>>();
+    bindings.sort();
+    bindings.dedup();
+    bindings
 }
 
 #[derive(Debug, PartialEq, Eq)]

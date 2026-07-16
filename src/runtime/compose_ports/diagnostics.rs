@@ -4,6 +4,8 @@ use crate::runtime::compose_ports::{
     compose_published_port_endpoint_display,
 };
 
+pub(crate) use crate::config::schema::COMPOSE_PUBLISHED_PORT_MAPPING_INVALID;
+
 use super::endpoint::{endpoint_for_entry, target_port_for_entry};
 use super::planning::ComposePublishedPortPlanError;
 
@@ -15,6 +17,8 @@ pub(crate) const COMPOSE_PUBLISHED_PORT_COLLISION: &str = "compose_published_por
 pub(crate) const COMPOSE_PUBLISHED_PORT_RELOCATION_FAILED: &str =
     "compose_published_port_relocation_failed";
 pub(crate) const COMPOSE_PUBLISHED_PORT_BIND_RACE: &str = "compose_published_port_bind_race";
+pub(crate) const COMPOSE_PUBLISHED_PORT_MAPPING_CONFLICT: &str =
+    "compose_published_port_mapping_conflict";
 
 #[derive(Debug)]
 pub(crate) enum ComposePublishedPortDiagnostic {
@@ -47,6 +51,12 @@ pub(crate) enum ComposePublishedPortDiagnostic {
         reason: String,
     },
     Invalid {
+        detail: String,
+    },
+    MappingInvalid {
+        detail: String,
+    },
+    MappingConflict {
         detail: String,
     },
     RelocationFailed {
@@ -85,6 +95,9 @@ impl ComposePublishedPortDiagnostic {
                     "Internal Compose published port state is inconsistent for service `{service}` port entry {port_entry_index}: {detail}"
                 ),
             },
+            ComposePublishedPortPlanError::MappingConflict { detail } => {
+                Self::MappingConflict { detail }
+            }
         }
     }
 }
@@ -143,6 +156,16 @@ impl std::fmt::Display for ComposePublishedPortDiagnostic {
             Self::Invalid { detail } => {
                 write!(formatter, "{COMPOSE_PUBLISHED_PORT_INVALID}: {detail}")
             }
+            Self::MappingInvalid { detail } => {
+                write!(
+                    formatter,
+                    "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: {detail}"
+                )
+            }
+            Self::MappingConflict { detail } => write!(
+                formatter,
+                "{COMPOSE_PUBLISHED_PORT_MAPPING_CONFLICT}: {detail}"
+            ),
             Self::RelocationFailed { detail } => write!(
                 formatter,
                 "{COMPOSE_PUBLISHED_PORT_RELOCATION_FAILED}: {detail}"

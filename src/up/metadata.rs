@@ -354,7 +354,10 @@ mod tests {
             &plan,
             Some(ComposePublishedPortFinalization {
                 input: &input,
+                mappings: &[],
                 existing_project_published_ports: &existing,
+                preserve_existing_bindings: true,
+                external_host_reservations: &[],
             }),
         )
         .unwrap();

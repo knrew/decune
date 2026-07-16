@@ -326,7 +326,9 @@ pub(super) fn finalized_compose_published_ports(
     plan: &UpPlan,
     context: Option<ComposePublishedPortFinalization<'_>>,
 ) -> Result<(ComposePublishedPortPlan, ComposePublishedPortOverride)> {
-    if !plan.config.compose.published_ports.relocation {
+    if !plan.config.compose.published_ports.relocation
+        && plan.config.compose.published_ports.mappings.is_empty()
+    {
         return Ok((
             ComposePublishedPortPlan::default(),
             ComposePublishedPortOverride::default(),
@@ -341,9 +343,12 @@ pub(super) fn finalized_compose_published_ports(
 
     let port_plan = plan_compose_published_ports_with_existing_project(
         context.input,
-        true,
+        plan.config.compose.published_ports.relocation,
         &plan.forward_ports,
+        context.mappings,
         context.existing_project_published_ports,
+        context.preserve_existing_bindings,
+        context.external_host_reservations,
     )
     .map_err(ComposePublishedPortDiagnostic::from_plan_error)?;
     let port_override = compose_published_port_override(&context.input.port_entries, &port_plan)?;

@@ -123,6 +123,7 @@ use feature_entrypoint::{
 use listing::{
     list_compose_forwarding_service_containers, list_compose_primary_containers,
     list_compose_project_containers, list_existing_compose_project_published_ports,
+    list_external_running_container_published_ports,
 };
 use reuse::{
     ExistingContainerReusePolicy, compose_service_forward_requires_recreate,
@@ -150,12 +151,12 @@ pub(in crate::up) async fn ensure_container_started(
     )?;
     run_host_initialize_lifecycle(&preliminary_plan.config, workspace.root())?;
     if preliminary_plan.compose_project.is_some() {
-        return ensure_compose_project_started(
+        return Box::pin(ensure_compose_project_started(
             workspace,
             preliminary_plan,
             options,
             forwarding_resolution,
-        )
+        ))
         .await;
     }
     Box::pin(ensure_image_container_started(

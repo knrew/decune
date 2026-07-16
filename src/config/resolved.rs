@@ -11,7 +11,7 @@ use crate::config::{
     path::ConfigPathOrigin,
     types::{
         DEFAULT_AUTO_PORT_MAX, DEFAULT_AUTO_PORT_MIN, DotfileConflict, GitHttpsMode,
-        GithubCredentialsMode, MountCreate, MountType, OnAutoForward, SshAgentMode,
+        GithubCredentialsMode, MountCreate, MountType, OnAutoForward, PortProtocol, SshAgentMode,
     },
 };
 use crate::runtime::compose_isolation::{COMPOSE_CLONE_ISOLATION_INVALID, Ipv4Cidr};
@@ -109,6 +109,16 @@ pub(crate) struct ResolvedCompose {
 pub(crate) struct ResolvedComposePublishedPorts {
     pub(crate) relocation: bool,
     pub(crate) warn_on_relocation: bool,
+    pub(crate) mappings: Vec<ResolvedComposePublishedPortMapping>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedComposePublishedPortMapping {
+    pub(crate) service: String,
+    pub(crate) target: u16,
+    pub(crate) protocol: PortProtocol,
+    pub(crate) host: u16,
+    pub(crate) host_ip: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]

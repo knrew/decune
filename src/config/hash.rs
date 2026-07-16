@@ -462,6 +462,31 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
 fn write_config_compose(writer: &mut CanonicalWriter, config: &ResolvedConfig) {
     let clone_isolation = &config.compose.clone_isolation;
     writer.object("Compose", |writer| {
+        if !config.compose.published_ports.mappings.is_empty() {
+            writer.field("published_port_mappings", |writer| {
+                writer.seq(
+                    config.compose.published_ports.mappings.iter(),
+                    |writer, mapping| {
+                        writer.object("PublishedPortMapping", |writer| {
+                            writer.field("service", |writer| writer.string(&mapping.service));
+                            writer.field("target", |writer| {
+                                writer.string(&mapping.target.to_string());
+                            });
+                            writer.field("protocol", |writer| {
+                                writer.string(match mapping.protocol {
+                                    PortProtocol::Tcp => "tcp",
+                                    PortProtocol::Udp => "udp",
+                                });
+                            });
+                            writer.field("host", |writer| writer.string(&mapping.host.to_string()));
+                            writer.field("host_ip", |writer| {
+                                writer.option_string(mapping.host_ip.as_deref());
+                            });
+                        });
+                    },
+                );
+            });
+        }
         writer.field("clone_isolation", |writer| {
             writer.object("CloneIsolation", |writer| {
                 writer.field("enabled", |writer| writer.bool(clone_isolation.enabled));
@@ -1810,7 +1835,7 @@ shell = false
     }
 
     #[test]
-    fn compose_published_ports_policy_does_not_change_hash_yet() {
+    fn compose_published_ports_relocation_policy_does_not_change_hash() {
         let disabled = resolved_config("version = 1\n");
         let enabled = resolved_config(
             r"
@@ -1823,6 +1848,40 @@ warn_on_relocation = true
         );
 
         assert_eq!(hash_for(&disabled), hash_for(&enabled));
+    }
+
+    #[test]
+    fn compose_published_port_mapping_changes_hash() {
+        let baseline = resolved_config("version = 1\n");
+        let mapped = resolved_config(
+            r#"
+version = 1
+
+[compose.published_ports]
+
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 1502
+host_ip = "127.0.0.1"
+"#,
+        );
+        let changed_host_ip = resolved_config(
+            r#"
+version = 1
+
+[compose.published_ports]
+
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 1502
+host_ip = "0.0.0.0"
+"#,
+        );
+
+        assert_ne!(hash_for(&baseline), hash_for(&mapped));
+        assert_ne!(hash_for(&mapped), hash_for(&changed_host_ip));
     }
 
     #[test]

@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    net::IpAddr,
+};
 
 use serde::{
     Deserialize, Deserializer,
@@ -243,7 +246,7 @@ pub(crate) struct RawPortConfig {
     pub(crate) label: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum RawPortProtocol {
     Tcp,
@@ -276,11 +279,108 @@ pub(crate) struct RawComposeConfig {
     pub(crate) clone_isolation: Option<RawComposeCloneIsolationConfig>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
-#[serde(deny_unknown_fields)]
+pub(crate) const COMPOSE_PUBLISHED_PORT_MAPPING_INVALID: &str =
+    "compose_published_port_mapping_invalid";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawComposePublishedPortsConfig {
     pub(crate) relocation: Option<bool>,
     pub(crate) warn_on_relocation: Option<bool>,
+    pub(crate) mappings: Vec<RawComposePublishedPortMappingConfig>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawComposePublishedPortMappingConfig {
+    pub(crate) enabled: Option<bool>,
+    pub(crate) service: String,
+    pub(crate) target: u16,
+    pub(crate) protocol: Option<RawPortProtocol>,
+    pub(crate) host: Option<u16>,
+    pub(crate) host_ip: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawComposePublishedPortsConfigFields {
+    relocation: Option<bool>,
+    warn_on_relocation: Option<bool>,
+    #[serde(default)]
+    mappings: Vec<RawComposePublishedPortMappingConfig>,
+}
+
+impl<'de> Deserialize<'de> for RawComposePublishedPortsConfig {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let fields = RawComposePublishedPortsConfigFields::deserialize(deserializer)?;
+        validate_compose_published_port_mappings::<D::Error>(&fields.mappings)?;
+        Ok(Self {
+            relocation: fields.relocation,
+            warn_on_relocation: fields.warn_on_relocation,
+            mappings: fields.mappings,
+        })
+    }
+}
+
+fn validate_compose_published_port_mappings<E>(
+    mappings: &[RawComposePublishedPortMappingConfig],
+) -> Result<(), E>
+where
+    E: de::Error,
+{
+    let mut identities = BTreeSet::new();
+    for mapping in mappings {
+        let protocol = mapping.protocol.unwrap_or(RawPortProtocol::Tcp);
+        let identity = (mapping.service.clone(), protocol, mapping.target);
+        if !identities.insert(identity) {
+            return Err(E::custom(format!(
+                "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: duplicate Compose published port mapping for service `{}`, target {}/tcp",
+                mapping.service, mapping.target
+            )));
+        }
+        if mapping.service.trim().is_empty() {
+            return Err(E::custom(
+                "compose_published_port_mapping_invalid: Compose published port mapping service must not be empty",
+            ));
+        }
+        if mapping.target == 0 {
+            return Err(E::custom(format!(
+                "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: Compose published port mapping target must be in 1..=65535 for service `{}`",
+                mapping.service
+            )));
+        }
+        if !mapping.enabled.unwrap_or(true) {
+            if mapping.host.is_some() || mapping.host_ip.is_some() {
+                return Err(E::custom(
+                    "compose_published_port_mapping_invalid: disabled Compose published port mapping must contain only its service, target, protocol, and enabled fields",
+                ));
+            }
+            continue;
+        }
+        let Some(host) = mapping.host else {
+            return Err(E::custom(format!(
+                "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: Compose published port mapping host is required for service `{}`, target {}/tcp",
+                mapping.service, mapping.target
+            )));
+        };
+        if host == 0 {
+            return Err(E::custom(format!(
+                "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: Compose published port mapping host must be in 1..=65535 for service `{}`, target {}/tcp",
+                mapping.service, mapping.target
+            )));
+        }
+        if let Some(host_ip) = &mapping.host_ip
+            && host_ip.parse::<IpAddr>().is_err()
+        {
+            return Err(E::custom(format!(
+                "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: Compose published port mapping host_ip is not a valid IP address for service `{}`, target {}/tcp: {host_ip}",
+                mapping.service, mapping.target
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -640,19 +740,95 @@ on_auto_forward = "{input}"
     #[test]
     fn compose_published_ports_config_is_supported() {
         let config: RawDecuneConfig = toml::from_str(
-            r"
+            r#"
 version = 1
 
 [compose.published_ports]
 relocation = true
 warn_on_relocation = true
-",
+
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 1502
+host_ip = "127.0.0.1"
+"#,
         )
         .expect("test config should parse");
 
         let published_ports = config.compose.published_ports.unwrap();
         assert_eq!(published_ports.relocation, Some(true));
         assert_eq!(published_ports.warn_on_relocation, Some(true));
+        assert_eq!(published_ports.mappings.len(), 1);
+        assert_eq!(published_ports.mappings[0].service, "app");
+        assert_eq!(published_ports.mappings[0].target, 502);
+        assert_eq!(published_ports.mappings[0].protocol, None);
+        assert_eq!(published_ports.mappings[0].host, Some(1502));
+        assert_eq!(
+            published_ports.mappings[0].host_ip.as_deref(),
+            Some("127.0.0.1")
+        );
+    }
+
+    #[rstest]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 1502
+
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 2502
+"#,
+        "duplicate Compose published port mapping"
+    )]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+enabled = false
+host = 1502
+"#,
+        "disabled Compose published port mapping"
+    )]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 0
+"#,
+        "host must be in 1..=65535"
+    )]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+host = 1502
+host_ip = "localhost"
+"#,
+        "host_ip is not a valid IP address"
+    )]
+    fn compose_published_port_mapping_rejects_invalid_config(
+        #[case] mapping: &str,
+        #[case] expected: &str,
+    ) {
+        let error = toml::from_str::<RawDecuneConfig>(&format!(
+            "version = 1\n\n[compose.published_ports]\n{mapping}"
+        ))
+        .expect_err("invalid mapping should be rejected");
+
+        let message = error.to_string();
+        assert!(
+            message.contains(COMPOSE_PUBLISHED_PORT_MAPPING_INVALID),
+            "unexpected error: {message}"
+        );
+        assert!(message.contains(expected), "unexpected error: {message}");
     }
 
     #[test]

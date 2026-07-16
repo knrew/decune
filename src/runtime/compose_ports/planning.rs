@@ -7,16 +7,17 @@ use crate::{
     },
     runtime::compose_ports::{
         ComposePortEligibility, ComposePortEntry, ComposePublishedPortAllocationReason,
-        ComposePublishedPortEndpoint, ComposePublishedPortPlan, ComposePublishedPortPlanEntry,
-        ComposePublishedPortPlanEntryType, ComposePublishedPortPlanSource,
-        ComposePublishedPortPlannedEndpointProbe, ComposePublishedPortPlanningInput,
-        ComposePublishedPortReservation, ComposePublishedPortReservationSource,
+        ComposePublishedPortEndpoint, ComposePublishedPortMapping, ComposePublishedPortPlan,
+        ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
+        ComposePublishedPortPlanSource, ComposePublishedPortPlannedEndpointProbe,
+        ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
+        ComposePublishedPortReservationSource,
     },
 };
 
 use super::endpoint::{
-    endpoint_for_entry, host_ip_display_value, protocol_order, requested_host_port,
-    reservation_host_ip, target_port_for_entry,
+    compose_published_port_endpoint_display, endpoint_for_entry, host_ip_display_value,
+    protocol_order, requested_host_port, reservation_host_ip, target_port_for_entry,
 };
 
 #[derive(Debug)]
@@ -34,6 +35,9 @@ pub(crate) enum ComposePublishedPortPlanError {
     InconsistentEntry {
         service: String,
         port_entry_index: usize,
+        detail: String,
+    },
+    MappingConflict {
         detail: String,
     },
 }
@@ -66,6 +70,7 @@ impl std::fmt::Display for ComposePublishedPortPlanError {
                 formatter,
                 "Internal Compose published port invariant failed for service `{service}` port entry {port_entry_index}: {detail}"
             ),
+            Self::MappingConflict { detail } => formatter.write_str(detail),
         }
     }
 }
@@ -76,51 +81,242 @@ pub(crate) fn plan_compose_published_ports_with_existing_project(
     input: &ComposePublishedPortPlanningInput,
     relocation_enabled: bool,
     existing_forward_ports: &[ResolvedForwardPort],
+    mappings: &[ComposePublishedPortMapping],
     existing_project_published_ports: &[ComposePublishedPortReservation],
+    preserve_existing_bindings: bool,
+    external_host_reservations: &[HostPortReservation],
 ) -> std::result::Result<ComposePublishedPortPlan, ComposePublishedPortPlanError> {
-    plan_compose_published_ports_with(
+    plan_compose_published_ports_inner(
         input,
         relocation_enabled,
         existing_forward_ports,
-        existing_project_published_ports,
+        mappings,
+        ExistingProjectBindings::new(existing_project_published_ports, preserve_existing_bindings),
+        external_host_reservations,
         host_port_probe,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn plan_compose_published_ports_with<F>(
     input: &ComposePublishedPortPlanningInput,
     relocation_enabled: bool,
     existing_forward_ports: &[ResolvedForwardPort],
     existing_project_published_ports: &[ComposePublishedPortReservation],
+    host_port_probe: F,
+) -> std::result::Result<ComposePublishedPortPlan, ComposePublishedPortPlanError>
+where
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
+{
+    plan_compose_published_ports_inner(
+        input,
+        relocation_enabled,
+        existing_forward_ports,
+        &[],
+        ExistingProjectBindings::new(existing_project_published_ports, true),
+        &[],
+        host_port_probe,
+    )
+}
+
+#[cfg(test)]
+pub(crate) fn plan_compose_published_ports_with_mappings<F>(
+    input: &ComposePublishedPortPlanningInput,
+    relocation_enabled: bool,
+    existing_forward_ports: &[ResolvedForwardPort],
+    mappings: &[ComposePublishedPortMapping],
+    existing_project_published_ports: &[ComposePublishedPortReservation],
+    external_host_reservations: &[HostPortReservation],
+    host_port_probe: F,
+) -> std::result::Result<ComposePublishedPortPlan, ComposePublishedPortPlanError>
+where
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
+{
+    plan_compose_published_ports_inner(
+        input,
+        relocation_enabled,
+        existing_forward_ports,
+        mappings,
+        ExistingProjectBindings::new(existing_project_published_ports, true),
+        external_host_reservations,
+        host_port_probe,
+    )
+}
+
+fn plan_compose_published_ports_inner<F>(
+    input: &ComposePublishedPortPlanningInput,
+    relocation_enabled: bool,
+    existing_forward_ports: &[ResolvedForwardPort],
+    mappings: &[ComposePublishedPortMapping],
+    existing_project_bindings: ExistingProjectBindings<'_>,
+    external_host_reservations: &[HostPortReservation],
     mut host_port_probe: F,
 ) -> std::result::Result<ComposePublishedPortPlan, ComposePublishedPortPlanError>
 where
     F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
 {
-    if !relocation_enabled {
+    if !relocation_enabled && mappings.is_empty() {
         return Ok(ComposePublishedPortPlan::default());
     }
 
     let mut reservations =
         resolved_forward_port_reservations(existing_forward_ports).collect::<Vec<_>>();
-    let running_project_reservations =
-        running_project_published_port_reservations(existing_project_published_ports);
-    let mut plan_entries = Vec::new();
+    reservations.extend(external_host_reservations.iter().cloned());
+    let mut state = PublishedPortPlanningState {
+        existing_project_published_ports: existing_project_bindings.all,
+        reusable_existing_project_published_ports: existing_project_bindings.reusable,
+        running_project_reservations: running_project_published_port_reservations(
+            existing_project_bindings.reusable,
+        ),
+        reservations,
+        plan_entries: Vec::new(),
+    };
+    let ordered_entries = ordered_eligible_port_entries(input);
 
-    for entry in ordered_eligible_port_entries(input) {
+    plan_explicit_mappings(&ordered_entries, mappings, &mut state, &mut host_port_probe)?;
+    plan_unmapped_entries(
+        &ordered_entries,
+        relocation_enabled,
+        mappings,
+        &mut state,
+        &mut host_port_probe,
+    )?;
+
+    let order = ordered_entries
+        .iter()
+        .enumerate()
+        .map(|(index, entry)| ((entry.service.as_str(), entry.entry_index), index))
+        .collect::<BTreeMap<_, _>>();
+    state.plan_entries.sort_by_key(|entry| {
+        order
+            .get(&(entry.service.as_str(), entry.port_entry_index))
+            .copied()
+            .unwrap_or(usize::MAX)
+    });
+
+    Ok(ComposePublishedPortPlan {
+        entries: state.plan_entries,
+    })
+}
+
+#[derive(Clone, Copy)]
+struct ExistingProjectBindings<'a> {
+    all: &'a [ComposePublishedPortReservation],
+    reusable: &'a [ComposePublishedPortReservation],
+}
+
+impl<'a> ExistingProjectBindings<'a> {
+    const fn new(all: &'a [ComposePublishedPortReservation], preserve: bool) -> Self {
+        Self {
+            all,
+            reusable: if preserve { all } else { &[] },
+        }
+    }
+}
+
+struct PublishedPortPlanningState<'a> {
+    existing_project_published_ports: &'a [ComposePublishedPortReservation],
+    reusable_existing_project_published_ports: &'a [ComposePublishedPortReservation],
+    running_project_reservations: Vec<HostPortReservation>,
+    reservations: Vec<HostPortReservation>,
+    plan_entries: Vec<ComposePublishedPortPlanEntry>,
+}
+
+fn plan_explicit_mappings<F>(
+    ordered_entries: &[&ComposePortEntry],
+    mappings: &[ComposePublishedPortMapping],
+    state: &mut PublishedPortPlanningState<'_>,
+    host_port_probe: &mut F,
+) -> std::result::Result<(), ComposePublishedPortPlanError>
+where
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
+{
+    for mapping in mappings {
+        let entry = ordered_entries
+            .iter()
+            .copied()
+            .find(|entry| mapping_matches_entry(mapping, entry))
+            .ok_or_else(|| ComposePublishedPortPlanError::InconsistentEntry {
+                service: mapping.service.clone(),
+                port_entry_index: mapping.port_entry_index,
+                detail: "resolved mapping does not match an eligible Compose port entry".to_owned(),
+            })?;
         let requested = endpoint_for_entry(entry)?;
         let target_port = target_port_for_entry(entry)?;
+        let effective_reservations = state
+            .reservations
+            .iter()
+            .chain(
+                running_project_published_port_reservations_excluding_entry(
+                    state.existing_project_published_ports,
+                    entry,
+                )
+                .iter(),
+            )
+            .cloned()
+            .collect::<Vec<_>>();
+        let desired_endpoint_is_held_by_current_entry = state
+            .existing_project_published_ports
+            .iter()
+            .any(|reservation| {
+                reservation.source == ComposePublishedPortReservationSource::RunningContainer
+                    && existing_project_published_port_identity_matches_entry(reservation, entry)
+                    && host_ips_conflict(&reservation.endpoint, &mapping.endpoint)
+                    && reservation.endpoint.host_port == mapping.endpoint.host_port
+            });
+        let decision = decision_for_mapping(
+            mapping,
+            &requested,
+            &effective_reservations,
+            desired_endpoint_is_held_by_current_entry,
+            host_port_probe,
+        )?;
+        state.reservations.push(HostPortReservation {
+            host_ip: reservation_host_ip(&decision.planned).to_owned(),
+            host: decision.planned.host_port,
+        });
+        state
+            .plan_entries
+            .push(plan_entry(entry, requested, target_port, decision));
+    }
+    Ok(())
+}
+
+fn plan_unmapped_entries<F>(
+    ordered_entries: &[&ComposePortEntry],
+    relocation_enabled: bool,
+    mappings: &[ComposePublishedPortMapping],
+    state: &mut PublishedPortPlanningState<'_>,
+    host_port_probe: &mut F,
+) -> std::result::Result<(), ComposePublishedPortPlanError>
+where
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
+{
+    for &entry in ordered_entries {
+        if mappings
+            .iter()
+            .any(|mapping| mapping_matches_entry(mapping, entry))
+        {
+            continue;
+        }
+        let requested = endpoint_for_entry(entry)?;
+        let target_port = target_port_for_entry(entry)?;
+        if !relocation_enabled {
+            plan_unrelocated_entry(entry, requested, target_port, mappings, state)?;
+            continue;
+        }
         let requested_host_ip = reservation_host_ip(&requested);
         let existing_endpoint = existing_project_published_port_candidate(
-            existing_project_published_ports,
+            state.reusable_existing_project_published_ports,
             entry,
             &requested,
-            &reservations,
-            &mut host_port_probe,
+            &state.reservations,
+            host_port_probe,
         )?;
-        let effective_reservations = reservations
+        let effective_reservations = state
+            .reservations
             .iter()
-            .chain(running_project_reservations.iter())
+            .chain(state.running_project_reservations.iter())
             .cloned()
             .collect::<Vec<_>>();
         let requested_reserved = host_port_reservations_conflict(
@@ -137,38 +333,136 @@ where
                 requested_host_ip,
                 requested_reserved,
                 &effective_reservations,
-                &mut host_port_probe,
+                host_port_probe,
             )?
         };
-        let PlannedEndpointDecision {
-            planned,
-            allocation_reason,
-            planned_endpoint_probe,
-        } = decision;
-        reservations.push(HostPortReservation {
-            host_ip: reservation_host_ip(&planned).to_owned(),
-            host: planned.host_port,
+        state.reservations.push(HostPortReservation {
+            host_ip: reservation_host_ip(&decision.planned).to_owned(),
+            host: decision.planned.host_port,
         });
-        let relocated = requested.host_port != planned.host_port;
+        state
+            .plan_entries
+            .push(plan_entry(entry, requested, target_port, decision));
+    }
+    Ok(())
+}
 
-        plan_entries.push(ComposePublishedPortPlanEntry {
-            service: entry.service.clone(),
-            port_entry_index: entry.entry_index,
-            source: ComposePublishedPortPlanSource::Compose,
-            kind: ComposePublishedPortPlanEntryType::Published,
-            target_port,
-            protocol: entry.protocol.clone(),
-            requested,
-            planned,
-            planned_endpoint_probe,
-            relocated,
-            allocation_reason,
+fn plan_unrelocated_entry(
+    entry: &ComposePortEntry,
+    requested: ComposePublishedPortEndpoint,
+    target_port: u16,
+    mappings: &[ComposePublishedPortMapping],
+    state: &mut PublishedPortPlanningState<'_>,
+) -> std::result::Result<(), ComposePublishedPortPlanError> {
+    if let Some(mapping) = mappings.iter().find(|mapping| {
+        host_ips_conflict(&mapping.endpoint, &requested)
+            && mapping.endpoint.host_port == requested.host_port
+    }) {
+        return Err(ComposePublishedPortPlanError::MappingConflict {
+            detail: format!(
+                "Compose published port mapping for service `{}`, target {}/tcp reserves desired endpoint {}, which conflicts with the unchanged requested endpoint for service `{}`, target {target_port}/tcp while automatic relocation is disabled",
+                mapping.service,
+                mapping.target_port,
+                compose_published_port_endpoint_display(&mapping.endpoint),
+                entry.service
+            ),
         });
     }
+    let decision = PlannedEndpointDecision {
+        planned: requested.clone(),
+        allocation_reason: ComposePublishedPortAllocationReason::Available,
+        planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
+    };
+    state.reservations.push(HostPortReservation {
+        host_ip: reservation_host_ip(&requested).to_owned(),
+        host: requested.host_port,
+    });
+    state
+        .plan_entries
+        .push(plan_entry(entry, requested, target_port, decision));
+    Ok(())
+}
 
-    Ok(ComposePublishedPortPlan {
-        entries: plan_entries,
+fn decision_for_mapping<F>(
+    mapping: &ComposePublishedPortMapping,
+    requested: &ComposePublishedPortEndpoint,
+    reservations: &[HostPortReservation],
+    desired_endpoint_is_held_by_current_entry: bool,
+    host_port_probe: &mut F,
+) -> std::result::Result<PlannedEndpointDecision, ComposePublishedPortPlanError>
+where
+    F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
+{
+    let desired_host_ip = reservation_host_ip(&mapping.endpoint);
+    let reserved =
+        host_port_reservations_conflict(reservations, desired_host_ip, mapping.endpoint.host_port);
+    let probe = if reserved {
+        HostPortProbe::Occupied
+    } else if desired_endpoint_is_held_by_current_entry {
+        HostPortProbe::Available
+    } else {
+        probe_compose_published_host_port(
+            host_port_probe,
+            desired_host_ip,
+            mapping.endpoint.host_port,
+        )?
+    };
+    if probe == HostPortProbe::Occupied {
+        return Err(ComposePublishedPortPlanError::MappingConflict {
+            detail: format!(
+                "Compose published port mapping for service `{}`, target {}/tcp cannot use desired endpoint {} because it is already reserved or occupied; requested endpoint: {}. Explicit mappings do not fall back to automatic relocation",
+                mapping.service,
+                mapping.target_port,
+                compose_published_port_endpoint_display(&mapping.endpoint),
+                compose_published_port_endpoint_display(requested)
+            ),
+        });
+    }
+    Ok(PlannedEndpointDecision {
+        planned: mapping.endpoint.clone(),
+        allocation_reason: ComposePublishedPortAllocationReason::Mapping,
+        planned_endpoint_probe: if probe == HostPortProbe::Available {
+            ComposePublishedPortPlannedEndpointProbe::Available
+        } else {
+            ComposePublishedPortPlannedEndpointProbe::Unprobeable
+        },
     })
+}
+
+fn plan_entry(
+    entry: &ComposePortEntry,
+    requested: ComposePublishedPortEndpoint,
+    target_port: u16,
+    decision: PlannedEndpointDecision,
+) -> ComposePublishedPortPlanEntry {
+    let relocated = requested != decision.planned;
+    ComposePublishedPortPlanEntry {
+        service: entry.service.clone(),
+        port_entry_index: entry.entry_index,
+        source: ComposePublishedPortPlanSource::Compose,
+        kind: ComposePublishedPortPlanEntryType::Published,
+        target_port,
+        protocol: entry.protocol.clone(),
+        requested,
+        planned: decision.planned,
+        planned_endpoint_probe: decision.planned_endpoint_probe,
+        relocated,
+        allocation_reason: decision.allocation_reason,
+    }
+}
+
+fn mapping_matches_entry(mapping: &ComposePublishedPortMapping, entry: &ComposePortEntry) -> bool {
+    (
+        mapping.service.as_str(),
+        mapping.port_entry_index,
+        mapping.target_port,
+        &mapping.protocol,
+    ) == (
+        entry.service.as_str(),
+        entry.entry_index,
+        entry.target_port.unwrap_or_default(),
+        &entry.protocol,
+    )
 }
 
 fn decision_for_existing_project_candidate(
@@ -248,16 +542,49 @@ struct PlannedEndpointDecision {
 fn running_project_published_port_reservations(
     existing_project_published_ports: &[ComposePublishedPortReservation],
 ) -> Vec<HostPortReservation> {
+    running_project_published_port_reservations_with_filter(
+        existing_project_published_ports,
+        |_| true,
+    )
+}
+
+fn running_project_published_port_reservations_excluding_entry(
+    existing_project_published_ports: &[ComposePublishedPortReservation],
+    entry: &ComposePortEntry,
+) -> Vec<HostPortReservation> {
+    running_project_published_port_reservations_with_filter(
+        existing_project_published_ports,
+        |reservation| !existing_project_published_port_identity_matches_entry(reservation, entry),
+    )
+}
+
+fn running_project_published_port_reservations_with_filter<F>(
+    existing_project_published_ports: &[ComposePublishedPortReservation],
+    mut include: F,
+) -> Vec<HostPortReservation>
+where
+    F: FnMut(&ComposePublishedPortReservation) -> bool,
+{
     existing_project_published_ports
         .iter()
         .filter(|reservation| {
             reservation.source == ComposePublishedPortReservationSource::RunningContainer
+                && include(reservation)
         })
         .map(|reservation| HostPortReservation {
             host_ip: reservation_host_ip(&reservation.endpoint).to_owned(),
             host: reservation.endpoint.host_port,
         })
         .collect()
+}
+
+fn existing_project_published_port_identity_matches_entry(
+    existing: &ComposePublishedPortReservation,
+    entry: &ComposePortEntry,
+) -> bool {
+    existing.service == entry.service
+        && Some(existing.target_port) == entry.target_port
+        && existing.protocol == entry.protocol
 }
 
 pub(crate) fn compose_published_port_plan_has_relocations(plan: &ComposePublishedPortPlan) -> bool {
@@ -500,12 +827,22 @@ mod tests {
     use super::*;
     use crate::runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
-        ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
+        ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortMapping,
         ComposePublishedPortPlannedEndpointProbe, ComposePublishedPortReservation,
         test_support::{
             forward_port, host_port_probe_from_availability, plan_with_availability, planning_input,
         },
     };
+
+    fn mapping(host_ip: ComposePublishedPortHostIp, host_port: u16) -> ComposePublishedPortMapping {
+        ComposePublishedPortMapping {
+            service: "app".to_owned(),
+            port_entry_index: 0,
+            target_port: 502,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint { host_ip, host_port },
+        }
+    }
 
     #[test]
     fn planner_returns_empty_plan_when_relocation_is_disabled() {
@@ -745,7 +1082,8 @@ mod tests {
                 assert_eq!(requested.host_port, u16::MAX);
             }
             ComposePublishedPortPlanError::HostPortAvailability { .. }
-            | ComposePublishedPortPlanError::InconsistentEntry { .. } => {
+            | ComposePublishedPortPlanError::InconsistentEntry { .. }
+            | ComposePublishedPortPlanError::MappingConflict { .. } => {
                 panic!("expected no-candidate error")
             }
         }
@@ -781,7 +1119,8 @@ mod tests {
                 assert!(source.to_string().contains("socket probe failed"));
             }
             other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
-            | ComposePublishedPortPlanError::InconsistentEntry { .. }) => {
+            | ComposePublishedPortPlanError::InconsistentEntry { .. }
+            | ComposePublishedPortPlanError::MappingConflict { .. }) => {
                 panic!("expected host port availability error, got {other:?}")
             }
         }
@@ -818,7 +1157,8 @@ mod tests {
                 assert!(detail.contains("published host port"));
             }
             other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
-            | ComposePublishedPortPlanError::HostPortAvailability { .. }) => {
+            | ComposePublishedPortPlanError::HostPortAvailability { .. }
+            | ComposePublishedPortPlanError::MappingConflict { .. }) => {
                 panic!("expected inconsistent entry error, got {other:?}")
             }
         }
@@ -854,7 +1194,8 @@ mod tests {
                 assert!(detail.contains("target port"));
             }
             other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
-            | ComposePublishedPortPlanError::HostPortAvailability { .. }) => {
+            | ComposePublishedPortPlanError::HostPortAvailability { .. }
+            | ComposePublishedPortPlanError::MappingConflict { .. }) => {
                 panic!("expected inconsistent entry error, got {other:?}")
             }
         }
@@ -1366,5 +1707,211 @@ mod tests {
         assert_eq!(plan.entries[0].planned.host_port, 3000);
         assert_eq!(plan.entries[1].planned.host_port, 3001);
         assert_eq!(plan.entries[2].planned.host_port, 3000);
+    }
+
+    #[test]
+    fn explicit_mapping_applies_when_automatic_relocation_is_disabled() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 502, "published": "502"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![mapping(
+            ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
+            1502,
+        )];
+
+        let plan = plan_compose_published_ports_with_mappings(
+            &input,
+            false,
+            &[],
+            &mappings,
+            &[],
+            &[],
+            |host_ip, port| {
+                assert_eq!((host_ip, port), ("0.0.0.0", 1502));
+                Ok(HostPortProbe::Available)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.entries.len(), 1);
+        assert_eq!(plan.entries[0].planned, mappings[0].endpoint);
+        assert!(plan.entries[0].relocated);
+        assert_eq!(
+            plan.entries[0].allocation_reason,
+            ComposePublishedPortAllocationReason::Mapping
+        );
+    }
+
+    #[test]
+    fn explicit_mapping_takes_precedence_over_current_binding_without_sticky_reuse() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {"ports": [{"target": 502, "published": "502"}]}
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![mapping(
+            ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+            1502,
+        )];
+        let existing = vec![ComposePublishedPortReservation {
+            service: "app".to_owned(),
+            target_port: 502,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
+                host_port: 1502,
+            },
+            source: ComposePublishedPortReservationSource::RunningContainer,
+        }];
+
+        let plan = plan_compose_published_ports_inner(
+            &input,
+            true,
+            &[],
+            &mappings,
+            ExistingProjectBindings::new(&existing, false),
+            &[],
+            |_, _| panic!("current entry binding should not be probed as an external conflict"),
+        )
+        .unwrap();
+
+        assert_eq!(plan.entries[0].planned.host_port, 1502);
+        assert_eq!(
+            plan.entries[0].allocation_reason,
+            ComposePublishedPortAllocationReason::Mapping
+        );
+    }
+
+    #[test]
+    fn explicit_mapping_reports_external_reservation_conflict_without_fallback() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {"ports": [{"target": 502, "published": "502"}]}
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![mapping(
+            ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+            1502,
+        )];
+        let external = vec![HostPortReservation {
+            host_ip: "0.0.0.0".to_owned(),
+            host: 1502,
+        }];
+
+        let error = plan_compose_published_ports_with_mappings(
+            &input,
+            true,
+            &[],
+            &mappings,
+            &[],
+            &external,
+            |_, _| panic!("reserved mapping endpoint must not be probed"),
+        )
+        .expect_err("mapping must not relocate automatically");
+
+        match error {
+            ComposePublishedPortPlanError::MappingConflict { detail } => {
+                assert!(detail.contains("app"));
+                assert!(detail.contains("127.0.0.1:1502"));
+                assert!(detail.contains("do not fall back"));
+            }
+            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            | ComposePublishedPortPlanError::HostPortAvailability { .. }
+            | ComposePublishedPortPlanError::InconsistentEntry { .. }) => {
+                panic!("unexpected planner error: {other}")
+            }
+        }
+    }
+
+    #[test]
+    fn external_running_container_reservation_is_used_for_requested_and_candidate_ports() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {"ports": [{"target": 3000, "published": "3000"}]}
+                }
+            }),
+            "app",
+            &[],
+        );
+        let external = vec![
+            HostPortReservation {
+                host_ip: "0.0.0.0".to_owned(),
+                host: 3000,
+            },
+            HostPortReservation {
+                host_ip: "127.0.0.1".to_owned(),
+                host: 3001,
+            },
+        ];
+        let mut probes = Vec::new();
+
+        let plan = plan_compose_published_ports_with_mappings(
+            &input,
+            true,
+            &[],
+            &[],
+            &[],
+            &external,
+            |host_ip, port| {
+                probes.push((host_ip.to_owned(), port));
+                Ok(HostPortProbe::Available)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(plan.entries[0].planned.host_port, 3002);
+        assert_eq!(probes, vec![("0.0.0.0".to_owned(), 3002)]);
+        assert_eq!(
+            plan.entries[0].allocation_reason,
+            ComposePublishedPortAllocationReason::Reserved
+        );
+    }
+
+    #[test]
+    fn external_ipv6_reservation_does_not_conflict_with_ipv4_binding() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {"ports": [{"host_ip": "127.0.0.1", "target": 3000, "published": "3000"}]}
+                }
+            }),
+            "app",
+            &[],
+        );
+        let external = vec![HostPortReservation {
+            host_ip: "::".to_owned(),
+            host: 3000,
+        }];
+
+        let plan = plan_compose_published_ports_with_mappings(
+            &input,
+            true,
+            &[],
+            &[],
+            &[],
+            &external,
+            |_, _| Ok(HostPortProbe::Available),
+        )
+        .unwrap();
+
+        assert_eq!(plan.entries[0].planned.host_port, 3000);
+        assert!(!plan.entries[0].relocated);
     }
 }
