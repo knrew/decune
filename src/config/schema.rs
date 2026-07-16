@@ -9,6 +9,8 @@ use serde::{
 };
 use toml::Value;
 
+use crate::runtime::compose_ports::COMPOSE_PUBLISHED_PORT_MAPPING_INVALID;
+
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct RawDecuneConfig {
@@ -278,9 +280,6 @@ pub(crate) struct RawComposeConfig {
     pub(crate) published_ports: Option<RawComposePublishedPortsConfig>,
     pub(crate) clone_isolation: Option<RawComposeCloneIsolationConfig>,
 }
-
-pub(crate) const COMPOSE_PUBLISHED_PORT_MAPPING_INVALID: &str =
-    "compose_published_port_mapping_invalid";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawComposePublishedPortsConfig {

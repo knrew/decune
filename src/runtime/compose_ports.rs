@@ -12,8 +12,8 @@ mod types;
 
 pub(crate) use classify::classify_compose_published_ports;
 pub(crate) use diagnostics::{
-    ComposePublishedPortDiagnostic, compose_published_port_invalid_config_error,
-    validate_compose_published_port_diagnostics,
+    COMPOSE_PUBLISHED_PORT_MAPPING_INVALID, ComposePublishedPortDiagnostic,
+    compose_published_port_invalid_config_error, validate_compose_published_port_diagnostics,
 };
 pub(crate) use endpoint::{compose_port_protocol_name, compose_published_port_endpoint_display};
 pub(crate) use input::{ComposeActiveServiceSet, compose_published_port_planning_input};

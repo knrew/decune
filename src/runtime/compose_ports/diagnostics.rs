@@ -4,8 +4,6 @@ use crate::runtime::compose_ports::{
     compose_published_port_endpoint_display,
 };
 
-pub(crate) use crate::config::schema::COMPOSE_PUBLISHED_PORT_MAPPING_INVALID;
-
 use super::endpoint::{endpoint_for_entry, target_port_for_entry};
 use super::planning::ComposePublishedPortPlanError;
 
@@ -19,6 +17,8 @@ pub(crate) const COMPOSE_PUBLISHED_PORT_AUTOMATIC_RELOCATION_FAILED: &str =
 pub(crate) const COMPOSE_PUBLISHED_PORT_BIND_RACE: &str = "compose_published_port_bind_race";
 pub(crate) const COMPOSE_PUBLISHED_PORT_MAPPING_CONFLICT: &str =
     "compose_published_port_mapping_conflict";
+pub(crate) const COMPOSE_PUBLISHED_PORT_MAPPING_INVALID: &str =
+    "compose_published_port_mapping_invalid";
 
 #[derive(Debug)]
 pub(crate) enum ComposePublishedPortDiagnostic {
