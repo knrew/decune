@@ -835,12 +835,40 @@ mod tests {
     };
 
     fn mapping(host_ip: ComposePublishedPortHostIp, host_port: u16) -> ComposePublishedPortMapping {
+        mapping_for("app", 0, 502, host_ip, host_port)
+    }
+
+    fn mapping_for(
+        service: &str,
+        port_entry_index: usize,
+        target_port: u16,
+        host_ip: ComposePublishedPortHostIp,
+        host_port: u16,
+    ) -> ComposePublishedPortMapping {
         ComposePublishedPortMapping {
-            service: "app".to_owned(),
-            port_entry_index: 0,
-            target_port: 502,
+            service: service.to_owned(),
+            port_entry_index,
+            target_port,
             protocol: ComposePortProtocol::Tcp,
             endpoint: ComposePublishedPortEndpoint { host_ip, host_port },
+        }
+    }
+
+    fn existing_mapping_binding(
+        service: &str,
+        target_port: u16,
+        host_port: u16,
+        source: ComposePublishedPortReservationSource,
+    ) -> ComposePublishedPortReservation {
+        ComposePublishedPortReservation {
+            service: service.to_owned(),
+            target_port,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                host_port,
+            },
+            source,
         }
     }
 
@@ -1841,6 +1869,142 @@ mod tests {
         assert_eq!(
             plan.entries[0].allocation_reason,
             ComposePublishedPortAllocationReason::Mapping
+        );
+    }
+
+    #[test]
+    fn explicit_mapping_swap_conflicts_with_other_running_entry_without_sticky_reuse() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {"ports": [{"host_ip": "127.0.0.1", "target": 502, "published": "1501"}]},
+                    "worker": {"ports": [{"host_ip": "127.0.0.1", "target": 503, "published": "1502"}]}
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![
+            mapping_for(
+                "app",
+                0,
+                502,
+                ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                1502,
+            ),
+            mapping_for(
+                "worker",
+                0,
+                503,
+                ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                1501,
+            ),
+        ];
+        let existing = vec![
+            existing_mapping_binding(
+                "app",
+                502,
+                1501,
+                ComposePublishedPortReservationSource::RunningContainer,
+            ),
+            existing_mapping_binding(
+                "worker",
+                503,
+                1502,
+                ComposePublishedPortReservationSource::RunningContainer,
+            ),
+        ];
+
+        let error = plan_compose_published_ports_inner(
+            &input,
+            true,
+            &[],
+            &mappings,
+            ExistingProjectBindings::new(&existing, false),
+            &[],
+            |_, _| panic!("running binding owned by another entry must not be probed"),
+        )
+        .expect_err("running mapping endpoints must not be swapped atomically");
+
+        let ComposePublishedPortPlanError::MappingConflict { detail } = error else {
+            panic!("unexpected planner error: {error}");
+        };
+        assert!(detail.contains("service `app`"));
+        assert!(detail.contains("127.0.0.1:1502"));
+        assert!(detail.contains("already reserved or occupied"));
+    }
+
+    #[test]
+    fn explicit_mapping_swap_succeeds_after_existing_entries_stop() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {"ports": [{"host_ip": "127.0.0.1", "target": 502, "published": "1501"}]},
+                    "worker": {"ports": [{"host_ip": "127.0.0.1", "target": 503, "published": "1502"}]}
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![
+            mapping_for(
+                "app",
+                0,
+                502,
+                ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                1502,
+            ),
+            mapping_for(
+                "worker",
+                0,
+                503,
+                ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                1501,
+            ),
+        ];
+        let existing = vec![
+            existing_mapping_binding(
+                "app",
+                502,
+                1501,
+                ComposePublishedPortReservationSource::StoppedContainer,
+            ),
+            existing_mapping_binding(
+                "worker",
+                503,
+                1502,
+                ComposePublishedPortReservationSource::StoppedContainer,
+            ),
+        ];
+        let mut probes = Vec::new();
+
+        let plan = plan_compose_published_ports_inner(
+            &input,
+            true,
+            &[],
+            &mappings,
+            ExistingProjectBindings::new(&existing, false),
+            &[],
+            |host_ip, port| {
+                probes.push((host_ip.to_owned(), port));
+                Ok(HostPortProbe::Available)
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            probes,
+            vec![
+                ("127.0.0.1".to_owned(), 1502),
+                ("127.0.0.1".to_owned(), 1501),
+            ]
+        );
+        assert_eq!(
+            plan.entries
+                .iter()
+                .map(|entry| (entry.service.as_str(), entry.planned.host_port))
+                .collect::<Vec<_>>(),
+            vec![("app", 1502), ("worker", 1501)]
         );
     }
 

@@ -914,6 +914,7 @@ mapping と relocation の対象は fixed TCP published host port に限る。pl
 
 - mapping は canonical Compose model の `service + protocol + target` に一致する port entry を解決する。存在しない service、active service 内で一致する entry が 0 件または複数件、または一致 entry が fixed TCP published host port でない場合は `compose_published_port_mapping_invalid` で起動前に error にする。存在するが今回の active service set に含まれない service の mapping はその実行では適用しない。
 - 同じ port entry では explicit mapping、同一 Compose project の既存 binding、Compose file の requested endpoint の順に優先する。mapping の endpoint が reservation または availability probe と衝突した場合は `compose_published_port_mapping_conflict` とし、automatic relocation へ fallback しない。mapping 自身が requested endpoint と同じ場合も planning 対象だが、endpoint 差分がなければ generated override は不要である。
+- 同一 Compose project で running 中の別 mapping identity が保持する endpoint は、rebuild planning でも reservation として扱う。複数 mapping の endpoint を相互に入れ替える場合、running project に対して atomic swap は行わず `compose_published_port_mapping_conflict` とする。既存 binding を解放するため `decune down` の後に `decune rebuild` を実行する。
 - mapping により host port または host IP が変わる場合は relocation として扱う。既存 container の binding と異なれば再作成が必要であり、generated Compose override は `published` と `host_ip` の両方を planned endpoint に合わせる。
 
 - image metadata や Feature metadata を merge した後の final `forwardPorts` / `[[ports]]` / CLI `-p` forwarding reservation を考慮し、同じ host endpoint を Compose published port と decune port forwarding の両方へ割り当ててはならない。

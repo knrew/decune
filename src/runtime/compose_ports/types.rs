@@ -60,7 +60,7 @@ pub(crate) enum ComposePortEligibility {
 pub(crate) struct ComposePublishedPortStartupDiagnostics<'a> {
     pub(crate) input: &'a ComposePublishedPortPlanningInput,
     pub(crate) plan: &'a ComposePublishedPortPlan,
-    pub(crate) relocation_enabled: bool,
+    pub(crate) planning_active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

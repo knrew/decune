@@ -295,9 +295,29 @@ pub(crate) struct RawComposePublishedPortMappingConfig {
     pub(crate) enabled: Option<bool>,
     pub(crate) service: String,
     pub(crate) target: u16,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_compose_published_port_mapping_protocol"
+    )]
     pub(crate) protocol: Option<RawPortProtocol>,
     pub(crate) host: Option<u16>,
     pub(crate) host_ip: Option<String>,
+}
+
+fn deserialize_compose_published_port_mapping_protocol<'de, D>(
+    deserializer: D,
+) -> Result<Option<RawPortProtocol>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let protocol = Option::<String>::deserialize(deserializer)?;
+    match protocol.as_deref() {
+        None => Ok(None),
+        Some("tcp") => Ok(Some(RawPortProtocol::Tcp)),
+        Some(protocol) => Err(D::Error::custom(format!(
+            "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: Compose published port mapping protocol `{protocol}` is unsupported; expected `tcp`"
+        ))),
+    }
 }
 
 #[derive(Deserialize)]
@@ -341,9 +361,9 @@ where
             )));
         }
         if mapping.service.trim().is_empty() {
-            return Err(E::custom(
-                "compose_published_port_mapping_invalid: Compose published port mapping service must not be empty",
-            ));
+            return Err(E::custom(format!(
+                "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: Compose published port mapping service must not be empty"
+            )));
         }
         if mapping.target == 0 {
             return Err(E::custom(format!(
@@ -353,9 +373,9 @@ where
         }
         if !mapping.enabled.unwrap_or(true) {
             if mapping.host.is_some() || mapping.host_ip.is_some() {
-                return Err(E::custom(
-                    "compose_published_port_mapping_invalid: disabled Compose published port mapping must contain only its service, target, protocol, and enabled fields",
-                ));
+                return Err(E::custom(format!(
+                    "{COMPOSE_PUBLISHED_PORT_MAPPING_INVALID}: disabled Compose published port mapping must contain only its service, target, protocol, and enabled fields"
+                )));
             }
             continue;
         }
@@ -774,6 +794,32 @@ host_ip = "127.0.0.1"
     #[case(
         r#"
 [[compose.published_ports.mappings]]
+service = ""
+target = 502
+host = 1502
+"#,
+        "service must not be empty"
+    )]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
+service = "app"
+target = 0
+host = 1502
+"#,
+        "target must be in 1..=65535"
+    )]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+"#,
+        "host is required"
+    )]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
 service = "app"
 target = 502
 host = 1502
@@ -857,6 +903,10 @@ enabled = false
         .expect_err("UDP mapping protocol should be rejected during deserialization");
 
         let message = error.to_string();
+        assert!(
+            message.contains(COMPOSE_PUBLISHED_PORT_MAPPING_INVALID),
+            "unexpected error: {message}"
+        );
         assert!(message.contains("udp"), "unexpected error: {message}");
         assert!(message.contains("tcp"), "unexpected error: {message}");
     }

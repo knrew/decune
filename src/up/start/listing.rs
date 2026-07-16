@@ -147,14 +147,14 @@ fn external_running_container_published_ports(
                 "Failed to parse Docker published port key `{container_port}` for running container `{container_name}`"
             )
         })?;
+        if protocol != "tcp" {
+            continue;
+        }
         target_port.parse::<u16>().with_context(|| {
             format!(
                 "Failed to parse Docker published target port `{target_port}` for running container `{container_name}`"
             )
         })?;
-        if protocol != "tcp" {
-            continue;
-        }
         let Some(bindings) = bindings else {
             continue;
         };
@@ -355,6 +355,38 @@ mod tests {
 
         assert!(message.contains("not-a-port"));
         assert!(message.contains("broken-app"));
+    }
+
+    #[test]
+    fn external_running_ports_skip_malformed_non_tcp_target() {
+        let mut container = container_with_ports(
+            true,
+            Some(port_map("not-a-port/udp", "0.0.0.0", "1053")),
+            None,
+        );
+        container.name = Some("/udp-app".to_owned());
+
+        assert!(
+            external_running_container_published_ports(container)
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn external_running_ports_reject_malformed_tcp_target_with_context() {
+        let mut container = container_with_ports(
+            true,
+            Some(port_map("not-a-port/tcp", "0.0.0.0", "18080")),
+            None,
+        );
+        container.name = Some("/broken-tcp-app".to_owned());
+
+        let error = external_running_container_published_ports(container).unwrap_err();
+        let message = error.to_string();
+
+        assert!(message.contains("not-a-port"));
+        assert!(message.contains("broken-tcp-app"));
     }
 
     #[test]

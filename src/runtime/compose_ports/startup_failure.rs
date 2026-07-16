@@ -19,7 +19,7 @@ pub(crate) fn classify_compose_published_port_startup_failure(
         return Ok(None);
     }
 
-    if diagnostics.relocation_enabled {
+    if diagnostics.planning_active {
         for entry in &diagnostics.plan.entries {
             if !compose_startup_error_mentions_endpoint_for_protocol(
                 stderr,
@@ -349,7 +349,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .unwrap()
@@ -384,7 +384,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .expect_err("inconsistent eligible entry must fail")
@@ -418,7 +418,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .unwrap()
@@ -452,7 +452,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -489,7 +489,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -541,7 +541,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -604,7 +604,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -657,7 +657,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -694,7 +694,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -729,7 +729,7 @@ mod tests {
         let diagnostics = ComposePublishedPortStartupDiagnostics {
             input: &input,
             plan: &plan,
-            relocation_enabled: false,
+            planning_active: false,
         };
 
         let diagnostic = classify_compose_published_port_startup_failure(
@@ -771,7 +771,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .unwrap()
@@ -807,7 +807,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .unwrap()
@@ -845,7 +845,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -881,7 +881,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -915,7 +915,7 @@ mod tests {
         let diagnostics = ComposePublishedPortStartupDiagnostics {
             input: &input,
             plan: &plan,
-            relocation_enabled: false,
+            planning_active: false,
         };
 
         assert!(

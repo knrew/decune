@@ -384,6 +384,8 @@ identity は `service + protocol + target` です。global mapping は project c
 
 mapping は active な Compose service の fixed TCP published port 1件に一意に対応する必要があります。存在しない service、対応 entry なし、同じ target の複数 entry、UDP/range/container-only entry は `compose_published_port_mapping_invalid` になります。desired endpoint が別の forwarding、running Docker container、同じ計画の published port、または host process と衝突した場合は `compose_published_port_mapping_conflict` になり、自動で別 port へ fallback しません。
 
+同じ Compose project で running 中の別 mapping が desired endpoint を現在保持している場合、その binding は `rebuild` の planning 中も予約済みとして扱われます。複数 mapping の endpoint を相互に入れ替えるときは、atomic swap は行われないため、`decune down` の後に `decune rebuild` を実行してください。
+
 relocation の対象は fixed TCP の Compose published port だけです。たとえば `3000:3000` や `127.0.0.1:3000:3000` は relocation 対象です。UDP、range、host port を省略した port entry は relocation 対象外です。たとえば `3000:3000/udp`、`3000-3005:3000-3005`、`3000` は relocation されません。
 
 mapping または relocation が有効な場合、decune は接続先 Docker daemon の running container が持つ actual TCP published binding を予約として扱い、requested port と relocation candidate の両方から除外します。現在の Compose project 自身は除外し、同 project 内の binding は既存 binding として扱います。IPv4/IPv6 wildcard の衝突規則は forwarding と共通です。

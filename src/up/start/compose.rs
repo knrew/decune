@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, net::IpAddr};
 
 use anyhow::{Context, Result, bail};
 
@@ -13,7 +13,7 @@ use crate::{
         container::ContainerInspect,
         dotfiles::materialize_dotfile_skeletons,
         image::{PullPolicy, ensure_image, image_container_tool_platform},
-        ports::{HostPortReservation, host_port_reservations_conflict},
+        ports::HostPortReservation,
         resource::{COMPOSE_NETWORK_LABEL, compose_project_name_from_labels},
     },
     runtime::{
@@ -465,10 +465,9 @@ fn compose_published_port_recreate_change(
         .iter()
         .filter(|existing| compose_published_port_reservation_matches_entry(existing, entry))
         .collect::<Vec<_>>();
-    if existing.is_empty()
-        || existing
-            .iter()
-            .any(|existing| existing.endpoint.host_port == entry.planned.host_port)
+    if existing
+        .iter()
+        .any(|existing| compose_published_port_endpoints_match(&existing.endpoint, &entry.planned))
     {
         return None;
     }
@@ -489,23 +488,25 @@ fn compose_published_port_reservation_matches_entry(
     reservation.service == entry.service
         && reservation.target_port == entry.target_port
         && reservation.protocol == entry.protocol
-        && compose_published_port_host_ips_conflict(&reservation.endpoint, &entry.planned)
 }
 
-fn compose_published_port_host_ips_conflict(
+fn compose_published_port_endpoints_match(
     existing: &ComposePublishedPortEndpoint,
     planned: &ComposePublishedPortEndpoint,
 ) -> bool {
-    const HOST_PORT_FOR_HOST_IP_MATCH: u16 = 1;
-    host_port_reservations_conflict(
-        [HostPortReservation {
-            host_ip: compose_published_port_reservation_host_ip(existing).to_owned(),
-            host: HOST_PORT_FOR_HOST_IP_MATCH,
-        }]
-        .iter(),
-        compose_published_port_reservation_host_ip(planned),
-        HOST_PORT_FOR_HOST_IP_MATCH,
-    )
+    if existing.host_port != planned.host_port {
+        return false;
+    }
+    let existing_host_ip = compose_published_port_reservation_host_ip(existing);
+    let planned_host_ip = compose_published_port_reservation_host_ip(planned);
+    existing_host_ip == planned_host_ip
+        || matches!(
+            (
+                existing_host_ip.parse::<IpAddr>(),
+                planned_host_ip.parse::<IpAddr>()
+            ),
+            (Ok(existing), Ok(planned)) if existing == planned
+        )
 }
 
 fn compose_published_port_reservation_host_ip(endpoint: &ComposePublishedPortEndpoint) -> &str {
@@ -1553,7 +1554,7 @@ const fn compose_startup_diagnostics<'a>(
     ComposePublishedPortStartupDiagnostics {
         input,
         plan: published_port_plan,
-        relocation_enabled: plan.config.compose.published_ports.relocation
+        planning_active: plan.config.compose.published_ports.relocation
             || !published_port_plan.entries.is_empty(),
     }
 }
@@ -1690,6 +1691,78 @@ mod tests {
             mount_policy: &policy,
             rebuild: false,
             existing_project_published_ports: &existing,
+            published_port_plan: &plan,
+            warning: ComposePublishedPortRecreateWarning::Suppress,
+        })
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::ReuseRunning {
+                id: "container-id".to_owned(),
+                name: "project-app-1".to_owned(),
+            }
+        );
+    }
+
+    #[test]
+    fn compose_decision_recreates_when_only_effective_host_ip_changes() {
+        let container = reusable_container("stable-hash");
+        let mut existing_binding = reservation(
+            18300,
+            ComposePublishedPortReservationSource::RunningContainer,
+        );
+        existing_binding.endpoint.host_ip =
+            ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned());
+        let mut entry = plan_entry(18300, 18300);
+        entry.planned.host_ip = ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned());
+        let plan = ComposePublishedPortPlan {
+            entries: vec![entry],
+        };
+
+        let policy = mount_policy(&[]);
+        let decision = decide_existing_compose_container(&ComposeExistingContainerDecisionInput {
+            containers: std::slice::from_ref(&container),
+            project_containers: std::slice::from_ref(&container),
+            expected_config_hash: "stable-hash",
+            mount_policy: &policy,
+            rebuild: false,
+            existing_project_published_ports: &[existing_binding],
+            published_port_plan: &plan,
+            warning: ComposePublishedPortRecreateWarning::Suppress,
+        })
+        .unwrap();
+
+        assert_eq!(
+            decision,
+            ExistingContainerDecision::Recreate {
+                containers: vec![container],
+            }
+        );
+    }
+
+    #[test]
+    fn compose_decision_reuses_equivalent_ipv6_host_ip_spelling() {
+        let container = reusable_container("stable-hash");
+        let mut existing_binding = reservation(
+            18300,
+            ComposePublishedPortReservationSource::RunningContainer,
+        );
+        existing_binding.endpoint.host_ip = ComposePublishedPortHostIp::Explicit("::1".to_owned());
+        let mut entry = plan_entry(18300, 18300);
+        entry.planned.host_ip = ComposePublishedPortHostIp::Explicit("0:0:0:0:0:0:0:1".to_owned());
+        let plan = ComposePublishedPortPlan {
+            entries: vec![entry],
+        };
+
+        let policy = mount_policy(&[]);
+        let decision = decide_existing_compose_container(&ComposeExistingContainerDecisionInput {
+            containers: std::slice::from_ref(&container),
+            project_containers: std::slice::from_ref(&container),
+            expected_config_hash: "stable-hash",
+            mount_policy: &policy,
+            rebuild: false,
+            existing_project_published_ports: &[existing_binding],
             published_port_plan: &plan,
             warning: ComposePublishedPortRecreateWarning::Suppress,
         })
