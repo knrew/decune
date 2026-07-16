@@ -370,7 +370,10 @@ impl FinalizeUpPlanResult {
 #[derive(Debug, Clone, Copy)]
 pub(in crate::up) struct ComposePublishedPortFinalization<'a> {
     pub(in crate::up) input: &'a ComposePublishedPortPlanningInput,
+    pub(in crate::up) mappings: &'a [crate::runtime::compose_ports::ComposePublishedPortMapping],
     pub(in crate::up) existing_project_published_ports: &'a [ComposePublishedPortReservation],
+    pub(in crate::up) preserve_existing_bindings: bool,
+    pub(in crate::up) external_host_reservations: &'a [crate::docker::ports::HostPortReservation],
 }
 
 #[derive(Debug, Clone, Copy)]

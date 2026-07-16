@@ -2,6 +2,7 @@ mod classify;
 pub(in crate::runtime) mod diagnostics;
 mod endpoint;
 mod input;
+mod mappings;
 mod overrides;
 mod planning;
 mod startup_failure;
@@ -11,11 +12,12 @@ mod types;
 
 pub(crate) use classify::classify_compose_published_ports;
 pub(crate) use diagnostics::{
-    ComposePublishedPortDiagnostic, compose_published_port_invalid_config_error,
-    validate_compose_published_port_diagnostics,
+    COMPOSE_PUBLISHED_PORT_MAPPING_INVALID, ComposePublishedPortDiagnostic,
+    compose_published_port_invalid_config_error, validate_compose_published_port_diagnostics,
 };
 pub(crate) use endpoint::{compose_port_protocol_name, compose_published_port_endpoint_display};
 pub(crate) use input::{ComposeActiveServiceSet, compose_published_port_planning_input};
+pub(crate) use mappings::resolve_compose_published_port_mappings;
 pub(crate) use overrides::{ComposePublishedPortOverride, compose_published_port_override};
 pub(crate) use planning::{
     compose_published_port_plan_has_relocations, compose_published_port_runtime_plan,
@@ -25,8 +27,8 @@ pub(crate) use startup_failure::classify_compose_published_port_startup_failure;
 pub(crate) use types::{
     ComposePortEligibility, ComposePortEntry, ComposePortHostIp, ComposePortProtocol,
     ComposePortSyntax, ComposePublishedHostPort, ComposePublishedPortAllocationReason,
-    ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
-    ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
+    ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortMapping,
+    ComposePublishedPortPlan, ComposePublishedPortPlanEntry, ComposePublishedPortPlanEntryType,
     ComposePublishedPortPlanSource, ComposePublishedPortPlannedEndpointProbe,
     ComposePublishedPortPlanningInput, ComposePublishedPortReservation,
     ComposePublishedPortReservationSource, ComposePublishedPortStartupDiagnostics,

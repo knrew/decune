@@ -1,9 +1,9 @@
 use crate::runtime::compose_ports::{
     ComposePortEligibility, ComposePortEntry, ComposePortProtocol, ComposePublishedHostPort,
-    ComposePublishedPortDiagnostic, ComposePublishedPortEndpoint, ComposePublishedPortHostIp,
-    ComposePublishedPortPlanEntry, ComposePublishedPortPlannedEndpointProbe,
-    ComposePublishedPortPlanningInput, ComposePublishedPortStartupDiagnostics,
-    compose_published_port_endpoint_display,
+    ComposePublishedPortAllocationReason, ComposePublishedPortDiagnostic,
+    ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlanEntry,
+    ComposePublishedPortPlannedEndpointProbe, ComposePublishedPortPlanningInput,
+    ComposePublishedPortStartupDiagnostics, compose_published_port_endpoint_display,
 };
 
 use super::{
@@ -19,7 +19,7 @@ pub(crate) fn classify_compose_published_port_startup_failure(
         return Ok(None);
     }
 
-    if diagnostics.relocation_enabled {
+    if diagnostics.planning_active {
         for entry in &diagnostics.plan.entries {
             if !compose_startup_error_mentions_endpoint_for_protocol(
                 stderr,
@@ -65,6 +65,17 @@ pub(crate) fn classify_compose_published_port_startup_failure(
 fn planned_endpoint_startup_failure_diagnostic(
     entry: &ComposePublishedPortPlanEntry,
 ) -> ComposePublishedPortDiagnostic {
+    if entry.allocation_reason == ComposePublishedPortAllocationReason::Mapping {
+        return ComposePublishedPortDiagnostic::MappingConflict {
+            detail: format!(
+                "Compose published port mapping for service `{}`, target {}/{} could not bind desired endpoint {} during Docker Compose startup. Explicit mappings do not fall back to automatic relocation",
+                entry.service,
+                entry.target_port,
+                super::endpoint::compose_port_protocol_name(&entry.protocol),
+                compose_published_port_endpoint_display(&entry.planned)
+            ),
+        };
+    }
     if entry.planned_endpoint_probe == ComposePublishedPortPlannedEndpointProbe::Unprobeable {
         return ComposePublishedPortDiagnostic::Collision {
             service: entry.service.clone(),
@@ -300,22 +311,26 @@ fn contains_endpoint_token_with_port_boundary(haystack: &str, needle: &str) -> b
 mod tests {
     use serde_json::json;
 
-    use super::super::planning::plan_compose_published_ports_with;
+    use super::super::planning::{
+        plan_compose_published_ports_with, plan_compose_published_ports_with_mappings,
+    };
     use super::*;
     use crate::docker::ports::HostPortProbe;
     use crate::runtime::compose_ports::diagnostics::{
         COMPOSE_PUBLISHED_PORT_BIND_RACE, COMPOSE_PUBLISHED_PORT_COLLISION,
-        COMPOSE_PUBLISHED_PORT_INVALID, COMPOSE_PUBLISHED_PORT_UNSUPPORTED,
+        COMPOSE_PUBLISHED_PORT_INVALID, COMPOSE_PUBLISHED_PORT_MAPPING_CONFLICT,
+        COMPOSE_PUBLISHED_PORT_UNSUPPORTED,
     };
     use crate::runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedHostPort, ComposePublishedPortEndpoint,
-        ComposePublishedPortHostIp, ComposePublishedPortPlan, ComposePublishedPortReservation,
-        ComposePublishedPortReservationSource, ComposePublishedPortStartupDiagnostics,
+        ComposePublishedPortHostIp, ComposePublishedPortMapping, ComposePublishedPortPlan,
+        ComposePublishedPortReservation, ComposePublishedPortReservationSource,
+        ComposePublishedPortStartupDiagnostics,
         test_support::{plan_with_availability, planning_input},
     };
 
     #[test]
-    fn startup_failure_classifier_reports_collision_when_relocation_is_disabled() {
+    fn startup_failure_classifier_reports_collision_when_automatic_relocation_is_disabled() {
         let input = planning_input(
             json!({
                 "services": {
@@ -334,7 +349,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .unwrap()
@@ -369,7 +384,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .expect_err("inconsistent eligible entry must fail")
@@ -403,7 +418,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .unwrap()
@@ -437,7 +452,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -474,7 +489,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -484,6 +499,121 @@ mod tests {
         assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
         assert!(diagnostic.contains("requested: 127.0.0.1:502"));
         assert!(diagnostic.contains("app:502/tcp"));
+        assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
+    }
+
+    #[test]
+    fn startup_failure_classifier_reports_mapping_conflict_for_unprobeable_mapping() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [{"host_ip": "127.0.0.1", "target": 502, "published": "502"}]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![ComposePublishedPortMapping {
+            service: "app".to_owned(),
+            port_entry_index: 0,
+            target_port: 502,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                host_port: 1502,
+            },
+        }];
+        let plan = plan_compose_published_ports_with_mappings(
+            &input,
+            false,
+            &[],
+            &mappings,
+            &[],
+            &[],
+            |_, _| Ok(HostPortProbe::Unprobeable),
+        )
+        .unwrap();
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen tcp 127.0.0.1:1502: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                planning_active: true,
+            },
+        )
+        .unwrap()
+        .expect("mapped bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_MAPPING_CONFLICT));
+        assert!(diagnostic.contains("service `app`"));
+        assert!(diagnostic.contains("127.0.0.1:1502"));
+        assert!(diagnostic.contains("do not fall back"));
+        assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
+    }
+
+    #[test]
+    fn startup_failure_classifier_reports_collision_for_unprobed_unmapped_entry() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [
+                            {"host_ip": "127.0.0.1", "target": 502, "published": "502"},
+                            {"host_ip": "127.0.0.1", "target": 3000, "published": "3000"}
+                        ]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![ComposePublishedPortMapping {
+            service: "app".to_owned(),
+            port_entry_index: 0,
+            target_port: 502,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                host_port: 1502,
+            },
+        }];
+        let plan = plan_compose_published_ports_with_mappings(
+            &input,
+            false,
+            &[],
+            &mappings,
+            &[],
+            &[],
+            |host_ip, port| {
+                assert_eq!((host_ip, port), ("127.0.0.1", 1502));
+                Ok(HostPortProbe::Available)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan.entries[1].planned_endpoint_probe,
+            ComposePublishedPortPlannedEndpointProbe::Unprobeable
+        );
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen tcp 127.0.0.1:3000: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                planning_active: true,
+            },
+        )
+        .unwrap()
+        .expect("unprobed unmapped bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
+        assert!(diagnostic.contains("requested: 127.0.0.1:3000"));
+        assert!(diagnostic.contains("app:3000/tcp"));
         assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
     }
 
@@ -527,7 +657,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -564,7 +694,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -599,7 +729,7 @@ mod tests {
         let diagnostics = ComposePublishedPortStartupDiagnostics {
             input: &input,
             plan: &plan,
-            relocation_enabled: false,
+            planning_active: false,
         };
 
         let diagnostic = classify_compose_published_port_startup_failure(
@@ -641,7 +771,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .unwrap()
@@ -677,7 +807,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: false,
+                planning_active: false,
             },
         )
         .unwrap()
@@ -715,7 +845,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -751,7 +881,7 @@ mod tests {
             ComposePublishedPortStartupDiagnostics {
                 input: &input,
                 plan: &plan,
-                relocation_enabled: true,
+                planning_active: true,
             },
         )
         .unwrap()
@@ -785,7 +915,7 @@ mod tests {
         let diagnostics = ComposePublishedPortStartupDiagnostics {
             input: &input,
             plan: &plan,
-            relocation_enabled: false,
+            planning_active: false,
         };
 
         assert!(

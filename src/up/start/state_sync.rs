@@ -6,7 +6,8 @@ use crate::{
     runtime::compose_isolation::ComposeIsolationSubnetPlan,
     runtime::compose_ports::{
         ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortPlan,
-        ComposePublishedPortPlanningInput, compose_published_port_runtime_plan,
+        ComposePublishedPortPlanEntry, ComposePublishedPortPlanningInput,
+        compose_published_port_runtime_plan,
     },
     state::{
         self, CloneIsolationNetworkRuntimeState, CloneIsolationRuntimeState, ComposeRuntimeState,
@@ -238,29 +239,35 @@ async fn compose_published_port_runtime_state(
     Ok(runtime_plan
         .entries
         .into_iter()
-        .map(|entry| {
-            let actual = actual_bindings_for_compose_published_port(&containers, &entry);
-            let planned = planned_endpoint_for_runtime_state(&entry, &actual);
-            let actual_bindings = actual
-                .into_iter()
-                .filter(|binding| binding.host_port == planned.host_port)
-                .collect::<Vec<_>>();
-            PublishedPortRuntimeState {
-                source: PublishedPortSource::Compose,
-                kind: PublishedPortRuntimeType::Published,
-                service: entry.service,
-                port_entry_index: entry.port_entry_index,
-                target: PublishedPortTarget {
-                    port: entry.target_port,
-                    protocol: compose_port_protocol_name(&entry.protocol).to_owned(),
-                },
-                requested: published_port_endpoint_state(&entry.requested),
-                planned: published_port_endpoint_state(&planned),
-                actual_bindings,
-                relocated: entry.requested.host_port != planned.host_port,
-            }
-        })
+        .map(|entry| published_port_runtime_state_for_entry(&containers, entry))
         .collect())
+}
+
+fn published_port_runtime_state_for_entry(
+    containers: &[ContainerInspect],
+    entry: ComposePublishedPortPlanEntry,
+) -> PublishedPortRuntimeState {
+    let actual = actual_bindings_for_compose_published_port(containers, &entry);
+    let planned = planned_endpoint_for_runtime_state(&entry, &actual);
+    let actual_bindings = actual
+        .into_iter()
+        .filter(|binding| binding.host_port == planned.host_port)
+        .collect::<Vec<_>>();
+    let relocated = entry.requested != planned;
+    PublishedPortRuntimeState {
+        source: PublishedPortSource::Compose,
+        kind: PublishedPortRuntimeType::Published,
+        service: entry.service,
+        port_entry_index: entry.port_entry_index,
+        target: PublishedPortTarget {
+            port: entry.target_port,
+            protocol: compose_port_protocol_name(&entry.protocol).to_owned(),
+        },
+        requested: published_port_endpoint_state(&entry.requested),
+        planned: published_port_endpoint_state(&planned),
+        actual_bindings,
+        relocated,
+    }
 }
 
 fn planned_endpoint_for_runtime_state(
@@ -404,6 +411,11 @@ fn state_matches_container_snapshot(
 mod tests {
     use super::super::test_support::generated_override_test_plan;
     use super::*;
+    use crate::runtime::compose_ports::{
+        ComposePortProtocol, ComposePublishedPortAllocationReason,
+        ComposePublishedPortPlanEntryType, ComposePublishedPortPlanSource,
+        ComposePublishedPortPlannedEndpointProbe,
+    };
 
     #[test]
     fn state_snapshot_records_final_image_tag_for_compose_plan() {
@@ -416,5 +428,37 @@ mod tests {
 
         assert_eq!(snapshot.image, "decune/project-abc123:config-hash");
         assert_eq!(snapshot.config_hash, "config-hash");
+    }
+
+    #[test]
+    fn host_ip_only_published_port_change_is_relocated_in_runtime_state() {
+        let state = published_port_runtime_state_for_entry(
+            &[],
+            ComposePublishedPortPlanEntry {
+                service: "app".to_owned(),
+                port_entry_index: 0,
+                source: ComposePublishedPortPlanSource::Compose,
+                kind: ComposePublishedPortPlanEntryType::Published,
+                target_port: 3000,
+                protocol: ComposePortProtocol::Tcp,
+                requested: ComposePublishedPortEndpoint {
+                    host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                    host_port: 3000,
+                },
+                planned: ComposePublishedPortEndpoint {
+                    host_ip: ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
+                    host_port: 3000,
+                },
+                planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
+                relocated: true,
+                allocation_reason: ComposePublishedPortAllocationReason::Mapping,
+            },
+        );
+
+        assert!(state.relocated);
+        assert_eq!(state.requested.ip_value.as_deref(), Some("127.0.0.1"));
+        assert_eq!(state.requested.host_port, 3000);
+        assert_eq!(state.planned.ip_value.as_deref(), Some("0.0.0.0"));
+        assert_eq!(state.planned.host_port, 3000);
     }
 }

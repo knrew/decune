@@ -105,7 +105,7 @@ ignore = [22, 2375, 2376]
 on_auto_forward = "notify"
 
 [compose.published_ports]
-relocation = true
+automatic_relocation = true
 warn_on_relocation = true
 
 [compose.clone_isolation]
@@ -291,7 +291,7 @@ shell = false
 
     fn assert_spec_example_compose(config: &RawDecuneConfig) {
         let published_ports = config.compose.published_ports.as_ref().unwrap();
-        assert_eq!(published_ports.relocation, Some(true));
+        assert_eq!(published_ports.automatic_relocation, Some(true));
         assert_eq!(published_ports.warn_on_relocation, Some(true));
         let clone_isolation = config.compose.clone_isolation.as_ref().unwrap();
         assert_eq!(clone_isolation.enabled, Some(true));

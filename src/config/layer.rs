@@ -10,9 +10,10 @@ use crate::config::{
     schema::{
         RawAutoPortsConfig, RawComposeCloneIsolationConfig, RawComposeCloneIsolationEndpointConfig,
         RawComposeCloneIsolationNamesConfig, RawComposeCloneIsolationNetworksConfig,
-        RawComposeConfig, RawComposePublishedPortsConfig, RawCredentialsConfig, RawDecuneConfig,
-        RawDotfileConfig, RawFeatureConfig, RawGitCredentialsConfig, RawGithubCredentialsConfig,
-        RawHookConfig, RawHooksConfig, RawMountConfig, RawPortConfig, RawPortProtocol,
+        RawComposeConfig, RawComposePublishedPortMappingConfig, RawComposePublishedPortsConfig,
+        RawCredentialsConfig, RawDecuneConfig, RawDotfileConfig, RawFeatureConfig,
+        RawGitCredentialsConfig, RawGithubCredentialsConfig, RawHookConfig, RawHooksConfig,
+        RawMountConfig, RawPortConfig, RawPortProtocol,
     },
     types::{
         Command, DEFAULT_PORT_HOST_IP, DotfileConflict, GitHttpsMode, GithubCredentialsMode,
@@ -194,15 +195,44 @@ impl LayerComposeCloneIsolationEndpoint {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct LayerComposePublishedPorts {
-    pub(crate) relocation: Option<bool>,
+    pub(crate) automatic_relocation: Option<bool>,
     pub(crate) warn_on_relocation: Option<bool>,
+    pub(crate) mappings: Vec<LayerComposePublishedPortMapping>,
 }
 
 impl LayerComposePublishedPorts {
-    const fn from_raw(raw: &RawComposePublishedPortsConfig) -> Self {
+    fn from_raw(raw: &RawComposePublishedPortsConfig) -> Self {
         Self {
-            relocation: raw.relocation,
+            automatic_relocation: raw.automatic_relocation,
             warn_on_relocation: raw.warn_on_relocation,
+            mappings: raw
+                .mappings
+                .iter()
+                .map(LayerComposePublishedPortMapping::from_raw)
+                .collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LayerComposePublishedPortMapping {
+    pub(crate) enabled: bool,
+    pub(crate) service: String,
+    pub(crate) target: u16,
+    pub(crate) protocol: PortProtocol,
+    pub(crate) host: Option<u16>,
+    pub(crate) host_ip: Option<String>,
+}
+
+impl LayerComposePublishedPortMapping {
+    fn from_raw(raw: &RawComposePublishedPortMappingConfig) -> Self {
+        Self {
+            enabled: raw.enabled.unwrap_or(true),
+            service: raw.service.clone(),
+            target: raw.target,
+            protocol: raw.protocol.unwrap_or(RawPortProtocol::Tcp).into(),
+            host: raw.host,
+            host_ip: raw.host_ip.clone(),
         }
     }
 }

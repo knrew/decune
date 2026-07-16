@@ -390,7 +390,7 @@ mod tests {
                 Some(ComposePublishedPortStartupDiagnostics {
                     input: &input,
                     plan: &plan,
-                    relocation_enabled: false,
+                    planning_active: false,
                 }),
             ))
             .unwrap_err()

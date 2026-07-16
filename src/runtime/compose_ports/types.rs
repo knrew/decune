@@ -60,13 +60,22 @@ pub(crate) enum ComposePortEligibility {
 pub(crate) struct ComposePublishedPortStartupDiagnostics<'a> {
     pub(crate) input: &'a ComposePublishedPortPlanningInput,
     pub(crate) plan: &'a ComposePublishedPortPlan,
-    pub(crate) relocation_enabled: bool,
+    pub(crate) planning_active: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ComposePublishedPortPlanningInput {
     pub(crate) services: crate::runtime::compose_ports::ComposeActiveServiceSet,
     pub(crate) port_entries: Vec<ComposePortEntry>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ComposePublishedPortMapping {
+    pub(crate) service: String,
+    pub(crate) port_entry_index: usize,
+    pub(crate) target_port: u16,
+    pub(crate) protocol: ComposePortProtocol,
+    pub(crate) endpoint: ComposePublishedPortEndpoint,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -135,6 +144,7 @@ pub(crate) enum ComposePublishedPortHostIp {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ComposePublishedPortAllocationReason {
     Available,
+    Mapping,
     Reserved,
     Unavailable,
 }

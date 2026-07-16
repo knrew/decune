@@ -318,7 +318,7 @@ mod tests {
     #[test]
     fn finalized_compose_published_ports_reserves_final_forward_ports() {
         let mut plan = compose_hash_plan("stable-hash", "decune/test:first", "1.0.0");
-        plan.config.compose.published_ports.relocation = true;
+        plan.config.compose.published_ports.automatic_relocation = true;
         plan.forward_ports = vec![ResolvedForwardPort {
             service: None,
             container: 3000,
@@ -354,7 +354,10 @@ mod tests {
             &plan,
             Some(ComposePublishedPortFinalization {
                 input: &input,
+                mappings: &[],
                 existing_project_published_ports: &existing,
+                preserve_existing_bindings: true,
+                external_host_reservations: &[],
             }),
         )
         .unwrap();

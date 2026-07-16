@@ -6,7 +6,8 @@ use serde_json::Value as JsonValue;
 use crate::runtime::{
     compose_cli::ComposeOverridePortEntry,
     compose_ports::{
-        ComposePortEntry, ComposePublishedPortPlan, compose_published_port_plan_has_relocations,
+        ComposePortEntry, ComposePublishedPortHostIp, ComposePublishedPortPlan,
+        compose_published_port_plan_has_relocations,
     },
 };
 
@@ -72,6 +73,14 @@ pub(crate) fn compose_published_port_override(
                     "published".to_owned(),
                     JsonValue::String(planned.planned.host_port.to_string()),
                 );
+                match &planned.planned.host_ip {
+                    ComposePublishedPortHostIp::Omitted => {
+                        fields.remove("host_ip");
+                    }
+                    ComposePublishedPortHostIp::Explicit(host_ip) => {
+                        fields.insert("host_ip".to_owned(), JsonValue::String(host_ip.clone()));
+                    }
+                }
             }
             ports.push(fields);
         }
@@ -163,7 +172,7 @@ mod tests {
                         host_port: 3001,
                     },
                     planned: ComposePublishedPortEndpoint {
-                        host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                        host_ip: ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
                         host_port: 3006,
                     },
                     planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
@@ -182,7 +191,7 @@ mod tests {
                         host_port: 3002,
                     },
                     planned: ComposePublishedPortEndpoint {
-                        host_ip: ComposePublishedPortHostIp::Explicit("0.0.0.0".to_owned()),
+                        host_ip: ComposePublishedPortHostIp::Omitted,
                         host_port: 3007,
                     },
                     planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
@@ -199,12 +208,12 @@ mod tests {
         assert_eq!(app_ports[0].get("published"), Some(&json!("3005")));
         assert_eq!(app_ports[0].get("host_ip"), None);
         assert_eq!(app_ports[1].get("published"), Some(&json!("3006")));
-        assert_eq!(app_ports[1].get("host_ip"), Some(&json!("127.0.0.1")));
+        assert_eq!(app_ports[1].get("host_ip"), Some(&json!("0.0.0.0")));
         assert_eq!(app_ports[1].get("app_protocol"), Some(&json!("http")));
         assert_eq!(app_ports[1].get("name"), Some(&json!("loopback")));
         assert_eq!(app_ports[1].get("mode"), Some(&json!("host")));
         assert_eq!(app_ports[2].get("published"), Some(&json!("3007")));
-        assert_eq!(app_ports[2].get("host_ip"), Some(&json!("0.0.0.0")));
+        assert_eq!(app_ports[2].get("host_ip"), None);
         assert_eq!(app_ports[3].get("published"), Some(&json!("8125")));
         assert_eq!(port_override.ports_for("worker"), None);
     }

@@ -225,6 +225,11 @@ impl DockerCli {
         .await
     }
 
+    pub(crate) async fn list_running_container_inspects(&self) -> Result<Vec<ContainerInspect>> {
+        self.list_container_inspects_with_filters_and_scope("running Docker containers", &[], false)
+            .await
+    }
+
     pub(crate) async fn list_standalone_workspace_containers(
         &self,
         workspace_id: &str,
@@ -369,7 +374,20 @@ impl DockerCli {
         target: &str,
         filters: &[String],
     ) -> Result<Vec<ContainerInspect>> {
-        let mut command = docker_cmd(["ps", "--all"]);
+        self.list_container_inspects_with_filters_and_scope(target, filters, true)
+            .await
+    }
+
+    async fn list_container_inspects_with_filters_and_scope(
+        &self,
+        target: &str,
+        filters: &[String],
+        include_stopped: bool,
+    ) -> Result<Vec<ContainerInspect>> {
+        let mut command = docker_cmd(["ps"]);
+        if include_stopped {
+            command = command.arg("--all");
+        }
         for filter in filters {
             command = command.arg("--filter").arg(filter);
         }
@@ -1439,6 +1457,35 @@ mod tests {
 
         assert_eq!(containers.len(), 1);
         assert_eq!(containers[0].name.as_deref(), Some("/kept"));
+    }
+
+    #[test]
+    fn list_running_container_inspects_omits_all_scope_and_accepts_disappearing_container() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(runtime_output(
+                br#"[{"Id":"kept-id","Name":"/kept"}]"#,
+                b"Error: No such container: removed-id\n",
+                1,
+            )),
+            Ok(output(b"kept-id\nremoved-id\n")),
+        ]);
+        let client = DockerCli::new(Arc::new(runner.clone()));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let containers = runtime
+            .block_on(client.list_running_container_inspects())
+            .unwrap();
+
+        assert_eq!(containers.len(), 1);
+        let commands = runner.commands();
+        assert_eq!(commands[0].args_vec(), ["ps", "--format", "{{.ID}}"]);
+        assert_eq!(
+            commands[1].args_vec(),
+            ["container", "inspect", "kept-id", "removed-id"]
+        );
     }
 
     #[test]

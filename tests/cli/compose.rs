@@ -40,7 +40,7 @@ fn compose_multi_replica_fixed_published_port_reports_diagnostic_code() {
 
     decune()
         .env("PATH", &fake_path)
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(&workspace_root)
         .assert()
         .failure()
@@ -1425,7 +1425,7 @@ fn compose_up_records_published_port_runtime_state() {
             "DECUNE_FAKE_WORKSPACE_SLUG",
             safe_workspace_slug(workspace_root.file_name().unwrap().to_str().unwrap()),
         )
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(&workspace_root)
         .assert()
         .success()
