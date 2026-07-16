@@ -330,7 +330,7 @@ mod tests {
     };
 
     #[test]
-    fn startup_failure_classifier_reports_collision_when_relocation_is_disabled() {
+    fn startup_failure_classifier_reports_collision_when_automatic_relocation_is_disabled() {
         let input = planning_input(
             json!({
                 "services": {

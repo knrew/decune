@@ -664,8 +664,8 @@ async fn prepare_compose_startup_context(
         list_compose_project_containers(client, workspace.id(), &project_name).await?;
     let existing_compose_containers =
         list_compose_primary_containers(client, workspace.id(), &project_name, &service).await?;
-    let published_port_planning_enabled =
-        plan.config.compose.published_ports.relocation || !published_port_mappings.is_empty();
+    let published_port_planning_enabled = plan.config.compose.published_ports.automatic_relocation
+        || !published_port_mappings.is_empty();
     let (existing_project_published_ports, external_host_reservations) =
         list_compose_published_port_reservations(
             client,
@@ -1554,7 +1554,7 @@ const fn compose_startup_diagnostics<'a>(
     ComposePublishedPortStartupDiagnostics {
         input,
         plan: published_port_plan,
-        planning_active: plan.config.compose.published_ports.relocation
+        planning_active: plan.config.compose.published_ports.automatic_relocation
             || !published_port_plan.entries.is_empty(),
     }
 }

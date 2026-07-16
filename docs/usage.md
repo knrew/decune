@@ -173,8 +173,8 @@ development container を作成または起動し、remote user のシェルに�
 - `--pull`: build/create 前に base image または Compose サービス image を pull する。
 - `--no-global-config`: global decune TOML 設定を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
-- `--published-port-relocation`: この実行で Compose published port relocation policy を有効化する。
-- `--no-published-port-relocation`: この実行で Compose published port relocation policy を無効化する。
+- `--automatic-published-port-relocation`: この実行で Compose automatic published port relocation policy を有効化する。
+- `--no-automatic-published-port-relocation`: この実行で Compose automatic published port relocation policy を無効化する。
 - `-p, --port <SPEC>`: 手動の port forwarding 設定を追加する。
 
 `--detach` では `up` 終了時に host daemon も停止するため、manual/automatic port forwarding と Git HTTPS host-helper forwarding は維持されません。detached container で Docker published port が必要な場合は、image/Dockerfile モードでは `appPort`、Compose モードでは Compose サービスの `ports` を使ってください。
@@ -314,7 +314,7 @@ ignore = [22, 2375, 2376]
 on_auto_forward = "notify"
 
 [compose.published_ports]
-relocation = false
+automatic_relocation = false
 warn_on_relocation = false
 
 [[compose.published_ports.mappings]]
@@ -365,11 +365,11 @@ host 側で通常ファイルまたは解決済み symlink target file を atomi
 
 Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。Dev Container `appPort` は Compose モードでは unsupported error です。
 
-`[compose.published_ports].relocation = true`、または `decune up --published-port-relocation` / `decune rebuild --published-port-relocation` は、後続の Compose published port relocation 処理の policy を有効化します。既定は無効です。`--no-published-port-relocation` はこの実行で config を上書きして無効化します。`--no-auto-forward` は automatic port forwarding だけを無効化し、この policy は変更しません。
+`[compose.published_ports].automatic_relocation = true`、または `decune up --automatic-published-port-relocation` / `decune rebuild --automatic-published-port-relocation` は、後続の Compose automatic published port relocation 処理の policy を有効化します。既定は無効です。`--no-automatic-published-port-relocation` はこの実行で config を上書きして無効化します。`--no-auto-forward` は automatic port forwarding だけを無効化し、この policy は変更しません。
 
 `[compose.published_ports].warn_on_relocation = true` にすると、relocation により requested endpoint とは別の planned endpoint を使う場合に、起動時に warning を表示します。既定では warning を出しません。warning を無効にしていても、relocated published port は `decune ports` の `STATE`、`REQUESTED`、JSON 出力で確認できます。既存 Compose project の published binding を変更するために container 再作成が必要な場合は、この設定に関係なく warning を表示し、自動的に再作成して起動を継続します。
 
-特定の fixed TCP published port を常に同じ host endpoint へ割り当てる場合は、`[[compose.published_ports.mappings]]` を使います。mapping は `relocation = false` でも適用されます。
+特定の fixed TCP published port を常に同じ host endpoint へ割り当てる場合は、`[[compose.published_ports.mappings]]` を使います。mapping は `automatic_relocation = false` でも適用されます。
 
 ```toml
 [[compose.published_ports.mappings]]
@@ -388,7 +388,7 @@ mapping は active な Compose service の fixed TCP published port 1件に一�
 
 relocation の対象は fixed TCP の Compose published port だけです。たとえば `3000:3000` や `127.0.0.1:3000:3000` は relocation 対象です。UDP、range、host port を省略した port entry は relocation 対象外です。たとえば `3000:3000/udp`、`3000-3005:3000-3005`、`3000` は relocation されません。
 
-mapping または relocation が有効な場合、decune は接続先 Docker daemon の running container が持つ actual TCP published binding を予約として扱い、requested port と relocation candidate の両方から除外します。現在の Compose project 自身は除外し、同 project 内の binding は既存 binding として扱います。IPv4/IPv6 wildcard の衝突規則は forwarding と共通です。
+mapping または automatic relocation が有効な場合、decune は接続先 Docker daemon の running container が持つ actual TCP published binding を予約として扱い、requested port と relocation candidate の両方から除外します。現在の Compose project 自身は除外し、同 project 内の binding は既存 binding として扱います。IPv4/IPv6 wildcard の衝突規則は forwarding と共通です。
 
 privileged port など decune process が権限上 TCP bind probe できない published host port は、requested port や同じ Compose project の既存 binding としては維持し、relocation 先候補としては使いません。Docker actual binding reservation で検出できない host process が使用していた場合は、Docker/Compose 起動時の published port collision diagnostic になります。
 
@@ -404,16 +404,16 @@ invalid host IP、malformed port syntax、想定外の availability probe error 
 
 mapping または relocation により実際に host port か host IP を変更する場合は、generated Compose override で Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要です。version 判定不能または古い Compose では起動前に error になります。
 
-relocation は最終的な `forwardPorts` / decune `[[ports]]` / CLI `-p` の host port 予約も考慮します。同じ Compose project が前回 relocation で使っている同じ Compose service の published host port は、再作成時に再利用できるものとして扱います。
+automatic relocation は最終的な `forwardPorts` / decune `[[ports]]` / CLI `-p` の host port 予約も考慮します。同じ Compose project が前回 relocation で使っている同じ Compose service の published host port は、再作成時に再利用できるものとして扱います。
 
-relocation 後の endpoint は Docker/Compose published port のままであり、decune forwarding ではありません。そのため `--detach` で起動した後も Docker/Compose の published binding として維持されます。`--no-auto-forward` は automatic port forwarding だけを無効化し、relocation policy は無効化しません。
+relocation 後の endpoint は Docker/Compose published port のままであり、decune forwarding ではありません。そのため `--detach` で起動した後も Docker/Compose の published binding として維持されます。`--no-auto-forward` は automatic port forwarding だけを無効化し、automatic relocation policy は無効化しません。
 
 relocated published port の確認には `decune ports` を使います。通常出力では `TYPE=published`、`SOURCE=compose`、`STATE=relocated` として表示され、`LOCAL` に planned endpoint、`REQUESTED` に元の requested endpoint が出ます。`decune ports --json` では `requested`、`planned`、`actual_bindings`、`relocated` を確認できます。host IP omitted は JSON では `null` になり、explicit `0.0.0.0` とは区別されます。
 
 Compose published port 関連の代表的な diagnostic code と対処は次の通りです。
 
-- `compose_published_port_collision`: requested host endpoint が使用中です。使用中の process、container、workspace を停止するか、Compose `ports` を変更するか、明示的に relocation を有効化してください。
-- `compose_published_port_relocation_failed`: requested host port 以降に利用可能な relocation candidate が見つかりません。使用中の host port を解放するか、Compose `ports` を変更してください。
+- `compose_published_port_collision`: requested host endpoint が使用中です。使用中の process、container、workspace を停止するか、Compose `ports` を変更するか、明示的に automatic relocation を有効化してください。
+- `compose_published_port_automatic_relocation_failed`: requested host port 以降に利用可能な automatic relocation candidate が見つかりません。使用中の host port を解放するか、Compose `ports` を変更してください。
 - `compose_published_port_bind_race`: planning 後に別 process が planned endpoint を取得した可能性があります。再実行するか、該当 endpoint を使っている process を停止してください。
 - `compose_published_port_unsupported`: startup failure が、host endpoint を安全に照合できる範囲で relocation 対象外 entry に関係しています。UDP、range、`network_mode: host` などの Compose `ports` を確認してください。
 - `compose_published_port_invalid`: invalid host IP、malformed port syntax、想定外の availability probe error など、simple collision ではない状態です。Compose `ports` の記述を確認してください。

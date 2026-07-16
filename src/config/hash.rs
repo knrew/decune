@@ -1835,14 +1835,14 @@ shell = false
     }
 
     #[test]
-    fn compose_published_ports_relocation_policy_does_not_change_hash() {
+    fn compose_published_ports_automatic_relocation_policy_does_not_change_hash() {
         let disabled = resolved_config("version = 1\n");
         let enabled = resolved_config(
             r"
 version = 1
 
 [compose.published_ports]
-relocation = true
+automatic_relocation = true
 warn_on_relocation = true
 ",
         );

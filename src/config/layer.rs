@@ -195,7 +195,7 @@ impl LayerComposeCloneIsolationEndpoint {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct LayerComposePublishedPorts {
-    pub(crate) relocation: Option<bool>,
+    pub(crate) automatic_relocation: Option<bool>,
     pub(crate) warn_on_relocation: Option<bool>,
     pub(crate) mappings: Vec<LayerComposePublishedPortMapping>,
 }
@@ -203,7 +203,7 @@ pub(crate) struct LayerComposePublishedPorts {
 impl LayerComposePublishedPorts {
     fn from_raw(raw: &RawComposePublishedPortsConfig) -> Self {
         Self {
-            relocation: raw.relocation,
+            automatic_relocation: raw.automatic_relocation,
             warn_on_relocation: raw.warn_on_relocation,
             mappings: raw
                 .mappings

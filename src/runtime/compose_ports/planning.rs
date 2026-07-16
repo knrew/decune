@@ -22,7 +22,7 @@ use super::endpoint::{
 
 #[derive(Debug)]
 pub(crate) enum ComposePublishedPortPlanError {
-    NoRelocationCandidate {
+    NoAutomaticRelocationCandidate {
         service: String,
         port_entry_index: usize,
         requested: ComposePublishedPortEndpoint,
@@ -45,13 +45,13 @@ pub(crate) enum ComposePublishedPortPlanError {
 impl std::fmt::Display for ComposePublishedPortPlanError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::NoRelocationCandidate {
+            Self::NoAutomaticRelocationCandidate {
                 service,
                 port_entry_index,
                 requested,
             } => write!(
                 formatter,
-                "No Compose published port relocation candidate is available for service `{service}` port entry {port_entry_index} requested host port {}",
+                "No automatic published port relocation candidate is available for Compose service `{service}` port entry {port_entry_index} requested host port {}",
                 requested.host_port
             ),
             Self::HostPortAvailability {
@@ -79,7 +79,7 @@ impl std::error::Error for ComposePublishedPortPlanError {}
 
 pub(crate) fn plan_compose_published_ports_with_existing_project(
     input: &ComposePublishedPortPlanningInput,
-    relocation_enabled: bool,
+    automatic_relocation_enabled: bool,
     existing_forward_ports: &[ResolvedForwardPort],
     mappings: &[ComposePublishedPortMapping],
     existing_project_published_ports: &[ComposePublishedPortReservation],
@@ -88,7 +88,7 @@ pub(crate) fn plan_compose_published_ports_with_existing_project(
 ) -> std::result::Result<ComposePublishedPortPlan, ComposePublishedPortPlanError> {
     plan_compose_published_ports_inner(
         input,
-        relocation_enabled,
+        automatic_relocation_enabled,
         existing_forward_ports,
         mappings,
         ExistingProjectBindings::new(existing_project_published_ports, preserve_existing_bindings),
@@ -100,7 +100,7 @@ pub(crate) fn plan_compose_published_ports_with_existing_project(
 #[cfg(test)]
 pub(crate) fn plan_compose_published_ports_with<F>(
     input: &ComposePublishedPortPlanningInput,
-    relocation_enabled: bool,
+    automatic_relocation_enabled: bool,
     existing_forward_ports: &[ResolvedForwardPort],
     existing_project_published_ports: &[ComposePublishedPortReservation],
     host_port_probe: F,
@@ -110,7 +110,7 @@ where
 {
     plan_compose_published_ports_inner(
         input,
-        relocation_enabled,
+        automatic_relocation_enabled,
         existing_forward_ports,
         &[],
         ExistingProjectBindings::new(existing_project_published_ports, true),
@@ -122,7 +122,7 @@ where
 #[cfg(test)]
 pub(crate) fn plan_compose_published_ports_with_mappings<F>(
     input: &ComposePublishedPortPlanningInput,
-    relocation_enabled: bool,
+    automatic_relocation_enabled: bool,
     existing_forward_ports: &[ResolvedForwardPort],
     mappings: &[ComposePublishedPortMapping],
     existing_project_published_ports: &[ComposePublishedPortReservation],
@@ -134,7 +134,7 @@ where
 {
     plan_compose_published_ports_inner(
         input,
-        relocation_enabled,
+        automatic_relocation_enabled,
         existing_forward_ports,
         mappings,
         ExistingProjectBindings::new(existing_project_published_ports, true),
@@ -145,7 +145,7 @@ where
 
 fn plan_compose_published_ports_inner<F>(
     input: &ComposePublishedPortPlanningInput,
-    relocation_enabled: bool,
+    automatic_relocation_enabled: bool,
     existing_forward_ports: &[ResolvedForwardPort],
     mappings: &[ComposePublishedPortMapping],
     existing_project_bindings: ExistingProjectBindings<'_>,
@@ -155,7 +155,7 @@ fn plan_compose_published_ports_inner<F>(
 where
     F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
 {
-    if !relocation_enabled && mappings.is_empty() {
+    if !automatic_relocation_enabled && mappings.is_empty() {
         return Ok(ComposePublishedPortPlan::default());
     }
 
@@ -176,7 +176,7 @@ where
     plan_explicit_mappings(&ordered_entries, mappings, &mut state, &mut host_port_probe)?;
     plan_unmapped_entries(
         &ordered_entries,
-        relocation_enabled,
+        automatic_relocation_enabled,
         mappings,
         &mut state,
         &mut host_port_probe,
@@ -284,7 +284,7 @@ where
 
 fn plan_unmapped_entries<F>(
     ordered_entries: &[&ComposePortEntry],
-    relocation_enabled: bool,
+    automatic_relocation_enabled: bool,
     mappings: &[ComposePublishedPortMapping],
     state: &mut PublishedPortPlanningState<'_>,
     host_port_probe: &mut F,
@@ -301,8 +301,14 @@ where
         }
         let requested = endpoint_for_entry(entry)?;
         let target_port = target_port_for_entry(entry)?;
-        if !relocation_enabled {
-            plan_unrelocated_entry(entry, requested, target_port, mappings, state)?;
+        if !automatic_relocation_enabled {
+            plan_unmapped_entry_without_automatic_relocation(
+                entry,
+                requested,
+                target_port,
+                mappings,
+                state,
+            )?;
             continue;
         }
         let requested_host_ip = reservation_host_ip(&requested);
@@ -347,7 +353,7 @@ where
     Ok(())
 }
 
-fn plan_unrelocated_entry(
+fn plan_unmapped_entry_without_automatic_relocation(
     entry: &ComposePortEntry,
     requested: ComposePublishedPortEndpoint,
     target_port: u16,
@@ -514,7 +520,7 @@ where
             } else {
                 ComposePublishedPortAllocationReason::Unavailable
             };
-            let planned_host_port = allocate_relocated_host_port(
+            let planned_host_port = allocate_automatic_relocation_host_port(
                 entry,
                 requested,
                 requested_host_ip,
@@ -761,7 +767,7 @@ fn host_ips_conflict(
     )
 }
 
-fn allocate_relocated_host_port<F>(
+fn allocate_automatic_relocation_host_port<F>(
     entry: &ComposePortEntry,
     requested: &ComposePublishedPortEndpoint,
     reservation_host_ip: &str,
@@ -772,7 +778,7 @@ where
     F: FnMut(&str, u16) -> anyhow::Result<HostPortProbe>,
 {
     let Some(mut candidate) = requested.host_port.checked_add(1) else {
-        return Err(no_relocation_candidate(entry, requested));
+        return Err(no_automatic_relocation_candidate(entry, requested));
     };
 
     loop {
@@ -787,7 +793,7 @@ where
             return Ok(candidate);
         }
         let Some(next) = candidate.checked_add(1) else {
-            return Err(no_relocation_candidate(entry, requested));
+            return Err(no_automatic_relocation_candidate(entry, requested));
         };
         candidate = next;
     }
@@ -810,11 +816,11 @@ where
     })
 }
 
-fn no_relocation_candidate(
+fn no_automatic_relocation_candidate(
     entry: &ComposePortEntry,
     requested: &ComposePublishedPortEndpoint,
 ) -> ComposePublishedPortPlanError {
-    ComposePublishedPortPlanError::NoRelocationCandidate {
+    ComposePublishedPortPlanError::NoAutomaticRelocationCandidate {
         service: entry.service.clone(),
         port_entry_index: entry.entry_index,
         requested: requested.clone(),
@@ -873,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn planner_returns_empty_plan_when_relocation_is_disabled() {
+    fn planner_returns_empty_plan_when_automatic_relocation_is_disabled() {
         let input = planning_input(
             json!({
                 "services": {
@@ -887,7 +893,7 @@ mod tests {
         );
 
         let plan = plan_compose_published_ports_with(&input, false, &[], &[], |_, _| {
-            panic!("availability must not be checked when relocation is disabled")
+            panic!("availability must not be checked when automatic relocation is disabled")
         })
         .unwrap();
 
@@ -1100,7 +1106,7 @@ mod tests {
         .expect_err("planner should fail without a relocation candidate");
 
         match error {
-            ComposePublishedPortPlanError::NoRelocationCandidate {
+            ComposePublishedPortPlanError::NoAutomaticRelocationCandidate {
                 service,
                 port_entry_index,
                 requested,
@@ -1146,7 +1152,7 @@ mod tests {
                 assert_eq!(host_port, 3000);
                 assert!(source.to_string().contains("socket probe failed"));
             }
-            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            other @ (ComposePublishedPortPlanError::NoAutomaticRelocationCandidate { .. }
             | ComposePublishedPortPlanError::InconsistentEntry { .. }
             | ComposePublishedPortPlanError::MappingConflict { .. }) => {
                 panic!("expected host port availability error, got {other:?}")
@@ -1184,7 +1190,7 @@ mod tests {
                 assert_eq!(port_entry_index, 0);
                 assert!(detail.contains("published host port"));
             }
-            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            other @ (ComposePublishedPortPlanError::NoAutomaticRelocationCandidate { .. }
             | ComposePublishedPortPlanError::HostPortAvailability { .. }
             | ComposePublishedPortPlanError::MappingConflict { .. }) => {
                 panic!("expected inconsistent entry error, got {other:?}")
@@ -1221,7 +1227,7 @@ mod tests {
                 assert_eq!(port_entry_index, 0);
                 assert!(detail.contains("target port"));
             }
-            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            other @ (ComposePublishedPortPlanError::NoAutomaticRelocationCandidate { .. }
             | ComposePublishedPortPlanError::HostPortAvailability { .. }
             | ComposePublishedPortPlanError::MappingConflict { .. }) => {
                 panic!("expected inconsistent entry error, got {other:?}")
@@ -1305,7 +1311,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            ComposePublishedPortPlanError::NoAutomaticRelocationCandidate { .. }
         ));
     }
 
@@ -1555,7 +1561,7 @@ mod tests {
 
         assert!(matches!(
             error,
-            ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            ComposePublishedPortPlanError::NoAutomaticRelocationCandidate { .. }
         ));
     }
 
@@ -1779,7 +1785,7 @@ mod tests {
     }
 
     #[test]
-    fn explicit_mapping_conflicts_with_unmapped_requested_endpoint_without_relocation() {
+    fn explicit_mapping_conflicts_with_unmapped_requested_endpoint_without_automatic_relocation() {
         let input = planning_input(
             json!({
                 "services": {
@@ -1820,7 +1826,7 @@ mod tests {
                 assert!(detail.contains("target 3000/tcp"));
                 assert!(detail.contains("automatic relocation is disabled"));
             }
-            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            other @ (ComposePublishedPortPlanError::NoAutomaticRelocationCandidate { .. }
             | ComposePublishedPortPlanError::HostPortAvailability { .. }
             | ComposePublishedPortPlanError::InconsistentEntry { .. }) => {
                 panic!("unexpected planner error: {other}")
@@ -2045,7 +2051,7 @@ mod tests {
                 assert!(detail.contains("127.0.0.1:1502"));
                 assert!(detail.contains("do not fall back"));
             }
-            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            other @ (ComposePublishedPortPlanError::NoAutomaticRelocationCandidate { .. }
             | ComposePublishedPortPlanError::HostPortAvailability { .. }
             | ComposePublishedPortPlanError::InconsistentEntry { .. }) => {
                 panic!("unexpected planner error: {other}")

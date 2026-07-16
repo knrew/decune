@@ -284,7 +284,7 @@ pub(crate) const COMPOSE_PUBLISHED_PORT_MAPPING_INVALID: &str =
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct RawComposePublishedPortsConfig {
-    pub(crate) relocation: Option<bool>,
+    pub(crate) automatic_relocation: Option<bool>,
     pub(crate) warn_on_relocation: Option<bool>,
     pub(crate) mappings: Vec<RawComposePublishedPortMappingConfig>,
 }
@@ -323,7 +323,7 @@ where
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct RawComposePublishedPortsConfigFields {
-    relocation: Option<bool>,
+    automatic_relocation: Option<bool>,
     warn_on_relocation: Option<bool>,
     #[serde(default)]
     mappings: Vec<RawComposePublishedPortMappingConfig>,
@@ -337,7 +337,7 @@ impl<'de> Deserialize<'de> for RawComposePublishedPortsConfig {
         let fields = RawComposePublishedPortsConfigFields::deserialize(deserializer)?;
         validate_compose_published_port_mappings::<D::Error>(&fields.mappings)?;
         Ok(Self {
-            relocation: fields.relocation,
+            automatic_relocation: fields.automatic_relocation,
             warn_on_relocation: fields.warn_on_relocation,
             mappings: fields.mappings,
         })
@@ -764,7 +764,7 @@ on_auto_forward = "{input}"
 version = 1
 
 [compose.published_ports]
-relocation = true
+automatic_relocation = true
 warn_on_relocation = true
 
 [[compose.published_ports.mappings]]
@@ -777,7 +777,7 @@ host_ip = "127.0.0.1"
         .expect("test config should parse");
 
         let published_ports = config.compose.published_ports.unwrap();
-        assert_eq!(published_ports.relocation, Some(true));
+        assert_eq!(published_ports.automatic_relocation, Some(true));
         assert_eq!(published_ports.warn_on_relocation, Some(true));
         assert_eq!(published_ports.mappings.len(), 1);
         assert_eq!(published_ports.mappings[0].service, "app");
@@ -788,6 +788,21 @@ host_ip = "127.0.0.1"
             published_ports.mappings[0].host_ip.as_deref(),
             Some("127.0.0.1")
         );
+    }
+
+    #[test]
+    fn compose_published_ports_legacy_relocation_key_is_rejected() {
+        let error = toml::from_str::<RawDecuneConfig>(
+            r"
+version = 1
+
+[compose.published_ports]
+relocation = true
+",
+        )
+        .expect_err("legacy published port relocation key must be rejected");
+
+        assert!(error.to_string().contains("unknown field `relocation`"));
     }
 
     #[rstest]

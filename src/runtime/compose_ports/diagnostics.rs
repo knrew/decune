@@ -14,8 +14,8 @@ pub(crate) const COMPOSE_PUBLISHED_PORT_MULTI_REPLICA_UNSUPPORTED: &str =
 pub(crate) const COMPOSE_PUBLISHED_PORT_UNSUPPORTED: &str = "compose_published_port_unsupported";
 pub(crate) const COMPOSE_PUBLISHED_PORT_INVALID: &str = "compose_published_port_invalid";
 pub(crate) const COMPOSE_PUBLISHED_PORT_COLLISION: &str = "compose_published_port_collision";
-pub(crate) const COMPOSE_PUBLISHED_PORT_RELOCATION_FAILED: &str =
-    "compose_published_port_relocation_failed";
+pub(crate) const COMPOSE_PUBLISHED_PORT_AUTOMATIC_RELOCATION_FAILED: &str =
+    "compose_published_port_automatic_relocation_failed";
 pub(crate) const COMPOSE_PUBLISHED_PORT_BIND_RACE: &str = "compose_published_port_bind_race";
 pub(crate) const COMPOSE_PUBLISHED_PORT_MAPPING_CONFLICT: &str =
     "compose_published_port_mapping_conflict";
@@ -59,7 +59,7 @@ pub(crate) enum ComposePublishedPortDiagnostic {
     MappingConflict {
         detail: String,
     },
-    RelocationFailed {
+    AutomaticRelocationFailed {
         detail: String,
     },
 }
@@ -67,13 +67,13 @@ pub(crate) enum ComposePublishedPortDiagnostic {
 impl ComposePublishedPortDiagnostic {
     pub(crate) fn from_plan_error(error: ComposePublishedPortPlanError) -> Self {
         match error {
-            ComposePublishedPortPlanError::NoRelocationCandidate {
+            ComposePublishedPortPlanError::NoAutomaticRelocationCandidate {
                 service,
                 port_entry_index,
                 requested,
-            } => Self::RelocationFailed {
+            } => Self::AutomaticRelocationFailed {
                 detail: format!(
-                    "No relocation candidate is available for service `{service}` port entry {port_entry_index} requested endpoint {}",
+                    "No automatic relocation candidate is available for service `{service}` port entry {port_entry_index} requested endpoint {}",
                     compose_published_port_endpoint_display(&requested)
                 ),
             },
@@ -124,7 +124,7 @@ impl std::fmt::Display for ComposePublishedPortDiagnostic {
                 protocol,
             } => write!(
                 formatter,
-                "{COMPOSE_PUBLISHED_PORT_COLLISION}: Compose published port collision. service: `{service}`; requested: {}; target: {service}:{target_port}/{}; source: compose. The requested Docker/Compose published host port is unavailable. This is not a decune forwarding listener. decune automatic forwarding does not replace Compose published ports. Suggested actions: stop the process, Docker container, or workspace using the requested endpoint; change the Compose published port; use a container-only Compose port when appropriate; or enable published port relocation explicitly.",
+                "{COMPOSE_PUBLISHED_PORT_COLLISION}: Compose published port collision. service: `{service}`; requested: {}; target: {service}:{target_port}/{}; source: compose. The requested Docker/Compose published host port is unavailable. This is not a decune forwarding listener. decune automatic forwarding does not replace Compose published ports. Suggested actions: stop the process, Docker container, or workspace using the requested endpoint; change the Compose published port; use a container-only Compose port when appropriate; or enable automatic published port relocation explicitly.",
                 compose_published_port_endpoint_display(requested),
                 compose_port_protocol_name(protocol)
             ),
@@ -166,9 +166,9 @@ impl std::fmt::Display for ComposePublishedPortDiagnostic {
                 formatter,
                 "{COMPOSE_PUBLISHED_PORT_MAPPING_CONFLICT}: {detail}"
             ),
-            Self::RelocationFailed { detail } => write!(
+            Self::AutomaticRelocationFailed { detail } => write!(
                 formatter,
-                "{COMPOSE_PUBLISHED_PORT_RELOCATION_FAILED}: {detail}"
+                "{COMPOSE_PUBLISHED_PORT_AUTOMATIC_RELOCATION_FAILED}: {detail}"
             ),
         }
     }
@@ -247,6 +247,25 @@ mod tests {
         assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_INVALID));
         assert!(diagnostic.contains("socket probe failed"));
         assert!(!diagnostic.contains("compose_published_port_collision"));
+    }
+
+    #[test]
+    fn missing_candidate_maps_to_automatic_relocation_failed_diagnostic() {
+        let diagnostic = ComposePublishedPortDiagnostic::from_plan_error(
+            ComposePublishedPortPlanError::NoAutomaticRelocationCandidate {
+                service: "app".to_owned(),
+                port_entry_index: 0,
+                requested: ComposePublishedPortEndpoint {
+                    host_ip: crate::runtime::compose_ports::ComposePublishedPortHostIp::Omitted,
+                    host_port: 3000,
+                },
+            },
+        )
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_AUTOMATIC_RELOCATION_FAILED));
+        assert!(diagnostic.contains("No automatic relocation candidate"));
+        assert!(!diagnostic.contains("compose_published_port_relocation_failed"));
     }
 
     #[test]

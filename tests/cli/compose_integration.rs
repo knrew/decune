@@ -154,7 +154,7 @@ fn compose_integration_reuses_running_compose_project_with_published_port_reloca
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -172,7 +172,7 @@ fn compose_integration_reuses_running_compose_project_with_published_port_reloca
     let first_id = first_primary.id.clone();
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -525,7 +525,7 @@ fn compose_integration_published_port_relocation_starts_second_workspace_and_rep
             "up",
             "--detach",
             "--no-auto-forward",
-            "--published-port-relocation",
+            "--automatic-published-port-relocation",
         ])
         .arg(second.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &second_container_tools_dir)
@@ -724,7 +724,7 @@ fn compose_integration_published_port_relocation_recreates_stopped_project_when_
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -750,7 +750,7 @@ fn compose_integration_published_port_relocation_recreates_stopped_project_when_
     let blocker = TcpListener::bind(("127.0.0.1", requested_port)).unwrap();
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -794,7 +794,7 @@ fn compose_integration_published_port_relocation_keeps_running_binding_after_blo
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -826,7 +826,7 @@ fn compose_integration_published_port_relocation_keeps_running_binding_after_blo
     drop(requested_listener);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -862,7 +862,7 @@ fn compose_integration_published_port_relocation_returns_to_requested_on_rebuild
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -878,7 +878,11 @@ fn compose_integration_published_port_relocation_returns_to_requested_on_rebuild
     drop(requested_listener);
 
     decune()
-        .args(["rebuild", "--detach", "--published-port-relocation"])
+        .args([
+            "rebuild",
+            "--detach",
+            "--automatic-published-port-relocation",
+        ])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -908,7 +912,7 @@ fn compose_integration_published_port_relocation_replaces_original_binding() {
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -951,7 +955,7 @@ fn compose_integration_published_port_relocation_preserves_host_ip_and_long_synt
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("XDG_STATE_HOME", &state_home_value)
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
@@ -1005,7 +1009,7 @@ fn compose_integration_sidecar_published_port_relocation_uses_docker_binding() {
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -1049,7 +1053,7 @@ fn compose_integration_dependency_published_port_relocation_uses_compose_active_
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(workspace.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
         .assert()
@@ -1095,7 +1099,7 @@ fn compose_integration_profile_published_port_relocation_follows_active_service_
     let active_container_tools_dir = fake_container_tools_bundle(&active.workspace);
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(inactive.path())
         .env("DECUNE_CONTAINER_TOOLS_DIR", &inactive_container_tools_dir)
         .assert()
@@ -1111,7 +1115,7 @@ fn compose_integration_profile_published_port_relocation_follows_active_service_
     );
 
     decune()
-        .args(["up", "--detach", "--published-port-relocation"])
+        .args(["up", "--detach", "--automatic-published-port-relocation"])
         .arg(active.path())
         .env("COMPOSE_PROFILES", "debug")
         .env("DECUNE_CONTAINER_TOOLS_DIR", &active_container_tools_dir)

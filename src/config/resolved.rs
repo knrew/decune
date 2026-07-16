@@ -107,7 +107,7 @@ pub(crate) struct ResolvedCompose {
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub(crate) struct ResolvedComposePublishedPorts {
-    pub(crate) relocation: bool,
+    pub(crate) automatic_relocation: bool,
     pub(crate) warn_on_relocation: bool,
     pub(crate) mappings: Vec<ResolvedComposePublishedPortMapping>,
 }

@@ -112,12 +112,12 @@ struct UpForwardingArgs {
     /// Disable automatic port forwarding.
     #[arg(long)]
     no_auto_forward: bool,
-    /// Enable Docker/Compose published port relocation.
-    #[arg(long, conflicts_with = "no_published_port_relocation")]
-    published_port_relocation: bool,
-    /// Disable Docker/Compose published port relocation.
-    #[arg(long, conflicts_with = "published_port_relocation")]
-    no_published_port_relocation: bool,
+    /// Enable automatic Docker/Compose published port relocation.
+    #[arg(long, conflicts_with = "no_automatic_published_port_relocation")]
+    automatic_published_port_relocation: bool,
+    /// Disable automatic Docker/Compose published port relocation.
+    #[arg(long, conflicts_with = "automatic_published_port_relocation")]
+    no_automatic_published_port_relocation: bool,
 }
 
 #[derive(Debug, Args)]
@@ -422,16 +422,16 @@ fn reject_detached_cli_ports(detach: bool, ports: &[ManualPort]) -> Result<()> {
 #[derive(Debug, Clone, Copy)]
 struct CliConfigLayerOptions {
     no_auto_forward: bool,
-    published_port_relocation: bool,
-    no_published_port_relocation: bool,
+    automatic_published_port_relocation: bool,
+    no_automatic_published_port_relocation: bool,
 }
 
 impl From<UpForwardingArgs> for CliConfigLayerOptions {
     fn from(args: UpForwardingArgs) -> Self {
         Self {
             no_auto_forward: args.no_auto_forward,
-            published_port_relocation: args.published_port_relocation,
-            no_published_port_relocation: args.no_published_port_relocation,
+            automatic_published_port_relocation: args.automatic_published_port_relocation,
+            no_automatic_published_port_relocation: args.no_automatic_published_port_relocation,
         }
     }
 }
@@ -445,10 +445,14 @@ fn cli_config_layer(ports: Vec<ManualPort>, options: CliConfigLayerOptions) -> C
         }),
         compose: LayerCompose {
             published_ports: LayerComposePublishedPorts {
-                relocation: options
-                    .published_port_relocation
+                automatic_relocation: options
+                    .automatic_published_port_relocation
                     .then_some(true)
-                    .or_else(|| options.no_published_port_relocation.then_some(false)),
+                    .or_else(|| {
+                        options
+                            .no_automatic_published_port_relocation
+                            .then_some(false)
+                    }),
                 ..LayerComposePublishedPorts::default()
             },
             ..LayerCompose::default()
@@ -612,7 +616,7 @@ mod tests {
             "--no-cache",
             "--pull",
             "--no-auto-forward",
-            "--published-port-relocation",
+            "--automatic-published-port-relocation",
             "-p",
             "3000",
             "--port",
@@ -635,8 +639,8 @@ mod tests {
         assert!(args.build.no_cache);
         assert!(args.build.pull);
         assert!(args.forwarding.no_auto_forward);
-        assert!(args.forwarding.published_port_relocation);
-        assert!(!args.forwarding.no_published_port_relocation);
+        assert!(args.forwarding.automatic_published_port_relocation);
+        assert!(!args.forwarding.no_automatic_published_port_relocation);
         assert_eq!(args.ports.len(), 2);
         assert_eq!(args.ports[0].container, 3000);
         assert_eq!(args.ports[0].host, None);
@@ -649,7 +653,10 @@ mod tests {
         let cli_layer = cli_config_layer(args.ports.clone(), args.forwarding.into());
 
         assert_eq!(cli_layer.auto_ports.unwrap().enabled, Some(false));
-        assert_eq!(cli_layer.compose.published_ports.relocation, Some(true));
+        assert_eq!(
+            cli_layer.compose.published_ports.automatic_relocation,
+            Some(true)
+        );
     }
 
     #[test]
@@ -742,7 +749,7 @@ mod tests {
             "--pull",
             "--update-features",
             "--no-auto-forward",
-            "--no-published-port-relocation",
+            "--no-automatic-published-port-relocation",
             "-p",
             "8080:80",
         ]);
@@ -762,8 +769,8 @@ mod tests {
         assert!(args.build.pull);
         assert!(args.build.update_features);
         assert!(args.forwarding.no_auto_forward);
-        assert!(!args.forwarding.published_port_relocation);
-        assert!(args.forwarding.no_published_port_relocation);
+        assert!(!args.forwarding.automatic_published_port_relocation);
+        assert!(args.forwarding.no_automatic_published_port_relocation);
         assert_eq!(args.ports.len(), 1);
         assert_eq!(args.ports[0].container, 80);
         assert_eq!(args.ports[0].host, Some(8080));
@@ -806,25 +813,38 @@ mod tests {
     }
 
     #[test]
-    fn published_port_relocation_flags_conflict() {
+    fn automatic_published_port_relocation_flags_conflict() {
         let error = Cli::try_parse_from([
             "decune",
             "up",
-            "--published-port-relocation",
-            "--no-published-port-relocation",
+            "--automatic-published-port-relocation",
+            "--no-automatic-published-port-relocation",
         ])
-        .expect_err("expected published port relocation flags to conflict");
+        .expect_err("expected automatic published port relocation flags to conflict");
 
         assert!(error.to_string().contains("cannot be used with"));
     }
 
     #[test]
-    fn no_auto_forward_is_independent_from_published_port_relocation() {
+    fn legacy_published_port_relocation_flags_are_rejected() {
+        for flag in [
+            "--published-port-relocation",
+            "--no-published-port-relocation",
+        ] {
+            let error = Cli::try_parse_from(["decune", "up", flag])
+                .expect_err("legacy published port relocation flag must be rejected");
+
+            assert!(error.to_string().contains("unexpected argument"));
+        }
+    }
+
+    #[test]
+    fn no_auto_forward_is_independent_from_automatic_published_port_relocation() {
         let cli = Cli::parse_from([
             "decune",
             "up",
             "--no-auto-forward",
-            "--published-port-relocation",
+            "--automatic-published-port-relocation",
         ]);
         let Commands::Up(args) = cli.command else {
             panic!("expected up command");
@@ -833,7 +853,10 @@ mod tests {
         let layer = cli_config_layer(Vec::new(), args.forwarding.into());
 
         assert_eq!(layer.auto_ports.unwrap().enabled, Some(false));
-        assert_eq!(layer.compose.published_ports.relocation, Some(true));
+        assert_eq!(
+            layer.compose.published_ports.automatic_relocation,
+            Some(true)
+        );
     }
 
     #[test]

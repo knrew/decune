@@ -835,10 +835,10 @@ mod tests {
         );
     }
     #[test]
-    fn compose_published_port_relocation_does_not_enable_auto_forwarding() {
+    fn automatic_compose_published_port_relocation_does_not_enable_auto_forwarding() {
         let mut config = compose_config("app");
         config.ports.auto.enabled = false;
-        config.compose.published_ports.relocation = true;
+        config.compose.published_ports.automatic_relocation = true;
         let plan = test_up_plan_with_config(config);
 
         let targets = plan_forwarding_agent_targets_with_host_reservations(
