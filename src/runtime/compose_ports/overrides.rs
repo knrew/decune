@@ -6,7 +6,8 @@ use serde_json::Value as JsonValue;
 use crate::runtime::{
     compose_cli::ComposeOverridePortEntry,
     compose_ports::{
-        ComposePortEntry, ComposePublishedPortPlan, compose_published_port_plan_has_relocations,
+        ComposePortEntry, ComposePublishedPortHostIp, ComposePublishedPortPlan,
+        compose_published_port_plan_has_relocations,
     },
 };
 
@@ -73,12 +74,10 @@ pub(crate) fn compose_published_port_override(
                     JsonValue::String(planned.planned.host_port.to_string()),
                 );
                 match &planned.planned.host_ip {
-                    crate::runtime::compose_ports::ComposePublishedPortHostIp::Omitted => {
+                    ComposePublishedPortHostIp::Omitted => {
                         fields.remove("host_ip");
                     }
-                    crate::runtime::compose_ports::ComposePublishedPortHostIp::Explicit(
-                        host_ip,
-                    ) => {
+                    ComposePublishedPortHostIp::Explicit(host_ip) => {
                         fields.insert("host_ip".to_owned(), JsonValue::String(host_ip.clone()));
                     }
                 }

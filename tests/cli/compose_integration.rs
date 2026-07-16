@@ -603,15 +603,10 @@ fn compose_integration_published_port_relocation_starts_second_workspace_and_rep
 #[ignore = "requires Docker daemon and Docker Compose v2.24.4 plugin"]
 fn compose_integration_explicit_published_port_mapping_applies_without_relocation_and_recreates_for_host_ip_change()
  {
-    let Some(listeners) = reserved_localhost_port_block_with_room(2, 0) else {
-        return;
-    };
-    let requested_port = listeners[0].local_addr().unwrap().port();
-    let mapped_port = requested_port + 1;
-    drop(listeners);
+    let requested_port = available_localhost_port();
     let workspace = compose_published_primary_workspace(requested_port);
     let container_tools_dir = fake_container_tools_bundle(&workspace.workspace);
-    write_compose_published_port_mapping(workspace.path(), mapped_port, "0.0.0.0");
+    write_compose_published_port_mapping(workspace.path(), requested_port, "127.0.0.1");
 
     decune()
         .args(["up", "--detach"])
@@ -624,7 +619,7 @@ fn compose_integration_explicit_published_port_mapping_applies_without_relocatio
 
     assert_eq!(
         compose_service_published_bindings(workspace.path(), "app", "3000/tcp"),
-        vec![("0.0.0.0".to_owned(), mapped_port)]
+        vec![("127.0.0.1".to_owned(), requested_port)]
     );
     let first_id = compose_project_containers(workspace.path())
         .unwrap()
@@ -635,7 +630,7 @@ fn compose_integration_explicit_published_port_mapping_applies_without_relocatio
         .expect("primary Compose service container should exist")
         .id;
 
-    write_compose_published_port_mapping(workspace.path(), mapped_port, "127.0.0.1");
+    write_compose_published_port_mapping(workspace.path(), requested_port, "0.0.0.0");
     decune()
         .args(["rebuild", "--detach"])
         .arg(workspace.path())
@@ -647,7 +642,7 @@ fn compose_integration_explicit_published_port_mapping_applies_without_relocatio
 
     assert_eq!(
         compose_service_published_bindings(workspace.path(), "app", "3000/tcp"),
-        vec![("127.0.0.1".to_owned(), mapped_port)]
+        vec![("0.0.0.0".to_owned(), requested_port)]
     );
     let second_id = compose_project_containers(workspace.path())
         .unwrap()
@@ -668,8 +663,8 @@ fn compose_integration_explicit_published_port_mapping_applies_without_relocatio
         .find(|port| port["type"] == "published" && port["service"] == "app")
         .unwrap_or_else(|| panic!("mapped app port was not reported: {ports:#?}"));
     assert_eq!(published["requested"]["host_port"], requested_port);
-    assert_eq!(published["planned"]["host_ip"], "127.0.0.1");
-    assert_eq!(published["planned"]["host_port"], mapped_port);
+    assert_eq!(published["planned"]["host_ip"], "0.0.0.0");
+    assert_eq!(published["planned"]["host_port"], requested_port);
     assert_eq!(published["relocated"], true);
 }
 

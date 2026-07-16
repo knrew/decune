@@ -371,7 +371,7 @@ fn plan_unrelocated_entry(
     let decision = PlannedEndpointDecision {
         planned: requested.clone(),
         allocation_reason: ComposePublishedPortAllocationReason::Available,
-        planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Available,
+        planned_endpoint_probe: ComposePublishedPortPlannedEndpointProbe::Unprobeable,
     };
     state.reservations.push(HostPortReservation {
         host_ip: reservation_host_ip(&requested).to_owned(),
@@ -1748,6 +1748,56 @@ mod tests {
             plan.entries[0].allocation_reason,
             ComposePublishedPortAllocationReason::Mapping
         );
+    }
+
+    #[test]
+    fn explicit_mapping_conflicts_with_unmapped_requested_endpoint_without_relocation() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [
+                            {"host_ip": "127.0.0.1", "target": 502, "published": "502"},
+                            {"host_ip": "127.0.0.1", "target": 3000, "published": "1502"}
+                        ]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![mapping(
+            ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+            1502,
+        )];
+
+        let error = plan_compose_published_ports_with_mappings(
+            &input,
+            false,
+            &[],
+            &mappings,
+            &[],
+            &[],
+            |host_ip, port| {
+                assert_eq!((host_ip, port), ("127.0.0.1", 1502));
+                Ok(HostPortProbe::Available)
+            },
+        )
+        .expect_err("mapping endpoint must conflict with the unchanged requested endpoint");
+
+        match error {
+            ComposePublishedPortPlanError::MappingConflict { detail } => {
+                assert!(detail.contains("target 502/tcp"));
+                assert!(detail.contains("127.0.0.1:1502"));
+                assert!(detail.contains("target 3000/tcp"));
+                assert!(detail.contains("automatic relocation is disabled"));
+            }
+            other @ (ComposePublishedPortPlanError::NoRelocationCandidate { .. }
+            | ComposePublishedPortPlanError::HostPortAvailability { .. }
+            | ComposePublishedPortPlanError::InconsistentEntry { .. }) => {
+                panic!("unexpected planner error: {other}")
+            }
+        }
     }
 
     #[test]

@@ -831,6 +831,36 @@ host_ip = "localhost"
         assert!(message.contains(expected), "unexpected error: {message}");
     }
 
+    #[rstest]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+protocol = "udp"
+host = 1502
+"#
+    )]
+    #[case(
+        r#"
+[[compose.published_ports.mappings]]
+service = "app"
+target = 502
+protocol = "udp"
+enabled = false
+"#
+    )]
+    fn compose_published_port_mapping_rejects_udp_protocol(#[case] mapping: &str) {
+        let error = toml::from_str::<RawDecuneConfig>(&format!(
+            "version = 1\n\n[compose.published_ports]\n{mapping}"
+        ))
+        .expect_err("UDP mapping protocol should be rejected during deserialization");
+
+        let message = error.to_string();
+        assert!(message.contains("udp"), "unexpected error: {message}");
+        assert!(message.contains("tcp"), "unexpected error: {message}");
+    }
+
     #[test]
     fn compose_clone_isolation_config_is_supported() {
         let config: RawDecuneConfig = toml::from_str(

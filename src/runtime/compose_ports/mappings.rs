@@ -4,7 +4,7 @@ use crate::{
         compose_cli::ComposeConfigModel,
         compose_ports::{
             ComposePortEligibility, ComposePortProtocol, ComposePublishedPortDiagnostic,
-            ComposePublishedPortHostIp, ComposePublishedPortMapping,
+            ComposePublishedPortEndpoint, ComposePublishedPortHostIp, ComposePublishedPortMapping,
             ComposePublishedPortPlanningInput,
         },
     },
@@ -71,7 +71,7 @@ pub(crate) fn resolve_compose_published_port_mappings(
             port_entry_index: entry.entry_index,
             target_port: mapping.target,
             protocol,
-            endpoint: crate::runtime::compose_ports::ComposePublishedPortEndpoint {
+            endpoint: ComposePublishedPortEndpoint {
                 host_ip: mapping
                     .host_ip
                     .clone()

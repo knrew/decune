@@ -556,6 +556,68 @@ mod tests {
     }
 
     #[test]
+    fn startup_failure_classifier_reports_collision_for_unprobed_unmapped_entry() {
+        let input = planning_input(
+            json!({
+                "services": {
+                    "app": {
+                        "ports": [
+                            {"host_ip": "127.0.0.1", "target": 502, "published": "502"},
+                            {"host_ip": "127.0.0.1", "target": 3000, "published": "3000"}
+                        ]
+                    }
+                }
+            }),
+            "app",
+            &[],
+        );
+        let mappings = vec![ComposePublishedPortMapping {
+            service: "app".to_owned(),
+            port_entry_index: 0,
+            target_port: 502,
+            protocol: ComposePortProtocol::Tcp,
+            endpoint: ComposePublishedPortEndpoint {
+                host_ip: ComposePublishedPortHostIp::Explicit("127.0.0.1".to_owned()),
+                host_port: 1502,
+            },
+        }];
+        let plan = plan_compose_published_ports_with_mappings(
+            &input,
+            false,
+            &[],
+            &mappings,
+            &[],
+            &[],
+            |host_ip, port| {
+                assert_eq!((host_ip, port), ("127.0.0.1", 1502));
+                Ok(HostPortProbe::Available)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            plan.entries[1].planned_endpoint_probe,
+            ComposePublishedPortPlannedEndpointProbe::Unprobeable
+        );
+
+        let diagnostic = classify_compose_published_port_startup_failure(
+            "Ports are not available: listen tcp 127.0.0.1:3000: bind: address already in use",
+            ComposePublishedPortStartupDiagnostics {
+                input: &input,
+                plan: &plan,
+                relocation_enabled: true,
+            },
+        )
+        .unwrap()
+        .expect("unprobed unmapped bind conflict should be classified")
+        .to_string();
+
+        assert!(diagnostic.contains(COMPOSE_PUBLISHED_PORT_COLLISION));
+        assert!(diagnostic.contains("requested: 127.0.0.1:3000"));
+        assert!(diagnostic.contains("app:3000/tcp"));
+        assert!(!diagnostic.contains(COMPOSE_PUBLISHED_PORT_BIND_RACE));
+    }
+
+    #[test]
     fn startup_failure_classifier_reports_collision_for_unprobeable_existing_binding() {
         let input = planning_input(
             json!({
