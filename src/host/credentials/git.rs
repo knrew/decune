@@ -96,18 +96,14 @@ pub(crate) fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<Strin
         );
     }
 
-    response
-        .validate()
-        .map_err(|_validation_error| anyhow!("Invalid host daemon response"))?;
-
-    match (response.ok, response.output, response.error) {
-        (true, Some(output), None) => Ok(output),
-        (false, None, Some(error)) => Err(anyhow!(
+    match response.into_result() {
+        Ok(Ok(output)) => Ok(output),
+        Ok(Err(error)) => Err(anyhow!(
             "Host daemon request failed ({}): {}",
             error.code,
             error.message
         )),
-        _ => Err(anyhow!("Invalid host daemon response")),
+        Err(_validation_error) => Err(anyhow!("Invalid host daemon response")),
     }
 }
 

@@ -97,22 +97,19 @@ impl HostDaemonResponse {
         }
     }
 
-    /// Validates the success/error field invariant for this response.
+    /// Validates the success/error field invariant and splits the response
+    /// into the success output or the server-reported error.
     ///
     /// # Errors
     ///
     /// Returns an error when required fields are missing or mutually exclusive fields are present.
-    pub const fn validate(&self) -> Result<(), HostDaemonResponseValidationError> {
-        let valid = if self.ok {
-            self.output.is_some() && self.error.is_none()
-        } else {
-            self.output.is_none() && self.error.is_some() && self.warnings.is_empty()
-        };
-
-        if valid {
-            Ok(())
-        } else {
-            Err(HostDaemonResponseValidationError)
+    pub fn into_result(
+        self,
+    ) -> Result<Result<String, HostDaemonError>, HostDaemonResponseValidationError> {
+        match (self.ok, self.output, self.error) {
+            (true, Some(output), None) => Ok(Ok(output)),
+            (false, None, Some(error)) if self.warnings.is_empty() => Ok(Err(error)),
+            _ => Err(HostDaemonResponseValidationError),
         }
     }
 }
@@ -169,7 +166,7 @@ mod tests {
         let decoded: HostDaemonResponse = serde_json::from_str(&json).unwrap();
 
         assert_eq!(decoded, response);
-        assert!(decoded.validate().is_ok());
+        assert!(decoded.into_result().is_ok());
     }
 
     #[test]
@@ -180,7 +177,7 @@ mod tests {
         let decoded: HostDaemonResponse = serde_json::from_str(&json).unwrap();
 
         assert_eq!(decoded, response);
-        assert!(decoded.validate().is_ok());
+        assert!(decoded.into_result().is_ok());
     }
 
     #[test]
@@ -189,7 +186,7 @@ mod tests {
             serde_json::from_str(r#"{"version":1,"ok":true,"output":"credential"}"#).unwrap();
 
         assert!(response.warnings.is_empty());
-        assert!(response.validate().is_ok());
+        assert!(response.into_result().is_ok());
     }
 
     #[test]
@@ -218,10 +215,11 @@ mod tests {
                             !has_output && has_error && !has_warnings
                         };
 
+                        let description = format!("{response:?}");
                         assert_eq!(
-                            response.validate().is_ok(),
+                            response.into_result().is_ok(),
                             expected_valid,
-                            "unexpected validation result for {response:?}"
+                            "unexpected validation result for {description}"
                         );
                     }
                 }
