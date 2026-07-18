@@ -72,6 +72,7 @@
 ## 表記ルール
 
 - decune CLI documentation では `flag` ではなく `option` を使う。
+- decune 独自機能の対応範囲は世代番号で表さず、対応・非対応の挙動を直接記述する。protocol の wire version と永続形式・domain separator の識別子はこの表記ルールの対象外。
 - `host` と `container` を名詞として使い、local side / remote side のような独自の言い換えを増やさない。
 - `port forwarding` と `published port` を明確に分ける。bare `publish` は Docker behavior が文脈で明確な場合だけ使う。
 - 利用者向け本文では `Docker Compose-based configuration` を優先し、実装挙動を説明するときだけ `Compose モード` を使う。
