@@ -248,6 +248,83 @@ read_only = true
     });
 }
 
+#[cfg(unix)]
+#[test]
+fn up_detach_mounts_multiple_dotfile_skeleton_entries() {
+    use std::collections::BTreeSet;
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    write_multiple_dotfile_skeleton_sources(&workspace);
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "postStartCommand": "test \"$(cat /root/.config/tool-a/tool-a-config.yml)\" = tool-a-config && test \"$(cat /root/.config/tool-a/tool-a-local.yml)\" = tool-a-local && test \"$(cat /root/.config/tool-b/tool-b-config.yml)\" = tool-b-config && test \"$(cat /root/.config/tool-b/tool-b-local.yml)\" = tool-b-local"
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+version = 1
+use_global_config = false
+
+[credentials.github]
+enabled = false
+
+[[dotfiles]]
+source = "dotfiles-src/tool-a"
+target = ".config/tool-a"
+read_only = true
+
+[[dotfiles]]
+source = "dotfiles-src/tool-b"
+target = ".config/tool-b"
+read_only = true
+"#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    with_clean_workspace_containers(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("Started dev container"));
+
+        let inspect = inspect_single_workspace_container(&workspace_root).must();
+        let mounts = inspect
+            .host_config
+            .must_msg("container host config should exist")
+            .mounts
+            .unwrap_or_default();
+        let backing_targets = mounts
+            .iter()
+            .filter_map(|mount| mount.target.as_deref())
+            .filter(|target| target.starts_with("/opt/decune/dotfile-backings/"))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(backing_targets.len(), 4);
+        assert_eq!(
+            mounts
+                .iter()
+                .filter_map(|mount| mount.target.as_deref())
+                .filter(|target| target.starts_with("/opt/decune/dotfile-backings/"))
+                .count(),
+            backing_targets.len()
+        );
+    });
+}
+
 fn assert_lazygit_dotfile_symlink_mounts(
     workspace_root: &Path,
     expected_skeleton: &Path,

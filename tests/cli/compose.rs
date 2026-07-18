@@ -2058,26 +2058,14 @@ fn compose_dotfiles_attached_up_prepares_lifecycle_once_before_post_attach() {
 
 #[cfg(unix)]
 #[test]
-fn compose_dotfile_skeleton_override_uses_backing_directory_mounts() {
-    use std::os::unix::fs as unix_fs;
+fn compose_dotfile_skeleton_override_uses_unique_backing_directory_mounts() {
+    use std::collections::BTreeSet;
 
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
     workspace.create_dir(".decune").unwrap();
-    workspace.create_dir("dotfiles-real").unwrap();
-    workspace.create_dir("lazygit-source").unwrap();
-    workspace
-        .write_file("dotfiles-real/config.yml", "key: value\n")
-        .unwrap();
-    workspace
-        .write_file("dotfiles-real/extra.yml", "not mounted\n")
-        .unwrap();
-    unix_fs::symlink(
-        workspace.path().join("dotfiles-real/config.yml"),
-        workspace.path().join("lazygit-source/config.yml"),
-    )
-    .unwrap();
+    write_multiple_dotfile_skeleton_sources(&workspace);
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
@@ -2107,13 +2095,19 @@ fn compose_dotfile_skeleton_override_uses_backing_directory_mounts() {
             ".decune/config.toml",
             r#"
             version = 1
+            use_global_config = false
 
             [credentials.github]
             enabled = false
 
             [[dotfiles]]
-            source = "lazygit-source"
-            target = ".config/lazygit"
+            source = "dotfiles-src/tool-a"
+            target = ".config/tool-a"
+            read_only = true
+
+            [[dotfiles]]
+            source = "dotfiles-src/tool-b"
+            target = ".config/tool-b"
             read_only = true
             "#,
         )
@@ -2138,9 +2132,28 @@ fn compose_dotfile_skeleton_override_uses_backing_directory_mounts() {
         ));
 
     let override_yaml = fs::read_to_string(override_log).unwrap();
-    assert!(override_yaml.contains("target: '/opt/decune/dotfiles/.config/lazygit'"));
-    assert!(override_yaml.contains("target: '/opt/decune/dotfile-backings/"));
-    assert!(!override_yaml.contains("target: '/opt/decune/dotfiles/.config/lazygit/config.yml'"));
+    assert!(override_yaml.contains("target: '/opt/decune/dotfiles/.config/tool-a'"));
+    assert!(override_yaml.contains("target: '/opt/decune/dotfiles/.config/tool-b'"));
+    let backing_targets = override_yaml
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("target: '"))
+        .filter_map(|target| target.strip_suffix('\''))
+        .filter(|target| target.starts_with("/opt/decune/dotfile-backings/"))
+        .collect::<BTreeSet<_>>();
+    assert_eq!(backing_targets.len(), 4);
+    assert_eq!(
+        override_yaml
+            .lines()
+            .filter(|line| line.contains("target: '/opt/decune/dotfile-backings/"))
+            .count(),
+        backing_targets.len()
+    );
+    assert!(
+        !override_yaml.contains("target: '/opt/decune/dotfiles/.config/tool-a/tool-a-config.yml'")
+    );
+    assert!(
+        !override_yaml.contains("target: '/opt/decune/dotfiles/.config/tool-b/tool-b-config.yml'")
+    );
     assert!(!override_yaml.contains("source: '/opt/decune"));
 }
 

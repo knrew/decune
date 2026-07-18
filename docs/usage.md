@@ -353,7 +353,7 @@ install_feature_if_missing = true
 
 dotfiles は remote home へ直接 bind mount せず、`/opt/decune/dotfiles/<target>` から symlink します。`/opt/decune` と `/run/decune` 配下は decune の internal path なので、`[[mounts]].target` には使えません。
 
-directory source の symlink 解決で skeleton fallback が必要な場合、decune は backing parent directory を internal path に bind mount します。そのため、同じ parent directory の sibling file が `/opt/decune/dotfile-backings/<n>` 経由で container から見える場合があります。remote home 側には設定した dotfile entry だけが現れます。
+directory source の symlink 解決で skeleton fallback が必要な場合、decune は backing parent directory を internal path に bind mount します。backing target の `<n>` は dotfiles entry 全体で一意になり、同じ canonical parent directory と `read_only` を使う entry 間では mount を共有します。そのため、同じ parent directory の sibling file が `/opt/decune/dotfile-backings/<n>` 経由で container から見える場合があります。remote home 側には設定した dotfile entry だけが現れます。
 
 host 側で通常ファイルまたは解決済み symlink target file を atomic rename 置換した場合、起動中 container から新しい内容が見えます。source 側 symlink path 自体を regular file に置換した場合は自動反映されないため、container を recreate してください。詳細な挙動は [specification.md](specification.md#dotfiles) を参照してください。
 

@@ -1518,6 +1518,80 @@ fn compose_integration_reuses_running_container_without_refreshing_dotfile_skele
     assert_eq!(output, "return {}\n");
 }
 
+#[cfg(unix)]
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_mounts_multiple_dotfile_skeleton_entries() {
+    match compose_integration_readiness() {
+        ComposeIntegrationDecision::Run => {}
+        ComposeIntegrationDecision::Error(message) => panic!("{message}"),
+    }
+
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    write_multiple_dotfile_skeleton_sources(&workspace);
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "dockerComposeFile": "compose.yaml",
+              "service": "app",
+              "overrideCommand": true
+            }
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/compose.yaml",
+            r#"
+            services:
+              app:
+                image: "alpine:3.20"
+            "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            r#"
+            version = 1
+            use_global_config = false
+
+            [credentials.github]
+            enabled = false
+
+            [[dotfiles]]
+            source = "dotfiles-src/tool-a"
+            target = ".config/tool-a"
+            read_only = true
+
+            [[dotfiles]]
+            source = "dotfiles-src/tool-b"
+            target = ".config/tool-b"
+            read_only = true
+            "#,
+        )
+        .unwrap();
+    let workspace = ComposeFixtureWorkspace { workspace };
+
+    run_decune_up_detach(workspace.path(), &[]);
+
+    for (path, expected) in [
+        ("/root/.config/tool-a/tool-a-config.yml", "tool-a-config\n"),
+        ("/root/.config/tool-a/tool-a-local.yml", "tool-a-local\n"),
+        ("/root/.config/tool-b/tool-b-config.yml", "tool-b-config\n"),
+        ("/root/.config/tool-b/tool-b-local.yml", "tool-b-local\n"),
+    ] {
+        assert_eq!(
+            compose_primary_container_output(workspace.path(), ["cat", path]),
+            expected
+        );
+    }
+}
+
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
 fn compose_integration_rejects_reuse_when_compose_env_interpolation_changes() {
