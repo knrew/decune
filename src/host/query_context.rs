@@ -11,6 +11,9 @@ use crate::{
 
 const QUERY_CONTEXT_FINGERPRINT_DOMAIN: &[u8] = b"decune-cli-query-context-v1";
 
+/// Immutable query target fixed at daemon startup. The paths are for daemon-internal query
+/// resolution only; they must not be re-resolved from live config or client input and must
+/// not appear in responses or persisted metadata.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ContainerCliQueryContext {
     workspace_id: String,
@@ -39,20 +42,15 @@ impl ContainerCliQueryContext {
             bail!("Invalid workspace ID for container CLI query context");
         }
         let forward_status_dir = forward_status_dir(&runtime_dir);
-        let mut context = Self {
+        let context_fingerprint =
+            context_fingerprint(&workspace_id, &state_dir, &runtime_dir, &forward_status_dir);
+        Ok(Self {
             workspace_id,
             state_dir,
             runtime_dir,
             forward_status_dir,
-            context_fingerprint: String::new(),
-        };
-        context.context_fingerprint = context_fingerprint(
-            &context.workspace_id,
-            &context.state_dir,
-            &context.runtime_dir,
-            &context.forward_status_dir,
-        );
-        Ok(context)
+            context_fingerprint,
+        })
     }
 
     pub(crate) fn context_fingerprint(&self) -> &str {

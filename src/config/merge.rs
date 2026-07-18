@@ -5,15 +5,15 @@ pub(crate) use crate::config::{
 
 use crate::config::{
     layer::{
-        LayerAutoPorts, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile, LayerFeature,
-        LayerForwardPort, LayerMount, LayerPort, LayerPortAttributes, LayerPublishPort,
-        feature_merge_identity,
+        LayerAutoPorts, LayerContainer, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile,
+        LayerFeature, LayerForwardPort, LayerMount, LayerPort, LayerPortAttributes,
+        LayerPublishPort, feature_merge_identity,
     },
     resolved::{
         ResolvedAutoPorts, ResolvedCompose, ResolvedComposeCloneIsolationEndpoint,
-        ResolvedComposePublishedPortMapping, ResolvedCredentials, ResolvedDevcontainer,
-        ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature,
-        ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
+        ResolvedComposePublishedPortMapping, ResolvedContainer, ResolvedCredentials,
+        ResolvedDevcontainer, ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry,
+        ResolvedFeature, ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
     },
 };
 
@@ -127,7 +127,7 @@ struct MergeAccumulator {
     ports: Vec<MergedPort>,
     auto_ports: ResolvedAutoPorts,
     compose: ResolvedCompose,
-    container: crate::config::resolved::ResolvedContainer,
+    container: ResolvedContainer,
     compose_published_ports_automatic_relocation_explicit: bool,
     devcontainer: ResolvedDevcontainer,
     devcontainer_init: Option<bool>,
@@ -211,7 +211,7 @@ impl MergeAccumulator {
         self.hooks.append(layer.hooks);
     }
 
-    const fn merge_container(&mut self, container: &crate::config::layer::LayerContainer) {
+    const fn merge_container(&mut self, container: &LayerContainer) {
         if let Some(enabled) = container.cli.enabled {
             self.container.cli.enabled = enabled;
         }

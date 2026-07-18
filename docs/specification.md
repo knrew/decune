@@ -1313,7 +1313,7 @@ host daemon は effective `container.cli.enabled` と immutable query context �
 
 host daemon metadata には query policy と context fingerprint だけを保存し、raw context、host path、secret を保存しない。daemon reuse identity は `Disabled` または `Enabled { context_fingerprint }` とし、disabled 同士、または同じ fingerprint の enabled 同士だけを再利用できる。policy または context が異なる active daemon は暗黙に共有せず、対象 workspace のすべての active attached `decune up` を終了してから再実行するよう error にする。reused daemon を監視する session は owner 終了後も同じ policy と実体 query context で daemon を再起動する。protocol version、peer UID/GID、Git HTTPS mode、socket inode 等の既存 reuse 条件も維持する。
 
-protocol version は `1` のままとし、capability list、build SHA、daemon revision は追加しない。decune v0 段階では旧/new daemon-client の mixed-version compatibility を保証しない。upgrade 時は対象 workspace のすべての active `decune up` を終了してから、新しい version で起動し直す。
+protocol version は `1` のままとし、capability list、build SHA、daemon revision は追加しない。decune v0 段階では旧/new daemon-client の mixed-version compatibility を保証しない。upgrade 時は対象 workspace のすべての active `decune up` を終了してから、新しい version で起動し直す。reuse 判定で active daemon の metadata を現在の version として読めない場合、または protocol version が一致しない場合も暗黙に共有せず、version 不一致の可能性を示してすべての active `decune up` の終了を促す error にする。
 
 禁止:
 

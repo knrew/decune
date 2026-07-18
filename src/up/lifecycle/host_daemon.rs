@@ -10,8 +10,9 @@ use crate::{
     config::{resolved::ResolvedGitCredentials, types::GitHttpsMode},
     docker::user::resolve_remote_user,
     host::daemon::{
-        HostDaemon, HostDaemonStartError, ensure_host_daemon_access_for_remote_user,
-        ensure_host_daemon_available_for_remote_user,
+        HOST_DAEMON_VERSION_MISMATCH, HostDaemon, HostDaemonStartError,
+        ensure_host_daemon_access_for_remote_user, ensure_host_daemon_available_for_remote_user,
+        host_daemon_metadata_is_version_incompatible,
     },
     host::query_context::HostDaemonCliQueryPolicy,
     ui,
@@ -134,7 +135,16 @@ async fn start_host_daemon_for_remote_user(
                             cli_query_policy,
                         ));
                     }
-                    Ok(false) => {}
+                    Ok(false) => {
+                        if host_daemon_metadata_is_version_incompatible(runtime_dir) {
+                            return Err(anyhow::anyhow!(HOST_DAEMON_VERSION_MISMATCH))
+                                .with_context(|| {
+                                    format!(
+                                        "Failed to start host daemon for workspace: {workspace_id}"
+                                    )
+                                });
+                        }
+                    }
                     Err(access_error) => {
                         return Err(access_error).with_context(|| {
                             format!("Failed to start host daemon for workspace: {workspace_id}")
@@ -428,6 +438,49 @@ mod tests {
 
             assert!(format!("{error:#}").contains(
                 "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry"
+            ));
+
+            existing.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn host_daemon_reuse_reports_version_mismatch_for_unreadable_metadata() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        runtime.block_on(async {
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing =
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, remote_group_id)
+                    .await
+                    .unwrap();
+
+            // Simulates metadata written by a decune version without the container_cli field.
+            let metadata_path = runtime_dir.join("host-daemon.json");
+            let mut metadata: serde_json::Value =
+                serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+            metadata.as_object_mut().unwrap().remove("container_cli");
+            fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+            let error = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                remote_user_id,
+                remote_group_id,
+                GitHttpsMode::HostHelper,
+                HostDaemonCliQueryPolicy::Disabled,
+            )
+            .await
+            .unwrap_err();
+
+            assert!(format!("{error:#}").contains(
+                "An active decune up session uses an incompatible host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry"
             ));
 
             existing.stop().await.unwrap();

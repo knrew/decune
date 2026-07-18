@@ -32,6 +32,7 @@ const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
 const HOST_DAEMON_METADATA_NAME: &str = "host-daemon.json";
 const MAX_HOST_DAEMON_REQUEST_BYTES: usize = 64 * 1024;
 pub(crate) const HOST_DAEMON_QUERY_IDENTITY_MISMATCH: &str = "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry";
+pub(crate) const HOST_DAEMON_VERSION_MISMATCH: &str = "An active decune up session uses an incompatible host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HostDaemonAccess {
@@ -460,6 +461,21 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
     Ok(true)
 }
 
+/// Call only after daemon startup failed because a live daemon holds the socket. A missing or
+/// unreadable metadata file is not treated as incompatible, so stale-state recovery paths that
+/// rely on a silent reuse decline keep restarting the daemon.
+pub(crate) fn host_daemon_metadata_is_version_incompatible(runtime_dir: &Path) -> bool {
+    let Ok(content) = fs::read(runtime_dir.join(HOST_DAEMON_METADATA_NAME)) else {
+        return false;
+    };
+    match serde_json::from_slice::<HostDaemonMetadata>(&content) {
+        Ok(metadata) => {
+            metadata.protocol_version != crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION
+        }
+        Err(_) => true,
+    }
+}
+
 pub(crate) async fn ensure_host_daemon_available_for_remote_user(
     runtime_dir: &Path,
     remote_user_id: u32,
@@ -696,10 +712,11 @@ mod tests {
     };
 
     use super::{
-        HostDaemon, HostDaemonAccess, MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket,
-        current_gid, current_uid, peer_uid_is_allowed,
+        HostDaemon, HostDaemonAccess, HostDaemonGitHttpsMode, HostDaemonMetadata,
+        MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket, current_gid, current_uid,
+        host_daemon_metadata_is_version_incompatible, peer_uid_is_allowed,
     };
-    use crate::host::query_context::HostDaemonCliQueryPolicy;
+    use crate::host::query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy};
     use crate::{
         config::types::GitHttpsMode,
         host::credentials::{GitCredentialCommand, GitCredentialExecutor},
@@ -793,6 +810,44 @@ mod tests {
 
             daemon.stop().await.unwrap();
         });
+    }
+
+    #[test]
+    fn metadata_version_incompatibility_detects_unreadable_or_mismatched_metadata() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path();
+        let metadata_path = runtime_dir.join("host-daemon.json");
+
+        assert!(!host_daemon_metadata_is_version_incompatible(runtime_dir));
+
+        let metadata = HostDaemonMetadata {
+            protocol_version: crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION,
+            allowed_peer_uid: 1000,
+            remote_gid: 1000,
+            git_https_mode: HostDaemonGitHttpsMode::HostHelper,
+            container_cli: HostDaemonCliQueryIdentity::Disabled,
+            runtime_dir_mode: 0o711,
+            socket_mode: 0o666,
+            socket_dev: 0,
+            socket_ino: 0,
+        };
+        fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert!(!host_daemon_metadata_is_version_incompatible(runtime_dir));
+
+        let mut future_version: Value = serde_json::to_value(&metadata).unwrap();
+        future_version["protocol_version"] =
+            json!(crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION + 1);
+        fs::write(&metadata_path, serde_json::to_vec(&future_version).unwrap()).unwrap();
+        assert!(host_daemon_metadata_is_version_incompatible(runtime_dir));
+
+        // Simulates metadata written before the container_cli field existed.
+        let mut old_version: Value = serde_json::to_value(&metadata).unwrap();
+        old_version.as_object_mut().unwrap().remove("container_cli");
+        fs::write(&metadata_path, serde_json::to_vec(&old_version).unwrap()).unwrap();
+        assert!(host_daemon_metadata_is_version_incompatible(runtime_dir));
+
+        fs::write(&metadata_path, b"not-json").unwrap();
+        assert!(host_daemon_metadata_is_version_incompatible(runtime_dir));
     }
 
     #[test]
