@@ -22,6 +22,10 @@ pub(crate) struct DotfileSkeletonPlan {
     entries: BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
 }
 
+/// Assigns backing mount targets uniquely across the whole dotfile mount plan.
+/// A shared backing mount is emitted only into the plan of the first entry that
+/// registers it, so per-entry plans are not self-contained: all entries' mounts
+/// must be merged into a single container mount set.
 #[derive(Debug, Default)]
 pub(super) struct DotfileBackingMountRegistry {
     targets: BTreeMap<(PathBuf, bool), String>,
