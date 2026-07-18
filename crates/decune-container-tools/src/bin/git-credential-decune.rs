@@ -62,15 +62,19 @@ fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<String> {
         );
     }
 
-    if response.ok {
-        return Ok(response.output.unwrap_or_default());
-    }
+    response
+        .validate()
+        .map_err(|_validation_error| anyhow!("Invalid host daemon response"))?;
 
-    let message = response.error.map_or_else(
-        || "Host daemon request failed".to_owned(),
-        |error| error.message,
-    );
-    Err(anyhow!(message))
+    match (response.ok, response.output, response.error) {
+        (true, Some(output), None) => Ok(output),
+        (false, None, Some(error)) => Err(anyhow!(
+            "Host daemon request failed ({}): {}",
+            error.code,
+            error.message
+        )),
+        _ => Err(anyhow!("Invalid host daemon response")),
+    }
 }
 
 fn git_credential_action_from_args() -> Result<GitCredentialAction> {
@@ -80,5 +84,64 @@ fn git_credential_action_from_args() -> Result<GitCredentialAction> {
         Some("reject" | "erase") => Ok(GitCredentialAction::Erase),
         Some(action) => bail!("Unsupported Git credential helper action: {action}"),
         None => bail!("Git credential helper action is required"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_git_credential_helper_response;
+
+    #[test]
+    fn git_credential_response_accepts_success_without_warnings_field() {
+        let output = parse_git_credential_helper_response(
+            br#"{"version":1,"ok":true,"output":"username=octo\npassword=SECRET\n"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(output, "username=octo\npassword=SECRET\n");
+    }
+
+    #[test]
+    fn git_credential_response_preserves_server_error_code() {
+        let error = parse_git_credential_helper_response(
+            br#"{"version":1,"ok":false,"error":{"code":"credential_failed","message":"Host git credential fill failed"}}"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Host daemon request failed (credential_failed): Host git credential fill failed"
+        );
+    }
+
+    #[test]
+    fn git_credential_response_rejects_malformed_invariants() {
+        for response in [
+            br#"{"version":1,"ok":true}"#.as_slice(),
+            br#"{"version":1,"ok":true,"output":"value","error":{"code":"future_error","message":"failed"}}"#
+                .as_slice(),
+            br#"{"version":1,"ok":false,"output":"value","error":{"code":"future_error","message":"failed"}}"#
+                .as_slice(),
+            br#"{"version":1,"ok":false}"#.as_slice(),
+            br#"{"version":1,"ok":false,"error":{"code":"future_error","message":"failed"},"warnings":["warning"]}"#
+                .as_slice(),
+        ] {
+            let error = parse_git_credential_helper_response(response).unwrap_err();
+
+            assert_eq!(error.to_string(), "Invalid host daemon response");
+        }
+    }
+
+    #[test]
+    fn git_credential_response_rejects_unsupported_protocol_version() {
+        let error = parse_git_credential_helper_response(
+            br#"{"version":999,"ok":true,"output":"credential"}"#,
+        )
+        .unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "Unsupported host daemon protocol version: 999"
+        );
     }
 }

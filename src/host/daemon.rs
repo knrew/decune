@@ -7,6 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
+use decune_container_protocol::ERROR_CODE_REQUEST_TOO_LARGE;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -638,7 +639,10 @@ async fn handle_connection(
     }
 
     let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES {
-        HostDaemonResponse::request_too_large(MAX_HOST_DAEMON_REQUEST_BYTES)
+        HostDaemonResponse::error(
+            ERROR_CODE_REQUEST_TOO_LARGE,
+            format!("Host daemon request exceeds {MAX_HOST_DAEMON_REQUEST_BYTES} bytes"),
+        )
     } else {
         handle_host_daemon_request(&request, git_credentials.as_ref(), git_https_mode)
     };

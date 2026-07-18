@@ -1,6 +1,12 @@
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
-use decune_container_protocol::GitCredentialHostRequest;
+pub(crate) use decune_container_protocol::HostDaemonResponse;
+use decune_container_protocol::{
+    CliQueryRequest, ERROR_CODE_CREDENTIAL_FAILED, ERROR_CODE_INVALID_REQUEST,
+    ERROR_CODE_NOT_IMPLEMENTED, ERROR_CODE_UNKNOWN_REQUEST_TYPE, ERROR_CODE_UNSUPPORTED_COMMAND,
+    ERROR_CODE_UNSUPPORTED_FORMAT, ERROR_CODE_UNSUPPORTED_PROTOCOL_VERSION,
+    GitCredentialHostRequest, REQUEST_TYPE_CLI_QUERY, REQUEST_TYPE_CREDENTIAL,
+};
 
 use crate::{
     config::types::GitHttpsMode,
@@ -10,7 +16,6 @@ use crate::{
 pub(crate) const HOST_DAEMON_PROTOCOL_VERSION: u16 =
     decune_container_protocol::HOST_DAEMON_PROTOCOL_VERSION;
 
-const REQUEST_TYPE_CREDENTIAL: &str = "credential";
 const REQUEST_TYPE_PORT_FORWARD: &str = "portForward";
 
 #[derive(Debug, Deserialize)]
@@ -18,52 +23,6 @@ struct HostDaemonRequest {
     version: u16,
     #[serde(rename = "type")]
     request_type: String,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-pub(crate) struct HostDaemonResponse {
-    version: u16,
-    ok: bool,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    output: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<HostDaemonError>,
-}
-
-#[derive(Debug, Serialize, PartialEq, Eq)]
-struct HostDaemonError {
-    code: String,
-    message: String,
-}
-
-impl HostDaemonResponse {
-    pub(crate) fn request_too_large(max_bytes: usize) -> Self {
-        Self::error(
-            "request_too_large",
-            format!("Host daemon request exceeds {max_bytes} bytes"),
-        )
-    }
-
-    fn error(code: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            version: HOST_DAEMON_PROTOCOL_VERSION,
-            ok: false,
-            output: None,
-            error: Some(HostDaemonError {
-                code: code.into(),
-                message: message.into(),
-            }),
-        }
-    }
-
-    fn ok(output: impl Into<String>) -> Self {
-        Self {
-            version: HOST_DAEMON_PROTOCOL_VERSION,
-            ok: true,
-            output: Some(output.into()),
-            error: None,
-        }
-    }
 }
 
 pub(crate) fn handle_host_daemon_request(
@@ -75,7 +34,7 @@ pub(crate) fn handle_host_daemon_request(
         Ok(request) => request,
         Err(error) => {
             return HostDaemonResponse::error(
-                "invalid_request",
+                ERROR_CODE_INVALID_REQUEST,
                 format!("Invalid host daemon request JSON: {error}"),
             );
         }
@@ -83,7 +42,7 @@ pub(crate) fn handle_host_daemon_request(
 
     if request.version != HOST_DAEMON_PROTOCOL_VERSION {
         return HostDaemonResponse::error(
-            "unsupported_protocol_version",
+            ERROR_CODE_UNSUPPORTED_PROTOCOL_VERSION,
             format!(
                 "Unsupported host daemon protocol version: {}",
                 request.version
@@ -95,12 +54,13 @@ pub(crate) fn handle_host_daemon_request(
         REQUEST_TYPE_CREDENTIAL => {
             handle_credential_request(bytes, git_credentials, git_https_mode)
         }
+        REQUEST_TYPE_CLI_QUERY => handle_cli_query_request(bytes),
         REQUEST_TYPE_PORT_FORWARD => HostDaemonResponse::error(
-            "not_implemented",
+            ERROR_CODE_NOT_IMPLEMENTED,
             "Host daemon request is not implemented yet: portForward",
         ),
         _ => HostDaemonResponse::error(
-            "unknown_request_type",
+            ERROR_CODE_UNKNOWN_REQUEST_TYPE,
             format!("Unknown host daemon request type: {}", request.request_type),
         ),
     }
@@ -115,16 +75,67 @@ fn handle_credential_request(
         Ok(request) => request,
         Err(error) => {
             return HostDaemonResponse::error(
-                "invalid_request",
+                ERROR_CODE_INVALID_REQUEST,
                 format!("Invalid Git credential request JSON: {error}"),
             );
         }
     };
 
     match handle_git_credential_request(&request, git_credentials, git_https_mode) {
-        Ok(output) => HostDaemonResponse::ok(output),
-        Err(error) => HostDaemonResponse::error("credential_failed", error.to_string()),
+        Ok(output) => HostDaemonResponse::success(output),
+        Err(error) => HostDaemonResponse::error(ERROR_CODE_CREDENTIAL_FAILED, error.to_string()),
     }
+}
+
+fn handle_cli_query_request(bytes: &[u8]) -> HostDaemonResponse {
+    let request = match serde_json::from_slice::<CliQueryRequest>(bytes) {
+        Ok(request) => request,
+        Err(error) => {
+            return HostDaemonResponse::error(
+                ERROR_CODE_INVALID_REQUEST,
+                format!("Invalid container CLI query request JSON: {error}"),
+            );
+        }
+    };
+
+    match request.command.as_str() {
+        "status" => {
+            if request.format != "text" {
+                return HostDaemonResponse::error(
+                    ERROR_CODE_UNSUPPORTED_FORMAT,
+                    format!(
+                        "Unsupported container CLI query format for status: {}",
+                        request.format
+                    ),
+                );
+            }
+        }
+        "ports" => {
+            if !matches!(request.format.as_str(), "text" | "json") {
+                return HostDaemonResponse::error(
+                    ERROR_CODE_UNSUPPORTED_FORMAT,
+                    format!(
+                        "Unsupported container CLI query format for ports: {}",
+                        request.format
+                    ),
+                );
+            }
+        }
+        _ => {
+            return HostDaemonResponse::error(
+                ERROR_CODE_UNSUPPORTED_COMMAND,
+                format!(
+                    "Unsupported container CLI query command: {}",
+                    request.command
+                ),
+            );
+        }
+    }
+
+    HostDaemonResponse::error(
+        ERROR_CODE_NOT_IMPLEMENTED,
+        "Host daemon request is not implemented yet: cliQuery",
+    )
 }
 
 #[cfg(test)]
@@ -268,6 +279,109 @@ mod tests {
             "Git HTTPS credential forwarding is disabled"
         );
         assert!(!response.to_string().contains("SECRET"));
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cli_query_valid_command_and_format_reach_execution_seam() {
+        let executor = RecordingGitCredentialExecutor::with_output("unused");
+
+        for (command, format) in [("status", "text"), ("ports", "text"), ("ports", "json")] {
+            let request = serde_json::to_vec(&json!({
+                "version": 1,
+                "type": "cliQuery",
+                "command": command,
+                "format": format,
+            }))
+            .unwrap();
+
+            let response =
+                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper);
+            let response = serde_json::to_value(response).unwrap();
+
+            assert_eq!(response["error"]["code"], "not_implemented");
+        }
+
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cli_query_rejects_unknown_command() {
+        let executor = RecordingGitCredentialExecutor::with_output("unused");
+
+        let response = handle_host_daemon_request(
+            br#"{"version":1,"type":"cliQuery","command":"inspect","format":"text"}"#,
+            &executor,
+            GitHttpsMode::HostHelper,
+        );
+        let response = serde_json::to_value(response).unwrap();
+
+        assert_eq!(response["error"]["code"], "unsupported_command");
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cli_query_rejects_unsupported_command_format_matrix() {
+        let executor = RecordingGitCredentialExecutor::with_output("unused");
+
+        for (command, format) in [("status", "json"), ("status", "yaml"), ("ports", "yaml")] {
+            let request = serde_json::to_vec(&json!({
+                "version": 1,
+                "type": "cliQuery",
+                "command": command,
+                "format": format,
+            }))
+            .unwrap();
+
+            let response =
+                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper);
+            let response = serde_json::to_value(response).unwrap();
+
+            assert_eq!(response["error"]["code"], "unsupported_format");
+        }
+
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cli_query_rejects_unknown_fields() {
+        let executor = RecordingGitCredentialExecutor::with_output("unused");
+
+        for field in ["workspace", "workspace_id", "all"] {
+            let mut request = json!({
+                "version": 1,
+                "type": "cliQuery",
+                "command": "status",
+                "format": "text",
+            });
+            request
+                .as_object_mut()
+                .unwrap()
+                .insert(field.to_owned(), json!("unexpected"));
+            let request = serde_json::to_vec(&request).unwrap();
+
+            let response =
+                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper);
+            let response = serde_json::to_value(response).unwrap();
+
+            assert_eq!(response["error"]["code"], "invalid_request");
+        }
+
+        assert!(executor.calls.lock().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cli_query_rejects_missing_fields() {
+        let executor = RecordingGitCredentialExecutor::with_output("unused");
+
+        let response = handle_host_daemon_request(
+            br#"{"version":1,"type":"cliQuery","command":"status"}"#,
+            &executor,
+            GitHttpsMode::HostHelper,
+        );
+        let response = serde_json::to_value(response).unwrap();
+
+        assert_eq!(response["error"]["code"], "invalid_request");
         assert!(executor.calls.lock().unwrap().is_empty());
     }
 }

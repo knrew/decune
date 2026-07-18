@@ -1286,6 +1286,12 @@ host daemon は `decune up` の子タスクとして起動し、`up` 終了時�
 - GitHub token file の一時管理。
 - port forwarding runtime の socket 基盤。
 
+container-side tool と host daemon の JSON protocol version は `1` とする。request の `version` と `type` は top-level envelope で検証し、`credential` と `cliQuery` を request type として予約する。`cliQuery` は `version`、`type`、`command`、`format` だけを持つ strict schema とし、unknown field は拒否する。schema validation では `status` + `text` と `ports` + `text|json` を受理するが、container CLI query の実行は未接続のため valid request にも `not_implemented` を返す。
+
+host daemon response は `version`、`ok`、任意の `output`、任意の `error`、任意の `warnings` を持つ。success response は `output` が必須で `error` を持たず、warning を 0 件以上持てる。error response は `code` と `message` を持つ `error` が必須で、`output` と warning を持たない。client はこの invariant に違反する response を invalid response として拒否する。`warnings` がない version 1 response は空 warning list として扱う。
+
+host daemon error code は lowercase snake_case とし、`invalid_request`、`unsupported_protocol_version`、`request_too_large`、`unknown_request_type`、`not_implemented`、`credential_failed`、`unsupported_command`、`unsupported_format`、`container_cli_disabled`、`cli_query_failed`、`cli_query_busy`、`cli_query_timeout` を定義する。wire 上の `code` は将来の追加値を受理できる string とする。
+
 禁止:
 
 - container から任意 host command を実行する API を提供しない。

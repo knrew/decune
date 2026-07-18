@@ -304,6 +304,7 @@ name = "decune-container-protocol"
 version = "0.3.4"
 dependencies = [
  "serde",
+ "serde_json",
 ]
 
 [[package]]

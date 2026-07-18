@@ -96,15 +96,19 @@ pub(crate) fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<Strin
         );
     }
 
-    if response.ok {
-        return Ok(response.output.unwrap_or_default());
-    }
+    response
+        .validate()
+        .map_err(|_validation_error| anyhow!("Invalid host daemon response"))?;
 
-    let message = response.error.map_or_else(
-        || "Host daemon request failed".to_owned(),
-        |error| error.message,
-    );
-    Err(anyhow!(message))
+    match (response.ok, response.output, response.error) {
+        (true, Some(output), None) => Ok(output),
+        (false, None, Some(error)) => Err(anyhow!(
+            "Host daemon request failed ({}): {}",
+            error.code,
+            error.message
+        )),
+        _ => Err(anyhow!("Invalid host daemon response")),
+    }
 }
 
 pub(crate) fn handle_git_credential_request(
@@ -675,8 +679,17 @@ mod tests {
         .unwrap_err();
 
         let message = format!("{error:#}");
+        assert!(message.contains("credential_failed"));
         assert!(message.contains("Host git credential fill failed"));
         assert!(!message.contains("SECRET"));
+    }
+
+    #[test]
+    fn helper_response_rejects_malformed_success() {
+        let error =
+            parse_git_credential_helper_response(br#"{"version":1,"ok":true}"#).unwrap_err();
+
+        assert_eq!(error.to_string(), "Invalid host daemon response");
     }
 
     #[test]
