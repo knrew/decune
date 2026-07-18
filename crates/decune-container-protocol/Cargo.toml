@@ -13,3 +13,6 @@ workspace = true
 
 [dependencies]
 serde = {features = ["derive"], version = "1.0.228"}
+
+[dev-dependencies]
+serde_json = "1.0.150"
