@@ -136,11 +136,14 @@ mod tests {
         let socket_path = Path::new("/path/that/must/not/be/used");
         let cases = [
             (vec!["--help"], EXIT_SUCCESS),
+            (vec!["--help", "status"], EXIT_SUCCESS),
             (vec!["--version"], EXIT_SUCCESS),
             (vec!["status", "--json"], EXIT_USAGE),
             (vec!["status", "."], EXIT_USAGE),
             (vec!["ports", "--all"], EXIT_USAGE),
             (vec!["ports", "."], EXIT_USAGE),
+            (vec!["ports", "--json", "--json"], EXIT_USAGE),
+            (vec!["ports", "--json", "--help"], EXIT_SUCCESS),
             (vec!["up"], EXIT_USAGE),
             (vec!["unknown"], EXIT_USAGE),
         ];
@@ -185,8 +188,13 @@ mod tests {
     fn help_version_and_host_only_help_write_local_stdout() {
         let cases = [
             (vec!["--help"], "Usage: decune <COMMAND>"),
+            (vec!["--help", "status"], "Usage: decune <COMMAND>"),
             (vec!["help", "status"], "Usage: decune status"),
             (vec!["ports", "--help"], "Usage: decune ports [--json]"),
+            (
+                vec!["ports", "--json", "--help"],
+                "Usage: decune ports [--json]",
+            ),
             (
                 vec!["help", "up"],
                 "`decune up` can only be run on the host.",
@@ -215,6 +223,27 @@ mod tests {
             );
             assert!(stderr.is_empty(), "input: {input:?}");
         }
+    }
+
+    #[test]
+    fn duplicate_ports_json_is_a_usage_error_without_daemon_output() {
+        let mut stdout = Vec::new();
+        let mut stderr = Vec::new();
+
+        let exit = execute_with(
+            &args(&["ports", "--json", "--json"]),
+            Path::new("/unused"),
+            &mut stdout,
+            &mut stderr,
+            |_, _| panic!("usage errors must not query the daemon"),
+        );
+
+        assert_eq!(exit, EXIT_USAGE);
+        assert!(stdout.is_empty());
+        assert_eq!(
+            stderr,
+            b"Error: decune ports --json cannot be used more than once inside a container\n"
+        );
     }
 
     #[test]

@@ -146,7 +146,7 @@ pub fn parse(args: &[OsString]) -> Result<ParsedCommand, UsageError> {
     };
 
     match command {
-        "--help" | "-h" if args.len() == 1 => Ok(ParsedCommand::PrintHelp(HelpCommand::Root)),
+        "--help" | "-h" => Ok(ParsedCommand::PrintHelp(HelpCommand::Root)),
         "--version" | "-V" if args.len() == 1 => Ok(ParsedCommand::PrintVersion),
         "help" => parse_help(&args[1..]),
         "status" => parse_status(&args[1..]),
@@ -187,66 +187,82 @@ fn parse_help(args: &[&str]) -> Result<ParsedCommand, UsageError> {
 }
 
 fn parse_status(args: &[&str]) -> Result<ParsedCommand, UsageError> {
-    if args.is_empty() {
-        return Ok(ParsedCommand::Query(Query {
-            command: QueryCommand::Status,
-            format: QueryFormat::Text,
-        }));
+    let mut has_workspace = false;
+    for argument in args {
+        match *argument {
+            "--help" | "-h" => {
+                return Ok(ParsedCommand::PrintHelp(HelpCommand::Status));
+            }
+            "--json" => {
+                return Err(UsageError::new(
+                    "decune status --json is not supported inside a container",
+                ));
+            }
+            option if option.starts_with('-') => {
+                return Err(UsageError::new(format!(
+                    "unknown option for decune status inside a container: {option}"
+                )));
+            }
+            _ => has_workspace = true,
+        }
     }
-    if matches!(args, ["--help" | "-h"]) {
-        return Ok(ParsedCommand::PrintHelp(HelpCommand::Status));
-    }
-    if args.contains(&"--json") {
+    if has_workspace {
         return Err(UsageError::new(
-            "decune status --json is not supported inside a container",
+            "decune status does not accept a workspace argument inside a container; it always queries the current workspace",
         ));
     }
-    if let Some(option) = args.iter().find(|argument| argument.starts_with('-')) {
-        return Err(UsageError::new(format!(
-            "unknown option for decune status inside a container: {option}"
-        )));
-    }
-    Err(UsageError::new(
-        "decune status does not accept a workspace argument inside a container; it always queries the current workspace",
-    ))
+    Ok(ParsedCommand::Query(Query {
+        command: QueryCommand::Status,
+        format: QueryFormat::Text,
+    }))
 }
 
 fn parse_ports(args: &[&str]) -> Result<ParsedCommand, UsageError> {
-    if args.is_empty() {
-        return Ok(ParsedCommand::Query(Query {
-            command: QueryCommand::Ports,
-            format: QueryFormat::Text,
-        }));
+    let mut json = false;
+    let mut all = false;
+    let mut has_workspace = false;
+    for argument in args {
+        match *argument {
+            "--help" | "-h" => {
+                return Ok(ParsedCommand::PrintHelp(HelpCommand::Ports));
+            }
+            "--json" if json => {
+                return Err(UsageError::new(
+                    "decune ports --json cannot be used more than once inside a container",
+                ));
+            }
+            "--json" => json = true,
+            "--all" => all = true,
+            option if option.starts_with('-') => {
+                return Err(UsageError::new(format!(
+                    "unknown option for decune ports inside a container: {option}"
+                )));
+            }
+            _ => has_workspace = true,
+        }
     }
-    if matches!(args, ["--help" | "-h"]) {
-        return Ok(ParsedCommand::PrintHelp(HelpCommand::Ports));
-    }
-    if args.contains(&"--all") {
+    if all {
         return Err(UsageError::new(
             "decune ports --all cannot be run inside a container; run it on the host",
         ));
     }
-    if let Some(option) = args
-        .iter()
-        .find(|argument| argument.starts_with('-') && **argument != "--json")
-    {
-        return Err(UsageError::new(format!(
-            "unknown option for decune ports inside a container: {option}"
-        )));
-    }
-    if args.iter().any(|argument| !argument.starts_with('-')) {
+    if has_workspace {
         return Err(UsageError::new(
             "decune ports does not accept a workspace argument inside a container; it always queries the current workspace",
         ));
     }
     Ok(ParsedCommand::Query(Query {
         command: QueryCommand::Ports,
-        format: QueryFormat::Json,
+        format: if json {
+            QueryFormat::Json
+        } else {
+            QueryFormat::Text
+        },
     }))
 }
 
 fn parse_host_only(command: &'static str, args: &[&str]) -> Result<ParsedCommand, UsageError> {
-    if matches!(args, ["--help" | "-h"]) {
+    if matches!(args.first(), Some(&("--help" | "-h"))) {
         return Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly(command)));
     }
     Err(UsageError::new(format!(
@@ -304,6 +320,10 @@ mod tests {
                 query(QueryCommand::Ports, QueryFormat::Json),
             ),
             (
+                vec!["ports", "--json", "--json"],
+                error("decune ports --json cannot be used more than once inside a container"),
+            ),
+            (
                 vec!["ports", "--all"],
                 error("decune ports --all cannot be run inside a container; run it on the host"),
             ),
@@ -350,7 +370,13 @@ mod tests {
 
     #[test]
     fn help_version_and_aliases_are_local_commands() {
-        for input in [vec!["--help"], vec!["-h"], vec!["help"]] {
+        for input in [
+            vec!["--help"],
+            vec!["-h"],
+            vec!["--help", "status"],
+            vec!["-h", "status"],
+            vec!["help"],
+        ] {
             assert_eq!(
                 parse(&args(&input)),
                 Ok(ParsedCommand::PrintHelp(HelpCommand::Root))
@@ -359,13 +385,24 @@ mod tests {
         for input in [vec!["--version"], vec!["-V"]] {
             assert_eq!(parse(&args(&input)), Ok(ParsedCommand::PrintVersion));
         }
-        for input in [vec!["status", "--help"], vec!["help", "status"]] {
+        for input in [
+            vec!["status", "--help"],
+            vec!["status", ".", "--help"],
+            vec!["help", "status"],
+        ] {
             assert_eq!(
                 parse(&args(&input)),
                 Ok(ParsedCommand::PrintHelp(HelpCommand::Status))
             );
         }
-        for input in [vec!["ports", "--help"], vec!["help", "ports"]] {
+        for input in [
+            vec!["ports", "--help"],
+            vec!["ports", "--json", "--help"],
+            vec!["ports", "--json", "-h"],
+            vec!["ports", "--all", "--help"],
+            vec!["ports", ".", "--help"],
+            vec!["help", "ports"],
+        ] {
             assert_eq!(
                 parse(&args(&input)),
                 Ok(ParsedCommand::PrintHelp(HelpCommand::Ports))
@@ -377,10 +414,40 @@ mod tests {
                 Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly(command)))
             );
             assert_eq!(
+                parse(&args(&[command, "--help", "--future"])),
+                Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly(command)))
+            );
+            assert_eq!(
                 parse(&args(&["help", command])),
                 Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly(command)))
             );
         }
+    }
+
+    #[test]
+    fn help_and_usage_errors_follow_argument_order() {
+        assert_eq!(
+            parse(&args(&["status", "--json", "--help"])),
+            Err(UsageError {
+                message: "decune status --json is not supported inside a container".to_owned(),
+                show_root_help: false,
+            })
+        );
+        assert_eq!(
+            parse(&args(&["ports", "--json", "--json", "--help"])),
+            Err(UsageError {
+                message: "decune ports --json cannot be used more than once inside a container"
+                    .to_owned(),
+                show_root_help: false,
+            })
+        );
+        assert_eq!(
+            parse(&args(&["ports", "--future", "--help"])),
+            Err(UsageError {
+                message: "unknown option for decune ports inside a container: --future".to_owned(),
+                show_root_help: false,
+            })
+        );
     }
 
     #[test]

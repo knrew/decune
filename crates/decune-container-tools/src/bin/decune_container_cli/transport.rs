@@ -13,7 +13,8 @@ use decune_container_protocol::{
 
 use super::parser::Query;
 
-const CONNECT_ATTEMPTS: usize = 5;
+const HANDOFF_RETRIES: usize = 4;
+const MAX_HOST_DAEMON_RESPONSE_BYTES: usize = 1024 * 1024;
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 pub const UNAVAILABLE_MESSAGE: &str = "decune host daemon is unavailable; keep an active attached \"decune up\" session running on the host (detached mode is not supported)";
@@ -66,10 +67,16 @@ pub fn query_with(
         .shutdown(Shutdown::Write)
         .map_err(|_error| QueryError::Transport)?;
 
+    let read_limit = u64::try_from(MAX_HOST_DAEMON_RESPONSE_BYTES + 1)
+        .map_err(|_error| QueryError::Transport)?;
     let mut response = Vec::new();
-    stream
+    (&mut stream)
+        .take(read_limit)
         .read_to_end(&mut response)
         .map_err(|_error| QueryError::Transport)?;
+    if response.len() > MAX_HOST_DAEMON_RESPONSE_BYTES {
+        return Err(QueryError::InvalidResponse);
+    }
     parse_response(&response)
 }
 
@@ -78,19 +85,20 @@ fn connect_with_retry(
     connect: &mut impl FnMut(&Path) -> io::Result<UnixStream>,
     sleep: &mut impl FnMut(Duration),
 ) -> Result<UnixStream, QueryError> {
-    for attempt in 0..CONNECT_ATTEMPTS {
+    for _ in 0..HANDOFF_RETRIES {
         match connect(socket_path) {
             Ok(stream) => return Ok(stream),
             Err(error) if is_handoff_error(&error) => {
-                if attempt + 1 == CONNECT_ATTEMPTS {
-                    return Err(QueryError::Unavailable);
-                }
                 sleep(RETRY_INTERVAL);
             }
             Err(_) => return Err(QueryError::Transport),
         }
     }
-    unreachable!("connect retry loop always returns on its final attempt")
+    match connect(socket_path) {
+        Ok(stream) => Ok(stream),
+        Err(error) if is_handoff_error(&error) => Err(QueryError::Unavailable),
+        Err(_) => Err(QueryError::Transport),
+    }
 }
 
 fn is_handoff_error(error: &io::Error) -> bool {
@@ -128,7 +136,7 @@ mod tests {
         time::Duration,
     };
 
-    use super::{QueryError, QuerySuccess, query_with};
+    use super::{MAX_HOST_DAEMON_RESPONSE_BYTES, QueryError, QuerySuccess, query_with};
     use crate::parser::{Query, QueryCommand, QueryFormat};
 
     const STATUS_QUERY: Query = Query {
@@ -136,15 +144,28 @@ mod tests {
         format: QueryFormat::Text,
     };
 
-    fn response_stream(response: &'static [u8]) -> UnixStream {
+    fn response_stream(response: &[u8]) -> UnixStream {
         let (client, mut server) = UnixStream::pair().unwrap();
+        let response = response.to_owned();
         thread::spawn(move || {
             let mut request = Vec::new();
             server.read_to_end(&mut request).unwrap();
-            server.write_all(response).unwrap();
+            server.write_all(&response).unwrap();
             server.shutdown(Shutdown::Write).unwrap();
         });
         client
+    }
+
+    fn success_response_with_size(size: usize) -> Vec<u8> {
+        const PREFIX: &[u8] = br#"{"version":1,"ok":true,"output":""#;
+        const SUFFIX: &[u8] = br#""}"#;
+        let output_size = size.checked_sub(PREFIX.len() + SUFFIX.len()).unwrap();
+        let mut response = Vec::with_capacity(size);
+        response.extend_from_slice(PREFIX);
+        response.resize(PREFIX.len() + output_size, b'x');
+        response.extend_from_slice(SUFFIX);
+        assert_eq!(response.len(), size);
+        response
     }
 
     #[test]
@@ -248,6 +269,35 @@ mod tests {
                 Err(QueryError::InvalidResponse)
             );
         }
+    }
+
+    #[test]
+    fn response_read_is_bounded_at_one_mibibyte() {
+        let at_limit = success_response_with_size(MAX_HOST_DAEMON_RESPONSE_BYTES);
+        let result = query_with(
+            Path::new("/unused"),
+            STATUS_QUERY,
+            |_| Ok(response_stream(&at_limit)),
+            |_| {},
+        )
+        .unwrap();
+        assert_eq!(
+            result.output.len(),
+            MAX_HOST_DAEMON_RESPONSE_BYTES
+                - br#"{"version":1,"ok":true,"output":""#.len()
+                - br#""}"#.len()
+        );
+
+        let over_limit = success_response_with_size(MAX_HOST_DAEMON_RESPONSE_BYTES + 1);
+        assert_eq!(
+            query_with(
+                Path::new("/unused"),
+                STATUS_QUERY,
+                |_| Ok(response_stream(&over_limit)),
+                |_| {},
+            ),
+            Err(QueryError::InvalidResponse)
+        );
     }
 
     #[test]
