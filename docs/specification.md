@@ -857,11 +857,11 @@ render 後の値は generated override の `services.<service>.environment.<env>
 - 同じ Compose project の既存 network が、対象 Compose network key に対して pool 内の非重複 subnet を保持していれば最優先で再利用する。次に state の前回割当を再利用する。通常の `up` では blocker が消えても割当を維持し、requested subnet を再度優先するのは rebuild 時だけとする。
 - 自 project の既存 network と新 plan の subnet、元 config の明示 gateway または endpoint 参照のために生成した gateway、`ip_range`、`aux_addresses` が一致しない場合、接続 container がなければ network を削除し、Compose に再作成させる。接続 container がある場合は `compose_clone_isolation_invalid` で停止し、`decune down` で project を停止してから `decune rebuild` するよう案内する。これには、旧 decune が `ip_range` / `aux_addresses` を欠落させて作成した network も含む。
 - generated Compose override は、planned subnet が requested subnet と同じ場合も含め、top-level `networks.<key>.ipam.config: !override` で IPAM config list を置換し、`subnet`、明示 `gateway`、`ip_range`、`aux_addresses` を意味保存して再生成する。network の `driver` や IPAM の `driver` / `options` など config list 外の user 設定は変更しない。relocation が有効で固定 IPv4 subnet を検出した場合は、Compose `!override` tag のため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose は error にする。canonical Compose model の IPAM config に decune が意味を解釈できない field、または `subnet` のない config entry がある場合は、list の一部を黙って破棄せず `compose_clone_isolation_unsupported` で停止する。同じ network に未知 field が複数ある場合は、field 名を決定的順序ですべて列挙し、field value は含めない。
-- `external: true` network は検出・書き換えの対象外とする。固定 IPv6 subnet、および対象 network に接続する service の `ipv4_address` / `ipv6_address` / `link_local_ips` は v1 では remap せず、`compose_clone_isolation_unsupported` で error にする。
+- `external: true` network は検出・書き換えの対象外とする。固定 IPv6 subnet、および対象 network に接続する service の `ipv4_address` / `ipv6_address` / `link_local_ips` は remap せず、`compose_clone_isolation_unsupported` で error にする。
 
 network が実際に別 subnet へ relocate された場合、preflight はその network に直接接続する service と、`network_mode: service:<service>` で接続を継承する service を対象にする。canonical Compose model の `services.*.environment` に endpoint render 結果を後勝ちで重ねた実効 string value を走査し、元 subnet の基底 IPv4 address、または元 gateway が前後を数字・dot としない token 境界付きで残っていれば、`compose_clone_isolation_endpoint_unsafe` で `docker compose up` 前に error にする。endpoint 宣言があっても、同じ値に別の relocated network の旧 address が残っていれば error になる。`10.99.0.1` は `10.99.0.100` や `110.99.0.1` に一致しない。planned subnet が requested subnet と同じ場合は stale 検出を行わない。
 
-stale 検出 v1 の対象は service environment value 内の元 subnet 基底 address と元 gateway だけである。`aux_addresses` 自体は IPAM config 内で remap するが、その元 address を environment、`extra_hosts`、service command、config file 内容などから参照していても自動検出・書き換えしないため、該当する外部 endpoint 契約は利用者が確認する。診断には service 名、環境変数名、Compose network key、一致した元 address だけを含め、environment value 全体を state、label、log、config hash、診断メッセージへ残してはならない。
+stale 検出の対象は service environment value 内の元 subnet 基底 address と元 gateway だけである。`aux_addresses` 自体は IPAM config 内で remap するが、その元 address を environment、`extra_hosts`、service command、config file 内容などから参照していても自動検出・書き換えしないため、該当する外部 endpoint 契約は利用者が確認する。診断には service 名、環境変数名、Compose network key、一致した元 address だけを含め、environment value 全体を state、label、log、config hash、診断メッセージへ残してはならない。
 
 `enabled = true` の name rewrite は generated Compose override に次の規則で出力する。
 
@@ -901,7 +901,7 @@ host_ip = "127.0.0.1"
 
 - `service`: 必須。Compose service 名。空文字列は error。
 - `target`: 必須。Compose port entry の container 側 port。`1..=65535`。
-- `protocol`: 任意。既定 `tcp`。v1 は `tcp` のみ対応する。
+- `protocol`: 任意。既定 `tcp`。`tcp` のみ対応する。
 - `host`: enabled mapping では必須。planned host port。`1..=65535`。
 - `host_ip`: 任意。IPv4 または IPv6 address。省略時は対応する Compose port entry の requested host IP を、host IP omitted を含めて継承する。
 - `enabled`: 任意。既定 true。false の entry は `service + protocol + target` だけを identity として下位 layer の mapping を削除し、`host` / `host_ip` を指定してはならない。
