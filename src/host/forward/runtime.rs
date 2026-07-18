@@ -12,9 +12,12 @@ use crate::{
     docker::ports::ResolvedForwardPort,
     hex::hex_lower,
     host::{
-        container_tools::{ContainerTool, ContainerToolPlatform, stage_container_tool},
+        container_tools::{
+            ContainerTool, ContainerToolPlatform, stage_container_tool,
+            stage_container_tool_with_private_parent,
+        },
         credentials::DECUNE_RUNTIME_TARGET,
-        runtime::prepare_private_runtime_dir,
+        runtime::{prepare_private_runtime_dir, set_private_runtime_parent},
     },
 };
 
@@ -153,18 +156,27 @@ fn prepare_service_forward_runtime(
     runtime_dir: &Path,
     platform: ContainerToolPlatform,
 ) -> Result<ServiceForwardRuntime> {
-    let runtime_dir = service_forward_runtime_dir(runtime_dir, service);
-    prepare_private_runtime_dir(&runtime_dir, "service port forwarding")?;
-    remove_stale_agent_start_file(&runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME))?;
-    remove_stale_agent_start_file(&runtime_dir.join(FORWARD_AGENT_STATUS_NAME))?;
-    let agent_path = stage_container_tool(ContainerTool::ForwardAgent, platform, &runtime_dir)?;
-    let socket_path = runtime_dir.join(forward_agent_socket_name(Some(service)));
+    let private_parent = runtime_dir
+        .parent()
+        .context("Service port forwarding runtime directory has no host-private staging parent")?;
+    let service_runtime_dir = service_forward_runtime_dir(runtime_dir, service);
+    prepare_private_runtime_dir(&service_runtime_dir, "service port forwarding")?;
+    set_private_runtime_parent(runtime_dir)?;
+    remove_stale_agent_start_file(&service_runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME))?;
+    remove_stale_agent_start_file(&service_runtime_dir.join(FORWARD_AGENT_STATUS_NAME))?;
+    let agent_path = stage_container_tool_with_private_parent(
+        ContainerTool::ForwardAgent,
+        platform,
+        &service_runtime_dir,
+        private_parent,
+    )?;
+    let socket_path = service_runtime_dir.join(forward_agent_socket_name(Some(service)));
     remove_stale_agent_start_file(&socket_path)?;
 
     Ok(ServiceForwardRuntime {
         service: service.to_owned(),
         mount: crate::docker::mounts::DockerMountSpec {
-            source: Some(runtime_dir.display().to_string()),
+            source: Some(service_runtime_dir.display().to_string()),
             target: DECUNE_RUNTIME_TARGET.to_owned(),
             mount_type: MountType::Bind,
             read_only: false,
@@ -175,8 +187,8 @@ fn prepare_service_forward_runtime(
         cleanup_paths: vec![
             agent_path,
             socket_path,
-            runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
-            runtime_dir.join(FORWARD_AGENT_STATUS_NAME),
+            service_runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME),
+            service_runtime_dir.join(FORWARD_AGENT_STATUS_NAME),
         ],
     })
 }
@@ -309,6 +321,36 @@ mod tests {
                 && mount.source.as_deref() == Some(runtime_dir.to_str().unwrap())
                 && !mount.read_only
         }));
+    }
+
+    #[test]
+    fn service_runtime_stages_agent_with_a_host_private_parent() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("decune-1000/workspace");
+
+        let runtime = prepare_service_forward_runtime(
+            "database",
+            &runtime_dir,
+            ContainerToolPlatform::LinuxAmd64,
+        )
+        .unwrap();
+        let service_runtime_dir = service_forward_runtime_dir(&runtime_dir, "database");
+
+        assert!(service_runtime_dir.join("decune-forward-agent").is_file());
+        assert_eq!(
+            runtime.mount.source.as_deref(),
+            service_runtime_dir.to_str()
+        );
+        assert_eq!(mode(runtime_dir.parent().unwrap()), 0o700);
+        assert!(
+            fs::read_dir(runtime_dir.parent().unwrap())
+                .unwrap()
+                .filter_map(Result::ok)
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with(".decune-forward-agent."))
+        );
     }
 
     #[test]
