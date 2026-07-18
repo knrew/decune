@@ -410,7 +410,7 @@ mod tests {
     use std::{fs, path::PathBuf};
 
     use crate::{
-        state::{LifecycleState, WorkspaceState},
+        state::{LifecycleState, WorkspaceModeSnapshot, WorkspaceState},
         status::evidence::{
             ContainerEvidence, ContainerRunState, CurrentWorkspaceConfig, DockerEvidence,
             StateEvidence, VolumeEvidence, WorkspaceEvidence, load_status_states,
@@ -771,6 +771,7 @@ mod tests {
         WorkspaceState {
             version: 1,
             workspace: "/workspace".to_owned(),
+            mode: WorkspaceModeSnapshot::Unknown,
             container_id: container_id.to_owned(),
             image: "image".to_owned(),
             config_hash: config_hash.to_owned(),

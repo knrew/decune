@@ -490,7 +490,7 @@ mod tests {
             command::{FakeRuntimeCommand, RuntimeOutput},
             docker_cli::DockerCli,
         },
-        state::{LifecycleState, WorkspaceState},
+        state::{LifecycleState, WorkspaceModeSnapshot, WorkspaceState},
         status::{
             inventory::{build_status_inventory, workspace_status_with_config},
             render::compose_services,
@@ -899,6 +899,7 @@ mod tests {
         WorkspaceState {
             version: 1,
             workspace: "/workspace".to_owned(),
+            mode: WorkspaceModeSnapshot::Unknown,
             container_id: container_id.to_owned(),
             image: "image".to_owned(),
             config_hash: config_hash.to_owned(),

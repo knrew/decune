@@ -19,6 +19,8 @@ pub(crate) fn state_file_path(state_dir: impl AsRef<Path>) -> PathBuf {
 pub(crate) struct WorkspaceState {
     pub(crate) version: u32,
     pub(crate) workspace: String,
+    #[serde(default)]
+    pub(crate) mode: WorkspaceModeSnapshot,
     pub(crate) container_id: String,
     pub(crate) image: String,
     pub(crate) config_hash: String,
@@ -36,6 +38,16 @@ pub(crate) struct WorkspaceState {
     pub(crate) last_used_at: Option<String>,
     #[serde(default)]
     pub(crate) lifecycle: LifecycleState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum WorkspaceModeSnapshot {
+    Image,
+    Dockerfile,
+    Compose,
+    #[default]
+    Unknown,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -238,6 +250,7 @@ pub(crate) struct StateContainerSnapshot {
     pub(crate) image: String,
     pub(crate) config_hash: String,
     pub(crate) config_file: Option<String>,
+    pub(crate) mode: WorkspaceModeSnapshot,
 }
 
 struct StateMetadata {
@@ -405,6 +418,7 @@ fn write_state_for_container_with_metadata(
     let state = WorkspaceState {
         version: STATE_VERSION,
         workspace: workspace_root.display().to_string(),
+        mode: container.mode,
         container_id: container.container_id,
         image: container.image,
         config_hash: container.config_hash,
@@ -563,7 +577,7 @@ mod tests {
         PostCreateLifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
         PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
         PublishedPortSource, PublishedPortTarget, StateContainerSnapshot,
-        UpdateContentLifecycleState, load_state_file, mark_state_used,
+        UpdateContentLifecycleState, WorkspaceModeSnapshot, load_state_file, mark_state_used,
         reconcile_state_without_container, remove_state_runtime_dirs, state_file_path,
         sync_state_with_container, sync_state_with_container_and_compose_project,
         sync_state_with_container_and_compose_runtime, write_reused_state_for_container,
@@ -647,6 +661,7 @@ mod tests {
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: Some("/workspace/custom/devcontainer.json".to_owned()),
+                mode: WorkspaceModeSnapshot::Dockerfile,
             },
             LifecycleState::default(),
         )
@@ -657,6 +672,7 @@ mod tests {
         let state_file = state_file_path(&state_dir);
         let content = fs::read_to_string(&state_file).unwrap();
         assert!(content.contains("version = 1"));
+        assert!(content.contains("mode = \"dockerfile\""));
         assert!(content.contains("container_id = \"container-a\""));
         assert!(content.contains("config_file = \"/workspace/custom/devcontainer.json\""));
         assert!(!content.contains("last_used_at"));
@@ -681,6 +697,7 @@ mod tests {
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+                mode: WorkspaceModeSnapshot::Compose,
             },
             Some("decune-project-abc123".to_owned()),
             LifecycleState::default(),
@@ -707,6 +724,38 @@ mod tests {
         let legacy_state = load_state_file(&state_dir).unwrap().unwrap();
         assert_eq!(legacy_state.compose_project_name, None);
         assert_eq!(legacy_state.container_id, state.container_id);
+    }
+
+    #[test]
+    fn state_mode_defaults_to_unknown_when_missing_from_existing_state() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let state = sync_state_with_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            StateContainerSnapshot {
+                container_id: "container-a".to_owned(),
+                image: "alpine:3.20".to_owned(),
+                config_hash: "hash-a".to_owned(),
+                config_file: None,
+                mode: WorkspaceModeSnapshot::Image,
+            },
+            LifecycleState::default(),
+        )
+        .unwrap();
+        let path = state_file_path(&state_dir);
+        let content = fs::read_to_string(&path).unwrap();
+        let legacy = content
+            .lines()
+            .filter(|line| !line.starts_with("mode = "))
+            .collect::<Vec<_>>()
+            .join("\n");
+        fs::write(&path, legacy).unwrap();
+
+        let existing = load_state_file(&state_dir).unwrap().unwrap();
+
+        assert_eq!(existing.mode, WorkspaceModeSnapshot::Unknown);
+        assert_eq!(existing.container_id, state.container_id);
     }
 
     #[test]
@@ -764,6 +813,7 @@ mod tests {
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+                mode: WorkspaceModeSnapshot::Compose,
             },
             Some("decune-project-abc123".to_owned()),
             ComposeRuntimeState {
@@ -837,6 +887,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: Some("/workspace/.devcontainer/devcontainer.json".to_owned()),
+                mode: WorkspaceModeSnapshot::Compose,
             },
             Some("decune-project-abc123".to_owned()),
             lifecycle_state(LifecycleStateFixture {
@@ -877,6 +928,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
+                mode: WorkspaceModeSnapshot::Compose,
             },
             Some("decune-project-abc123".to_owned()),
             LifecycleState::all_completed(),
@@ -885,6 +937,7 @@ last_started_at = "unix:2"
         existing.created_at = "unix:10".to_owned();
         existing.last_started_at = "unix:20".to_owned();
         existing.last_used_at = Some("unix:30".to_owned());
+        existing.mode = WorkspaceModeSnapshot::Unknown;
         write_state_file(&state_dir, &existing).unwrap();
 
         let running_reuse = write_reused_state_for_container(
@@ -895,6 +948,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
+                mode: WorkspaceModeSnapshot::Compose,
             },
             Some("decune-project-abc123".to_owned()),
             &existing,
@@ -905,6 +959,7 @@ last_started_at = "unix:2"
         assert_eq!(running_reuse.last_started_at, "unix:20");
         assert_eq!(running_reuse.last_used_at.as_deref(), Some("unix:30"));
         assert_eq!(running_reuse.lifecycle, LifecycleState::all_completed());
+        assert_eq!(running_reuse.mode, WorkspaceModeSnapshot::Compose);
 
         let started_reuse = write_reused_state_for_container(
             &state_dir,
@@ -914,6 +969,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
+                mode: WorkspaceModeSnapshot::Compose,
             },
             Some("decune-project-abc123".to_owned()),
             &existing,
@@ -939,6 +995,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
+                mode: WorkspaceModeSnapshot::Image,
             },
             LifecycleState::all_completed(),
         )
@@ -962,6 +1019,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
+                mode: WorkspaceModeSnapshot::Image,
             },
             lifecycle_state(LifecycleStateFixture {
                 on_create: Completed,
@@ -981,6 +1039,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
+                mode: WorkspaceModeSnapshot::Image,
             },
             LifecycleState::all_completed(),
         )
@@ -1025,6 +1084,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
+                mode: WorkspaceModeSnapshot::Image,
             },
             LifecycleState::all_completed(),
         )
@@ -1070,6 +1130,7 @@ last_started_at = "unix:2"
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: None,
+                mode: WorkspaceModeSnapshot::Image,
             },
             LifecycleState::default(),
         )

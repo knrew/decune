@@ -73,6 +73,17 @@ impl WorkspaceMode {
     }
 }
 
+impl From<crate::state::WorkspaceModeSnapshot> for WorkspaceMode {
+    fn from(mode: crate::state::WorkspaceModeSnapshot) -> Self {
+        match mode {
+            crate::state::WorkspaceModeSnapshot::Image => Self::Image,
+            crate::state::WorkspaceModeSnapshot::Dockerfile => Self::Dockerfile,
+            crate::state::WorkspaceModeSnapshot::Compose => Self::Compose,
+            crate::state::WorkspaceModeSnapshot::Unknown => Self::Unknown,
+        }
+    }
+}
+
 impl EnvironmentStatus {
     pub(super) const fn as_str(self) -> &'static str {
         match self {
