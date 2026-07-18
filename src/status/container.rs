@@ -1,4 +1,4 @@
-use std::{collections::BTreeSet, fmt, fmt::Write as _};
+use std::{fmt, fmt::Write as _};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -13,6 +13,10 @@ use crate::{
     },
 };
 
+use super::aggregate::{
+    aggregate_environment_status, aggregate_health_status, aggregate_lifecycle_status,
+    should_report_unhealthy,
+};
 use super::types::{
     ContainerStatusSummary, EnvironmentStatus, HealthStatus, LifecycleStatus, RuntimeRunState,
     StatusIssueSeverity, VolumeStatusSummary, WorkspaceMode,
@@ -203,6 +207,7 @@ pub(crate) fn build_container_workspace_status(
         environment_status,
         health_status,
         lifecycle_status,
+        runtime,
     );
 
     ContainerWorkspaceStatus {
@@ -290,14 +295,18 @@ fn config_snapshot_status(
     }) else {
         return ConfigSnapshotStatus::RuntimeMismatch;
     };
-    let Some(runtime_identity) = primary.config_identity.as_ref() else {
-        return ConfigSnapshotStatus::Unavailable;
-    };
-    if runtime_identity == &state.config_identity {
-        ConfigSnapshotStatus::Consistent
-    } else {
-        ConfigSnapshotStatus::RuntimeMismatch
+    if runtime
+        .containers
+        .iter()
+        .filter_map(|container| container.config_identity.as_ref())
+        .any(|runtime_identity| runtime_identity != &state.config_identity)
+    {
+        return ConfigSnapshotStatus::RuntimeMismatch;
     }
+    if primary.config_identity.is_none() {
+        return ConfigSnapshotStatus::Unavailable;
+    }
+    ConfigSnapshotStatus::Consistent
 }
 
 fn container_environment_status(
@@ -319,62 +328,28 @@ fn container_environment_status(
     }) {
         return EnvironmentStatus::Partial;
     }
-    if runtime
-        .containers
-        .iter()
-        .any(|container| container.run_state == RuntimeRunState::Unknown)
-    {
-        return EnvironmentStatus::Unknown;
-    }
-    let running = runtime
-        .containers
-        .iter()
-        .filter(|container| container.run_state == RuntimeRunState::Running)
-        .count();
-    match running {
-        0 => EnvironmentStatus::Stopped,
-        count if count == runtime.containers.len() => EnvironmentStatus::Running,
-        _ => EnvironmentStatus::Partial,
-    }
+    aggregate_environment_status(
+        runtime
+            .containers
+            .iter()
+            .map(|container| container.run_state),
+    )
 }
 
 fn container_health_status(runtime: Option<&ContainerQueryRuntimeSnapshot>) -> HealthStatus {
     let Some(runtime) = runtime else {
         return HealthStatus::Unknown;
     };
-    if runtime.containers.is_empty() {
-        return HealthStatus::Unknown;
-    }
-    let statuses = runtime
-        .containers
-        .iter()
-        .map(|container| container.health_status)
-        .collect::<BTreeSet<_>>();
-    if statuses.contains(&HealthStatus::Unknown) {
-        return HealthStatus::Unknown;
-    }
-    if statuses.len() == 1 {
-        return statuses.into_iter().next().unwrap_or(HealthStatus::Unknown);
-    }
-    HealthStatus::Mixed
+    aggregate_health_status(
+        runtime
+            .containers
+            .iter()
+            .map(|container| container.health_status),
+    )
 }
 
 fn container_lifecycle_status(state: Option<&ContainerQueryStateSnapshot>) -> LifecycleStatus {
-    let Some(state) = state else {
-        return LifecycleStatus::Unknown;
-    };
-    if [
-        LifecycleCompletion::OnCreate,
-        LifecycleCompletion::UpdateContent,
-        LifecycleCompletion::PostCreate,
-    ]
-    .into_iter()
-    .all(|completion| state.lifecycle.is_completed(completion))
-    {
-        LifecycleStatus::Complete
-    } else {
-        LifecycleStatus::Incomplete
-    }
+    aggregate_lifecycle_status(state.map(|state| state.lifecycle))
 }
 
 fn container_status_issues(
@@ -382,6 +357,7 @@ fn container_status_issues(
     environment_status: EnvironmentStatus,
     health_status: HealthStatus,
     lifecycle_status: LifecycleStatus,
+    runtime: Option<&ContainerQueryRuntimeSnapshot>,
 ) -> Vec<ContainerQueryStatusIssue> {
     let mut issues = Vec::new();
     match config_snapshot_status {
@@ -417,10 +393,18 @@ fn container_status_issues(
         | EnvironmentStatus::NotCreated
         | EnvironmentStatus::Unknown => {}
     }
-    if matches!(health_status, HealthStatus::Unhealthy | HealthStatus::Mixed) {
+    if runtime.is_some_and(|runtime| {
+        should_report_unhealthy(
+            health_status,
+            runtime
+                .containers
+                .iter()
+                .map(|container| container.health_status),
+        )
+    }) {
         issues.push(ContainerQueryStatusIssue {
             code: "unhealthy-container",
-            severity: StatusIssueSeverity::Warning,
+            severity: StatusIssueSeverity::Error,
             message: "One or more managed containers are unhealthy.",
             action: Some("Inspect the affected containers on the host."),
         });
@@ -688,6 +672,133 @@ mod tests {
     }
 
     #[test]
+    fn mixed_health_without_unhealthy_does_not_report_an_issue() {
+        let mut snapshot = query_snapshot("hash", Some("hash"));
+        runtime_mut(&mut snapshot)
+            .containers
+            .push(container_evidence("sidecar-id", None, HealthStatus::None));
+
+        let status = build_container_workspace_status(&snapshot);
+        let output = render_container_workspace_status(&status);
+
+        assert_eq!(status.health_status, HealthStatus::Mixed);
+        assert_eq!(
+            status.config_snapshot_status,
+            ConfigSnapshotStatus::Consistent
+        );
+        assert!(
+            status
+                .issues
+                .iter()
+                .all(|issue| issue.code != "unhealthy-container"),
+            "{:?}",
+            status.issues
+        );
+        assert!(!output.contains("unhealthy-container"));
+    }
+
+    #[test]
+    fn mixed_health_with_unhealthy_reports_an_error() {
+        let mut snapshot = query_snapshot("hash", Some("hash"));
+        runtime_mut(&mut snapshot)
+            .containers
+            .push(container_evidence(
+                "sidecar-id",
+                None,
+                HealthStatus::Unhealthy,
+            ));
+
+        let status = build_container_workspace_status(&snapshot);
+        let output = render_container_workspace_status(&status);
+        let issue = status
+            .issues
+            .iter()
+            .find(|issue| issue.code == "unhealthy-container")
+            .unwrap();
+
+        assert_eq!(status.health_status, HealthStatus::Mixed);
+        assert_eq!(issue.severity, StatusIssueSeverity::Error);
+        assert!(output.contains("unhealthy-container [error]"));
+    }
+
+    #[test]
+    fn config_snapshot_checks_all_available_runtime_identities() {
+        let mut matching = query_snapshot("hash", Some("hash"));
+        runtime_mut(&mut matching)
+            .containers
+            .push(container_evidence(
+                "sidecar-id",
+                Some("hash"),
+                HealthStatus::None,
+            ));
+        let matching_status = build_container_workspace_status(&matching);
+
+        let mut mismatching = matching;
+        runtime_mut(&mut mismatching).containers[1] =
+            container_evidence("sidecar-id", Some("other-hash"), HealthStatus::None);
+        let mismatching_status = build_container_workspace_status(&mismatching);
+
+        assert_eq!(
+            matching_status.config_snapshot_status,
+            ConfigSnapshotStatus::Consistent
+        );
+        assert_eq!(
+            mismatching_status.config_snapshot_status,
+            ConfigSnapshotStatus::RuntimeMismatch
+        );
+    }
+
+    #[test]
+    fn missing_primary_is_a_runtime_mismatch_and_partial_environment() {
+        let mut snapshot = query_snapshot("hash", Some("hash"));
+        runtime_mut(&mut snapshot).containers[0].id = Some("replacement-id".to_owned());
+
+        let status = build_container_workspace_status(&snapshot);
+
+        assert_eq!(
+            status.config_snapshot_status,
+            ConfigSnapshotStatus::RuntimeMismatch
+        );
+        assert_eq!(status.environment_status, EnvironmentStatus::Partial);
+        for code in ["runtime-mismatch", "partial-environment"] {
+            assert!(
+                status.issues.iter().any(|issue| issue.code == code),
+                "{:?}",
+                status.issues
+            );
+        }
+    }
+
+    #[test]
+    fn missing_primary_identity_is_unavailable_without_a_known_mismatch() {
+        let status = build_container_workspace_status(&query_snapshot("recorded-hash", None));
+
+        assert_eq!(
+            status.config_snapshot_status,
+            ConfigSnapshotStatus::Unavailable
+        );
+    }
+
+    #[test]
+    fn known_mismatch_takes_precedence_over_missing_primary_identity() {
+        let mut snapshot = query_snapshot("recorded-hash", None);
+        runtime_mut(&mut snapshot)
+            .containers
+            .push(container_evidence(
+                "sidecar-id",
+                Some("other-hash"),
+                HealthStatus::None,
+            ));
+
+        let status = build_container_workspace_status(&snapshot);
+
+        assert_eq!(
+            status.config_snapshot_status,
+            ConfigSnapshotStatus::RuntimeMismatch
+        );
+    }
+
+    #[test]
     fn missing_recorded_mode_degrades_to_unknown() {
         let mut state = workspace_state("hash");
         state.mode = WorkspaceModeSnapshot::Unknown;
@@ -809,6 +920,30 @@ mod tests {
                 name: Some("managed-volume".to_owned()),
             }],
         }
+    }
+
+    fn runtime_mut(snapshot: &mut ContainerQuerySnapshot) -> &mut ContainerQueryRuntimeSnapshot {
+        match &mut snapshot.docker {
+            ContainerQueryDockerEvidence::Available(runtime) => runtime,
+            ContainerQueryDockerEvidence::Unavailable => {
+                panic!("test snapshot must have runtime evidence")
+            }
+        }
+    }
+
+    fn container_evidence(
+        id: &str,
+        config_hash: Option<&str>,
+        health_status: HealthStatus,
+    ) -> ContainerQueryContainerEvidence {
+        ContainerQueryContainerEvidence::new(
+            Some(id.to_owned()),
+            Some(format!("/{id}")),
+            Some(id.to_owned()),
+            RuntimeRunState::Running,
+            health_status,
+            config_hash,
+        )
     }
 
     fn workspace_state(config_hash: &str) -> WorkspaceState {

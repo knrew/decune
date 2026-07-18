@@ -8,6 +8,7 @@ use crate::{
     workspace::{Workspace, decune_state_root},
 };
 
+mod aggregate;
 #[cfg_attr(
     not(test),
     expect(

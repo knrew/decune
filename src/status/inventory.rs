@@ -1,11 +1,15 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::state::{LifecycleCompletion, WorkspaceState};
+use crate::state::WorkspaceState;
 
 use super::{
+    aggregate::{
+        aggregate_environment_status, aggregate_health_status, aggregate_lifecycle_status,
+        should_report_unhealthy,
+    },
     evidence::{
-        ContainerRunState, CurrentWorkspaceConfig, DockerEvidence, StateEvidence,
-        WorkspaceEvidence, has_docker_evidence, state_container_is_present,
+        CurrentWorkspaceConfig, DockerEvidence, StateEvidence, WorkspaceEvidence,
+        has_docker_evidence, state_container_is_present,
     },
     types::{
         ConfigStatus, ContainerStatusSummary, EnvironmentStatus, HealthStatus, LifecycleStatus,
@@ -162,24 +166,12 @@ fn environment_status(
     if state.is_some_and(|state| !state_container_is_present(state, &evidence.containers)) {
         return EnvironmentStatus::Partial;
     }
-    if evidence
-        .containers
-        .iter()
-        .any(|container| container.run_state == ContainerRunState::Unknown)
-    {
-        return EnvironmentStatus::Unknown;
-    }
-    let running = evidence
-        .containers
-        .iter()
-        .filter(|container| container.run_state == ContainerRunState::Running)
-        .count();
-    let stopped = evidence.containers.len() - running;
-    match (running, stopped) {
-        (0, _) => EnvironmentStatus::Stopped,
-        (_, 0) => EnvironmentStatus::Running,
-        _ => EnvironmentStatus::Partial,
-    }
+    aggregate_environment_status(
+        evidence
+            .containers
+            .iter()
+            .map(|container| container.run_state.into()),
+    )
 }
 
 fn config_status(
@@ -245,46 +237,19 @@ fn health_status(evidence: &WorkspaceEvidence, docker_unavailable: bool) -> Heal
     if docker_unavailable {
         return HealthStatus::Unknown;
     }
-    if evidence.containers.is_empty() {
-        return HealthStatus::Unknown;
-    }
-    let statuses = evidence
-        .containers
-        .iter()
-        .map(|container| container.health_status)
-        .collect::<BTreeSet<_>>();
-    if statuses.contains(&HealthStatus::Unknown) {
-        return HealthStatus::Unknown;
-    }
-    if statuses.len() == 1 {
-        statuses.into_iter().next().unwrap_or(HealthStatus::Unknown)
-    } else {
-        HealthStatus::Mixed
-    }
+    aggregate_health_status(
+        evidence
+            .containers
+            .iter()
+            .map(|container| container.health_status),
+    )
 }
 
-const fn lifecycle_status(
-    state: Option<&WorkspaceState>,
-    state_unreadable: bool,
-) -> LifecycleStatus {
+fn lifecycle_status(state: Option<&WorkspaceState>, state_unreadable: bool) -> LifecycleStatus {
     if state_unreadable {
         return LifecycleStatus::Unknown;
     }
-    let Some(state) = state else {
-        return LifecycleStatus::Unknown;
-    };
-    let lifecycle = state.lifecycle;
-    if lifecycle.is_command_completed(LifecycleCompletion::OnCreate)
-        && lifecycle.is_after_hook_completed(LifecycleCompletion::OnCreate)
-        && lifecycle.is_command_completed(LifecycleCompletion::UpdateContent)
-        && lifecycle.is_after_hook_completed(LifecycleCompletion::UpdateContent)
-        && lifecycle.is_command_completed(LifecycleCompletion::PostCreate)
-        && lifecycle.is_after_hook_completed(LifecycleCompletion::PostCreate)
-    {
-        LifecycleStatus::Complete
-    } else {
-        LifecycleStatus::Incomplete
-    }
+    aggregate_lifecycle_status(state.map(|state| state.lifecycle))
 }
 
 fn workspace_issues(input: &WorkspaceIssueInput<'_>) -> Vec<StatusIssue> {
@@ -359,13 +324,13 @@ fn workspace_issues(input: &WorkspaceIssueInput<'_>) -> Vec<StatusIssue> {
             Some("Run decune up, down, or remove to reconcile the environment."),
         ));
     }
-    if health_status == HealthStatus::Unhealthy
-        || (health_status == HealthStatus::Mixed
-            && evidence
-                .containers
-                .iter()
-                .any(|container| container.health_status == HealthStatus::Unhealthy))
-    {
+    if should_report_unhealthy(
+        health_status,
+        evidence
+            .containers
+            .iter()
+            .map(|container| container.health_status),
+    ) {
         issues.push(issue(
             "unhealthy-container",
             StatusIssueSeverity::Error,
@@ -577,6 +542,28 @@ mod tests {
         );
     }
     #[test]
+    fn mixed_health_issue_requires_unhealthy_evidence() {
+        let without_unhealthy = health_workspace(vec![HealthStatus::Healthy, HealthStatus::None]);
+        assert_eq!(without_unhealthy.health_status, HealthStatus::Mixed);
+        assert!(
+            without_unhealthy
+                .issues
+                .iter()
+                .all(|issue| issue.code != "unhealthy-container"),
+            "{:?}",
+            without_unhealthy.issues
+        );
+
+        let with_unhealthy = health_workspace(vec![HealthStatus::Healthy, HealthStatus::Unhealthy]);
+        let issue = with_unhealthy
+            .issues
+            .iter()
+            .find(|issue| issue.code == "unhealthy-container")
+            .unwrap();
+        assert_eq!(with_unhealthy.health_status, HealthStatus::Mixed);
+        assert_eq!(issue.severity, StatusIssueSeverity::Error);
+    }
+    #[test]
     fn config_mismatch_and_lifecycle_are_derived() {
         let inventory = build_status_inventory(
             vec![state_evidence(
@@ -726,6 +713,9 @@ mod tests {
             .environment_status
     }
     fn health_for(statuses: Vec<HealthStatus>) -> HealthStatus {
+        health_workspace(statuses).health_status
+    }
+    fn health_workspace(statuses: Vec<HealthStatus>) -> WorkspaceStatus {
         let containers = statuses
             .into_iter()
             .enumerate()
@@ -747,8 +737,10 @@ mod tests {
                 volumes: Vec::new(),
             }),
         )
-        .workspaces[0]
-            .health_status
+        .workspaces
+        .into_iter()
+        .next()
+        .unwrap()
     }
     fn single_workspace(inventory: &StatusInventory) -> &WorkspaceStatus {
         assert_eq!(inventory.workspaces.len(), 1);
