@@ -1141,6 +1141,8 @@ clone isolation name rewrite により生成される container/resource name、
 
 state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。write は atomic に行う。Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。lifecycle 完了 marker と `devcontainer.json` path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 
+state には起動時の mode を `image` / `dockerfile` / `compose` の snapshot として記録する。new container と reused container のどちらでも、その起動で解決した mode へ同期する。mode field がない既存の version 1 state は `unknown` として読み、state version は `1` を維持する。resolved config 全体や config 内容を mode snapshot のために保存しない。
+
 Compose published port relocation では、requested endpoint、planned endpoint、`relocated`、起動時に Docker inspect で観測した actual binding を表示補助 metadata として state に記録する。この metadata は現在有効な Docker binding の正本ではない。
 
 Compose clone isolation network relocation では、Compose network key ごとの requested subnet、planned subnet、planned gateway、`relocated` を表示補助 metadata として state に記録する。現在有効な subnet の正本は Docker network inspect とする。
@@ -1303,7 +1305,13 @@ host daemon は `decune up` の子タスクとして起動し、`up` 終了時�
 - GitHub token file の一時管理。
 - port forwarding runtime の socket 基盤。
 
-container-side tool と host daemon の JSON protocol version は `1` とする。request の `version` と `type` は top-level envelope で検証し、`credential` と `cliQuery` を request type として予約する。`cliQuery` は `version`、`type`、`command`、`format` だけを持つ strict schema とし、unknown field は拒否する。schema validation では `status` + `text` と `ports` + `text|json` を受理するが、container CLI query の実行は未接続のため valid request にも `not_implemented` を返す。
+container-side tool と host daemon の JSON protocol version は `1` とする。request の `version` と `type` は top-level envelope で検証し、`credential` と `cliQuery` を request type として予約する。`cliQuery` は `version`、`type`、`command`、`format` だけを持つ strict schema とし、unknown field は拒否する。schema validation では `status` + `text` と `ports` + `text|json` を受理する。container query 用の副作用のない snapshot 変換と render は実装済みだが、host daemon の収集・dispatch は未接続のため、現時点の valid request は `not_implemented` を返す。
+
+container query 用 model は、検証済み workspace ID、起動時 mode、container ID/name/service、run state/health、managed volume name、lifecycle/timestamp、sanitization 済み port だけを保持する。raw `ContainerInspect`、Docker/Compose label map、workspace/config path、raw config hash、env、build args、secret、mount source、external command の raw stderr、他 workspace の resource は model、cache、renderer へ渡さない。recorded state と runtime config identity の比較には raw hash を保持せず、domain-separated digest へ射影した非表示の比較値を使う。この比較値は `Debug` と serialization に出力しない。
+
+container 専用 status は host の workspace detail model/renderer を流用せず、recorded state と query 時の managed runtime evidence を比較する。`Config snapshot: consistent` は両者が整合することだけを表し、live workspace config は常に `Live workspace: not checked` と表示する。recorded primary container が runtime evidence に存在しない場合、または identity を持つ managed container のいずれかが recorded identity と一致しない場合は `runtime-mismatch` とする。既知の identity 不一致がなく、primary container の identity を取得できない場合は `unavailable` とし、identity を持たない non-primary container は比較から除外する。state または runtime evidence 自体を取得できない場合も `unavailable` とし、host status の `current` / `needs-rebuild` とは区別する。health summary が `mixed` でも、実際に `unhealthy` な managed container がなければ `unhealthy-container` issue は表示しない。この issue の条件と severity (`error`) は host status と同じにする。host workspace/config path、raw hash/label は表示せず、host で実行する action は `Action (run on host)` section に表示する。text output の末尾 newline はちょうど 1 個とする。host 側 `decune status [WORKSPACE]` の live config 比較と既存 renderer は変更しない。
+
+container query 用 port snapshot は workspace path と workspace ID field を構造上持たない。`ports` text は host の単一 workspace table と同じ column、意味、sort 順を使い、`ports` JSON は host の単一 workspace `Vec<PortInventoryEntry>` schema と同じにする。JSON の各 entry で `workspace` / `workspace_id` は `None` として省略し、text/JSON とも末尾 newline はちょうど 1 個とする。forwarding status socket の I/O と Docker evidence collector は host daemon 接続工程の責務とし、この snapshot/render 層には含めない。
 
 container-side CLI の Cargo target は `decune-container-cli` とし、`clap` には依存せず `args_os` を使って解析する。この target の user-facing command 名、container tools bundle への追加、runtime staging は別工程で接続する。socket は既定で `/run/decune/host-daemon.sock` を使う。
 

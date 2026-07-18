@@ -901,7 +901,10 @@ mod tests {
     use super::stop_timeout_seconds;
     use crate::{
         docker::client::DockerClient,
-        state::{LifecycleState, StateContainerSnapshot, sync_state_with_container},
+        state::{
+            LifecycleState, StateContainerSnapshot, WorkspaceModeSnapshot,
+            sync_state_with_container,
+        },
         workspace::Workspace,
     };
     use anyhow::Result;
@@ -1105,6 +1108,7 @@ mod tests {
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: Some(config_dir.join("devcontainer.json").display().to_string()),
+                mode: WorkspaceModeSnapshot::Compose,
             },
             LifecycleState::default(),
         )
@@ -1160,6 +1164,7 @@ mod tests {
                 image: "alpine:3.20".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: Some(config_dir.join("devcontainer.json").display().to_string()),
+                mode: WorkspaceModeSnapshot::Image,
             },
             LifecycleState::default(),
         )
@@ -1233,6 +1238,7 @@ mod tests {
                 image: "decune/project:hash-a".to_owned(),
                 config_hash: "hash-a".to_owned(),
                 config_file: Some(custom_dir.join("devcontainer.json").display().to_string()),
+                mode: WorkspaceModeSnapshot::Dockerfile,
             },
             LifecycleState::default(),
         )

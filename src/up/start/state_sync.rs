@@ -1,6 +1,7 @@
 use std::{cell::RefCell, collections::BTreeSet};
 
 use crate::{
+    config::resolved::ResolvedDevcontainerSource,
     devcontainer::lifecycle::LifecycleRunPath,
     docker::{client::DockerClient, container::ContainerInspect, resource::COMPOSE_SERVICE_LABEL},
     runtime::compose_isolation::ComposeIsolationSubnetPlan,
@@ -13,7 +14,8 @@ use crate::{
         self, CloneIsolationNetworkRuntimeState, CloneIsolationRuntimeState, ComposeRuntimeState,
         LifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
         PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
-        PublishedPortSource, PublishedPortTarget, StateContainerSnapshot, WorkspaceState,
+        PublishedPortSource, PublishedPortTarget, StateContainerSnapshot, WorkspaceModeSnapshot,
+        WorkspaceState,
     },
     up::types::{UpOutcome, UpPlan},
     workspace::Workspace,
@@ -396,6 +398,18 @@ pub(super) fn state_container_snapshot(
             .labels
             .get("devcontainer.config_file")
             .cloned(),
+        mode: workspace_mode_snapshot(plan.config.devcontainer.source.as_ref()),
+    }
+}
+
+const fn workspace_mode_snapshot(
+    source: Option<&ResolvedDevcontainerSource>,
+) -> WorkspaceModeSnapshot {
+    match source {
+        Some(ResolvedDevcontainerSource::Image(_)) => WorkspaceModeSnapshot::Image,
+        Some(ResolvedDevcontainerSource::Dockerfile(_)) => WorkspaceModeSnapshot::Dockerfile,
+        Some(ResolvedDevcontainerSource::Compose(_)) => WorkspaceModeSnapshot::Compose,
+        None => WorkspaceModeSnapshot::Unknown,
     }
 }
 
@@ -409,8 +423,13 @@ fn state_matches_container_snapshot(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
     use super::super::test_support::generated_override_test_plan;
     use super::*;
+    use crate::config::layer::{
+        LayerDevcontainerBuild, LayerDevcontainerCompose, LayerDevcontainerSource,
+    };
     use crate::runtime::compose_ports::{
         ComposePortProtocol, ComposePublishedPortAllocationReason,
         ComposePublishedPortPlanEntryType, ComposePublishedPortPlanSource,
@@ -420,6 +439,12 @@ mod tests {
     #[test]
     fn state_snapshot_records_final_image_tag_for_compose_plan() {
         let mut plan = generated_override_test_plan(Vec::new());
+        plan.config.devcontainer.source =
+            Some(LayerDevcontainerSource::Compose(LayerDevcontainerCompose {
+                files: vec!["compose.yaml".to_owned()],
+                service: "app".to_owned(),
+                run_services: None,
+            }));
         plan.image = "decune/project-abc123:config-hash".to_owned();
         plan.base_image = "example/app:dev".to_owned();
         plan.resources.config_hash = "config-hash".to_owned();
@@ -428,6 +453,42 @@ mod tests {
 
         assert_eq!(snapshot.image, "decune/project-abc123:config-hash");
         assert_eq!(snapshot.config_hash, "config-hash");
+        assert_eq!(snapshot.mode, WorkspaceModeSnapshot::Compose);
+    }
+
+    #[test]
+    fn state_snapshot_mode_covers_all_launch_sources() {
+        let image = LayerDevcontainerSource::Image("alpine:3.20".to_owned());
+        let dockerfile = LayerDevcontainerSource::Dockerfile(LayerDevcontainerBuild {
+            dockerfile: "Dockerfile".to_owned(),
+            context: None,
+            args: BTreeMap::new(),
+            options: Vec::new(),
+            target: None,
+            cache_from: Vec::new(),
+        });
+        let compose = LayerDevcontainerSource::Compose(LayerDevcontainerCompose {
+            files: vec!["compose.yaml".to_owned()],
+            service: "app".to_owned(),
+            run_services: None,
+        });
+
+        assert_eq!(
+            workspace_mode_snapshot(Some(&image)),
+            WorkspaceModeSnapshot::Image
+        );
+        assert_eq!(
+            workspace_mode_snapshot(Some(&dockerfile)),
+            WorkspaceModeSnapshot::Dockerfile
+        );
+        assert_eq!(
+            workspace_mode_snapshot(Some(&compose)),
+            WorkspaceModeSnapshot::Compose
+        );
+        assert_eq!(
+            workspace_mode_snapshot(None),
+            WorkspaceModeSnapshot::Unknown
+        );
     }
 
     #[test]
