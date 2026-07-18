@@ -18,7 +18,7 @@ mod targets;
 mod tree;
 
 pub(crate) use setup::setup_dotfiles;
-use skeleton::skeleton_dotfile_mount_plan;
+use skeleton::{DotfileBackingMountRegistry, skeleton_dotfile_mount_plan};
 pub(crate) use skeleton::{DotfileSkeletonPlan, materialize_dotfile_skeletons};
 use targets::{ExpandedDotfile, dotfile_mount_target, expanded_dotfiles};
 use tree::{backing_root_mount_source, collect_dotfile_tree, directory_contains_any_symlink};
@@ -52,8 +52,15 @@ pub(crate) fn dotfile_mount_plan(
     state_root: &Path,
 ) -> Result<DotfileMountPlan> {
     let mut plan = DotfileMountPlan::default();
+    let mut backing_mounts = DotfileBackingMountRegistry::default();
     for dotfile in expanded_dotfiles(config, variables)? {
-        let dotfile_plan = dotfile_mount_spec(&dotfile, workspace_root, variables, state_root)?;
+        let dotfile_plan = dotfile_mount_spec(
+            &dotfile,
+            workspace_root,
+            variables,
+            state_root,
+            &mut backing_mounts,
+        )?;
         plan.mounts.extend(dotfile_plan.mounts);
         plan.skeletons.extend(dotfile_plan.skeletons);
     }
@@ -66,6 +73,7 @@ fn dotfile_mount_spec(
     workspace_root: &Path,
     variables: &VariableContext,
     state_root: &Path,
+    backing_mounts: &mut DotfileBackingMountRegistry,
 ) -> Result<DotfileMountPlan> {
     let target = dotfile_mount_target(&dotfile.target)?;
     let source = resolve_host_path(
@@ -127,6 +135,7 @@ fn dotfile_mount_spec(
         &target,
         state_root,
         dotfile.dotfile.read_only,
+        backing_mounts,
     )?;
     if plan.mounts.len() > MAX_DOTFILE_MOUNTS {
         bail!(

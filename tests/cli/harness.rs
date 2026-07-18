@@ -122,6 +122,34 @@ pub(crate) fn decune() -> TestCommand {
     TestCommand { command, gh_config }
 }
 
+pub fn write_multiple_dotfile_skeleton_sources(workspace: &support::TempWorkspace) {
+    for tool in ["tool-a", "tool-b"] {
+        workspace.create_dir(format!("dotfiles-repo/{tool}")).must();
+        workspace.create_dir(format!("dotfiles-src/{tool}")).must();
+        workspace
+            .write_file(
+                format!("dotfiles-repo/{tool}/{tool}-config.yml"),
+                format!("{tool}-config\n"),
+            )
+            .must();
+        workspace
+            .write_file(
+                format!("dotfiles-src/{tool}/{tool}-local.yml"),
+                format!("{tool}-local\n"),
+            )
+            .must();
+        std::os::unix::fs::symlink(
+            workspace
+                .path()
+                .join(format!("dotfiles-repo/{tool}/{tool}-config.yml")),
+            workspace
+                .path()
+                .join(format!("dotfiles-src/{tool}/{tool}-config.yml")),
+        )
+        .must();
+    }
+}
+
 #[test]
 fn decune_command_removes_gh_config_directory_on_drop() {
     let command = decune();

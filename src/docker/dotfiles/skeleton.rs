@@ -22,6 +22,24 @@ pub(crate) struct DotfileSkeletonPlan {
     entries: BTreeMap<PathBuf, DotfileSkeletonEntryKind>,
 }
 
+#[derive(Debug, Default)]
+pub(super) struct DotfileBackingMountRegistry {
+    targets: BTreeMap<(PathBuf, bool), String>,
+}
+
+impl DotfileBackingMountRegistry {
+    fn target_for(&mut self, source: &Path, read_only: bool) -> (String, bool) {
+        let next_target = format!("{DOTFILE_BACKINGS_MOUNT_ROOT}/{}", self.targets.len());
+        match self.targets.entry((source.to_path_buf(), read_only)) {
+            Entry::Vacant(entry) => {
+                entry.insert(next_target.clone());
+                (next_target, true)
+            }
+            Entry::Occupied(entry) => (entry.get().clone(), false),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum DotfileSkeletonEntryKind {
     Symlink { target: String },
@@ -47,6 +65,7 @@ pub(super) fn skeleton_dotfile_mount_plan(
     container_target: &str,
     state_root: &Path,
     read_only: bool,
+    backing_mounts: &mut DotfileBackingMountRegistry,
 ) -> Result<DotfileMountPlan> {
     let components = relative_target_components(dotfile_target)?;
     let skeleton_root = state_root
@@ -73,7 +92,7 @@ pub(super) fn skeleton_dotfile_mount_plan(
         backing_sources: BTreeSet::new(),
     };
     builder.build_directory(&source, Path::new(""), &mut ancestors, 0)?;
-    builder.finalize_backing_mounts()?;
+    builder.finalize_backing_mounts(backing_mounts)?;
     builder.mounts[1..].sort_by(|left, right| {
         container_path_depth(&left.target)
             .cmp(&container_path_depth(&right.target))
@@ -276,13 +295,18 @@ impl DotfileSkeletonBuilder<'_> {
         Ok(())
     }
 
-    fn finalize_backing_mounts(&mut self) -> Result<()> {
+    fn finalize_backing_mounts(
+        &mut self,
+        backing_mounts: &mut DotfileBackingMountRegistry,
+    ) -> Result<()> {
         let mut backing_targets = BTreeMap::new();
         for source in &self.backing_sources {
-            let target = format!("{DOTFILE_BACKINGS_MOUNT_ROOT}/{}", backing_targets.len());
+            let (target, is_new) = backing_mounts.target_for(source, self.read_only);
             backing_targets.insert(source.clone(), target.clone());
-            self.mounts
-                .push(dotfile_bind_mount(source, target, self.read_only));
+            if is_new {
+                self.mounts
+                    .push(dotfile_bind_mount(source, target, self.read_only));
+            }
         }
 
         let backing_entries = self
@@ -622,7 +646,7 @@ fn container_path_depth(path: &str) -> usize {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{collections::BTreeSet, fs, path::Path};
 
     #[cfg(unix)]
     use std::os::unix::{fs as unix_fs, fs::MetadataExt};
@@ -675,6 +699,24 @@ mod tests {
             .find(|mount| {
                 mount.source.as_deref() == source.to_str()
                     && mount.target.starts_with(DOTFILE_BACKINGS_MOUNT_ROOT)
+            })
+            .expect("expected dotfile backing mount")
+            .target
+            .clone()
+    }
+
+    fn backing_mount_target_for_source_and_mode(
+        mounts: &[DockerMountSpec],
+        source: &Path,
+        read_only: bool,
+    ) -> String {
+        let source = source.canonicalize().unwrap();
+        mounts
+            .iter()
+            .find(|mount| {
+                mount.source.as_deref() == source.to_str()
+                    && mount.target.starts_with(DOTFILE_BACKINGS_MOUNT_ROOT)
+                    && mount.read_only == read_only
             })
             .expect("expected dotfile backing mount")
             .target
@@ -851,6 +893,236 @@ mod tests {
         assert_skeleton_symlink(
             &skeleton_path.join("local.yml"),
             &format!("{source_backing_target}/local.yml"),
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn assigns_unique_backing_targets_across_skeleton_dotfile_entries() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mut dotfiles = Vec::new();
+        for tool in ["tool-a", "tool-b"] {
+            let backing_dir = workspace.path().join("dotfiles-repo").join(tool);
+            let source_dir = workspace.path().join("dotfiles-src").join(tool);
+            fs::create_dir_all(&backing_dir).unwrap();
+            fs::create_dir_all(&source_dir).unwrap();
+            fs::write(
+                backing_dir.join(format!("{tool}-config.yml")),
+                format!("{tool}-config\n"),
+            )
+            .unwrap();
+            fs::write(
+                source_dir.join(format!("{tool}-local.yml")),
+                format!("{tool}-local\n"),
+            )
+            .unwrap();
+            unix_fs::symlink(
+                backing_dir.join(format!("{tool}-config.yml")),
+                source_dir.join(format!("{tool}-config.yml")),
+            )
+            .unwrap();
+            dotfiles.push(ResolvedDotfile {
+                source: format!("dotfiles-src/{tool}"),
+                target: format!(".config/{tool}"),
+                read_only: true,
+                resolve_symlink: true,
+                on_conflict: DotfileConflict::Fail,
+                origin: ConfigPathOrigin::Project,
+            });
+        }
+        let config = ResolvedConfig {
+            dotfiles,
+            ..ResolvedConfig::default()
+        };
+
+        let plan = dotfile_mount_plan(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+        materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+
+        let backing_targets = plan
+            .mounts
+            .iter()
+            .filter(|mount| mount.target.starts_with(DOTFILE_BACKINGS_MOUNT_ROOT))
+            .map(|mount| mount.target.as_str())
+            .collect::<BTreeSet<_>>();
+        assert_eq!(backing_targets.len(), 4);
+        assert_eq!(
+            plan.mounts
+                .iter()
+                .filter(|mount| mount.target.starts_with(DOTFILE_BACKINGS_MOUNT_ROOT))
+                .count(),
+            backing_targets.len()
+        );
+
+        for tool in ["tool-a", "tool-b"] {
+            let backing_dir = workspace.path().join("dotfiles-repo").join(tool);
+            let source_dir = workspace.path().join("dotfiles-src").join(tool);
+            let backing_target = backing_mount_target_for_source(&plan.mounts, &backing_dir);
+            let source_target = backing_mount_target_for_source(&plan.mounts, &source_dir);
+            let skeleton = workspace
+                .path()
+                .join(DOTFILE_MOUNT_SKELETON_DIR)
+                .join(".config")
+                .join(tool);
+            assert_skeleton_symlink(
+                &skeleton.join(format!("{tool}-config.yml")),
+                &format!("{backing_target}/{tool}-config.yml"),
+            );
+            assert_skeleton_symlink(
+                &skeleton.join(format!("{tool}-local.yml")),
+                &format!("{source_target}/{tool}-local.yml"),
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn shares_backing_mounts_across_read_only_skeleton_dotfile_entries() {
+        let workspace = tempfile::tempdir().unwrap();
+        let backing_dir = workspace.path().join("dotfiles-repo/tool");
+        let source_dir = workspace.path().join("dotfiles-src/tool");
+        fs::create_dir_all(&backing_dir).unwrap();
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(backing_dir.join("config.yml"), "config\n").unwrap();
+        fs::write(source_dir.join("local.yml"), "local\n").unwrap();
+        unix_fs::symlink(
+            backing_dir.join("config.yml"),
+            source_dir.join("config.yml"),
+        )
+        .unwrap();
+        let config = ResolvedConfig {
+            dotfiles: [".config/tool-a", ".config/tool-b"]
+                .into_iter()
+                .map(|target| ResolvedDotfile {
+                    source: "dotfiles-src/tool".to_owned(),
+                    target: target.to_owned(),
+                    read_only: true,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Fail,
+                    origin: ConfigPathOrigin::Project,
+                })
+                .collect(),
+            ..ResolvedConfig::default()
+        };
+
+        let plan = dotfile_mount_plan(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+        materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+
+        assert_eq!(
+            plan.mounts
+                .iter()
+                .filter(|mount| mount.target.starts_with(DOTFILE_BACKINGS_MOUNT_ROOT))
+                .count(),
+            2
+        );
+        let backing_target = backing_mount_target_for_source(&plan.mounts, &backing_dir);
+        let source_target = backing_mount_target_for_source(&plan.mounts, &source_dir);
+        for tool in ["tool-a", "tool-b"] {
+            let skeleton = workspace
+                .path()
+                .join(DOTFILE_MOUNT_SKELETON_DIR)
+                .join(".config")
+                .join(tool);
+            assert_skeleton_symlink(
+                &skeleton.join("config.yml"),
+                &format!("{backing_target}/config.yml"),
+            );
+            assert_skeleton_symlink(
+                &skeleton.join("local.yml"),
+                &format!("{source_target}/local.yml"),
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn separates_backing_mounts_for_different_access_modes() {
+        let workspace = tempfile::tempdir().unwrap();
+        let backing_dir = workspace.path().join("dotfiles-repo/tool");
+        let source_dir = workspace.path().join("dotfiles-src/tool");
+        fs::create_dir_all(&backing_dir).unwrap();
+        fs::create_dir_all(&source_dir).unwrap();
+        fs::write(backing_dir.join("config.yml"), "config\n").unwrap();
+        fs::write(source_dir.join("local.yml"), "local\n").unwrap();
+        unix_fs::symlink(
+            backing_dir.join("config.yml"),
+            source_dir.join("config.yml"),
+        )
+        .unwrap();
+        let config = ResolvedConfig {
+            dotfiles: vec![
+                ResolvedDotfile {
+                    source: "dotfiles-src/tool".to_owned(),
+                    target: ".config/read-only".to_owned(),
+                    read_only: true,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Fail,
+                    origin: ConfigPathOrigin::Project,
+                },
+                ResolvedDotfile {
+                    source: "dotfiles-src/tool".to_owned(),
+                    target: ".config/writable".to_owned(),
+                    read_only: false,
+                    resolve_symlink: true,
+                    on_conflict: DotfileConflict::Fail,
+                    origin: ConfigPathOrigin::Project,
+                },
+            ],
+            ..ResolvedConfig::default()
+        };
+
+        let plan = dotfile_mount_plan(
+            &config,
+            workspace.path(),
+            &variables(workspace.path()),
+            workspace.path(),
+        )
+        .unwrap();
+        materialize_dotfile_skeletons(&plan.skeletons).unwrap();
+
+        assert_eq!(
+            plan.mounts
+                .iter()
+                .filter(|mount| mount.target.starts_with(DOTFILE_BACKINGS_MOUNT_ROOT))
+                .count(),
+            4
+        );
+        for source in [&backing_dir, &source_dir] {
+            let read_only_target =
+                backing_mount_target_for_source_and_mode(&plan.mounts, source, true);
+            let writable_target =
+                backing_mount_target_for_source_and_mode(&plan.mounts, source, false);
+            assert_ne!(read_only_target, writable_target);
+        }
+
+        let read_only_backing =
+            backing_mount_target_for_source_and_mode(&plan.mounts, &backing_dir, true);
+        let writable_backing =
+            backing_mount_target_for_source_and_mode(&plan.mounts, &backing_dir, false);
+        assert_skeleton_symlink(
+            &workspace
+                .path()
+                .join(DOTFILE_MOUNT_SKELETON_DIR)
+                .join(".config/read-only/config.yml"),
+            &format!("{read_only_backing}/config.yml"),
+        );
+        assert_skeleton_symlink(
+            &workspace
+                .path()
+                .join(DOTFILE_MOUNT_SKELETON_DIR)
+                .join(".config/writable/config.yml"),
+            &format!("{writable_backing}/config.yml"),
         );
     }
 
