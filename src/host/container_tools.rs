@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     env, fs,
     io::{Read, Seek, Write},
-    os::unix::fs::{MetadataExt, PermissionsExt},
+    os::unix::fs::PermissionsExt,
     path::{Component, Path, PathBuf},
 };
 
@@ -85,12 +85,13 @@ pub(crate) fn stage_container_tool(
             runtime_dir.display()
         )
     })?;
+    let source_dir = container_tool_override_dir();
     stage_container_tool_from_sources(
         tool,
         platform,
         runtime_dir,
         private_parent,
-        &container_tool_override_dirs(),
+        source_dir.as_deref(),
         default_embedded_container_tools(),
     )
 }
@@ -101,12 +102,13 @@ pub(crate) fn stage_container_tool_with_private_parent(
     runtime_dir: &Path,
     private_parent: &Path,
 ) -> Result<PathBuf> {
+    let source_dir = container_tool_override_dir();
     stage_container_tool_from_sources(
         tool,
         platform,
         runtime_dir,
         private_parent,
-        &container_tool_override_dirs(),
+        source_dir.as_deref(),
         default_embedded_container_tools(),
     )
 }
@@ -144,11 +146,11 @@ const TEST_EMBEDDED_CONTAINER_TOOLS: &[EmbeddedContainerToolArtifact] = &[
     },
 ];
 
-pub(crate) fn stage_container_tool_from_dirs(
+pub(crate) fn stage_container_tool_from_dir(
     tool: ContainerTool,
     platform: ContainerToolPlatform,
     runtime_dir: &Path,
-    source_dirs: &[PathBuf],
+    source_dir: &Path,
 ) -> Result<PathBuf> {
     let private_parent = runtime_dir.parent().with_context(|| {
         format!(
@@ -161,7 +163,7 @@ pub(crate) fn stage_container_tool_from_dirs(
         platform,
         runtime_dir,
         private_parent,
-        source_dirs,
+        Some(source_dir),
         &[],
     )
 }
@@ -171,7 +173,7 @@ fn stage_container_tool_with_embedded(
     tool: ContainerTool,
     platform: ContainerToolPlatform,
     runtime_dir: &Path,
-    source_dirs: &[PathBuf],
+    source_dir: Option<&Path>,
     embedded: &'static [EmbeddedContainerToolArtifact],
 ) -> Result<PathBuf> {
     let private_parent = runtime_dir.parent().with_context(|| {
@@ -185,7 +187,7 @@ fn stage_container_tool_with_embedded(
         platform,
         runtime_dir,
         private_parent,
-        source_dirs,
+        source_dir,
         embedded,
     )
 }
@@ -255,10 +257,10 @@ pub(crate) fn write_test_container_tools_bundle(
             )?;
             let sha256 = hex_lower(&Sha256::digest(contents));
             manifest_entries.push(serde_json::json!({
-                    "name": tool,
-                    "platform": platform,
+                "name": tool,
+                "platform": platform,
                 "path": relative_path.display().to_string(),
-                    "sha256": sha256,
+                "sha256": sha256,
             }));
             writeln!(sums, "{sha256}  {}", relative_path.display())
                 .context("Failed to format test container tools SHA256SUMS")?;
@@ -295,11 +297,11 @@ fn stage_container_tool_from_sources(
     platform: ContainerToolPlatform,
     runtime_dir: &Path,
     private_parent: &Path,
-    source_dirs: &[PathBuf],
+    source_dir: Option<&Path>,
     embedded: &'static [EmbeddedContainerToolArtifact],
 ) -> Result<PathBuf> {
     let target = runtime_dir.join(tool.file_name());
-    let resolved = resolve_container_tool(tool, platform, source_dirs, embedded)?;
+    let resolved = resolve_container_tool(tool, platform, source_dir, embedded)?;
     let expected_sha256 = resolved.sha256().to_owned();
 
     atomic_stage_container_tool(&target, private_parent, &expected_sha256, |staged| {
@@ -348,12 +350,6 @@ fn atomic_stage_container_tool(
     let mut staged = create_private_staging_file(private_parent, &prefix, 12)?;
 
     write_contents(staged.as_file_mut())?;
-    staged.as_file_mut().flush().with_context(|| {
-        format!(
-            "Failed to flush staged decune container tool artifact for {}",
-            target.display()
-        )
-    })?;
     staged
         .as_file()
         .set_permissions(fs::Permissions::from_mode(0o755))
@@ -393,27 +389,7 @@ fn create_private_staging_file(
 }
 
 fn verify_open_file_sha256(file: &mut fs::File, expected: &str, target: &Path) -> Result<()> {
-    file.rewind().with_context(|| {
-        format!(
-            "Failed to rewind staged decune container tool artifact for checksum: {}",
-            target.display()
-        )
-    })?;
-    let mut hasher = Sha256::new();
-    let mut buffer = [0_u8; 16 * 1024];
-    loop {
-        let read = file.read(&mut buffer).with_context(|| {
-            format!(
-                "Failed to read staged decune container tool artifact for checksum: {}",
-                target.display()
-            )
-        })?;
-        if read == 0 {
-            break;
-        }
-        hasher.update(&buffer[..read]);
-    }
-    let actual = hex_lower(&hasher.finalize());
+    let actual = sha256_open_file(file, target, "staged decune container tool artifact")?;
     if actual != expected {
         bail!(
             "Container tool artifact checksum mismatch after staging: {}",
@@ -423,14 +399,33 @@ fn verify_open_file_sha256(file: &mut fs::File, expected: &str, target: &Path) -
     Ok(())
 }
 
+fn sha256_open_file(file: &mut fs::File, path: &Path, description: &str) -> Result<String> {
+    file.rewind().with_context(|| {
+        format!(
+            "Failed to rewind {description} for checksum: {}",
+            path.display()
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 16 * 1024];
+    loop {
+        let read = file.read(&mut buffer).with_context(|| {
+            format!(
+                "Failed to read {description} for checksum: {}",
+                path.display()
+            )
+        })?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    Ok(hex_lower(&hasher.finalize()))
+}
+
 fn validate_replaceable_target(target: &Path) -> Result<()> {
     match fs::symlink_metadata(target) {
-        Ok(metadata)
-            if metadata.mode() & libc::S_IFMT == libc::S_IFREG
-                || metadata.file_type().is_symlink() =>
-        {
-            Ok(())
-        }
+        Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => Ok(()),
         Ok(_) => bail!(
             "Decune container tool runtime path is not a regular file or symlink: {}",
             target.display()
@@ -448,10 +443,10 @@ fn validate_replaceable_target(target: &Path) -> Result<()> {
 fn resolve_container_tool(
     tool: ContainerTool,
     platform: ContainerToolPlatform,
-    source_dirs: &[PathBuf],
+    source_dir: Option<&Path>,
     embedded: &'static [EmbeddedContainerToolArtifact],
 ) -> Result<ResolvedContainerTool<'static>> {
-    if let Some(source_dir) = source_dirs.first() {
+    if let Some(source_dir) = source_dir {
         return resolve_external_container_tool(tool, platform, source_dir);
     }
 
@@ -675,13 +670,20 @@ fn check_sha256sums(dir: &Path, manifest_sums: &BTreeMap<PathBuf, String>) -> Re
 }
 
 fn verify_file_sha256(path: &Path, expected: &str) -> Result<()> {
-    let bytes = fs::read(path).with_context(|| {
+    let mut file = fs::File::open(path).with_context(|| {
         format!(
             "Failed to read container tool artifact for checksum: {}",
             path.display()
         )
     })?;
-    verify_sha256(&bytes, expected, || path.display().to_string())
+    let actual = sha256_open_file(&mut file, path, "container tool artifact")?;
+    if actual != expected {
+        bail!(
+            "Container tool artifact checksum mismatch: {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 fn verify_embedded_sha256(artifact: &EmbeddedContainerToolArtifact) -> Result<()> {
@@ -698,12 +700,10 @@ fn verify_sha256(bytes: &[u8], expected: &str, display: impl FnOnce() -> String)
     Ok(())
 }
 
-fn container_tool_override_dirs() -> Vec<PathBuf> {
+fn container_tool_override_dir() -> Option<PathBuf> {
     env::var_os(CONTAINER_TOOLS_ENV)
         .filter(|value| !value.is_empty())
         .map(PathBuf::from)
-        .into_iter()
-        .collect()
 }
 
 enum ResolvedContainerTool<'a> {
@@ -758,7 +758,7 @@ mod tests {
     use super::{
         ContainerTool, ContainerToolPlatform, EmbeddedContainerToolArtifact,
         TestContainerToolEntry, atomic_stage_container_tool, create_private_staging_file,
-        stage_container_tool_from_dirs, stage_container_tool_with_embedded,
+        stage_container_tool_from_dir, stage_container_tool_with_embedded,
         write_test_container_tools_bundle,
     };
 
@@ -793,11 +793,11 @@ mod tests {
         )
         .unwrap();
 
-        let staged = stage_container_tool_from_dirs(
+        let staged = stage_container_tool_from_dir(
             ContainerTool::Decune,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[source],
+            &source,
         )
         .unwrap();
 
@@ -817,6 +817,34 @@ mod tests {
             serde_json::from_slice(&fs::read(temp.path().join("source/manifest.json")).unwrap())
                 .unwrap();
         assert_eq!(manifest["tools"].as_array().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn stages_external_artifact_larger_than_checksum_buffer() {
+        let temp = TempDir::new().unwrap();
+        let source = temp.path().join("source");
+        let runtime = temp.path().join("runtime");
+        let contents = vec![b'x'; 16 * 1024 + 1];
+        fs::create_dir_all(&runtime).unwrap();
+        write_test_container_tools_bundle(
+            &source,
+            &[TestContainerToolEntry {
+                tool: ContainerTool::Decune,
+                platform: ContainerToolPlatform::LinuxAmd64,
+                contents: &contents,
+            }],
+        )
+        .unwrap();
+
+        let staged = stage_container_tool_from_dir(
+            ContainerTool::Decune,
+            ContainerToolPlatform::LinuxAmd64,
+            &runtime,
+            &source,
+        )
+        .unwrap();
+
+        assert_eq!(fs::read(staged).unwrap(), contents);
     }
 
     #[test]
@@ -840,7 +868,7 @@ mod tests {
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[source],
+            Some(source.as_path()),
             EMBEDDED_FORWARD_AGENT_AMD64,
         )
         .unwrap();
@@ -860,11 +888,11 @@ mod tests {
         fs::create_dir_all(&source).unwrap();
         fs::create_dir_all(&runtime).unwrap();
 
-        let error = stage_container_tool_from_dirs(
+        let error = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[source],
+            &source,
         )
         .unwrap_err();
 
@@ -888,11 +916,11 @@ mod tests {
             });
         });
 
-        let error = stage_container_tool_from_dirs(
+        let error = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[source],
+            &source,
         )
         .unwrap_err();
 
@@ -919,18 +947,18 @@ mod tests {
             tools.push(tools[0].clone());
         });
 
-        let unknown = stage_container_tool_from_dirs(
+        let unknown = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[unknown_source],
+            &unknown_source,
         )
         .unwrap_err();
-        let duplicate = stage_container_tool_from_dirs(
+        let duplicate = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[duplicate_source],
+            &duplicate_source,
         )
         .unwrap_err();
 
@@ -962,18 +990,18 @@ mod tests {
             tools[0]["path"] = serde_json::Value::String("../outside".to_owned());
         });
 
-        let duplicate = stage_container_tool_from_dirs(
+        let duplicate = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[duplicate_source],
+            &duplicate_source,
         )
         .unwrap_err();
-        let unsafe_path = stage_container_tool_from_dirs(
+        let unsafe_path = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[unsafe_source],
+            &unsafe_source,
         )
         .unwrap_err();
 
@@ -1000,7 +1028,7 @@ mod tests {
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxArm64,
             &runtime,
-            &[],
+            None,
             EMBEDDED_FORWARD_AGENT_ARM64,
         )
         .unwrap();
@@ -1021,11 +1049,11 @@ mod tests {
         write_test_container_tools_bundle(&source, &[]).unwrap();
         fs::write(source.join("linux-amd64/decune-forward-agent"), b"tampered").unwrap();
 
-        let error = stage_container_tool_from_dirs(
+        let error = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[source],
+            &source,
         )
         .unwrap_err();
 
@@ -1049,11 +1077,11 @@ mod tests {
         )
         .unwrap();
 
-        let error = stage_container_tool_from_dirs(
+        let error = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[source],
+            &source,
         )
         .unwrap_err();
 
@@ -1077,11 +1105,11 @@ mod tests {
         )
         .unwrap();
 
-        let error = stage_container_tool_from_dirs(
+        let error = stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[source],
+            &source,
         )
         .unwrap_err();
 
@@ -1108,7 +1136,7 @@ mod tests {
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[],
+            None,
             EMBEDDED_FORWARD_AGENT_AMD64,
         )
         .unwrap();
@@ -1166,7 +1194,7 @@ mod tests {
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[],
+            None,
             EMBEDDED_FORWARD_AGENT_AMD64,
         )
         .unwrap();
@@ -1188,7 +1216,7 @@ mod tests {
             ContainerTool::ForwardAgent,
             ContainerToolPlatform::LinuxAmd64,
             &runtime,
-            &[],
+            None,
             EMBEDDED_FORWARD_AGENT_AMD64,
         )
         .unwrap_err();

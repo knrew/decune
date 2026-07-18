@@ -90,23 +90,23 @@ pub(crate) fn prepare_forward_runtime(
     runtime_dir: &Path,
     platform: ContainerToolPlatform,
 ) -> Result<ForwardRuntime> {
-    prepare_forward_runtime_with_tool_dirs(runtime_dir, platform, None)
+    prepare_forward_runtime_with_tool_dir(runtime_dir, platform, None)
 }
 
-fn prepare_forward_runtime_with_tool_dirs(
+fn prepare_forward_runtime_with_tool_dir(
     runtime_dir: &Path,
     platform: ContainerToolPlatform,
-    tool_source_dirs: Option<Vec<PathBuf>>,
+    tool_source_dir: Option<PathBuf>,
 ) -> Result<ForwardRuntime> {
     prepare_private_runtime_dir(runtime_dir, "port forwarding")?;
     remove_stale_agent_start_file(&runtime_dir.join(FORWARD_AGENT_DIAGNOSTIC_NAME))?;
     remove_stale_agent_start_file(&runtime_dir.join(FORWARD_AGENT_STATUS_NAME))?;
-    let agent_path = match tool_source_dirs {
-        Some(source_dirs) => crate::host::container_tools::stage_container_tool_from_dirs(
+    let agent_path = match tool_source_dir {
+        Some(source_dir) => crate::host::container_tools::stage_container_tool_from_dir(
             ContainerTool::ForwardAgent,
             platform,
             runtime_dir,
-            &source_dirs,
+            &source_dir,
         )?,
         None => stage_container_tool(ContainerTool::ForwardAgent, platform, runtime_dir)?,
     };
@@ -295,10 +295,10 @@ mod tests {
         .unwrap();
         let runtime_dir = temp.path().join("runtime");
 
-        let runtime = prepare_forward_runtime_with_tool_dirs(
+        let runtime = prepare_forward_runtime_with_tool_dir(
             &runtime_dir,
             ContainerToolPlatform::LinuxAmd64,
-            Some(vec![source_dir]),
+            Some(source_dir),
         )
         .unwrap();
 

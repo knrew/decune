@@ -134,7 +134,7 @@ source checkout からの local install は `cargo run --locked -p xtask -- inst
 
 開発・debug 用 override として `DECUNE_CONTAINER_TOOLS_DIR` を残す。build-time の bundle 制御は通常 `xtask` が内部で行い、bundle dir の既定値は `target/decune-xtask/container-tools-bundle` とする。`DECUNE_CONTAINER_TOOLS_BUNDLE` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` は低レベル build 用の内部 override として扱い、通常の local/CI 手順では利用者に要求しない。
 
-container-side tool の runtime staging は、container に mount する runtime directory 内へ temporary file を作らない。host-private かつ target と同一 filesystem の親 directory に排他的 create で temporary file を作り、開いた file descriptor へ artifact bytes を書く。flush、mode `0755` の設定、最終 staged bytes の SHA-256 検証が完了した後、runtime target を atomic rename で置換する。既存 target が symlink の場合は link 先を変更せず symlink entry 自体を置換し、directory など安全に置換できない file type は runtime corruption error とする。失敗時は temporary file を削除し、partial target を公開しない。
+container-side tool の runtime staging は、container に mount する runtime directory 内へ temporary file を作らない。host-private かつ target と同一 filesystem の親 directory に排他的 create で temporary file を作り、開いた file descriptor への artifact bytes の書き込み、mode `0755` の設定、最終 staged bytes の SHA-256 検証が完了した後、runtime target を atomic rename で置換する。既存 target が symlink の場合は link 先を変更せず symlink entry 自体を置換し、directory など安全に置換できない file type は runtime corruption error とする。失敗時は temporary file を削除し、partial target を公開しない。
 
 ## CLI
 
