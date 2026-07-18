@@ -1288,7 +1288,15 @@ host daemon は `decune up` の子タスクとして起動し、`up` 終了時�
 
 container-side tool と host daemon の JSON protocol version は `1` とする。request の `version` と `type` は top-level envelope で検証し、`credential` と `cliQuery` を request type として予約する。`cliQuery` は `version`、`type`、`command`、`format` だけを持つ strict schema とし、unknown field は拒否する。schema validation では `status` + `text` と `ports` + `text|json` を受理するが、container CLI query の実行は未接続のため valid request にも `not_implemented` を返す。
 
+container-side CLI の Cargo target は `decune-container-cli` とし、`clap` には依存せず `args_os` を使って解析する。この target の user-facing command 名、container tools bundle への追加、runtime staging は別工程で接続する。socket は既定で `/run/decune/host-daemon.sock` を使う。
+
+container-side CLI は current workspace だけを対象とし、`status` は `status` + `text`、`ports` は `ports` + `text`、`ports --json` は `ports` + `json` の query を送る。`status --json`、workspace positional（`.` を含む）、`ports --all` は socket へ接続する前に usage error とする。`up`、`rebuild`、`down`、`remove` / `rm`、`clean` も host-only command として local で拒否する。`--help` / `-h` / `help`、command help、`--version` / `-V` は local 表示とし、host-only command の help は host で実行する command であることを説明する。引数なし、unknown command / option、non-UTF-8 argument は panic せず usage error とする。
+
+query transport は request の write 完了後に Unix socket の write half を shutdown し、response を EOF まで読む。daemon handoff 中の socket 交換を許容するため、connect の `NotFound` / `ConnectionRefused` だけを最大 5 回、100 ms 間隔で再試行する。permission error、request write/read error、invalid response、daemon error は再試行しない。再試行を使い切った場合は、attached `decune up` session が必要で detached mode では利用できないことを示す canonical unavailable error とする。他の transport error は daemon 停止や authorization failure と断定しない generic error とする。
+
 host daemon response は `version`、`ok`、任意の `output`、任意の `error`、任意の `warnings` を持つ。success response は `output` が必須で `error` を持たず、warning を 0 件以上持てる。error response は `code` と `message` を持つ `error` が必須で、`output` と warning を持たない。client はこの invariant に違反する response を invalid response として拒否する。`warnings` がない version 1 response は空 warning list として扱う。
+
+container-side CLI は success warning を配列順に `Warning: <message>` として stderr へ書き、success output は改変せず stdout へ書く。success は warning の有無にかかわらず exit `0`、daemon / transport / invalid-response error は exit `1`、usage error は exit `2` とする。daemon error code は未知の将来値も受理し、その message を `Error: <message>` として stderr へ書き、stdout は空に保つ。warning と error の末尾 newline は 1 個に正規化するが、success output には newline を追加しない。
 
 host daemon error code は lowercase snake_case とし、`invalid_request`、`unsupported_protocol_version`、`request_too_large`、`unknown_request_type`、`not_implemented`、`credential_failed`、`unsupported_command`、`unsupported_format`、`container_cli_disabled`、`cli_query_failed`、`cli_query_busy`、`cli_query_timeout` を定義する。wire 上の `code` は将来の追加値を受理できる string とする。
 
