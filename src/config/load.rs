@@ -125,6 +125,9 @@ service = "app"
 env = "HOST_AGENT_ENDPOINT"
 value = "grpc://${decune.network.fixed_net.gateway}:50051"
 
+[container.cli]
+enabled = true
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -227,6 +230,7 @@ shell = false
         assert_spec_example_mounts(&config);
         assert_spec_example_ports(&config);
         assert_spec_example_compose(&config);
+        assert!(config.container.cli.enabled.unwrap());
         assert_spec_example_credentials(&config);
         assert_spec_example_hooks(&config);
     }

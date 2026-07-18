@@ -441,6 +441,9 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
         writer.field("compose", |writer| {
             write_config_compose(writer, config);
         });
+        // container.cli.enabled controls only the attached host daemon query policy and does not
+        // change the container or Compose project that decune creates.
+        _ = config.container.cli.enabled;
         writer.field("devcontainer", |writer| {
             write_devcontainer(
                 writer,
@@ -2529,6 +2532,32 @@ https = "host-helper-read-only"
         );
 
         assert_ne!(hash_for(&host_helper), hash_for(&read_only));
+    }
+
+    #[test]
+    fn container_cli_enabled_change_does_not_change_hash() {
+        let enabled = resolved_config(
+            r"
+version = 1
+
+[container.cli]
+enabled = true
+",
+        );
+        let disabled = resolved_config(
+            r"
+version = 1
+
+[container.cli]
+enabled = false
+",
+        );
+
+        assert_ne!(
+            enabled.container.cli.enabled,
+            disabled.container.cli.enabled
+        );
+        assert_eq!(hash_for(&enabled), hash_for(&disabled));
     }
 
     #[test]

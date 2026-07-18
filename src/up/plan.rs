@@ -546,6 +546,12 @@ mod tests {
     fn project_config_can_skip_global_layer() {
         let config_home = tempfile::tempdir().unwrap();
         let _guard = set_xdg_config_home(config_home.path());
+        fs::create_dir_all(config_home.path().join("decune")).unwrap();
+        fs::write(
+            config_home.path().join("decune/config.toml"),
+            "version = 1\n\n[container.cli]\nenabled = false\n",
+        )
+        .unwrap();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Project Global Opt Out");
         fs::create_dir_all(&root).unwrap();
@@ -561,6 +567,7 @@ mod tests {
         let plan = build_up_plan(&workspace, None, ConfigLayer::default()).unwrap();
 
         assert!(plan.config_layers.global.is_none());
+        assert!(plan.config.container.cli.enabled);
     }
 
     #[test]
@@ -598,6 +605,12 @@ subnet_pool = "not-a-cidr"
     fn cli_skip_global_config_can_skip_global_layer() {
         let config_home = tempfile::tempdir().unwrap();
         let _guard = set_xdg_config_home(config_home.path());
+        fs::create_dir_all(config_home.path().join("decune")).unwrap();
+        fs::write(
+            config_home.path().join("decune/config.toml"),
+            "version = 1\n\n[container.cli]\nenabled = false\n",
+        )
+        .unwrap();
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("Cli Global Opt Out");
         fs::create_dir_all(&root).unwrap();
@@ -615,6 +628,7 @@ subnet_pool = "not-a-cidr"
         .unwrap();
 
         assert!(plan.config_layers.global.is_none());
+        assert!(plan.config.container.cli.enabled);
     }
 
     #[test]

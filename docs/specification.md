@@ -650,6 +650,7 @@ project 設定は Git 管理してよい。秘密情報を設定 file に直接�
 ### merge rule
 
 - scalar: 後勝ち。
+- `container.cli.enabled`: boolean scalar として後勝ち。global の `false` は project の `true` で再有効化できる。
 - `init` / `privileged`: boolean scalar として後勝ち。上位 layer の `false` は下位 layer の `true` を打ち消せる。
 - `capAdd` / `securityOpt`: security list として deduped union。
 - map: key ごとに merge。同一 key は後勝ち。
@@ -711,6 +712,9 @@ target = 502
 protocol = "tcp"
 host = 1502
 host_ip = "127.0.0.1"
+
+[container.cli]
+enabled = true
 
 [credentials.git]
 enabled = true
@@ -945,6 +949,19 @@ Compose published port diagnostics の code は以下を使う。
 - `compose_published_port_mapping_invalid`: mapping の service/identity が canonical Compose model の fixed TCP published port に一意に対応しない。
 - `compose_published_port_mapping_conflict`: explicit mapping の desired endpoint が reservation または availability probe と衝突した。automatic relocation へは fallback しない。
 
+### `[container.cli]`
+
+```toml
+[container.cli]
+enabled = true
+```
+
+`enabled` は container 内の read-only decune CLI query を許可する project preference で、既定は true とする。global / project 間では通常の boolean scalar と同じ後勝ちで merge し、global の `false` は project の `true` で再有効化できる。`use_global_config = false` または `--no-global-config` では global 値を読み込まない。
+
+effective value が false の場合は host daemon が query を拒否する authoritative gate とする。artifact の削除や symlink の有無だけを enforcement として扱わない。一方、この設定は untrusted repository から解除不能な security opt-out ではない。repository から解除できない deny policy が必要な場合は、credentials を含む host-only policy plane を別途設計する。
+
+`container.cli.enabled` は config hash に含めない。この値だけの変更では container または Compose project の再作成を要求しない。
+
 ### `[credentials.git]`
 
 ```toml
@@ -1118,7 +1135,7 @@ Compose モードでは上記 label を primary service に追加する。明示
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
-config hash には、resolved metadata/config、Feature lock、relevant CLI options、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose モードの user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、Compose published port relocation により生成される service `ports` override、clone isolation network relocation により生成される subnet / gateway、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose モードでは user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
+config hash には、resolved metadata/config、Feature lock、relevant CLI options、Dockerfile 内容、`build.options`、effective ignore file、build context digest、entrypoint plan、Linux host の UID/GID sync input、Compose モードの user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input を含める。manual/automatic forwarding の現在値、`container.cli.enabled`、Compose published port relocation により生成される service `ports` override、clone isolation network relocation により生成される subnet / gateway、credential token value、SSH agent socket path、GitHub token file path、`${localEnv:...}` 由来の `remoteEnv` value、Compose secrets の解決済み value は含めない。`${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。Compose モードでは user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。generated override semantic hash input には primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。`${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。ただし generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
 
 clone isolation name rewrite により生成される container/resource name、元 `container_name` のために生成する network alias、追随して書き換える container name 参照、network relocation により生成される subnet / gateway、endpoint placeholder の render 後 environment value は relocation 結果値なので、generated override semantic hash input には含めない。clone isolation policy と endpoint の未展開 template は resolved config hash input に含める。
 
@@ -1291,6 +1308,12 @@ container-side tool と host daemon の JSON protocol version は `1` とする�
 host daemon response は `version`、`ok`、任意の `output`、任意の `error`、任意の `warnings` を持つ。success response は `output` が必須で `error` を持たず、warning を 0 件以上持てる。error response は `code` と `message` を持つ `error` が必須で、`output` と warning を持たない。client はこの invariant に違反する response を invalid response として拒否する。`warnings` がない version 1 response は空 warning list として扱う。
 
 host daemon error code は lowercase snake_case とし、`invalid_request`、`unsupported_protocol_version`、`request_too_large`、`unknown_request_type`、`not_implemented`、`credential_failed`、`unsupported_command`、`unsupported_format`、`container_cli_disabled`、`cli_query_failed`、`cli_query_busy`、`cli_query_timeout` を定義する。wire 上の `code` は将来の追加値を受理できる string とする。
+
+host daemon は effective `container.cli.enabled` と immutable query context を起動時に固定する。query context は検証済み workspace ID、その ID に対応する state directory、workspace runtime directory、そこから導出する forwarding status directory だけを保持し、`Workspace::resolve`、live config、client input から host path を再解決しない。context fingerprint は `decune-cli-query-context-v1` で domain separation した SHA-256 digest とし、canonical field order で workspace ID と固定 server path context だけを入力にする。secret、token、credential value、resolved config 全体を入力に含めない。
+
+host daemon metadata には query policy と context fingerprint だけを保存し、raw context、host path、secret を保存しない。daemon reuse identity は `Disabled` または `Enabled { context_fingerprint }` とし、disabled 同士、または同じ fingerprint の enabled 同士だけを再利用できる。policy または context が異なる active daemon は暗黙に共有せず、対象 workspace のすべての active attached `decune up` を終了してから再実行するよう error にする。reused daemon を監視する session は owner 終了後も同じ policy と実体 query context で daemon を再起動する。protocol version、peer UID/GID、Git HTTPS mode、socket inode 等の既存 reuse 条件も維持する。
+
+protocol version は `1` のままとし、capability list、build SHA、daemon revision は追加しない。decune v0 段階では旧/new daemon-client の mixed-version compatibility を保証しない。upgrade 時は対象 workspace のすべての active `decune up` を終了してから、新しい version で起動し直す。
 
 禁止:
 

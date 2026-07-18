@@ -13,6 +13,8 @@ curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.3.4/scripts/install
 
 `$HOME/.local/bin` が `PATH` に含まれていない場合は、利用しているシェルの設定で追加してください。
 
+decune を upgrade する前に、対象 workspace で動いている attached `decune up` session をすべて終了してください。binary を更新した後、新しい version で `decune up` を起動し直します。旧/new host daemon と container-side client の mixed-version compatibility は保証されません。
+
 ### 手動アーカイブインストール
 
 ホストに合う target triple を選び、チェックサムを検証してからインストールします。
@@ -336,6 +338,9 @@ service = "app"
 env = "HOST_AGENT_ENDPOINT"
 value = "grpc://${decune.network.grpc.gateway}:50051"
 
+[container.cli]
+enabled = true
+
 [credentials.git]
 enabled = true
 copy_user = true
@@ -350,6 +355,8 @@ install_feature_if_missing = true
 ```
 
 完全なスキーマと merge rule は [specification.md](specification.md#decune-toml-設定) を参照してください。
+
+`[container.cli].enabled` の既定値は true です。通常の後勝ち設定なので、global config の `false` は project config の `true` で再有効化できます。repository から解除不能な security opt-out ではありません。project の `use_global_config = false` または `--no-global-config` を使うと、global の値自体を適用しません。この設定だけを変更しても container または Compose project の rebuild は不要です。
 
 dotfiles は remote home へ直接 bind mount せず、`/opt/decune/dotfiles/<target>` から symlink します。`/opt/decune` と `/run/decune` 配下は decune の internal path なので、`[[mounts]].target` には使えません。
 

@@ -3,4 +3,5 @@ pub(crate) mod credentials;
 pub(crate) mod daemon;
 pub(crate) mod forward;
 pub(crate) mod protocol;
+pub(crate) mod query_context;
 pub(crate) mod runtime;

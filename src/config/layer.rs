@@ -11,9 +11,9 @@ use crate::config::{
         RawAutoPortsConfig, RawComposeCloneIsolationConfig, RawComposeCloneIsolationEndpointConfig,
         RawComposeCloneIsolationNamesConfig, RawComposeCloneIsolationNetworksConfig,
         RawComposeConfig, RawComposePublishedPortMappingConfig, RawComposePublishedPortsConfig,
-        RawCredentialsConfig, RawDecuneConfig, RawDotfileConfig, RawFeatureConfig,
-        RawGitCredentialsConfig, RawGithubCredentialsConfig, RawHookConfig, RawHooksConfig,
-        RawMountConfig, RawPortConfig, RawPortProtocol,
+        RawContainerCliConfig, RawContainerConfig, RawCredentialsConfig, RawDecuneConfig,
+        RawDotfileConfig, RawFeatureConfig, RawGitCredentialsConfig, RawGithubCredentialsConfig,
+        RawHookConfig, RawHooksConfig, RawMountConfig, RawPortConfig, RawPortProtocol,
     },
     types::{
         Command, DEFAULT_PORT_HOST_IP, DotfileConflict, GitHttpsMode, GithubCredentialsMode,
@@ -41,6 +41,7 @@ pub(crate) struct ConfigLayer {
     pub(crate) forward_ports: Vec<LayerForwardPort>,
     pub(crate) auto_ports: Option<LayerAutoPorts>,
     pub(crate) compose: LayerCompose,
+    pub(crate) container: LayerContainer,
     pub(crate) devcontainer: Option<LayerDevcontainerMetadata>,
     pub(crate) credentials: LayerCredentials,
     pub(crate) hooks: LayerHooks,
@@ -82,9 +83,36 @@ impl ConfigLayer {
             forward_ports: Vec::new(),
             auto_ports: raw.ports.auto.map(LayerAutoPorts::from_raw),
             compose: LayerCompose::from_raw(&raw.compose),
+            container: LayerContainer::from_raw(&raw.container),
             devcontainer: None,
             credentials: LayerCredentials::from_raw(raw.credentials),
             hooks: LayerHooks::from_raw(raw.hooks),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LayerContainer {
+    pub(crate) cli: LayerContainerCli,
+}
+
+impl LayerContainer {
+    const fn from_raw(raw: &RawContainerConfig) -> Self {
+        Self {
+            cli: LayerContainerCli::from_raw(&raw.cli),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct LayerContainerCli {
+    pub(crate) enabled: Option<bool>,
+}
+
+impl LayerContainerCli {
+    const fn from_raw(raw: &RawContainerCliConfig) -> Self {
+        Self {
+            enabled: raw.enabled,
         }
     }
 }
