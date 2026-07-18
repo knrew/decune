@@ -664,7 +664,7 @@ async fn handle_connection(
     mut stream: UnixStream,
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
-    _cli_query_policy: Arc<HostDaemonCliQueryPolicy>,
+    cli_query_policy: Arc<HostDaemonCliQueryPolicy>,
 ) {
     let mut request = Vec::new();
     let read_failed = {
@@ -684,7 +684,12 @@ async fn handle_connection(
             format!("Host daemon request exceeds {MAX_HOST_DAEMON_REQUEST_BYTES} bytes"),
         )
     } else {
-        handle_host_daemon_request(&request, git_credentials.as_ref(), git_https_mode)
+        handle_host_daemon_request(
+            &request,
+            git_credentials.as_ref(),
+            git_https_mode,
+            cli_query_policy.as_ref(),
+        )
     };
     let Ok(response) = serde_json::to_vec(&response) else {
         return;
@@ -1080,6 +1085,98 @@ mod tests {
                     GitCredentialCommand::Reject,
                     "protocol=https\nhost=github.com\nusername=octo\n\n".to_owned()
                 )]
+            );
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_blocks_cli_query_when_container_cli_is_disabled() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+
+            let response = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "cliQuery",
+                    "command": "status",
+                    "format": "text"
+                }),
+            )
+            .await;
+
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": false,
+                    "error": {
+                        "code": "container_cli_disabled",
+                        "message": "Container CLI queries are disabled"
+                    }
+                })
+            );
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_allows_cli_query_to_reach_execution_seam_when_enabled() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let runtime_dir = temp.path().join("runtime");
+            let policy = HostDaemonCliQueryPolicy::enabled_for_test(
+                "012345abcdef",
+                temp.path().join("state"),
+                runtime_dir.clone(),
+            );
+            let daemon = HostDaemon::start_for_remote_user_with_git_https_mode(
+                &runtime_dir,
+                current_uid(),
+                current_gid(),
+                GitHttpsMode::HostHelper,
+                policy,
+            )
+            .await
+            .unwrap();
+
+            let response = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "cliQuery",
+                    "command": "status",
+                    "format": "text"
+                }),
+            )
+            .await;
+
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": false,
+                    "error": {
+                        "code": "not_implemented",
+                        "message": "Host daemon request is not implemented yet: cliQuery"
+                    }
+                })
             );
 
             daemon.stop().await.unwrap();
