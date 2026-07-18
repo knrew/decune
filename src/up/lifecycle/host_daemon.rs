@@ -10,9 +10,11 @@ use crate::{
     config::{resolved::ResolvedGitCredentials, types::GitHttpsMode},
     docker::user::resolve_remote_user,
     host::daemon::{
-        HostDaemon, HostDaemonStartError, ensure_host_daemon_access_for_remote_user,
-        ensure_host_daemon_available_for_remote_user,
+        HOST_DAEMON_VERSION_MISMATCH, HostDaemon, HostDaemonStartError,
+        ensure_host_daemon_access_for_remote_user, ensure_host_daemon_available_for_remote_user,
+        host_daemon_metadata_is_version_incompatible,
     },
+    host::query_context::HostDaemonCliQueryPolicy,
     ui,
     up::{exec_target::resolve_up_exec_target, start::StartedUpContainer},
 };
@@ -38,6 +40,7 @@ impl HostDaemonGuard {
         remote_user_id: u32,
         remote_group_id: u32,
         git_https_mode: GitHttpsMode,
+        cli_query_policy: HostDaemonCliQueryPolicy,
     ) -> Self {
         Self {
             _daemon: None,
@@ -46,6 +49,7 @@ impl HostDaemonGuard {
                 remote_user_id,
                 remote_group_id,
                 git_https_mode,
+                cli_query_policy,
             ))),
         }
     }
@@ -71,6 +75,10 @@ pub(in crate::up) async fn start_host_daemon_for_up(
         &started.plan.uid_gid_sync_plan,
     )
     .await?;
+    let cli_query_policy = HostDaemonCliQueryPolicy::for_workspace(
+        started.plan.config.container.cli.enabled,
+        &started.workspace,
+    )?;
 
     start_host_daemon_for_remote_user(
         runtime_dir,
@@ -78,6 +86,7 @@ pub(in crate::up) async fn start_host_daemon_for_up(
         remote_user.uid,
         remote_user.gid,
         daemon_git_https_mode(&started.plan.config.credentials.git),
+        cli_query_policy,
     )
     .await
 }
@@ -96,12 +105,14 @@ async fn start_host_daemon_for_remote_user(
     remote_user_id: u32,
     remote_group_id: u32,
     git_https_mode: GitHttpsMode,
+    cli_query_policy: HostDaemonCliQueryPolicy,
 ) -> Result<HostDaemonGuard> {
     match HostDaemon::start_for_remote_user_with_git_https_mode(
         runtime_dir,
         remote_user_id,
         remote_group_id,
         git_https_mode,
+        cli_query_policy.clone(),
     )
     .await
     {
@@ -113,6 +124,7 @@ async fn start_host_daemon_for_remote_user(
                     remote_user_id,
                     remote_group_id,
                     git_https_mode,
+                    &cli_query_policy,
                 ) {
                     Ok(true) => {
                         return Ok(HostDaemonGuard::reused(
@@ -120,9 +132,19 @@ async fn start_host_daemon_for_remote_user(
                             remote_user_id,
                             remote_group_id,
                             git_https_mode,
+                            cli_query_policy,
                         ));
                     }
-                    Ok(false) => {}
+                    Ok(false) => {
+                        if host_daemon_metadata_is_version_incompatible(runtime_dir) {
+                            return Err(anyhow::anyhow!(HOST_DAEMON_VERSION_MISMATCH))
+                                .with_context(|| {
+                                    format!(
+                                        "Failed to start host daemon for workspace: {workspace_id}"
+                                    )
+                                });
+                        }
+                    }
                     Err(access_error) => {
                         return Err(access_error).with_context(|| {
                             format!("Failed to start host daemon for workspace: {workspace_id}")
@@ -142,6 +164,7 @@ async fn monitor_reused_host_daemon(
     remote_user_id: u32,
     remote_group_id: u32,
     git_https_mode: GitHttpsMode,
+    cli_query_policy: HostDaemonCliQueryPolicy,
 ) {
     let mut _daemon = None;
     let mut warned_failure = false;
@@ -155,6 +178,7 @@ async fn monitor_reused_host_daemon(
             remote_user_id,
             remote_group_id,
             git_https_mode,
+            &cli_query_policy,
         )
         .await
         {
@@ -174,6 +198,7 @@ async fn monitor_reused_host_daemon(
             remote_user_id,
             remote_group_id,
             git_https_mode,
+            cli_query_policy.clone(),
         )
         .await
         {
@@ -187,6 +212,7 @@ async fn monitor_reused_host_daemon(
                     remote_user_id,
                     remote_group_id,
                     git_https_mode,
+                    &cli_query_policy,
                 ) {
                     Ok(true) => warned_failure = false,
                     Ok(false) => {
@@ -229,6 +255,7 @@ mod tests {
     use crate::{
         config::{resolved::ResolvedGitCredentials, types::GitHttpsMode},
         host::daemon::HostDaemon,
+        host::query_context::HostDaemonCliQueryPolicy,
     };
 
     #[test]
@@ -279,6 +306,7 @@ mod tests {
                 remote_user_id,
                 remote_group_id,
                 GitHttpsMode::HostHelper,
+                HostDaemonCliQueryPolicy::Disabled,
             )
             .await
             .unwrap();
@@ -302,10 +330,16 @@ mod tests {
         runtime.block_on(async {
             let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
             let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
-            let existing =
-                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, remote_group_id)
-                    .await
-                    .unwrap();
+            let cli_query_policy = enabled_policy(&runtime_dir, "state-a");
+            let existing = HostDaemon::start_for_remote_user_with_git_https_mode(
+                &runtime_dir,
+                remote_user_id,
+                remote_group_id,
+                GitHttpsMode::HostHelper,
+                cli_query_policy.clone(),
+            )
+            .await
+            .unwrap();
 
             let guard = start_host_daemon_for_remote_user(
                 &runtime_dir,
@@ -313,17 +347,143 @@ mod tests {
                 remote_user_id,
                 remote_group_id,
                 GitHttpsMode::HostHelper,
+                cli_query_policy,
             )
             .await
             .unwrap();
+            let existing_identity = metadata_container_cli_identity(&runtime_dir);
 
             existing.stop().await.unwrap();
 
             wait_for_socket(&runtime_dir.join("host-daemon.sock")).await;
             assert_eq!(mode(&runtime_dir), 0o711);
             assert_eq!(mode(&runtime_dir.join("host-daemon.sock")), 0o666);
+            assert_eq!(
+                metadata_container_cli_identity(&runtime_dir),
+                existing_identity
+            );
 
             drop(guard);
+        });
+    }
+
+    #[test]
+    fn host_daemon_reuse_rejects_different_container_cli_policy_with_explicit_error() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        runtime.block_on(async {
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing =
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, remote_group_id)
+                    .await
+                    .unwrap();
+
+            let error = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                remote_user_id,
+                remote_group_id,
+                GitHttpsMode::HostHelper,
+                enabled_policy(&runtime_dir, "state-a"),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(format!("{error:#}").contains(
+                "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry"
+            ));
+
+            existing.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn host_daemon_reuse_rejects_different_query_context_with_explicit_error() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        runtime.block_on(async {
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing = HostDaemon::start_for_remote_user_with_git_https_mode(
+                &runtime_dir,
+                remote_user_id,
+                remote_group_id,
+                GitHttpsMode::HostHelper,
+                enabled_policy(&runtime_dir, "state-a"),
+            )
+            .await
+            .unwrap();
+
+            let error = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                remote_user_id,
+                remote_group_id,
+                GitHttpsMode::HostHelper,
+                enabled_policy(&runtime_dir, "state-b"),
+            )
+            .await
+            .unwrap_err();
+
+            assert!(format!("{error:#}").contains(
+                "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry"
+            ));
+
+            existing.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn host_daemon_reuse_reports_version_mismatch_for_unreadable_metadata() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+
+        runtime.block_on(async {
+            let remote_user_id = if current_uid() == 20001 { 20002 } else { 20001 };
+            let remote_group_id = if current_gid() == 20001 { 20002 } else { 20001 };
+            let existing =
+                HostDaemon::start_for_remote_user(&runtime_dir, remote_user_id, remote_group_id)
+                    .await
+                    .unwrap();
+
+            // Simulates metadata written by a decune version without the container_cli field.
+            let metadata_path = runtime_dir.join("host-daemon.json");
+            let mut metadata: serde_json::Value =
+                serde_json::from_slice(&fs::read(&metadata_path).unwrap()).unwrap();
+            metadata.as_object_mut().unwrap().remove("container_cli");
+            fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+
+            let error = start_host_daemon_for_remote_user(
+                &runtime_dir,
+                "workspace-test",
+                remote_user_id,
+                remote_group_id,
+                GitHttpsMode::HostHelper,
+                HostDaemonCliQueryPolicy::Disabled,
+            )
+            .await
+            .unwrap_err();
+
+            assert!(format!("{error:#}").contains(
+                "An active decune up session uses an incompatible host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry"
+            ));
+
+            existing.stop().await.unwrap();
         });
     }
 
@@ -354,6 +514,7 @@ mod tests {
                 remote_user_id,
                 world_access_gid,
                 GitHttpsMode::HostHelper,
+                HostDaemonCliQueryPolicy::Disabled,
             )
             .await
             .unwrap();
@@ -393,6 +554,7 @@ mod tests {
                 remote_user_id,
                 group_access_gid,
                 GitHttpsMode::HostHelper,
+                HostDaemonCliQueryPolicy::Disabled,
             )
             .await
             .unwrap();
@@ -428,6 +590,7 @@ mod tests {
                 remote_user_id,
                 remote_group_id,
                 GitHttpsMode::HostHelperReadOnly,
+                HostDaemonCliQueryPolicy::Disabled,
             )
             .await
             .unwrap_err();
@@ -462,6 +625,7 @@ mod tests {
                 20001,
                 20001,
                 GitHttpsMode::HostHelper,
+                HostDaemonCliQueryPolicy::Disabled,
             )
             .await
             .unwrap_err();
@@ -497,6 +661,7 @@ mod tests {
                 20001,
                 20001,
                 GitHttpsMode::HostHelper,
+                HostDaemonCliQueryPolicy::Disabled,
             )
             .await
             .unwrap_err();
@@ -530,6 +695,19 @@ mod tests {
                 socket_path.display()
             )
         });
+    }
+
+    fn enabled_policy(runtime_dir: &Path, state_name: &str) -> HostDaemonCliQueryPolicy {
+        HostDaemonCliQueryPolicy::enabled_for_test(
+            "012345abcdef",
+            runtime_dir.join(state_name),
+            runtime_dir.to_path_buf(),
+        )
+    }
+
+    fn metadata_container_cli_identity(runtime_dir: &Path) -> serde_json::Value {
+        let metadata = fs::read(runtime_dir.join("host-daemon.json")).unwrap();
+        serde_json::from_slice::<serde_json::Value>(&metadata).unwrap()["container_cli"].clone()
     }
 
     fn current_uid() -> u32 {

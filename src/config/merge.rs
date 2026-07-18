@@ -5,15 +5,15 @@ pub(crate) use crate::config::{
 
 use crate::config::{
     layer::{
-        LayerAutoPorts, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile, LayerFeature,
-        LayerForwardPort, LayerMount, LayerPort, LayerPortAttributes, LayerPublishPort,
-        feature_merge_identity,
+        LayerAutoPorts, LayerContainer, LayerCredentials, LayerDevcontainerMetadata, LayerDotfile,
+        LayerFeature, LayerForwardPort, LayerMount, LayerPort, LayerPortAttributes,
+        LayerPublishPort, feature_merge_identity,
     },
     resolved::{
         ResolvedAutoPorts, ResolvedCompose, ResolvedComposeCloneIsolationEndpoint,
-        ResolvedComposePublishedPortMapping, ResolvedCredentials, ResolvedDevcontainer,
-        ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry, ResolvedFeature,
-        ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
+        ResolvedComposePublishedPortMapping, ResolvedContainer, ResolvedCredentials,
+        ResolvedDevcontainer, ResolvedDotfile, ResolvedDotfileDisable, ResolvedDotfileEntry,
+        ResolvedFeature, ResolvedHooks, ResolvedMount, ResolvedPort, ResolvedPorts,
     },
 };
 
@@ -127,6 +127,7 @@ struct MergeAccumulator {
     ports: Vec<MergedPort>,
     auto_ports: ResolvedAutoPorts,
     compose: ResolvedCompose,
+    container: ResolvedContainer,
     compose_published_ports_automatic_relocation_explicit: bool,
     devcontainer: ResolvedDevcontainer,
     devcontainer_init: Option<bool>,
@@ -200,6 +201,7 @@ impl MergeAccumulator {
         }
 
         self.merge_compose(&layer.compose);
+        self.merge_container(&layer.container);
 
         if let Some(devcontainer) = layer.devcontainer {
             self.merge_devcontainer(devcontainer);
@@ -207,6 +209,12 @@ impl MergeAccumulator {
 
         self.merge_credentials(&layer.credentials);
         self.hooks.append(layer.hooks);
+    }
+
+    const fn merge_container(&mut self, container: &LayerContainer) {
+        if let Some(enabled) = container.cli.enabled {
+            self.container.cli.enabled = enabled;
+        }
     }
 
     fn merge_feature(&mut self, feature: LayerFeature) {
@@ -542,6 +550,7 @@ impl MergeAccumulator {
                 auto: self.auto_ports,
             },
             compose: self.compose,
+            container: self.container,
             devcontainer: self.devcontainer,
             credentials: self.credentials,
             hooks: self.hooks,
@@ -721,6 +730,7 @@ mod tests {
         assert_eq!(config.ports.auto.on_auto_forward, OnAutoForward::Notify);
         assert!(!config.compose.published_ports.automatic_relocation);
         assert!(!config.compose.published_ports.warn_on_relocation);
+        assert!(config.container.cli.enabled);
         assert!(config.devcontainer.update_remote_user_uid);
         assert!(config.credentials.git.enabled);
         assert!(config.credentials.git.copy_user);
@@ -733,6 +743,32 @@ mod tests {
             GithubCredentialsMode::GhTokenFile
         );
         assert!(config.credentials.github.install_feature_if_missing);
+    }
+
+    #[test]
+    fn container_cli_enabled_uses_last_specified_scalar_value() {
+        for (global, project, expected) in [
+            (false, None, false),
+            (false, Some(true), true),
+            (true, Some(false), false),
+        ] {
+            let global = raw_layer(&format!(
+                "version = 1\n\n[container.cli]\nenabled = {global}\n"
+            ));
+            let project = project.map(|enabled| {
+                raw_layer(&format!(
+                    "version = 1\n\n[container.cli]\nenabled = {enabled}\n"
+                ))
+            });
+
+            let config = resolve_config(ConfigMergeInput {
+                global: Some(global),
+                project,
+                ..ConfigMergeInput::default()
+            });
+
+            assert_eq!(config.container.cli.enabled, expected);
+        }
     }
 
     #[test]

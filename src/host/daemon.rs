@@ -20,6 +20,7 @@ use crate::{
     host::{
         credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
         protocol::{HostDaemonResponse, handle_host_daemon_request},
+        query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy},
         runtime::{
             create_runtime_dir, set_private_runtime_parent, set_runtime_dir_mode,
             validate_runtime_dir_mode,
@@ -30,6 +31,8 @@ use crate::{
 const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
 const HOST_DAEMON_METADATA_NAME: &str = "host-daemon.json";
 const MAX_HOST_DAEMON_REQUEST_BYTES: usize = 64 * 1024;
+pub(crate) const HOST_DAEMON_QUERY_IDENTITY_MISMATCH: &str = "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry";
+pub(crate) const HOST_DAEMON_VERSION_MISMATCH: &str = "An active decune up session uses an incompatible host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HostDaemonAccess {
@@ -125,6 +128,7 @@ struct HostDaemonMetadata {
     allowed_peer_uid: u32,
     remote_gid: u32,
     git_https_mode: HostDaemonGitHttpsMode,
+    container_cli: HostDaemonCliQueryIdentity,
     runtime_dir_mode: u32,
     socket_mode: u32,
     socket_dev: u64,
@@ -178,6 +182,7 @@ impl HostDaemon {
             remote_group_id,
             Arc::new(SystemGitCredentialExecutor),
             GitHttpsMode::HostHelper,
+            HostDaemonCliQueryPolicy::Disabled,
         )
         .await
     }
@@ -187,6 +192,7 @@ impl HostDaemon {
         remote_user_id: u32,
         remote_group_id: u32,
         git_https_mode: GitHttpsMode,
+        cli_query_policy: HostDaemonCliQueryPolicy,
     ) -> Result<Self> {
         Self::start_with_access(
             runtime_dir,
@@ -195,6 +201,7 @@ impl HostDaemon {
             remote_group_id,
             Arc::new(SystemGitCredentialExecutor),
             git_https_mode,
+            cli_query_policy,
         )
         .await
     }
@@ -211,6 +218,7 @@ impl HostDaemon {
             current_gid(),
             git_credentials,
             GitHttpsMode::HostHelper,
+            HostDaemonCliQueryPolicy::Disabled,
         )
         .await
     }
@@ -222,6 +230,7 @@ impl HostDaemon {
         remote_group_id: u32,
         git_credentials: Arc<dyn GitCredentialExecutor>,
         git_https_mode: GitHttpsMode,
+        cli_query_policy: HostDaemonCliQueryPolicy,
     ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
         prepare_runtime_dir(&runtime_dir, access)?;
@@ -242,6 +251,7 @@ impl HostDaemon {
             allowed_peer_uid,
             remote_group_id,
             git_https_mode,
+            &cli_query_policy.identity(),
             access,
         )
         .inspect_err(|_| {
@@ -254,6 +264,7 @@ impl HostDaemon {
             allowed_peer_uid,
             git_credentials,
             git_https_mode,
+            cli_query_policy,
         ));
 
         Ok(Self {
@@ -350,6 +361,7 @@ fn write_host_daemon_metadata(
     allowed_peer_uid: u32,
     remote_group_id: u32,
     git_https_mode: GitHttpsMode,
+    cli_query_identity: &HostDaemonCliQueryIdentity,
     access: HostDaemonAccess,
 ) -> Result<()> {
     let socket_metadata = fs::symlink_metadata(socket_path).with_context(|| {
@@ -363,6 +375,7 @@ fn write_host_daemon_metadata(
         allowed_peer_uid,
         remote_gid: remote_group_id,
         git_https_mode: git_https_mode.into(),
+        container_cli: cli_query_identity.clone(),
         runtime_dir_mode: access.runtime_dir_mode,
         socket_mode: access.socket_mode,
         socket_dev: socket_metadata.dev(),
@@ -389,6 +402,7 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
     remote_user_id: u32,
     remote_group_id: u32,
     git_https_mode: GitHttpsMode,
+    cli_query_policy: &HostDaemonCliQueryPolicy,
 ) -> Result<bool> {
     let metadata_path = runtime_dir.join(HOST_DAEMON_METADATA_NAME);
     let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
@@ -413,6 +427,10 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
     {
         return Ok(false);
     }
+    let cli_query_identity = cli_query_policy.identity();
+    if !metadata.container_cli.can_reuse(&cli_query_identity) {
+        bail!(HOST_DAEMON_QUERY_IDENTITY_MISMATCH);
+    }
 
     let existing_access = metadata.access();
     let access = existing_access.expanded_for(HostDaemonAccess::for_remote_user(
@@ -435,6 +453,7 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
             remote_user_id,
             remote_group_id,
             git_https_mode,
+            &cli_query_identity,
             access,
         )?;
     }
@@ -442,17 +461,34 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
     Ok(true)
 }
 
+/// Call only after daemon startup failed because a live daemon holds the socket. A missing or
+/// unreadable metadata file is not treated as incompatible, so stale-state recovery paths that
+/// rely on a silent reuse decline keep restarting the daemon.
+pub(crate) fn host_daemon_metadata_is_version_incompatible(runtime_dir: &Path) -> bool {
+    let Ok(content) = fs::read(runtime_dir.join(HOST_DAEMON_METADATA_NAME)) else {
+        return false;
+    };
+    match serde_json::from_slice::<HostDaemonMetadata>(&content) {
+        Ok(metadata) => {
+            metadata.protocol_version != crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION
+        }
+        Err(_) => true,
+    }
+}
+
 pub(crate) async fn ensure_host_daemon_available_for_remote_user(
     runtime_dir: &Path,
     remote_user_id: u32,
     remote_group_id: u32,
     git_https_mode: GitHttpsMode,
+    cli_query_policy: &HostDaemonCliQueryPolicy,
 ) -> Result<bool> {
     if !ensure_host_daemon_access_for_remote_user(
         runtime_dir,
         remote_user_id,
         remote_group_id,
         git_https_mode,
+        cli_query_policy,
     )? {
         return Ok(false);
     }
@@ -599,7 +635,9 @@ async fn run_host_daemon(
     allowed_peer_uid: u32,
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
+    cli_query_policy: HostDaemonCliQueryPolicy,
 ) {
+    let cli_query_policy = Arc::new(cli_query_policy);
     loop {
         let Ok((stream, _)) = listener.accept().await else {
             break;
@@ -611,6 +649,7 @@ async fn run_host_daemon(
             stream,
             Arc::clone(&git_credentials),
             git_https_mode,
+            Arc::clone(&cli_query_policy),
         ));
     }
 }
@@ -625,6 +664,7 @@ async fn handle_connection(
     mut stream: UnixStream,
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
+    cli_query_policy: Arc<HostDaemonCliQueryPolicy>,
 ) {
     let mut request = Vec::new();
     let read_failed = {
@@ -644,7 +684,12 @@ async fn handle_connection(
             format!("Host daemon request exceeds {MAX_HOST_DAEMON_REQUEST_BYTES} bytes"),
         )
     } else {
-        handle_host_daemon_request(&request, git_credentials.as_ref(), git_https_mode)
+        handle_host_daemon_request(
+            &request,
+            git_credentials.as_ref(),
+            git_https_mode,
+            cli_query_policy.as_ref(),
+        )
     };
     let Ok(response) = serde_json::to_vec(&response) else {
         return;
@@ -672,10 +717,15 @@ mod tests {
     };
 
     use super::{
-        HostDaemon, HostDaemonAccess, MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket,
-        current_gid, current_uid, peer_uid_is_allowed,
+        HostDaemon, HostDaemonAccess, HostDaemonGitHttpsMode, HostDaemonMetadata,
+        MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket, current_gid, current_uid,
+        host_daemon_metadata_is_version_incompatible, peer_uid_is_allowed,
     };
-    use crate::host::credentials::{GitCredentialCommand, GitCredentialExecutor};
+    use crate::host::query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy};
+    use crate::{
+        config::types::GitHttpsMode,
+        host::credentials::{GitCredentialCommand, GitCredentialExecutor},
+    };
 
     #[derive(Debug)]
     struct StaticGitCredentialExecutor;
@@ -726,6 +776,83 @@ mod tests {
             daemon.stop().await.unwrap();
             assert!(!socket_path.exists());
         });
+    }
+
+    #[test]
+    fn daemon_metadata_keeps_only_container_cli_query_identity_digest() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path().join("workspace-runtime");
+        let state_dir = temp.path().join("SECRET-state");
+        let policy = HostDaemonCliQueryPolicy::enabled_for_test(
+            "012345abcdef",
+            state_dir.clone(),
+            runtime_dir.clone(),
+        );
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start_for_remote_user_with_git_https_mode(
+                &runtime_dir,
+                current_uid(),
+                current_gid(),
+                GitHttpsMode::HostHelper,
+                policy,
+            )
+            .await
+            .unwrap();
+
+            let metadata = fs::read_to_string(runtime_dir.join("host-daemon.json")).unwrap();
+
+            assert!(metadata.contains(r#""policy":"enabled""#));
+            assert!(metadata.contains(r#""context_fingerprint":"#));
+            assert!(!metadata.contains("012345abcdef"));
+            assert!(!metadata.contains("SECRET-state"));
+            assert!(!metadata.contains(&state_dir.display().to_string()));
+            assert!(!metadata.contains(&runtime_dir.display().to_string()));
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn metadata_version_incompatibility_detects_unreadable_or_mismatched_metadata() {
+        let temp = TempDir::new().unwrap();
+        let runtime_dir = temp.path();
+        let metadata_path = runtime_dir.join("host-daemon.json");
+
+        assert!(!host_daemon_metadata_is_version_incompatible(runtime_dir));
+
+        let metadata = HostDaemonMetadata {
+            protocol_version: crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION,
+            allowed_peer_uid: 1000,
+            remote_gid: 1000,
+            git_https_mode: HostDaemonGitHttpsMode::HostHelper,
+            container_cli: HostDaemonCliQueryIdentity::Disabled,
+            runtime_dir_mode: 0o711,
+            socket_mode: 0o666,
+            socket_dev: 0,
+            socket_ino: 0,
+        };
+        fs::write(&metadata_path, serde_json::to_vec(&metadata).unwrap()).unwrap();
+        assert!(!host_daemon_metadata_is_version_incompatible(runtime_dir));
+
+        let mut future_version: Value = serde_json::to_value(&metadata).unwrap();
+        future_version["protocol_version"] =
+            json!(crate::host::protocol::HOST_DAEMON_PROTOCOL_VERSION + 1);
+        fs::write(&metadata_path, serde_json::to_vec(&future_version).unwrap()).unwrap();
+        assert!(host_daemon_metadata_is_version_incompatible(runtime_dir));
+
+        // Simulates metadata written before the container_cli field existed.
+        let mut old_version: Value = serde_json::to_value(&metadata).unwrap();
+        old_version.as_object_mut().unwrap().remove("container_cli");
+        fs::write(&metadata_path, serde_json::to_vec(&old_version).unwrap()).unwrap();
+        assert!(host_daemon_metadata_is_version_incompatible(runtime_dir));
+
+        fs::write(&metadata_path, b"not-json").unwrap();
+        assert!(host_daemon_metadata_is_version_incompatible(runtime_dir));
     }
 
     #[test]
@@ -958,6 +1085,98 @@ mod tests {
                     GitCredentialCommand::Reject,
                     "protocol=https\nhost=github.com\nusername=octo\n\n".to_owned()
                 )]
+            );
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_blocks_cli_query_when_container_cli_is_disabled() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+
+            let response = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "cliQuery",
+                    "command": "status",
+                    "format": "text"
+                }),
+            )
+            .await;
+
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": false,
+                    "error": {
+                        "code": "container_cli_disabled",
+                        "message": "Container CLI queries are disabled"
+                    }
+                })
+            );
+
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_allows_cli_query_to_reach_execution_seam_when_enabled() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let runtime_dir = temp.path().join("runtime");
+            let policy = HostDaemonCliQueryPolicy::enabled_for_test(
+                "012345abcdef",
+                temp.path().join("state"),
+                runtime_dir.clone(),
+            );
+            let daemon = HostDaemon::start_for_remote_user_with_git_https_mode(
+                &runtime_dir,
+                current_uid(),
+                current_gid(),
+                GitHttpsMode::HostHelper,
+                policy,
+            )
+            .await
+            .unwrap();
+
+            let response = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "cliQuery",
+                    "command": "status",
+                    "format": "text"
+                }),
+            )
+            .await;
+
+            assert_eq!(
+                response,
+                json!({
+                    "version": 1,
+                    "ok": false,
+                    "error": {
+                        "code": "not_implemented",
+                        "message": "Host daemon request is not implemented yet: cliQuery"
+                    }
+                })
             );
 
             daemon.stop().await.unwrap();

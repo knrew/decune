@@ -28,6 +28,8 @@ pub(crate) struct RawDecuneConfig {
     #[serde(default)]
     pub(crate) compose: RawComposeConfig,
     #[serde(default)]
+    pub(crate) container: RawContainerConfig,
+    #[serde(default)]
     pub(crate) credentials: RawCredentialsConfig,
     #[serde(default)]
     pub(crate) hooks: RawHooksConfig,
@@ -44,10 +46,24 @@ impl RawDecuneConfig {
             mounts: Vec::new(),
             ports: RawPortsConfig::default(),
             compose: RawComposeConfig::default(),
+            container: RawContainerConfig::default(),
             credentials: RawCredentialsConfig::default(),
             hooks: RawHooksConfig::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawContainerConfig {
+    #[serde(default)]
+    pub(crate) cli: RawContainerCliConfig,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct RawContainerCliConfig {
+    pub(crate) enabled: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -982,6 +998,33 @@ subnet_poo1 = "10.200.0.0/16"
         .unwrap_err();
 
         assert!(error.to_string().contains("subnet_poo1"));
+    }
+
+    #[test]
+    fn container_cli_config_is_strictly_parsed() {
+        let config = toml::from_str::<RawDecuneConfig>(
+            r"
+version = 1
+
+[container.cli]
+enabled = false
+",
+        )
+        .unwrap();
+
+        assert_eq!(config.container.cli.enabled, Some(false));
+
+        let error = toml::from_str::<RawDecuneConfig>(
+            r"
+version = 1
+
+[container.cli]
+enable = false
+",
+        )
+        .unwrap_err();
+
+        assert!(error.to_string().contains("enable"));
     }
 
     #[derive(Debug, Deserialize)]

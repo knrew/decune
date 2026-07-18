@@ -25,9 +25,26 @@ pub(crate) struct ResolvedConfig {
     pub(crate) mounts: Vec<ResolvedMount>,
     pub(crate) ports: ResolvedPorts,
     pub(crate) compose: ResolvedCompose,
+    pub(crate) container: ResolvedContainer,
     pub(crate) devcontainer: ResolvedDevcontainer,
     pub(crate) credentials: ResolvedCredentials,
     pub(crate) hooks: ResolvedHooks,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct ResolvedContainer {
+    pub(crate) cli: ResolvedContainerCli,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ResolvedContainerCli {
+    pub(crate) enabled: bool,
+}
+
+impl Default for ResolvedContainerCli {
+    fn default() -> Self {
+        Self { enabled: true }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]

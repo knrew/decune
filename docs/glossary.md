@@ -66,6 +66,9 @@
 
 - credential forwarding: host の Git credentials、SSH agent access、GitHub CLI token access を container で利用可能にする仕組み。
 - host daemon: `decune up` の子タスクとして動き、`up` process が生きている間だけ credential forwarding と port forwarding support を担当する process。
+- container CLI query: container 内の decune CLI が host daemon 経由で status / ports などの read-only 情報を問い合わせる仕組み。
+- query context: host daemon が container CLI query の対象として起動時に固定する、検証済み workspace ID と固定 server path の集合。live config や client input からは再解決しない。
+- context fingerprint: query context から domain separation 付き SHA-256 で導出する digest。daemon reuse の同一性比較にだけ使い、raw path を含まない。
 - secret-sensitive value: `containerEnv`、`remoteEnv`、`build.args` などで `${localEnv:...}` から来たため、decune が sensitive として追跡する value。
 - security boundary: host と container の間で decune が何を expose し、何を expose しないかを定義する境界。
 
