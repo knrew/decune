@@ -41,7 +41,7 @@ Linux / macOS ホストと Docker CLI / Docker Compose v2 を対象にします�
 - Git 認証情報転送を使う場合: ホスト側の `git`
 - GitHub CLI token 転送を使う場合: ホスト側の `gh`
 
-必要な Docker Compose の機能は [docs/specification.md](docs/specification.md#ホスト要件) を参照してください。
+必要な Docker Compose の機能は [docs/specification.md](docs/specification.md#21-ホスト要件) を参照してください。
 
 ## インストール
 

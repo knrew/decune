@@ -58,7 +58,7 @@ decune --help
 - Git 認証情報転送を使う場合: ホスト側の `git`
 - GitHub CLI token 転送を使う場合: ホスト側の `gh`
 
-必要な Docker Compose の機能は [specification.md](specification.md#ホスト要件) を参照してください。
+必要な Docker Compose の機能は [specification.md](specification.md#21-ホスト要件) を参照してください。
 
 ## クイックスタート
 
@@ -226,7 +226,7 @@ decune が管理している workspace について、現在有効な host 側 p
 
 Compose published port で host IP が省略されている場合、通常出力では `LOCAL` や `REQUESTED` を `*:<port>` と表示し、explicit `0.0.0.0` と区別します。relocated published port は `STATE` に `relocated` を表示します。
 
-`--json` を付けると、通常出力の table を再構成できる JSON array を出力します。各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持ち、必要に応じて `workspace`、`workspace_id`、`requested_host_ip`、`requested_host_port` を含みます。Compose published port relocation の情報がある published entry では、`target`、`requested`、`planned`、`actual_bindings`、`port_entry_index`、`relocated` と互換用の flat field も追加されます。`requested.host_ip` / `planned.host_ip` は host IP omitted の場合 `null`、explicit host IP の場合 string です。`actual_bindings` は Docker inspect から得た現在の actual binding の配列です。field の詳細な契約は [specification.md](specification.md#ports) を参照してください。
+`--json` を付けると、通常出力の table を再構成できる JSON array を出力します。各 entry は `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持ち、必要に応じて `workspace`、`workspace_id`、`requested_host_ip`、`requested_host_port` を含みます。Compose published port relocation の情報がある published entry では、`target`、`requested`、`planned`、`actual_bindings`、`port_entry_index`、`relocated` と互換用の flat field も追加されます。`requested.host_ip` / `planned.host_ip` は host IP omitted の場合 `null`、explicit host IP の場合 string です。`actual_bindings` は Docker inspect から得た現在の actual binding の配列です。field の詳細な契約は [specification.md](specification.md#36-ports) を参照してください。
 
 現在有効な host 側 port がない場合、通常出力は単一 workspace で `No active ports for this workspace`、`--all` で `No active ports`、JSON 出力は `[]` です。
 
@@ -374,7 +374,7 @@ mode = "gh-token-file"
 install_feature_if_missing = true
 ```
 
-完全なスキーマと merge rule は [specification.md](specification.md#decune-toml-設定) を参照してください。
+完全なスキーマと merge rule は [specification.md](specification.md#5-decune-toml-設定) を参照してください。
 
 `[container.cli].enabled` の既定値は true です。通常の後勝ち設定なので、global config の `false` は project config の `true` で再有効化できます。repository から解除不能な security opt-out ではありません。project の `use_global_config = false` または `--no-global-config` を使うと、global の値自体を適用しません。この設定だけを変更しても container または Compose project の rebuild は不要です。
 
@@ -386,7 +386,7 @@ dotfiles は remote home へ直接 bind mount せず、`/opt/decune/dotfiles/<ta
 
 directory source の symlink 解決で skeleton fallback が必要な場合、decune は backing parent directory を internal path に bind mount します。backing target の `<n>` は dotfiles entry 全体で一意になり、同じ canonical parent directory と `read_only` を使う entry 間では mount を共有します。そのため、同じ parent directory の sibling file が `/opt/decune/dotfile-backings/<n>` 経由で container から見える場合があります。remote home 側には設定した dotfile entry だけが現れます。
 
-host 側で通常ファイルまたは解決済み symlink target file を atomic rename 置換した場合、起動中 container から新しい内容が見えます。source 側 symlink path 自体を regular file に置換した場合は自動反映されないため、container を recreate してください。詳細な挙動は [specification.md](specification.md#dotfiles) を参照してください。
+host 側で通常ファイルまたは解決済み symlink target file を atomic rename 置換した場合、起動中 container から新しい内容が見えます。source 側 symlink path 自体を regular file に置換した場合は自動反映されないため、container を recreate してください。詳細な挙動は [specification.md](specification.md#57-dotfiles) を参照してください。
 
 ## ポートフォワーディングと published port
 
@@ -474,7 +474,7 @@ env = "AGENT_ENDPOINT"
 value = "http://${decune.network.appnet.gateway}:9000"
 ```
 
-有効化すると、fixed TCP published port は空いている host port へ relocation され、固定名と固定 IPv4 subnet は workspace ごとの値になります。Compose project name と既定命名の network / volume は opt-in の有無にかかわらず workspace scope です。固定名 volume は clone ごとに別 volume になるため、データも clone 間で分離されます。container 間通信では元の `container_name` を DNS alias として維持し、`network_mode` / `ipc` / `pid` / `volumes_from` / `external_links` が書き換え対象の固定 container name を参照していれば、同じ workspace 固有名へ追随させます。service 名による参照と外部 container への参照は変更しません。host 側から `docker exec <元名>` のように固定名を直接使う tool は書き換え後の名前へ更新してください。詳細は [specification.md](specification.md#clone-isolation) を参照してください。
+有効化すると、fixed TCP published port は空いている host port へ relocation され、固定名と固定 IPv4 subnet は workspace ごとの値になります。Compose project name と既定命名の network / volume は opt-in の有無にかかわらず workspace scope です。固定名 volume は clone ごとに別 volume になるため、データも clone 間で分離されます。container 間通信では元の `container_name` を DNS alias として維持し、`network_mode` / `ipc` / `pid` / `volumes_from` / `external_links` が書き換え対象の固定 container name を参照していれば、同じ workspace 固有名へ追随させます。service 名による参照と外部 container への参照は変更しません。host 側から `docker exec <元名>` のように固定名を直接使う tool は書き換え後の名前へ更新してください。詳細は [specification.md](specification.md#89-clone-isolation) を参照してください。
 
 `volumes_from` または `external_links` の参照を書き換える構成では、list を安全に完全置換するため Docker Compose v2.24.4 以上が必要です。`network_mode` / `ipc` / `pid` の参照だけを書き換える構成には、この追加要件はありません。
 
@@ -484,7 +484,7 @@ value = "http://${decune.network.appnet.gateway}:9000"
 
 制限として、`external: true` の resource は共有契約を維持して書き換えません。IPv6 subnet と `ipv4_address` / `ipv6_address` / `link_local_ips` は relocation せず、該当する構成では起動前に停止します。`aux_addresses` の IPAM 値は remap しますが、その元 address を environment や他の設定から直接参照している箇所は追随しません。`extra_hosts`、command、config file 内の旧 network address も自動検出・書き換えの対象外です。
 
-起動に失敗した場合は diagnostic code を確認します。`compose_fixed_name_conflict` と `compose_network_subnet_overlap` は衝突相手を、`compose_clone_isolation_unsupported` は static address / IPv6 などの制限を、`compose_clone_isolation_endpoint_unsafe` は宣言されていない旧 endpoint 参照を示します。`compose_clone_isolation_invalid` と `compose_clone_isolation_pool_exhausted` は設定または subnet pool を見直してください。各 code の判定条件は [specification.md の Clone isolation](specification.md#clone-isolation) を参照してください。
+起動に失敗した場合は diagnostic code を確認します。`compose_fixed_name_conflict` と `compose_network_subnet_overlap` は衝突相手を、`compose_clone_isolation_unsupported` は static address / IPv6 などの制限を、`compose_clone_isolation_endpoint_unsafe` は宣言されていない旧 endpoint 参照を示します。`compose_clone_isolation_invalid` と `compose_clone_isolation_pool_exhausted` は設定または subnet pool を見直してください。各 code の判定条件は [specification.md の Clone isolation](specification.md#89-clone-isolation) を参照してください。
 
 既存 network の subnet を変更する必要があり container が接続されたままの場合は、`decune down` の後に `decune rebuild` を実行してください。別 process で複数の `decune up` を同時実行すると、preflight 後の network 作成までに同じ subnet を選ぶ場合があります。Docker 側で subnet 重複になった場合は、先に成功した起動の完了後に失敗した `decune up` を再実行してください。
 
