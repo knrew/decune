@@ -1,6 +1,5 @@
 use std::{
     fs,
-    net::TcpListener,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Child, Command, Output, Stdio},
@@ -60,6 +59,7 @@ struct IsolatedRoots {
 
 impl IsolatedRoots {
     fn new() -> Self {
+        // Keep XDG_RUNTIME_DIR short enough for the host daemon Unix socket's sun_path limit.
         let root = tempfile::Builder::new()
             .prefix("d")
             .tempdir_in("/tmp")
@@ -118,25 +118,31 @@ impl ContainerCliWorkspace {
 
     fn supported(fixture: SupportedFixture) -> Self {
         let workspace = Self::from_fixture(fixture.name());
-        let primary_port = available_localhost_port();
-        workspace.render_config(
-            fixture.name(),
-            &[("\"__PRIMARY_HOST_PORT__\"", &primary_port.to_string())],
-        );
-        if matches!(fixture, SupportedFixture::Compose) {
-            let sidecar_port = available_localhost_port();
-            let published_port = available_localhost_port();
-            workspace.render_config(
-                fixture.name(),
-                &[
-                    ("\"__PRIMARY_HOST_PORT__\"", &primary_port.to_string()),
-                    ("\"__SIDECAR_HOST_PORT__\"", &sidecar_port.to_string()),
-                ],
-            );
-            workspace.render_compose(
-                fixture.name(),
-                &[("__PUBLISHED_HOST_PORT__", &published_port.to_string())],
-            );
+        match fixture {
+            SupportedFixture::Compose => {
+                let [primary_port, sidecar_port, published_port] = available_localhost_ports();
+                let primary_port = primary_port.to_string();
+                let sidecar_port = sidecar_port.to_string();
+                let published_port = published_port.to_string();
+                workspace.render_config(
+                    fixture.name(),
+                    &[
+                        ("\"__PRIMARY_HOST_PORT__\"", primary_port.as_str()),
+                        ("\"__SIDECAR_HOST_PORT__\"", sidecar_port.as_str()),
+                    ],
+                );
+                workspace.render_compose(
+                    fixture.name(),
+                    &[("__PUBLISHED_HOST_PORT__", published_port.as_str())],
+                );
+            }
+            SupportedFixture::Image | SupportedFixture::Dockerfile => {
+                let primary_port = available_localhost_port().to_string();
+                workspace.render_config(
+                    fixture.name(),
+                    &[("\"__PRIMARY_HOST_PORT__\"", primary_port.as_str())],
+                );
+            }
         }
         workspace
     }
@@ -432,6 +438,7 @@ fn compose_integration_container_cli_supported_query_and_rejection_matrix() {
         session.wait_for_started();
 
         assert_supported_queries(&workspace, &container, fixture);
+        // Rejections are runtime-mode independent, so one fixture keeps this Docker E2E bounded.
         if matches!(fixture, SupportedFixture::Image) {
             assert_rejection_matrix(&container, fixture.remote_uid());
         }
@@ -564,7 +571,7 @@ fn compose_integration_container_cli_aggregates_forwarding_and_survives_daemon_h
     let mut owner = workspace.start_attached();
     let container = owner.wait_for_query(&workspace, "20001");
     owner.wait_for_started();
-    let first = forwarded_ports(&container, "20001");
+    let first = wait_for_forwarded_port_count(&container, "20001", 2);
     assert_eq!(first.len(), 2);
 
     let mut peer = workspace.start_attached();
@@ -883,7 +890,9 @@ fn exec_container_cli(
         .output()
         .must();
     ContainerCommandOutput {
-        code: output.status.code().must(),
+        code: output.status.code().must_msg(format_args!(
+            "container CLI terminated without an exit code: container={container}; binary={binary}; args={args:?}"
+        )),
         stdout: output.stdout,
         stderr: output.stderr,
     }
@@ -892,9 +901,4 @@ fn exec_container_cli(
 fn assert_single_trailing_newline(output: &[u8]) {
     assert!(output.ends_with(b"\n"), "output: {output:?}");
     assert!(!output.ends_with(b"\n\n"), "output: {output:?}");
-}
-
-fn available_localhost_port() -> u16 {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).must();
-    listener.local_addr().must().port()
 }

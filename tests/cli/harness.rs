@@ -1,6 +1,7 @@
 use std::{
     ffi::OsString,
     fmt::{Debug, Display, Write as _},
+    net::TcpListener,
     ops::{Deref, DerefMut},
 };
 
@@ -125,6 +126,19 @@ pub(crate) fn test_fail(message: impl Display) -> ! {
     std::process::abort();
 }
 
+pub fn available_localhost_ports<const COUNT: usize>() -> [u16; COUNT] {
+    let listeners: [TcpListener; COUNT] =
+        std::array::from_fn(|_| TcpListener::bind(("127.0.0.1", 0)).must());
+    listeners
+        .each_ref()
+        .map(|listener| listener.local_addr().must().port())
+}
+
+pub fn available_localhost_port() -> u16 {
+    let [port] = available_localhost_ports();
+    port
+}
+
 pub(crate) fn decune() -> TestCommand {
     let gh_config = support::TempWorkspace::new().must();
     let mut command = Command::cargo_bin("decune").must();
@@ -143,6 +157,14 @@ pub(crate) fn decune() -> TestCommand {
         .env_remove("GH_ENTERPRISE_TOKEN")
         .env_remove("GITHUB_ENTERPRISE_TOKEN");
     TestCommand { command, gh_config }
+}
+
+#[test]
+fn available_localhost_ports_are_distinct() {
+    let [first, second, third] = available_localhost_ports();
+    assert_ne!(first, second);
+    assert_ne!(first, third);
+    assert_ne!(second, third);
 }
 
 pub fn write_multiple_dotfile_skeleton_sources(workspace: &support::TempWorkspace) {
