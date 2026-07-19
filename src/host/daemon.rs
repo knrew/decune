@@ -13,7 +13,7 @@ use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{UnixListener, UnixStream},
     sync::{OwnedSemaphorePermit, Semaphore},
-    task::JoinHandle,
+    task::{JoinHandle, JoinSet},
 };
 
 use crate::{
@@ -650,7 +650,11 @@ async fn run_host_daemon(
     };
     let cli_query_policy = Arc::new(cli_query_policy);
     let active_connections = Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS));
+    // Keep accepted connections owned by the accept loop so cancelling the daemon
+    // also cancels every in-flight connection.
+    let mut connection_tasks = JoinSet::new();
     loop {
+        while connection_tasks.try_join_next().is_some() {}
         let Ok(connection_permit) = Arc::clone(&active_connections).acquire_owned().await else {
             break;
         };
@@ -660,14 +664,14 @@ async fn run_host_daemon(
         if !peer_uid_is_allowed(&stream, allowed_peer_uid) {
             continue;
         }
-        tokio::spawn(handle_connection(
+        drop(connection_tasks.spawn(handle_connection(
             stream,
             Arc::clone(&git_credentials),
             git_https_mode,
             Arc::clone(&cli_query_policy),
             cli_query_service.clone(),
             connection_permit,
-        ));
+        )));
     }
 }
 
@@ -690,10 +694,10 @@ async fn handle_connection(
     };
 
     let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES {
-        HostDaemonResponse::error(
+        serialize_host_daemon_response(&HostDaemonResponse::error(
             ERROR_CODE_REQUEST_TOO_LARGE,
             format!("Host daemon request exceeds {MAX_HOST_DAEMON_REQUEST_BYTES} bytes"),
-        )
+        ))
     } else {
         match handle_host_daemon_request(
             &request,
@@ -701,21 +705,27 @@ async fn handle_connection(
             git_https_mode,
             cli_query_policy.as_ref(),
         ) {
-            HostDaemonRequestDispatch::Respond(response) => response,
+            HostDaemonRequestDispatch::Respond(response) => {
+                serialize_host_daemon_response(&response)
+            }
             HostDaemonRequestDispatch::CliQuery(query) => match cli_query_service {
                 Some(service) => service.execute(query).await,
-                None => HostDaemonResponse::error(
+                None => serialize_host_daemon_response(&HostDaemonResponse::error(
                     ERROR_CODE_CLI_QUERY_FAILED,
                     "Container CLI query failed",
-                ),
+                )),
             },
         }
     };
-    let Ok(response) = serde_json::to_vec(&response) else {
+    let Ok(response) = response else {
         return;
     };
 
     _ = write_host_daemon_response(&mut stream, &response).await;
+}
+
+fn serialize_host_daemon_response(response: &HostDaemonResponse) -> Result<Vec<u8>> {
+    serde_json::to_vec(response).context("Failed to serialize host daemon response")
 }
 
 async fn read_host_daemon_request<R>(stream: &mut R) -> io::Result<Vec<u8>>
@@ -1357,6 +1367,68 @@ mod tests {
 
             assert!(response.is_empty());
             daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_stop_aborts_active_connection_tasks() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+            let mut stream = UnixStream::connect(daemon.socket_path()).await.unwrap();
+            stream.write_all(b"{").await.unwrap();
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            daemon.stop().await.unwrap();
+
+            let mut response = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                stream.read_to_end(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(response.is_empty());
+        });
+    }
+
+    #[test]
+    fn daemon_drop_aborts_active_connection_tasks() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+            let mut stream = UnixStream::connect(daemon.socket_path()).await.unwrap();
+            stream.write_all(b"{").await.unwrap();
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            drop(daemon);
+
+            let mut response = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                stream.read_to_end(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(response.is_empty());
         });
     }
 
