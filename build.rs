@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     env,
     fmt::Write as _,
     fs,
@@ -13,7 +13,7 @@ use sha2::{Digest, Sha256};
 
 const REQUIRED_PROTOCOL_VERSION: u32 = 1;
 const REQUIRED_SCHEMA_VERSION: u32 = 1;
-const TOOLS: [&str; 2] = ["git-credential-decune", "decune-forward-agent"];
+const TOOLS: [&str; 3] = ["git-credential-decune", "decune-forward-agent", "decune"];
 const PLATFORMS: [&str; 2] = ["linux-amd64", "linux-arm64"];
 
 fn main() -> Result<()> {
@@ -294,34 +294,11 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
             bundle_dir.display()
         )
     })?;
-    let manifest_path = bundle_dir.join("manifest.json");
-    let manifest_bytes = fs::read(&manifest_path).with_context(|| {
-        format!(
-            "Failed to read container tools manifest: {}",
-            manifest_path.display()
-        )
-    })?;
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes).with_context(|| {
-        format!(
-            "Failed to parse container tools manifest: {}",
-            manifest_path.display()
-        )
-    })?;
-    if manifest.schema_version != REQUIRED_SCHEMA_VERSION {
-        bail!(
-            "Unsupported container tools manifest schemaVersion: {}",
-            manifest.schema_version
-        );
-    }
-    if manifest.protocol_version != REQUIRED_PROTOCOL_VERSION {
-        bail!(
-            "Unsupported container tools protocolVersion: {}",
-            manifest.protocol_version
-        );
-    }
+    let manifest = read_manifest(&bundle_dir)?;
 
     let expected = expected_container_tool_set();
     let mut seen = BTreeSet::new();
+    let mut manifest_sums = BTreeMap::new();
     let mut entries = Vec::new();
     for entry in manifest.tools {
         let key = (entry.name.clone(), entry.platform.clone());
@@ -341,6 +318,15 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
         }
         validate_manifest_path(&entry.path)?;
         validate_sha256_string(&entry.sha256)?;
+        if manifest_sums
+            .insert(entry.path.clone(), entry.sha256.clone())
+            .is_some()
+        {
+            bail!(
+                "Duplicate container tool artifact path in manifest: {}",
+                entry.path.display()
+            );
+        }
         let absolute_path = bundle_dir.join(&entry.path);
         if !absolute_path.is_file() {
             bail!(
@@ -374,6 +360,7 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
         let missing = expected.difference(&seen).cloned().collect::<Vec<_>>();
         bail!("Missing required container tool artifacts: {missing:?}");
     }
+    check_sha256sums(&bundle_dir, &manifest_sums)?;
 
     entries.sort_by(|left, right| {
         left.platform
@@ -381,6 +368,35 @@ fn validate_bundle(bundle_dir: &Path) -> Result<Vec<ValidatedEntry>> {
             .then_with(|| left.name.cmp(&right.name))
     });
     Ok(entries)
+}
+
+fn read_manifest(bundle_dir: &Path) -> Result<Manifest> {
+    let manifest_path = bundle_dir.join("manifest.json");
+    let manifest_bytes = fs::read(&manifest_path).with_context(|| {
+        format!(
+            "Failed to read container tools manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: Manifest = serde_json::from_slice(&manifest_bytes).with_context(|| {
+        format!(
+            "Failed to parse container tools manifest: {}",
+            manifest_path.display()
+        )
+    })?;
+    if manifest.schema_version != REQUIRED_SCHEMA_VERSION {
+        bail!(
+            "Unsupported container tools manifest schemaVersion: {}",
+            manifest.schema_version
+        );
+    }
+    if manifest.protocol_version != REQUIRED_PROTOCOL_VERSION {
+        bail!(
+            "Unsupported container tools protocolVersion: {}",
+            manifest.protocol_version
+        );
+    }
+    Ok(manifest)
 }
 
 fn expected_container_tool_set() -> BTreeSet<(String, String)> {
@@ -412,6 +428,34 @@ fn validate_manifest_path(path: &Path) -> Result<()> {
                 path.display()
             ),
         }
+    }
+    Ok(())
+}
+
+fn check_sha256sums(dir: &Path, manifest_sums: &BTreeMap<PathBuf, String>) -> Result<()> {
+    let sums_path = dir.join("SHA256SUMS");
+    let sums = fs::read_to_string(&sums_path)
+        .with_context(|| format!("Failed to read {}", sums_path.display()))?;
+    let mut parsed = BTreeMap::new();
+    for (index, line) in sums.lines().enumerate() {
+        if line.is_empty() {
+            bail!("Invalid SHA256SUMS line {}: empty line", index + 1);
+        }
+        let Some((sha256, path)) = line.split_once("  ") else {
+            bail!(
+                "Invalid SHA256SUMS line {}: expected '<sha256><two spaces><path>'",
+                index + 1
+            );
+        };
+        validate_sha256_string(sha256)?;
+        let path = PathBuf::from(path);
+        validate_manifest_path(&path)?;
+        if parsed.insert(path.clone(), sha256.to_owned()).is_some() {
+            bail!("Duplicate path in SHA256SUMS: {}", path.display());
+        }
+    }
+    if &parsed != manifest_sums {
+        bail!("SHA256SUMS does not match container tools manifest");
     }
     Ok(())
 }

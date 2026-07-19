@@ -19,12 +19,18 @@ use crate::{
 
 const SCHEMA_VERSION: u32 = 1;
 const PROTOCOL_VERSION: u32 = 1;
-const TOOLS: [ContainerTool; 2] = [
+const TOOLS: [ContainerTool; 3] = [
     ContainerTool {
-        name: "git-credential-decune",
+        cargo_bin: "git-credential-decune",
+        artifact_name: "git-credential-decune",
     },
     ContainerTool {
-        name: "decune-forward-agent",
+        cargo_bin: "decune-forward-agent",
+        artifact_name: "decune-forward-agent",
+    },
+    ContainerTool {
+        cargo_bin: "decune-container-cli",
+        artifact_name: "decune",
     },
 ];
 const PLATFORMS: [ContainerToolPlatform; 2] = [
@@ -81,10 +87,7 @@ pub(crate) fn build_container_tools(
             )
         })?;
         for tool in TOOLS {
-            let source = target_dir(workspace)
-                .join(platform.rust_target)
-                .join("dist")
-                .join(tool.name);
+            let source = container_tool_build_artifact(workspace, platform, tool);
             if !source.is_file() {
                 bail!(
                     "Missing container tool build artifact: {}. Ensure Rust target {} is installed.",
@@ -92,7 +95,7 @@ pub(crate) fn build_container_tools(
                     platform.rust_target
                 );
             }
-            let relative_path = PathBuf::from(platform.id).join(tool.name);
+            let relative_path = container_tool_bundle_path(platform, tool);
             let target = temp.path().join(&relative_path);
             fs::copy(&source, &target).with_context(|| {
                 format!(
@@ -109,7 +112,7 @@ pub(crate) fn build_container_tools(
             })?;
             let sha256 = sha256_file(&target)?;
             entries.push(ManifestEntry {
-                name: tool.name.to_owned(),
+                name: tool.artifact_name.to_owned(),
                 platform: platform.id.to_owned(),
                 path: relative_path.to_string_lossy().into_owned(),
                 sha256,
@@ -125,6 +128,21 @@ pub(crate) fn build_container_tools(
     write_manifest_and_sums(temp.path(), entries)?;
     replace_dir(temp, &out)?;
     Ok(())
+}
+
+fn container_tool_build_artifact(
+    workspace: &Path,
+    platform: ContainerToolPlatform,
+    tool: ContainerTool,
+) -> PathBuf {
+    target_dir(workspace)
+        .join(platform.rust_target)
+        .join("dist")
+        .join(tool.cargo_bin)
+}
+
+fn container_tool_bundle_path(platform: ContainerToolPlatform, tool: ContainerTool) -> PathBuf {
+    PathBuf::from(platform.id).join(tool.artifact_name)
 }
 
 fn build_platform(
@@ -413,7 +431,7 @@ fn expected_container_tool_set() -> BTreeSet<(String, String)> {
         .flat_map(|platform| {
             TOOLS
                 .iter()
-                .map(move |tool| (tool.name.to_owned(), platform.id.to_owned()))
+                .map(move |tool| (tool.artifact_name.to_owned(), platform.id.to_owned()))
         })
         .collect()
 }
@@ -447,7 +465,8 @@ fn check_sha256sums(dir: &Path, manifest_sums: &BTreeMap<String, String>) -> Res
 
 #[derive(Debug, Clone, Copy)]
 struct ContainerTool {
-    name: &'static str,
+    cargo_bin: &'static str,
+    artifact_name: &'static str,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -485,6 +504,27 @@ mod tests {
         assert_eq!(PLATFORMS[0].rust_target, "x86_64-unknown-linux-musl");
         assert_eq!(PLATFORMS[1].id, "linux-arm64");
         assert_eq!(PLATFORMS[1].rust_target, "aarch64-unknown-linux-musl");
+    }
+
+    #[test]
+    fn required_tool_mapping_uses_distinct_container_cli_names() {
+        assert_eq!(TOOLS.len() * PLATFORMS.len(), 6);
+        assert_eq!(TOOLS[0].cargo_bin, "git-credential-decune");
+        assert_eq!(TOOLS[0].artifact_name, "git-credential-decune");
+        assert_eq!(TOOLS[1].cargo_bin, "decune-forward-agent");
+        assert_eq!(TOOLS[1].artifact_name, "decune-forward-agent");
+        assert_eq!(TOOLS[2].cargo_bin, "decune-container-cli");
+        assert_eq!(TOOLS[2].artifact_name, "decune");
+
+        let workspace = Path::new("/workspace/decune");
+        assert_eq!(
+            container_tool_build_artifact(workspace, PLATFORMS[0], TOOLS[2]),
+            workspace.join("target/x86_64-unknown-linux-musl/dist/decune-container-cli")
+        );
+        assert_eq!(
+            container_tool_bundle_path(PLATFORMS[0], TOOLS[2]),
+            Path::new("linux-amd64/decune")
+        );
     }
 
     #[test]
@@ -607,6 +647,23 @@ mod tests {
     }
 
     #[test]
+    fn check_container_tools_rejects_duplicate_artifact_path() {
+        let temp = TempDir::new().unwrap();
+        let mut entries = create_container_tool_files(temp.path());
+        let duplicate_path = entries[0].path.clone();
+        entries[1].path = duplicate_path;
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Duplicate container tool artifact path in manifest")
+        );
+    }
+
+    #[test]
     fn check_container_tools_rejects_missing_required_entry() {
         let temp = TempDir::new().unwrap();
         let mut entries = create_container_tool_files(temp.path());
@@ -635,6 +692,43 @@ mod tests {
             error
                 .to_string()
                 .contains("Invalid sha256 value in container tools manifest")
+        );
+    }
+
+    #[test]
+    fn check_container_tools_rejects_checksum_mismatch() {
+        let temp = TempDir::new().unwrap();
+        let entries = create_container_tool_files(temp.path());
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+        fs::write(
+            temp.path().join("linux-amd64/git-credential-decune"),
+            "tampered",
+        )
+        .unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Container tool artifact checksum mismatch")
+        );
+    }
+
+    #[test]
+    fn check_container_tools_rejects_non_executable_artifact() {
+        let temp = TempDir::new().unwrap();
+        let entries = create_container_tool_files(temp.path());
+        write_manifest_and_sums(temp.path(), entries).unwrap();
+        let artifact = temp.path().join("linux-amd64/git-credential-decune");
+        fs::set_permissions(&artifact, fs::Permissions::from_mode(0o644)).unwrap();
+
+        let error = check_container_tools(temp.path()).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("Container tool artifact is not executable")
         );
     }
 
@@ -683,16 +777,16 @@ mod tests {
         for platform in PLATFORMS {
             fs::create_dir_all(dir.join(platform.id)).unwrap();
             for tool in TOOLS {
-                let relative_path = PathBuf::from(platform.id).join(tool.name);
+                let relative_path = container_tool_bundle_path(platform, tool);
                 let path = dir.join(&relative_path);
                 fs::write(
                     &path,
-                    format!("{} for {}", tool.name, platform.id).as_bytes(),
+                    format!("{} for {}", tool.artifact_name, platform.id).as_bytes(),
                 )
                 .unwrap();
                 fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
                 entries.push(ManifestEntry {
-                    name: tool.name.to_owned(),
+                    name: tool.artifact_name.to_owned(),
                     platform: platform.id.to_owned(),
                     path: relative_path.to_string_lossy().into_owned(),
                     sha256: sha256_file(&path).unwrap(),
