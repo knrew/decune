@@ -1,7 +1,4 @@
-use std::{
-    collections::BTreeMap,
-    path::{Path, PathBuf},
-};
+use std::{collections::BTreeMap, path::Path};
 
 use anyhow::Result;
 
@@ -75,31 +72,18 @@ fi
 finish unchanged
 "#;
 
-#[derive(Debug)]
-pub(crate) struct ContainerCliRuntime {
-    _artifact: Option<PathBuf>,
-}
-
-pub(crate) fn prepare_container_cli_runtime(
+pub(crate) fn prepare_container_cli_artifact(
     enabled: bool,
     platform: ContainerToolPlatform,
     runtime_dir: &Path,
-) -> Result<ContainerCliRuntime> {
+) -> Result<()> {
     prepare_private_runtime_dir(runtime_dir, "container CLI")?;
-    let artifact = if enabled {
-        Some(stage_container_tool(
-            ContainerTool::Decune,
-            platform,
-            runtime_dir,
-        )?)
+    if enabled {
+        stage_container_tool(ContainerTool::Decune, platform, runtime_dir)?;
     } else {
         remove_container_tool(ContainerTool::Decune, runtime_dir)?;
-        None
-    };
-
-    Ok(ContainerCliRuntime {
-        _artifact: artifact,
-    })
+    }
+    Ok(())
 }
 
 pub(crate) async fn reconcile_container_cli_symlink(
@@ -195,7 +179,7 @@ mod tests {
 
     use super::{
         CONTAINER_CLI_TARGET, RECONCILE_CONTAINER_CLI_SYMLINK_SCRIPT,
-        container_cli_symlink_warning, prepare_container_cli_runtime,
+        container_cli_symlink_warning, prepare_container_cli_artifact,
         reconcile_container_cli_symlink_warning,
     };
     use crate::{
@@ -210,23 +194,32 @@ mod tests {
     fn container_cli_artifact_is_staged_persistently_and_removed_when_disabled() {
         let temp = TempDir::new().unwrap();
         let runtime_dir = temp.path().join("runtime");
-        {
-            let _runtime = prepare_container_cli_runtime(
-                true,
-                ContainerToolPlatform::LinuxAmd64,
-                &runtime_dir,
-            )
+        prepare_container_cli_artifact(true, ContainerToolPlatform::LinuxAmd64, &runtime_dir)
             .unwrap();
-            let metadata = fs::metadata(runtime_dir.join("decune")).unwrap();
-            assert!(metadata.len() > 0);
-            assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
-        }
+        let metadata = fs::metadata(runtime_dir.join("decune")).unwrap();
+        assert!(metadata.len() > 0);
+        assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
         assert!(runtime_dir.join("decune").is_file());
 
-        prepare_container_cli_runtime(false, ContainerToolPlatform::LinuxAmd64, &runtime_dir)
+        prepare_container_cli_artifact(false, ContainerToolPlatform::LinuxAmd64, &runtime_dir)
             .unwrap();
 
         assert!(runtime_dir.join("decune").symlink_metadata().is_err());
+    }
+
+    #[test]
+    fn enabled_reconciliation_accepts_exact_target_symlink_when_target_is_missing() {
+        let temp = TempDir::new().unwrap();
+        let parent = temp.path().join("usr/local/bin");
+        let destination = parent.join("decune");
+        let target = temp.path().join("run/decune/decune");
+        fs::create_dir_all(&parent).unwrap();
+        symlink(&target, &destination).unwrap();
+
+        let status = run_reconciliation_script(true, &destination, &target, &parent);
+
+        assert_eq!(status, "ready");
+        assert_eq!(fs::read_link(destination).unwrap(), target);
     }
 
     #[test]

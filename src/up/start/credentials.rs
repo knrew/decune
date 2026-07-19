@@ -1,7 +1,6 @@
 use super::*;
 
 pub(in crate::up) struct CredentialRuntime {
-    _container_cli: ContainerCliRuntime,
     _git_credentials: GitCredentialRuntime,
     _github_cli: GithubCliRuntime,
     _ssh_agent: SshAgentRuntime,
@@ -11,7 +10,6 @@ pub(in crate::up) struct CredentialRuntime {
 }
 
 struct PreparedCredentialRuntimes {
-    container_cli: ContainerCliRuntime,
     github_cli: GithubCliRuntime,
     ssh_agent: SshAgentRuntime,
     forward: ForwardRuntime,
@@ -20,7 +18,6 @@ struct PreparedCredentialRuntimes {
 
 impl CredentialRuntime {
     fn new(
-        container_cli: ContainerCliRuntime,
         git_credentials: GitCredentialRuntime,
         github_cli: GithubCliRuntime,
         ssh_agent: SshAgentRuntime,
@@ -42,7 +39,6 @@ impl CredentialRuntime {
             .collect();
 
         Self {
-            _container_cli: container_cli,
             _git_credentials: git_credentials,
             _github_cli: github_cli,
             _ssh_agent: ssh_agent,
@@ -75,8 +71,7 @@ pub(super) fn add_credential_runtime_mounts(
     runtime_dir: &Path,
     platform: ContainerToolPlatform,
 ) -> Result<(UpPlan, CredentialRuntime)> {
-    let container_cli =
-        prepare_container_cli_runtime(plan.config.container.cli.enabled, platform, runtime_dir)?;
+    prepare_container_cli_artifact(plan.config.container.cli.enabled, platform, runtime_dir)?;
     let ssh_agent = prepare_ssh_agent_runtime(&plan.config)?;
     let github_cli = prepare_github_cli_runtime(&plan.config, runtime_dir)?;
     let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir, platform)?;
@@ -90,7 +85,6 @@ pub(super) fn add_credential_runtime_mounts(
         plan,
         runtime_dir,
         PreparedCredentialRuntimes {
-            container_cli,
             github_cli,
             ssh_agent,
             forward,
@@ -107,8 +101,7 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_ssh_socket(
     ssh_auth_sock: Option<&Path>,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let platform = ContainerToolPlatform::LinuxAmd64;
-    let container_cli =
-        prepare_container_cli_runtime(plan.config.container.cli.enabled, platform, runtime_dir)?;
+    prepare_container_cli_artifact(plan.config.container.cli.enabled, platform, runtime_dir)?;
     let ssh_agent = crate::host::credentials::prepare_ssh_agent_runtime_with_socket(
         &plan.config,
         ssh_auth_sock,
@@ -129,7 +122,6 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_ssh_socket(
         plan,
         runtime_dir,
         PreparedCredentialRuntimes {
-            container_cli,
             github_cli,
             ssh_agent,
             forward,
@@ -147,8 +139,7 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_inputs(
     github_token: Option<&str>,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let platform = ContainerToolPlatform::LinuxAmd64;
-    let container_cli =
-        prepare_container_cli_runtime(plan.config.container.cli.enabled, platform, runtime_dir)?;
+    prepare_container_cli_artifact(plan.config.container.cli.enabled, platform, runtime_dir)?;
     let ssh_agent = crate::host::credentials::prepare_ssh_agent_runtime_with_socket(
         &plan.config,
         ssh_auth_sock,
@@ -169,7 +160,6 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_inputs(
         plan,
         runtime_dir,
         PreparedCredentialRuntimes {
-            container_cli,
             github_cli,
             ssh_agent,
             forward,
@@ -186,7 +176,6 @@ fn add_prepared_credential_runtime_mounts(
     platform: ContainerToolPlatform,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let PreparedCredentialRuntimes {
-        container_cli,
         github_cli,
         ssh_agent,
         forward,
@@ -210,7 +199,6 @@ fn add_prepared_credential_runtime_mounts(
     Ok((
         plan,
         CredentialRuntime::new(
-            container_cli,
             git_credentials,
             github_cli,
             ssh_agent,

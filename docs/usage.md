@@ -360,7 +360,7 @@ install_feature_if_missing = true
 
 有効な場合、`decune up` は primary container に container-side CLI を `/run/decune/decune` として配置し、最初の lifecycle command より前に `/usr/local/bin/decune` symlink を準備します。container 内の `decune status` と `decune ports` は active attached `decune up` session がある間だけ利用できます。`decune up --detach` の終了後や attached session 終了後は artifact が残っていても query は利用できません。
 
-`/usr/local/bin/decune` に既存 file、directory、別 target または broken symlink がある場合や、root filesystem が read-only の場合、decune は既存 destination を変更せず warning を表示して `up` を継続します。その場合は `/run/decune/decune` を直接実行してください。無効な場合、次の `up` で stale artifact と `/run/decune/decune` を指す exact managed symlink を削除し、同名の既存 file、directory、その他の symlink は変更しません。
+`/usr/local/bin/decune` に既存 file、directory、または `/run/decune/decune` 以外を指す symlink（broken symlink を含む）がある場合や、root filesystem が read-only の場合、decune は既存 destination を変更せず warning を表示して `up` を継続します。その場合は `/run/decune/decune` を直接実行してください。exact target の判定は symlink の link 文字列で行うため、link 先が存在しない exact target symlink も変更しません。無効な場合、次の `up` で stale artifact と `/run/decune/decune` を指す exact managed symlink を削除し、同名の既存 file、directory、その他の symlink は変更しません。ただし symlink の検査と削除は atomic ではないため、container 内で destination が同時に差し替えられる場合、この削除保護は best-effort です。
 
 dotfiles は remote home へ直接 bind mount せず、`/opt/decune/dotfiles/<target>` から symlink します。`/opt/decune` と `/run/decune` 配下は decune の internal path なので、`[[mounts]].target` には使えません。
 

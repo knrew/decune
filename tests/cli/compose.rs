@@ -1875,10 +1875,17 @@ fn compose_service_user_is_used_for_lifecycle_when_devcontainer_users_are_unset(
         "cli/compose/compose-service-user-is-used-for-lifecycle-when-devcontainer-users-are-unset.sh",
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime_root = host_tools.path().join("runtime");
+    let host_daemon_socket = runtime_root
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("host-daemon.sock");
 
     decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("DECUNE_EXPECT_HOST_DAEMON_SOCKET", &host_daemon_socket)
+        .env("XDG_RUNTIME_DIR", &runtime_root)
         .args(["up", "--detach"])
         .arg(&workspace_root)
         .assert()
@@ -1890,6 +1897,7 @@ fn compose_service_user_is_used_for_lifecycle_when_devcontainer_users_are_unset(
 
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(commands.contains("exec --user appuser"));
+    assert_container_cli_setup_precedes_lifecycle(&commands, "exec --user appuser");
 }
 
 #[test]
@@ -1938,10 +1946,17 @@ fn compose_exec_lifecycle_shell_attach_returns_shell_exit_and_defaults_to_stop_c
         "cli/compose/compose-exec-lifecycle-shell-attach-returns-shell-exit-and-defaults-to-stop-compose-shutdown.sh",
     );
     let workspace_root = workspace.path().canonicalize().unwrap();
+    let runtime_root = host_tools.path().join("runtime");
+    let host_daemon_socket = runtime_root
+        .join("decune")
+        .join(workspace_id(&workspace_root))
+        .join("host-daemon.sock");
 
     decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("DECUNE_EXPECT_HOST_DAEMON_SOCKET", &host_daemon_socket)
+        .env("XDG_RUNTIME_DIR", &runtime_root)
         .arg("up")
         .arg(&workspace_root)
         .assert()
@@ -1963,10 +1978,28 @@ fn compose_exec_lifecycle_shell_attach_returns_shell_exit_and_defaults_to_stop_c
     assert!(commands.contains(
         "exec --interactive --user root --workdir /workspace compose-app-id /usr/local/bin/decune-shell"
     ));
+    assert_container_cli_setup_precedes_lifecycle(
+        &commands,
+        "exec --user root --workdir /workspace compose-app-id /bin/sh -lc printf post-start",
+    );
     assert!(
         commands
             .lines()
             .any(|command| command.starts_with("compose ") && command.ends_with(" stop"))
+    );
+}
+
+fn assert_container_cli_setup_precedes_lifecycle(commands: &str, lifecycle_command: &str) {
+    let symlink = commands
+        .find("decune-container-cli-symlink enabled")
+        .expect("container CLI symlink reconciliation command was not recorded");
+    let lifecycle = commands
+        .find(lifecycle_command)
+        .expect("user lifecycle command was not recorded");
+
+    assert!(
+        symlink < lifecycle,
+        "container CLI symlink reconciliation must precede the first user lifecycle command"
     );
 }
 
