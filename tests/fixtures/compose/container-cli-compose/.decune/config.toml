@@ -1,0 +1,26 @@
+shell   = "/bin/sh"
+version = 1
+
+[[ports]]
+container = 4321
+host      = "__PRIMARY_HOST_PORT__"
+label     = "primary"
+service   = "app"
+
+[[ports]]
+container = 5432
+host      = "__SIDECAR_HOST_PORT__"
+label     = "worker"
+service   = "worker"
+
+[ports.auto]
+enabled = false
+
+[container.cli]
+enabled = true
+
+[credentials.git]
+enabled = false
+
+[credentials.github]
+enabled = false

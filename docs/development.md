@@ -99,6 +99,8 @@ cargo run --locked -p xtask -- compose-integration
 
 `compose_integration` の Docker-backed test は `#[ignore]` として定義します。通常の unit test では実行されず、`compose-integration` が Docker/Compose availability を確認したうえで ignored integration test を one test thread で実行します。
 
+この経路は通常の Compose scenario に加え、実 bundle の container-side 3 tools × 2 platforms を build/check し、container CLI の image-based / Dockerfile-based / Docker Compose-based E2E を実行します。container CLI E2E は attached `up` process と別の `docker exec` process を使い、query、UID/sidecar topology、lifecycle、forwarding handoff、sanitized disclosure boundary を real Docker resource で確認します。
+
 ## リリース成果物
 
 配布アーカイブを手元で作成します。正式リリースでは、tag push 後に GitHub Actions の `Release` workflow が同じ `xtask` を使って成果物を作成します。tag 作成から公開後確認までの手順は [release.md](release.md) を参照してください。

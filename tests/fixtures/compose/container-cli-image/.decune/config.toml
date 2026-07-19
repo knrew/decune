@@ -1,0 +1,19 @@
+shell   = "/bin/sh"
+version = 1
+
+[[ports]]
+container = 4321
+host      = "__PRIMARY_HOST_PORT__"
+label     = "primary"
+
+[ports.auto]
+enabled = false
+
+[container.cli]
+enabled = true
+
+[credentials.git]
+enabled = false
+
+[credentials.github]
+enabled = false

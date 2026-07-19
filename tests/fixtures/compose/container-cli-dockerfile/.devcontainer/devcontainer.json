@@ -1,0 +1,10 @@
+{
+  "name": "container-cli-dockerfile",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "none",
+  "updateRemoteUserUID": false
+}

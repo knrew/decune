@@ -301,7 +301,7 @@ fn up_attached_forwards_manual_port_to_container_localhost() {
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let stderr_path = workspace_root.join(".decune-up-stderr");
-    let host_port = available_host_port();
+    let host_port = available_localhost_port();
     cleanup_workspace_containers(&workspace_root).must();
     cleanup_workspace_images(&workspace_root).must();
 
@@ -412,7 +412,7 @@ fn up_attached_forwards_manual_port_when_image_default_user_is_non_root() {
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let stderr_path = workspace_root.join(".decune-up-stderr");
-    let host_port = available_host_port();
+    let host_port = available_localhost_port();
     cleanup_workspace_containers(&workspace_root).must();
     cleanup_workspace_images(&workspace_root).must();
 
@@ -568,7 +568,7 @@ fn up_attached_auto_forwards_new_container_listen_port() {
 #[test]
 fn up_detach_publishes_app_port_to_requested_host_port() {
     let workspace = support::TempWorkspace::new().unwrap();
-    let host_port = available_host_port();
+    let host_port = available_localhost_port();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
         .write_file(
@@ -671,7 +671,7 @@ fn up_detach_publishes_app_port_to_requested_host_port() {
 #[test]
 fn up_detach_warns_when_app_port_has_no_host_ip() {
     let workspace = support::TempWorkspace::new().unwrap();
-    let host_port = available_host_port();
+    let host_port = available_localhost_port();
     workspace.create_dir(".devcontainer").unwrap();
     workspace
         .write_file(
@@ -719,11 +719,6 @@ fn up_detach_warns_when_app_port_has_no_host_ip() {
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
     }
-}
-
-fn available_host_port() -> u16 {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).must();
-    listener.local_addr().must().port()
 }
 
 fn spawn_attached_manual_port_forward(

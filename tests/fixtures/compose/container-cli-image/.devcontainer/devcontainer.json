@@ -1,0 +1,8 @@
+{
+  "name": "container-cli-image",
+  "image": "alpine:3.20",
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind",
+  "workspaceFolder": "/workspace",
+  "shutdownAction": "none",
+  "updateRemoteUserUID": false
+}

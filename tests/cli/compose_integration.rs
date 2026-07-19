@@ -2301,11 +2301,6 @@ fn compose_profile_published_workspace(host_port: u16, run_debug: bool) -> Compo
     ComposeFixtureWorkspace { workspace }
 }
 
-fn available_localhost_port() -> u16 {
-    let listener = TcpListener::bind(("127.0.0.1", 0)).must();
-    listener.local_addr().must().port()
-}
-
 fn reserved_localhost_port_with_room_for_relocation() -> Option<TcpListener> {
     (0..16).find_map(|_| {
         let listener = TcpListener::bind(("127.0.0.1", 0)).ok()?;

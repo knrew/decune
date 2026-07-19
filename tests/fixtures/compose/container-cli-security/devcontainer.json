@@ -1,0 +1,9 @@
+{
+  "name": "container-cli-security-regression",
+  "build": {
+    "dockerfile": "/host/DECUNE_E2E_SECRET_MARKER/Dockerfile",
+    "context": "/host/DECUNE_E2E_SECRET_MARKER/context"
+  },
+  "workspaceMount": "source=/host/DECUNE_E2E_SECRET_MARKER/mount,target=/workspace,type=bind",
+  "workspaceFolder": "/workspace"
+}

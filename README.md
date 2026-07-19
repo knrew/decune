@@ -10,7 +10,7 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 - `decune rebuild` / `decune down` / `decune remove` による明示的なライフサイクル管理
 - `decune status` で decune が管理する workspace environment の summary/detail を確認
 - `decune ports` で実行中の port forwarding と Docker published port の host 側の利用状況を確認
-- attached `decune up` session 中は primary container 内の `decune status` / `decune ports` から同じ workspace を確認
+- attached `decune up` session 中は primary container 内の `decune status` / `decune ports` から同じ workspace を確認（[利用方法](docs/usage.md#container-内の-decune)）
 - `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
 - image-based / Dockerfile-based / Docker Compose-based の Dev Container 構成を起動
 - Compose clone isolation により、固定 published port・固定名・固定 IPv4 subnet・宣言済み endpoint を workspace ごとに分離
@@ -123,6 +123,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `forwardPorts`、decune `[[ports]]`、`decune up -p` は decune のポートフォワーディングであり、Docker の published port ではありません。
 - `decune status` は JSON 出力や `--ports` / `--resources` option を持たず、`LAST_USED` は state の `last_used_at` だけから表示します。
 - `decune ports` は decune が現在維持している port forwarding と Docker published port の両方を表示し、`TYPE` で `forwarded` / `published`、`STATE` で relocated Compose published port を区別します。workspace 横断では `decune ports --all`、JSON 出力では `decune ports --json` を使います。
+- container 内の `decune status` / `decune ports` は primary container の current workspace に固定された read-only query で、active な attached `decune up` session がある間だけ利用できます。
 - `appPort` は image/Dockerfile モードの Docker published port です。
 - Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。`appPort`、`workspaceMount`、`runArgs` は Compose モードでは unsupported error です。
 - Compose automatic published port relocation policy は既定で無効です。`[compose.published_ports].automatic_relocation = true` または `decune up --automatic-published-port-relocation` / `decune rebuild --automatic-published-port-relocation` で、この実行の policy を有効化できます。`[[compose.published_ports.mappings]]` では、policy と独立に fixed TCP published port の host endpoint を明示できます。実際に host port または host IP を変更する場合は Docker Compose v2.24.4 以上が必要です。

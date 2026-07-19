@@ -1,0 +1,8 @@
+{
+  "name": "container-cli-collision-regular",
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "shutdownAction": "none",
+  "updateRemoteUserUID": false
+}
