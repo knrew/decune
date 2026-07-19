@@ -337,6 +337,8 @@ mod tests {
         let service_runtime_dir = service_forward_runtime_dir(&runtime_dir, "database");
 
         assert!(service_runtime_dir.join("decune-forward-agent").is_file());
+        assert!(!service_runtime_dir.join("decune").exists());
+        assert!(!service_runtime_dir.join("host-daemon.sock").exists());
         assert_eq!(
             runtime.mount.source.as_deref(),
             service_runtime_dir.to_str()

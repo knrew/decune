@@ -113,6 +113,31 @@ pub(crate) fn stage_container_tool_with_private_parent(
     )
 }
 
+pub(crate) fn remove_container_tool(tool: ContainerTool, runtime_dir: &Path) -> Result<()> {
+    let target = runtime_dir.join(tool.file_name());
+    match fs::symlink_metadata(&target) {
+        Ok(metadata) if metadata.is_file() || metadata.file_type().is_symlink() => {
+            fs::remove_file(&target).with_context(|| {
+                format!(
+                    "Failed to remove decune container tool artifact: {}",
+                    target.display()
+                )
+            })
+        }
+        Ok(_) => bail!(
+            "Decune container tool runtime path is not a regular file or symlink: {}",
+            target.display()
+        ),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error).with_context(|| {
+            format!(
+                "Failed to inspect decune container tool runtime path: {}",
+                target.display()
+            )
+        }),
+    }
+}
+
 fn default_embedded_container_tools() -> &'static [EmbeddedContainerToolArtifact] {
     #[cfg(test)]
     {
@@ -758,7 +783,7 @@ mod tests {
     use super::{
         ContainerTool, ContainerToolPlatform, EmbeddedContainerToolArtifact,
         TestContainerToolEntry, atomic_stage_container_tool, create_private_staging_file,
-        stage_container_tool_from_dir, stage_container_tool_with_embedded,
+        remove_container_tool, stage_container_tool_from_dir, stage_container_tool_with_embedded,
         write_test_container_tools_bundle,
     };
 
@@ -1205,6 +1230,44 @@ mod tests {
             fs::read(runtime.join("decune-forward-agent")).unwrap(),
             b"embedded"
         );
+    }
+
+    #[test]
+    fn removes_regular_or_symlink_container_tool_without_following_symlink() {
+        for symlink_entry in [false, true] {
+            let temp = TempDir::new().unwrap();
+            let runtime = temp.path().join("runtime");
+            let target = runtime.join("decune");
+            let outside = temp.path().join("outside");
+            fs::create_dir_all(&runtime).unwrap();
+            fs::write(&outside, b"outside").unwrap();
+            if symlink_entry {
+                symlink(&outside, &target).unwrap();
+            } else {
+                fs::write(&target, b"stale").unwrap();
+            }
+
+            remove_container_tool(ContainerTool::Decune, &runtime).unwrap();
+
+            assert!(target.symlink_metadata().is_err());
+            assert_eq!(fs::read(&outside).unwrap(), b"outside");
+        }
+    }
+
+    #[test]
+    fn remove_container_tool_rejects_runtime_directory() {
+        let temp = TempDir::new().unwrap();
+        let runtime = temp.path().join("runtime");
+        fs::create_dir_all(runtime.join("decune")).unwrap();
+
+        let error = remove_container_tool(ContainerTool::Decune, &runtime).unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("runtime path is not a regular file or symlink")
+        );
+        assert!(runtime.join("decune").is_dir());
     }
 
     #[test]

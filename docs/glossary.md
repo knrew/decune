@@ -40,6 +40,7 @@
 - Compose file: `dockerComposeFile` で参照する Docker Compose YAML file。
 - Compose project: 同じ project name のもとで Docker Compose が管理する services、networks、volumes。
 - service: Docker Compose service。
+- primary container: image/Dockerfile-based 構成の development container、または Compose primary service の container。decune が shell attach、lifecycle、runtime tool を適用する主対象。
 - primary service: Dev Container `service` property で選ばれた Compose service。decune は shell attach、lifecycle command、Features、dotfiles、credentials、UID/GID sync、automatic port forwarding をこの service に適用する。
 - sidecar service: primary service 以外の Compose service。
 - generated Compose override: decune が state/runtime area に生成する Compose override file。利用者は編集しない。
@@ -65,7 +66,8 @@
 ## セキュリティ用語
 
 - credential forwarding: host の Git credentials、SSH agent access、GitHub CLI token access を container で利用可能にする仕組み。
-- host daemon: `decune up` の子タスクとして動き、`up` process が生きている間だけ credential forwarding と port forwarding support を担当する process。
+- host daemon: `decune up` の子タスクとして動き、`up` process が生きている間だけ credential forwarding、port forwarding support、attached session の container CLI query を担当する process。
+- container CLI: primary container 内へ `/run/decune/decune` として配置され、通常は `/usr/local/bin/decune` symlink から実行する container-side client。
 - container CLI query: container 内の decune CLI が host daemon 経由で status / ports などの read-only 情報を問い合わせる仕組み。
 - query context: host daemon が container CLI query の対象として起動時に固定する、検証済み workspace ID と固定 server path の集合。live config や client input からは再解決しない。
 - context fingerprint: query context から domain separation 付き SHA-256 で導出する digest。daemon reuse の同一性比較にだけ使い、raw path を含まない。

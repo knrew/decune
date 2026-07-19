@@ -1,6 +1,7 @@
 use super::*;
 
 pub(in crate::up) struct CredentialRuntime {
+    _container_cli: ContainerCliRuntime,
     _git_credentials: GitCredentialRuntime,
     _github_cli: GithubCliRuntime,
     _ssh_agent: SshAgentRuntime,
@@ -9,8 +10,17 @@ pub(in crate::up) struct CredentialRuntime {
     mount_policy: CredentialRuntimeMountPolicy,
 }
 
+struct PreparedCredentialRuntimes {
+    container_cli: ContainerCliRuntime,
+    github_cli: GithubCliRuntime,
+    ssh_agent: SshAgentRuntime,
+    forward: ForwardRuntime,
+    service_forward: Vec<ServiceForwardRuntime>,
+}
+
 impl CredentialRuntime {
     fn new(
+        container_cli: ContainerCliRuntime,
         git_credentials: GitCredentialRuntime,
         github_cli: GithubCliRuntime,
         ssh_agent: SshAgentRuntime,
@@ -32,6 +42,7 @@ impl CredentialRuntime {
             .collect();
 
         Self {
+            _container_cli: container_cli,
             _git_credentials: git_credentials,
             _github_cli: github_cli,
             _ssh_agent: ssh_agent,
@@ -64,6 +75,8 @@ pub(super) fn add_credential_runtime_mounts(
     runtime_dir: &Path,
     platform: ContainerToolPlatform,
 ) -> Result<(UpPlan, CredentialRuntime)> {
+    let container_cli =
+        prepare_container_cli_runtime(plan.config.container.cli.enabled, platform, runtime_dir)?;
     let ssh_agent = prepare_ssh_agent_runtime(&plan.config)?;
     let github_cli = prepare_github_cli_runtime(&plan.config, runtime_dir)?;
     let forward = prepare_forward_runtime(&plan.forward_ports, runtime_dir, platform)?;
@@ -76,10 +89,13 @@ pub(super) fn add_credential_runtime_mounts(
     add_prepared_credential_runtime_mounts(
         plan,
         runtime_dir,
-        github_cli,
-        ssh_agent,
-        forward,
-        service_forward,
+        PreparedCredentialRuntimes {
+            container_cli,
+            github_cli,
+            ssh_agent,
+            forward,
+            service_forward,
+        },
         platform,
     )
 }
@@ -91,6 +107,8 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_ssh_socket(
     ssh_auth_sock: Option<&Path>,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let platform = ContainerToolPlatform::LinuxAmd64;
+    let container_cli =
+        prepare_container_cli_runtime(plan.config.container.cli.enabled, platform, runtime_dir)?;
     let ssh_agent = crate::host::credentials::prepare_ssh_agent_runtime_with_socket(
         &plan.config,
         ssh_auth_sock,
@@ -110,10 +128,13 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_ssh_socket(
     add_prepared_credential_runtime_mounts(
         plan,
         runtime_dir,
-        github_cli,
-        ssh_agent,
-        forward,
-        service_forward,
+        PreparedCredentialRuntimes {
+            container_cli,
+            github_cli,
+            ssh_agent,
+            forward,
+            service_forward,
+        },
         platform,
     )
 }
@@ -126,6 +147,8 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_inputs(
     github_token: Option<&str>,
 ) -> Result<(UpPlan, CredentialRuntime)> {
     let platform = ContainerToolPlatform::LinuxAmd64;
+    let container_cli =
+        prepare_container_cli_runtime(plan.config.container.cli.enabled, platform, runtime_dir)?;
     let ssh_agent = crate::host::credentials::prepare_ssh_agent_runtime_with_socket(
         &plan.config,
         ssh_auth_sock,
@@ -145,10 +168,13 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_inputs(
     add_prepared_credential_runtime_mounts(
         plan,
         runtime_dir,
-        github_cli,
-        ssh_agent,
-        forward,
-        service_forward,
+        PreparedCredentialRuntimes {
+            container_cli,
+            github_cli,
+            ssh_agent,
+            forward,
+            service_forward,
+        },
         platform,
     )
 }
@@ -156,12 +182,16 @@ pub(in crate::up) fn add_credential_runtime_mounts_with_inputs(
 fn add_prepared_credential_runtime_mounts(
     mut plan: UpPlan,
     runtime_dir: &Path,
-    github_cli: GithubCliRuntime,
-    ssh_agent: SshAgentRuntime,
-    forward: ForwardRuntime,
-    service_forward: Vec<ServiceForwardRuntime>,
+    runtimes: PreparedCredentialRuntimes,
     platform: ContainerToolPlatform,
 ) -> Result<(UpPlan, CredentialRuntime)> {
+    let PreparedCredentialRuntimes {
+        container_cli,
+        github_cli,
+        ssh_agent,
+        forward,
+        service_forward,
+    } = runtimes;
     let git_credentials = prepare_git_credential_runtime(&plan.config, runtime_dir, platform)?;
     extend_runtime_mounts(&mut plan.mounts, git_credentials.mounts());
     extend_runtime_mounts(&mut plan.mounts, github_cli.mounts());
@@ -180,6 +210,7 @@ fn add_prepared_credential_runtime_mounts(
     Ok((
         plan,
         CredentialRuntime::new(
+            container_cli,
             git_credentials,
             github_cli,
             ssh_agent,
@@ -412,6 +443,49 @@ mod tests {
                 .any(|mount| mount.target == DECUNE_RUNTIME_TARGET)
         );
     }
+
+    #[test]
+    fn container_cli_runtime_stages_enabled_artifact_and_cleans_stale_disabled_artifact() {
+        let temp = tempfile::tempdir().unwrap();
+        let runtime_dir = temp.path().join("runtime");
+        let mut enabled_config = ResolvedConfig::default();
+        enabled_config.container.cli.enabled = true;
+        enabled_config.credentials.git.enabled = false;
+        enabled_config.credentials.github.enabled = false;
+        enabled_config.credentials.github.mode = GithubCredentialsMode::Off;
+
+        let (enabled_plan, enabled_runtime) = add_credential_runtime_mounts_with_inputs(
+            test_up_plan_with_config(enabled_config),
+            &runtime_dir,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(runtime_dir.join("decune").is_file());
+        assert!(enabled_plan.mounts.iter().any(|mount| {
+            mount.target == DECUNE_RUNTIME_TARGET
+                && mount.source.as_deref() == Some(runtime_dir.to_str().unwrap())
+        }));
+        drop(enabled_runtime);
+        assert!(runtime_dir.join("decune").is_file());
+
+        let mut disabled_config = ResolvedConfig::default();
+        disabled_config.container.cli.enabled = false;
+        disabled_config.credentials.git.enabled = false;
+        disabled_config.credentials.github.enabled = false;
+        disabled_config.credentials.github.mode = GithubCredentialsMode::Off;
+        let (_disabled_plan, _disabled_runtime) = add_credential_runtime_mounts_with_inputs(
+            test_up_plan_with_config(disabled_config),
+            &runtime_dir,
+            None,
+            None,
+        )
+        .unwrap();
+
+        assert!(runtime_dir.join("decune").symlink_metadata().is_err());
+    }
+
     #[test]
     fn compose_credentials_secret_leak_generated_override_injects_primary_runtime_mounts() {
         let temp = tempfile::tempdir().unwrap();

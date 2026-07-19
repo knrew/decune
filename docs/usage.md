@@ -358,6 +358,10 @@ install_feature_if_missing = true
 
 `[container.cli].enabled` の既定値は true です。通常の後勝ち設定なので、global config の `false` は project config の `true` で再有効化できます。repository から解除不能な security opt-out ではありません。project の `use_global_config = false` または `--no-global-config` を使うと、global の値自体を適用しません。この設定だけを変更しても container または Compose project の rebuild は不要です。
 
+有効な場合、`decune up` は primary container に container-side CLI を `/run/decune/decune` として配置し、最初の lifecycle command より前に `/usr/local/bin/decune` symlink を準備します。container 内の `decune status` と `decune ports` は active attached `decune up` session がある間だけ利用できます。`decune up --detach` の終了後や attached session 終了後は artifact が残っていても query は利用できません。
+
+`/usr/local/bin/decune` に既存 file、directory、別 target または broken symlink がある場合や、root filesystem が read-only の場合、decune は既存 destination を変更せず warning を表示して `up` を継続します。その場合は `/run/decune/decune` を直接実行してください。無効な場合、次の `up` で stale artifact と `/run/decune/decune` を指す exact managed symlink を削除し、同名の既存 file、directory、その他の symlink は変更しません。
+
 dotfiles は remote home へ直接 bind mount せず、`/opt/decune/dotfiles/<target>` から symlink します。`/opt/decune` と `/run/decune` 配下は decune の internal path なので、`[[mounts]].target` には使えません。
 
 directory source の symlink 解決で skeleton fallback が必要な場合、decune は backing parent directory を internal path に bind mount します。backing target の `<n>` は dotfiles entry 全体で一意になり、同じ canonical parent directory と `read_only` を使う entry 間では mount を共有します。そのため、同じ parent directory の sibling file が `/opt/decune/dotfile-backings/<n>` 経由で container から見える場合があります。remote home 側には設定した dotfile entry だけが現れます。
