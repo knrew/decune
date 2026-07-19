@@ -1,5 +1,5 @@
+shell   = "/bin/sh"
 version = 1
-shell = "/bin/sh"
 
 [ports.auto]
 enabled = false

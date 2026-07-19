@@ -121,7 +121,7 @@ impl ContainerCliWorkspace {
         let primary_port = available_localhost_port();
         workspace.render_config(
             fixture.name(),
-            &[("__PRIMARY_HOST_PORT__", &primary_port.to_string())],
+            &[("\"__PRIMARY_HOST_PORT__\"", &primary_port.to_string())],
         );
         if matches!(fixture, SupportedFixture::Compose) {
             let sidecar_port = available_localhost_port();
@@ -129,8 +129,8 @@ impl ContainerCliWorkspace {
             workspace.render_config(
                 fixture.name(),
                 &[
-                    ("__PRIMARY_HOST_PORT__", &primary_port.to_string()),
-                    ("__SIDECAR_HOST_PORT__", &sidecar_port.to_string()),
+                    ("\"__PRIMARY_HOST_PORT__\"", &primary_port.to_string()),
+                    ("\"__SIDECAR_HOST_PORT__\"", &sidecar_port.to_string()),
                 ],
             );
             workspace.render_compose(

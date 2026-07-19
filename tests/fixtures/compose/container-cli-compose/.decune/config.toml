@@ -1,17 +1,17 @@
+shell   = "/bin/sh"
 version = 1
-shell = "/bin/sh"
 
 [[ports]]
-service = "app"
 container = 4321
-host = __PRIMARY_HOST_PORT__
-label = "primary"
+host      = "__PRIMARY_HOST_PORT__"
+label     = "primary"
+service   = "app"
 
 [[ports]]
-service = "worker"
 container = 5432
-host = __SIDECAR_HOST_PORT__
-label = "worker"
+host      = "__SIDECAR_HOST_PORT__"
+label     = "worker"
+service   = "worker"
 
 [ports.auto]
 enabled = false
