@@ -22,8 +22,9 @@ pub(crate) use session::{ForwardSession, start_forward_session_with_auto};
 #[cfg(test)]
 pub(crate) use status::ForwardStatusSource;
 pub(crate) use status::{
-    ActiveForwardPort, ForwardStatusRegistry, ForwardStatusServer, forward_status_dir,
-    list_active_forward_status_ports, remove_forward_status_dir, start_forward_status_server,
+    ActiveForwardPort, ForwardStatusList, ForwardStatusRegistry, ForwardStatusServer,
+    forward_status_dir, list_active_forward_status_ports, remove_forward_status_dir,
+    start_forward_status_server,
 };
 
 const FORWARD_AGENT_NAME: &str = "decune-forward-agent";

@@ -56,6 +56,18 @@ impl ContainerCliQueryContext {
     pub(crate) fn context_fingerprint(&self) -> &str {
         &self.context_fingerprint
     }
+
+    pub(crate) fn workspace_id(&self) -> &str {
+        &self.workspace_id
+    }
+
+    pub(crate) fn state_dir(&self) -> &std::path::Path {
+        &self.state_dir
+    }
+
+    pub(crate) fn forward_status_dir(&self) -> &std::path::Path {
+        &self.forward_status_dir
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

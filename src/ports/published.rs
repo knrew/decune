@@ -14,8 +14,8 @@ use crate::{
 use super::{
     context::WorkspacePortContext,
     types::{
-        PortInventoryActualBinding, PortInventoryEndpoint, PortInventoryEntry, PortInventoryTarget,
-        PortUsageType,
+        ContainerPortSnapshot, PortInventoryActualBinding, PortInventoryEndpoint,
+        PortInventoryEntry, PortInventoryTarget, PortUsageType,
     },
 };
 
@@ -84,6 +84,30 @@ pub(super) fn dedupe_published_containers(
     }
 
     deduped
+}
+
+pub(crate) fn container_published_port_snapshots(
+    containers: &[ContainerInspect],
+    published_ports: &[PublishedPortRuntimeState],
+) -> Vec<ContainerPortSnapshot> {
+    let context = WorkspacePortContext {
+        workspace_id: String::new(),
+        workspace_path: None,
+        runtime_dir: std::path::PathBuf::new(),
+        published_ports: published_ports.to_vec(),
+    };
+    let entries = containers
+        .iter()
+        .cloned()
+        .map(|container| PublishedContainerInspect {
+            container,
+            context: Some(context.clone()),
+        })
+        .collect();
+    published_ports_from_container_entries(dedupe_published_containers(entries), false)
+        .iter()
+        .map(ContainerPortSnapshot::from)
+        .collect()
 }
 
 fn published_ports_from_container(

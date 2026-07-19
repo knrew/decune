@@ -5,11 +5,9 @@ use std::{
     path::{Path, PathBuf},
     pin::Pin,
     process::{ExitStatus, Stdio},
+    sync::Arc,
     time::Duration,
 };
-
-#[cfg(test)]
-use std::sync::Arc;
 
 use anyhow::{Context, Result, bail};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
@@ -73,13 +71,6 @@ impl RuntimeCommand {
         }
         self
     }
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "Runtime command timeouts are specified and covered by tests, but no production caller is wired yet."
-        )
-    )]
     pub(crate) const fn timeout(mut self, timeout: Duration) -> Self {
         self.timeout = Some(timeout);
         self
@@ -178,6 +169,44 @@ pub(crate) trait RuntimeCommandRunner: Send + Sync {
         command: RuntimeCommand,
         stdio: RuntimeStdio,
     ) -> Pin<Box<dyn Future<Output = Result<i32>> + Send + 'a>>;
+}
+
+#[derive(Clone)]
+pub(crate) struct QueryRuntimeCommandRunner {
+    inner: Arc<dyn RuntimeCommandRunner>,
+    timeout: Duration,
+}
+
+impl QueryRuntimeCommandRunner {
+    pub(crate) const fn new(inner: Arc<dyn RuntimeCommandRunner>, timeout: Duration) -> Self {
+        Self { inner, timeout }
+    }
+}
+
+impl RuntimeCommandRunner for QueryRuntimeCommandRunner {
+    fn run_capture<'a>(
+        &'a self,
+        command: RuntimeCommand,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>> {
+        self.inner.run_capture(command.timeout(self.timeout))
+    }
+
+    fn run_capture_with_stdin<'a>(
+        &'a self,
+        command: RuntimeCommand,
+        stdin: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<RuntimeOutput>> + Send + 'a>> {
+        self.inner
+            .run_capture_with_stdin(command.timeout(self.timeout), stdin)
+    }
+
+    fn run_status<'a>(
+        &'a self,
+        command: RuntimeCommand,
+        stdio: RuntimeStdio,
+    ) -> Pin<Box<dyn Future<Output = Result<i32>> + Send + 'a>> {
+        self.inner.run_status(command.timeout(self.timeout), stdio)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -561,9 +590,14 @@ pub(crate) fn ensure_success(
 
 #[cfg(test)]
 mod tests {
-    use super::{RedactionRules, RuntimeCommand, RuntimeCommandRunner, TokioRuntimeCommand};
+    use super::{
+        FakeRuntimeCommand, QueryRuntimeCommandRunner, RedactionRules, RuntimeCommand,
+        RuntimeCommandRunner, RuntimeOutput, RuntimeStdio, TokioRuntimeCommand,
+    };
 
     use std::path::Path;
+
+    use std::sync::Arc;
 
     #[cfg(unix)]
     use std::{
@@ -578,6 +612,54 @@ mod tests {
         assert_eq!(command.program(), "docker");
         assert_eq!(command.args_vec(), ["inspect", "container"]);
         assert_eq!(command.sanitized_display(), "docker inspect container");
+    }
+
+    #[test]
+    fn query_runtime_runner_applies_timeout_to_every_command_mode() {
+        let inner = FakeRuntimeCommand::new(vec![
+            Ok(RuntimeOutput {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+            Ok(RuntimeOutput {
+                stdout: Vec::new(),
+                stderr: Vec::new(),
+                exit_code: 0,
+            }),
+        ]);
+        let runner =
+            QueryRuntimeCommandRunner::new(Arc::new(inner.clone()), Duration::from_secs(5));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            runner
+                .run_capture(RuntimeCommand::new("docker").arg("ps"))
+                .await
+                .unwrap();
+            runner
+                .run_capture_with_stdin(RuntimeCommand::new("docker").arg("build"), Vec::new())
+                .await
+                .unwrap();
+            runner
+                .run_status(
+                    RuntimeCommand::new("docker").arg("version"),
+                    RuntimeStdio::Inherit,
+                )
+                .await
+                .unwrap();
+        });
+
+        assert_eq!(inner.commands().len(), 3);
+        assert!(
+            inner
+                .commands()
+                .iter()
+                .all(|command| command.timeout_duration() == Some(Duration::from_secs(5)))
+        );
     }
 
     #[test]
