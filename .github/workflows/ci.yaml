@@ -17,6 +17,7 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   CARGO_INCREMENTAL: 0
+  RUST_CACHE_SAVE_IF: ${{ github.event_name == 'pull_request' || github.event_name == 'schedule' || github.ref_name == github.event.repository.default_branch }}
 
 jobs:
   taplo:
@@ -122,6 +123,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          save-if: ${{ env.RUST_CACHE_SAVE_IF }}
       - name: Cargo clippy
         run: cargo clippy --workspace --all-features --all-targets
 
@@ -142,6 +147,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: ${{ matrix.profile }}
+          save-if: ${{ env.RUST_CACHE_SAVE_IF }}
       - name: Cargo check
         run: cargo check ${{ matrix.release_flag }} --workspace --all-targets --all-features --verbose
 
@@ -165,6 +175,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: ${{ matrix.profile }}
+          save-if: ${{ env.RUST_CACHE_SAVE_IF }}
       - name: Check Docker daemon
         run: docker version
       - name: Cargo test
@@ -190,6 +205,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: x86_64-unknown-linux-musl,aarch64-unknown-linux-musl
+      - name: Cache Rust dependencies
+        uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4  # v2.9.1
+        with:
+          key: ${{ matrix.profile }}
+          save-if: ${{ env.RUST_CACHE_SAVE_IF }}
       - name: Check Docker daemon
         run: docker version
       - name: Check Docker Compose v2 plugin
