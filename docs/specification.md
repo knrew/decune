@@ -1146,7 +1146,7 @@ Compose-based configuration の複数 clone を同一 Docker daemon 上で同時
 | No automatic rewrite    | external resource、IPv6、static service address、undeclared endpoint         |
 
 - 常に workspace scope となる resource は、`safe_workspace_slug` と `workspace_id`、または workspace 固有の Compose project name により clone ごとに分離する。
-- Opt-in rewrite は `[compose.clone_isolation].enabled = true` を master gate とし、published port と固定名を workspace 固有値へ、network relocation と endpoint 契約を明示した対象を relocation 後の値へ書き換える。
+- Opt-in rewrite は `[compose.clone_isolation].enabled = true` を master gate とし、published port と固定名を workspace 固有値へ、network relocation と endpoint 宣言を明示した対象を relocation 後の値へ書き換える。
 - 自動 rewrite しない resource のうち、external resource は利用者の共有契約を維持する。relocation 対象 network の IPv6 / static address は actionable diagnostic で停止する。relocation 後も environment に残る旧 endpoint address は起動前に診断するが、宣言なしに値を推測して書き換えない。
 - clone isolation は external resource の clone 別複製や共有設定を自動化しない。
 

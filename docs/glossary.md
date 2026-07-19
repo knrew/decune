@@ -1,6 +1,6 @@
 # decune 用語集
 
-この用語集は、decune のドキュメントで使う用語と表記基準を定義します。README と docs を編集するときは、ここにある語を優先してください。
+この用語集は、decune のドキュメントで使う用語と表記基準を定義します。README と docs を編集するときは、ここにある語を優先してください。ドキュメント全体の構成と執筆規約は [development.md](development.md#ドキュメント構成と執筆規約) を参照してください。
 
 ## CLI 用語
 
@@ -9,6 +9,8 @@
 - argument: `WORKSPACE` のような位置引数、または `--config <PATH>` の `PATH` のような option value。
 - subcommand: 実装説明で必要な場合だけ使う。利用者向けドキュメントでは原則 `command` を使う。
 - usage: CLI またはリファレンスに示すコマンド構文。
+- attached `decune up` session: シェル接続を維持したまま実行中の `decune up`。port forwarding、credential forwarding、container 内からの query はこの session の間だけ有効。
+- diagnostic code: 起動前検査や planning の失敗を識別する安定した code(例: `compose_published_port_collision`)。定義は [specification.md 13 章](specification.md#13-診断コード)、対処は [ports.md](ports.md) と [clone-isolation.md](clone-isolation.md)。
 
 ## Dev Container 用語
 
@@ -26,6 +28,7 @@
 ## ワークスペースと設定の用語
 
 - workspace root: decune が対象にするローカルプロジェクトディレクトリ。Git リポジトリ内ではリポジトリルート。
+- workspace id: workspace root から導出する decune の安定した識別子。Docker resource name と workspace data の単位に使う([specification.md 10.1 節](specification.md#101-workspace-id-と-resource-name))。
 - global decune config: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`。
 - project decune config: `<workspace>/.decune/config.toml`。
 - configuration layer: 最終的に merge される設定の入力。image metadata、Feature metadata、global config、project config、CLI options など。
@@ -33,6 +36,8 @@
 - generated data: decune が XDG cache/state/runtime 配下に生成し、管理している workspace data や共有 Feature archive cache。workspace file である `.decune/config.toml` や `.decune/features.lock.toml` は含めない。
 - workspace data: workspace id 単位で作られる decune の cache、state、runtime data。
 - Feature archive cache: OCI Feature archive を再利用するための共有 cache。`$XDG_CACHE_HOME/decune/features` または `~/.cache/decune/features`。
+- skeleton fallback: dotfiles の source を直接の bind mount で表現できない場合に、decune が state 領域に生成した skeleton 構造経由で dotfile entry を提供する方式([specification.md 5.7 節](specification.md#57-dotfiles))。
+- decune internal path: container 内で decune が予約する `/opt/decune` と `/run/decune` 配下の path。user-defined mount と workspace mount の target には使えない。
 
 ## Docker と Compose の用語
 
@@ -41,22 +46,23 @@
 - Compose project: 同じ project name のもとで Docker Compose が管理する services、networks、volumes。
 - service: Docker Compose service。
 - primary container: image/Dockerfile-based 構成の development container、または Compose primary service の container。decune が shell attach、lifecycle、runtime tool を適用する主対象。
-- primary service: Dev Container `service` property で選ばれた Compose service。decune は shell attach、lifecycle command、Features、dotfiles、credentials、UID/GID sync、automatic port forwarding をこの service に適用する。
+- primary service: Dev Container `service` property で選ばれた Compose service。decune が shell attach や lifecycle command などの適用対象にする service([specification.md 8 章](specification.md#8-docker-compose-モード))。
 - sidecar service: primary service 以外の Compose service。
 - generated Compose override: decune が state/runtime area に生成する Compose override file。利用者は編集しない。
-- clone isolation: 同じ Docker Compose-based workspace の複数 clone を同一 Docker daemon 上で同時利用するため、clone-sensitive な published port、固定名、固定 subnet、endpoint を workspace ごとに分離する opt-in 機能。
-- clone isolation preflight: Compose モードで別 clone / 別 workspace の同時起動時に衝突しうる固定 subnet / resource name と、relocation 後も environment に残る旧 network address を `docker compose up` の前に検出する処理。name / subnet / endpoint rewrite が有効な対象は書き換え後の値で照合し、それ以外は検出のみを行う。
+- clone isolation: 同じ Docker Compose-based workspace の複数 clone を同一 Docker daemon 上で同時利用するため、clone-sensitive な published port、固定名、固定 subnet、endpoint を workspace ごとに分離する opt-in 機能。使い方は [clone-isolation.md](clone-isolation.md)。
+- clone isolation preflight: 他 clone / 他 workspace と衝突しうる固定名・固定 subnet・stale な endpoint を `docker compose up` の前に検出する処理([specification.md 8.9.2 節](specification.md#892-preflight))。
 
 ## ネットワーク用語
 
 - port forwarding: container-side forward agent を経由して host listen address から container port へ転送する decune の機能。`forwardPorts`、decune `[[ports]]`、CLI `-p` は port forwarding。
 - published port: Docker が host port と container port を publish する設定。image/Dockerfile モードでは Dev Container `appPort`、Compose モードでは Compose service `ports` で指定する。
+- fixed TCP published port: host 側 port を明示した TCP の Compose published port entry(例: `3000:3000`)。published port mapping / relocation と clone isolation の分離対象になる単位([specification.md 8.8 節](specification.md#88-published-port-mapping-と-relocation))。
 - requested endpoint: 利用者設定や Compose file が要求した host 側 endpoint。
 - planned endpoint: decune が起動前に割り当てる予定の host 側 endpoint。Compose published port relocation では requested endpoint と異なる場合がある。
 - automatic published port relocation: fixed TCP published host endpoint が使用できない場合に、decune が次の利用可能な host port を自動探索する policy。
 - explicit published port mapping: `[[compose.published_ports.mappings]]` で `service + protocol + target` に対応する planned host endpoint を明示する設定。automatic relocation policy とは独立して適用する。
 - subnet pool: clone isolation が固定 IPv4 subnet の workspace 固有 relocation 先を選ぶために利用する IPv4 CIDR 範囲。
-- endpoint 契約: 固定 network address を参照する service environment を、Compose network key と relocation 後の gateway / subnet placeholder に明示的に対応付ける `[[compose.clone_isolation.endpoints]]` 宣言。
+- endpoint 宣言: 固定 network address を参照する service environment を、Compose network key と relocation 後の gateway / subnet placeholder に対応付ける `[[compose.clone_isolation.endpoints]]` の宣言([specification.md 8.9.4 節](specification.md#894-endpoint-宣言))。
 - actual binding: Docker が実際に publish している host 側 binding。
 - availability probe: host port の空き状況を確認するために decune process が行う TCP bind probe。
 - unprobeable: availability probe が権限などの理由で空き・占有を判別できない状態。occupied や available とは区別する。

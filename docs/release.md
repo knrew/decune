@@ -4,7 +4,7 @@
 
 ## 方針
 
-- 公式配布は GitHub Releases のビルド済みアーカイブです。`Cargo.toml` は `publish = false` のため、crates.io publish は行いません。
+- 公式配布は GitHub Releases のビルド済みアーカイブです。`Cargo.toml` は `publish = false` のため、crates.io publish は行いません。配布物の契約(公式導線、アーカイブ内容、release asset、検証手段、`decune --version` の表示規則)は [specification.md 11 章](specification.md#11-配布の契約)を正とします。
 - tag は `vMAJOR.MINOR.PATCH` 形式にします。pre-release は `v0.1.1-rc.1` のように SemVer の pre-release suffix を使います。
 - release notes は GitHub Releases の generated release notes を使います。必要な見出しや除外条件が増えた場合は、GitHub の release notes 設定で調整します。
 - 成果物は GitHub Actions 上で作り、ローカルで作ったバイナリは配布しません。
@@ -14,7 +14,10 @@
 ## 通常フロー
 
 1. release PR を作成します。
-   - root `Cargo.toml` の `[workspace.package]` version、README、usage のバージョン表記をリリース予定版へ揃えます。
+   - root `Cargo.toml` の `[workspace.package]` version をリリース予定版へ更新します。
+   - ドキュメントのバージョン表記を同じ版へ揃えます。更新箇所は次の 2 か所です。更新箇所が増減した場合は、この一覧も更新します。
+     - [README.md「インストール」](../README.md#インストール)の install.sh ワンライナー
+     - [usage.md「インストール」](usage.md#インストール)の install.sh ワンライナーと手動アーカイブ手順の `version=`
    - 公開挙動、CLI option、設定 key、security boundary が変わる場合は `docs/specification.md` と関連する利用者向けドキュメントも更新します。
 
 2. release PR で標準検証を通します。
