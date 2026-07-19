@@ -21,7 +21,7 @@ use crate::{
     },
     host::{
         forward::{ForwardStatusList, list_active_forward_status_ports},
-        query_context::ContainerCliQueryContext,
+        query_context::{ContainerCliQueryContext, HostDaemonCliQueryPolicy},
     },
     ports::{
         container_forwarded_port_snapshots, container_published_port_snapshots,
@@ -677,6 +677,38 @@ impl ContainerCliQueryService {
             coordinator,
             active_queries: Arc::new(Semaphore::new(active_queries)),
             query_timeout,
+        }
+    }
+}
+
+/// Query runtime fixed at daemon startup. Carrying the service inside the enabled
+/// variant guarantees by type that an admitted query always has a service to run on.
+#[derive(Clone)]
+pub(super) enum ContainerCliQueryRuntime {
+    Disabled,
+    Enabled(Arc<ContainerCliQueryService>),
+}
+
+impl ContainerCliQueryRuntime {
+    pub(super) fn from_policy(policy: &HostDaemonCliQueryPolicy) -> Self {
+        match policy {
+            HostDaemonCliQueryPolicy::Disabled => Self::Disabled,
+            HostDaemonCliQueryPolicy::Enabled(context) => {
+                Self::Enabled(Arc::new(ContainerCliQueryService::new(context.clone())))
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn from_policy_with_runtime_command(
+        policy: &HostDaemonCliQueryPolicy,
+        runtime_command: Arc<dyn RuntimeCommandRunner>,
+    ) -> Self {
+        match policy {
+            HostDaemonCliQueryPolicy::Disabled => Self::Disabled,
+            HostDaemonCliQueryPolicy::Enabled(context) => Self::Enabled(Arc::new(
+                ContainerCliQueryService::with_runtime_command(context.clone(), runtime_command),
+            )),
         }
     }
 }

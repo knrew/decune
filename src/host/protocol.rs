@@ -9,12 +9,13 @@ use decune_container_protocol::{
     REQUEST_TYPE_CREDENTIAL,
 };
 
+use std::sync::Arc;
+
 use crate::{
     config::types::GitHttpsMode,
     host::{
         credentials::{GitCredentialExecutor, handle_git_credential_request},
-        query::ContainerCliQuery,
-        query_context::HostDaemonCliQueryPolicy,
+        query::{ContainerCliQuery, ContainerCliQueryRuntime, ContainerCliQueryService},
     },
 };
 
@@ -30,17 +31,19 @@ struct HostDaemonRequest {
     request_type: String,
 }
 
-#[derive(Debug, PartialEq, Eq)]
 pub(super) enum HostDaemonRequestDispatch {
     Respond(HostDaemonResponse),
-    CliQuery(ContainerCliQuery),
+    CliQuery {
+        query: ContainerCliQuery,
+        service: Arc<ContainerCliQueryService>,
+    },
 }
 
 pub(super) fn handle_host_daemon_request(
     bytes: &[u8],
     git_credentials: &dyn GitCredentialExecutor,
     git_https_mode: GitHttpsMode,
-    cli_query_policy: &HostDaemonCliQueryPolicy,
+    cli_query_runtime: &ContainerCliQueryRuntime,
 ) -> HostDaemonRequestDispatch {
     let request = match serde_json::from_slice::<HostDaemonRequest>(bytes) {
         Ok(request) => request,
@@ -68,7 +71,7 @@ pub(super) fn handle_host_daemon_request(
             git_credentials,
             git_https_mode,
         )),
-        REQUEST_TYPE_CLI_QUERY => handle_cli_query_request(bytes, cli_query_policy),
+        REQUEST_TYPE_CLI_QUERY => handle_cli_query_request(bytes, cli_query_runtime),
         REQUEST_TYPE_PORT_FORWARD => HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
             ERROR_CODE_NOT_IMPLEMENTED,
             "Host daemon request is not implemented yet: portForward",
@@ -103,7 +106,7 @@ fn handle_credential_request(
 
 fn handle_cli_query_request(
     bytes: &[u8],
-    cli_query_policy: &HostDaemonCliQueryPolicy,
+    cli_query_runtime: &ContainerCliQueryRuntime,
 ) -> HostDaemonRequestDispatch {
     let request = match serde_json::from_slice::<CliQueryRequest>(bytes) {
         Ok(request) => request,
@@ -150,14 +153,17 @@ fn handle_cli_query_request(
         }
     };
 
-    match cli_query_policy {
-        HostDaemonCliQueryPolicy::Disabled => {
+    match cli_query_runtime {
+        ContainerCliQueryRuntime::Disabled => {
             HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_CONTAINER_CLI_DISABLED,
                 "Container CLI queries are disabled",
             ))
         }
-        HostDaemonCliQueryPolicy::Enabled(_) => HostDaemonRequestDispatch::CliQuery(query),
+        ContainerCliQueryRuntime::Enabled(service) => HostDaemonRequestDispatch::CliQuery {
+            query,
+            service: Arc::clone(service),
+        },
     }
 }
 
@@ -172,7 +178,7 @@ mod tests {
     use crate::config::types::GitHttpsMode;
     use crate::host::{
         credentials::{GitCredentialCommand, GitCredentialExecutor},
-        query::ContainerCliQuery,
+        query::{ContainerCliQuery, ContainerCliQueryRuntime},
         query_context::HostDaemonCliQueryPolicy,
     };
 
@@ -223,7 +229,7 @@ mod tests {
             br#"{"version":1,"type":"credential","action":"get","input":"protocol=https\nhost=github.com\n\n"}"#,
             &executor,
             GitHttpsMode::HostHelper,
-            &HostDaemonCliQueryPolicy::Disabled,
+            &ContainerCliQueryRuntime::Disabled,
         );
 
         assert_eq!(
@@ -251,7 +257,7 @@ mod tests {
             br#"{"version":1,"type":"credential","action":"store","input":"protocol=https\nhost=github.com\nusername=octo\npassword=SECRET\n\n"}"#,
             &executor,
             GitHttpsMode::HostHelper,
-            &HostDaemonCliQueryPolicy::Disabled,
+            &ContainerCliQueryRuntime::Disabled,
         );
 
         assert_eq!(
@@ -277,7 +283,7 @@ mod tests {
             br#"{"version":1,"type":"credential","action":"get","input":"password=SECRET\n\n"}"#,
             &executor,
             GitHttpsMode::HostHelper,
-            &HostDaemonCliQueryPolicy::Disabled,
+            &ContainerCliQueryRuntime::Disabled,
         );
         let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
@@ -299,7 +305,7 @@ mod tests {
             br#"{"version":1,"type":"credential","action":"get","input":"password=SECRET\n\n"}"#,
             &executor,
             GitHttpsMode::Off,
-            &HostDaemonCliQueryPolicy::Disabled,
+            &ContainerCliQueryRuntime::Disabled,
         );
         let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
@@ -316,7 +322,7 @@ mod tests {
     #[test]
     fn cli_query_valid_command_and_format_reach_execution_seam() {
         let executor = RecordingGitCredentialExecutor::with_output("unused");
-        let policy = enabled_policy();
+        let runtime = enabled_runtime();
 
         for (command, format, expected) in [
             ("status", "text", ContainerCliQuery::StatusText),
@@ -332,9 +338,15 @@ mod tests {
             .unwrap();
 
             let dispatch =
-                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &policy);
+                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &runtime);
 
-            assert_eq!(dispatch, HostDaemonRequestDispatch::CliQuery(expected));
+            match dispatch {
+                HostDaemonRequestDispatch::CliQuery { query, .. } => assert_eq!(query, expected),
+                HostDaemonRequestDispatch::Respond(response) => panic!(
+                    "expected query dispatch, got immediate response: {:?}",
+                    serde_json::to_value(response)
+                ),
+            }
         }
 
         assert!(executor.calls.lock().unwrap().is_empty());
@@ -357,7 +369,7 @@ mod tests {
                 &request,
                 &executor,
                 GitHttpsMode::HostHelper,
-                &HostDaemonCliQueryPolicy::Disabled,
+                &ContainerCliQueryRuntime::Disabled,
             );
             let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
@@ -374,13 +386,13 @@ mod tests {
     #[test]
     fn cli_query_rejects_unknown_command() {
         let executor = RecordingGitCredentialExecutor::with_output("unused");
-        let policy = enabled_policy();
+        let runtime = enabled_runtime();
 
         let response = handle_host_daemon_request(
             br#"{"version":1,"type":"cliQuery","command":"inspect","format":"text"}"#,
             &executor,
             GitHttpsMode::HostHelper,
-            &policy,
+            &runtime,
         );
         let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
@@ -391,7 +403,7 @@ mod tests {
     #[test]
     fn cli_query_rejects_unsupported_command_format_matrix() {
         let executor = RecordingGitCredentialExecutor::with_output("unused");
-        let policy = enabled_policy();
+        let runtime = enabled_runtime();
 
         for (command, format) in [("status", "json"), ("status", "yaml"), ("ports", "yaml")] {
             let request = serde_json::to_vec(&json!({
@@ -403,7 +415,7 @@ mod tests {
             .unwrap();
 
             let response =
-                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &policy);
+                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &runtime);
             let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
             assert_eq!(response["error"]["code"], "unsupported_format");
@@ -415,7 +427,7 @@ mod tests {
     #[test]
     fn cli_query_rejects_unknown_fields() {
         let executor = RecordingGitCredentialExecutor::with_output("unused");
-        let policy = enabled_policy();
+        let runtime = enabled_runtime();
 
         for field in ["workspace", "workspace_id", "all"] {
             let mut request = json!({
@@ -431,7 +443,7 @@ mod tests {
             let request = serde_json::to_vec(&request).unwrap();
 
             let response =
-                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &policy);
+                handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &runtime);
             let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
             assert_eq!(response["error"]["code"], "invalid_request");
@@ -443,13 +455,13 @@ mod tests {
     #[test]
     fn cli_query_rejects_missing_fields() {
         let executor = RecordingGitCredentialExecutor::with_output("unused");
-        let policy = enabled_policy();
+        let runtime = enabled_runtime();
 
         let response = handle_host_daemon_request(
             br#"{"version":1,"type":"cliQuery","command":"status"}"#,
             &executor,
             GitHttpsMode::HostHelper,
-            &policy,
+            &runtime,
         );
         let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
@@ -457,12 +469,12 @@ mod tests {
         assert!(executor.calls.lock().unwrap().is_empty());
     }
 
-    fn enabled_policy() -> HostDaemonCliQueryPolicy {
-        HostDaemonCliQueryPolicy::enabled_for_test(
+    fn enabled_runtime() -> ContainerCliQueryRuntime {
+        ContainerCliQueryRuntime::from_policy(&HostDaemonCliQueryPolicy::enabled_for_test(
             "012345abcdef",
             PathBuf::from("/state/workspace"),
             PathBuf::from("/run/decune/workspace"),
-        )
+        ))
     }
 
     fn response_from_dispatch(
@@ -470,7 +482,7 @@ mod tests {
     ) -> decune_container_protocol::HostDaemonResponse {
         match dispatch {
             HostDaemonRequestDispatch::Respond(response) => response,
-            HostDaemonRequestDispatch::CliQuery(query) => {
+            HostDaemonRequestDispatch::CliQuery { query, .. } => {
                 panic!("expected immediate response, got query dispatch: {query:?}")
             }
         }

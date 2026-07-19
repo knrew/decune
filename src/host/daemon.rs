@@ -7,7 +7,7 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use decune_container_protocol::{ERROR_CODE_CLI_QUERY_FAILED, ERROR_CODE_REQUEST_TOO_LARGE};
+use decune_container_protocol::ERROR_CODE_REQUEST_TOO_LARGE;
 use serde::{Deserialize, Serialize};
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
@@ -21,7 +21,7 @@ use crate::{
     host::{
         credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
         protocol::{HostDaemonRequestDispatch, HostDaemonResponse, handle_host_daemon_request},
-        query::ContainerCliQueryService,
+        query::ContainerCliQueryRuntime,
         query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy},
         runtime::{
             create_runtime_dir, set_private_runtime_parent, set_runtime_dir_mode,
@@ -127,6 +127,36 @@ impl fmt::Display for HostDaemonStartError {
 
 impl Error for HostDaemonStartError {}
 
+/// Metadata identity and dispatch runtime derived together from one policy, so the
+/// recorded reuse identity always matches the runtime serving queries.
+struct HostDaemonCliQueryStartup {
+    identity: HostDaemonCliQueryIdentity,
+    runtime: ContainerCliQueryRuntime,
+}
+
+impl HostDaemonCliQueryStartup {
+    fn from_policy(policy: &HostDaemonCliQueryPolicy) -> Self {
+        Self {
+            identity: policy.identity(),
+            runtime: ContainerCliQueryRuntime::from_policy(policy),
+        }
+    }
+
+    #[cfg(test)]
+    fn from_policy_with_runtime_command(
+        policy: &HostDaemonCliQueryPolicy,
+        runtime_command: Arc<dyn crate::runtime::command::RuntimeCommandRunner>,
+    ) -> Self {
+        Self {
+            identity: policy.identity(),
+            runtime: ContainerCliQueryRuntime::from_policy_with_runtime_command(
+                policy,
+                runtime_command,
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct HostDaemonMetadata {
     protocol_version: u16,
@@ -138,37 +168,6 @@ struct HostDaemonMetadata {
     socket_mode: u32,
     socket_dev: u64,
     socket_ino: u64,
-}
-
-struct HostDaemonCliQueryRuntime {
-    policy: HostDaemonCliQueryPolicy,
-    service: Option<Arc<ContainerCliQueryService>>,
-}
-
-impl HostDaemonCliQueryRuntime {
-    fn system(policy: HostDaemonCliQueryPolicy) -> Self {
-        let service = match &policy {
-            HostDaemonCliQueryPolicy::Disabled => None,
-            HostDaemonCliQueryPolicy::Enabled(context) => {
-                Some(Arc::new(ContainerCliQueryService::new(context.clone())))
-            }
-        };
-        Self { policy, service }
-    }
-
-    #[cfg(test)]
-    fn with_runtime_command(
-        policy: HostDaemonCliQueryPolicy,
-        runtime_command: Arc<dyn crate::runtime::command::RuntimeCommandRunner>,
-    ) -> Self {
-        let service = match &policy {
-            HostDaemonCliQueryPolicy::Disabled => None,
-            HostDaemonCliQueryPolicy::Enabled(context) => Some(Arc::new(
-                ContainerCliQueryService::with_runtime_command(context.clone(), runtime_command),
-            )),
-        };
-        Self { policy, service }
-    }
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -248,8 +247,6 @@ impl HostDaemon {
         cli_query_policy: HostDaemonCliQueryPolicy,
         cli_query_runner: Arc<dyn crate::runtime::command::RuntimeCommandRunner>,
     ) -> Result<Self> {
-        let cli_query_runtime =
-            HostDaemonCliQueryRuntime::with_runtime_command(cli_query_policy, cli_query_runner);
         Self::start_with_access_and_cli_query_runtime(
             runtime_dir,
             HostDaemonAccess::private(),
@@ -257,7 +254,10 @@ impl HostDaemon {
             current_gid(),
             Arc::new(SystemGitCredentialExecutor),
             GitHttpsMode::HostHelper,
-            cli_query_runtime,
+            HostDaemonCliQueryStartup::from_policy_with_runtime_command(
+                &cli_query_policy,
+                cli_query_runner,
+            ),
         )
         .await
     }
@@ -295,7 +295,7 @@ impl HostDaemon {
             remote_group_id,
             git_credentials,
             git_https_mode,
-            HostDaemonCliQueryRuntime::system(cli_query_policy),
+            HostDaemonCliQueryStartup::from_policy(&cli_query_policy),
         )
         .await
     }
@@ -307,7 +307,7 @@ impl HostDaemon {
         remote_group_id: u32,
         git_credentials: Arc<dyn GitCredentialExecutor>,
         git_https_mode: GitHttpsMode,
-        cli_query_runtime: HostDaemonCliQueryRuntime,
+        cli_query_startup: HostDaemonCliQueryStartup,
     ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
         prepare_runtime_dir(&runtime_dir, access)?;
@@ -328,7 +328,7 @@ impl HostDaemon {
             allowed_peer_uid,
             remote_group_id,
             git_https_mode,
-            &cli_query_runtime.policy.identity(),
+            &cli_query_startup.identity,
             access,
         )
         .inspect_err(|_| {
@@ -336,14 +336,12 @@ impl HostDaemon {
             cleanup_host_daemon_socket_file(&socket_path);
         })?;
 
-        let HostDaemonCliQueryRuntime { policy, service } = cli_query_runtime;
         let task = tokio::spawn(run_host_daemon(
             listener,
             allowed_peer_uid,
             git_credentials,
             git_https_mode,
-            policy,
-            service,
+            cli_query_startup.runtime,
             Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS)),
         ));
 
@@ -715,11 +713,9 @@ async fn run_host_daemon(
     allowed_peer_uid: u32,
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
-    cli_query_policy: HostDaemonCliQueryPolicy,
-    cli_query_service: Option<Arc<ContainerCliQueryService>>,
+    cli_query_runtime: ContainerCliQueryRuntime,
     active_connections: Arc<Semaphore>,
 ) {
-    let cli_query_policy = Arc::new(cli_query_policy);
     // Keep accepted connections owned by the accept loop so cancelling the daemon
     // also cancels every in-flight connection.
     let mut connection_tasks = JoinSet::new();
@@ -738,11 +734,15 @@ async fn run_host_daemon(
             stream,
             Arc::clone(&git_credentials),
             git_https_mode,
-            Arc::clone(&cli_query_policy),
-            cli_query_service.clone(),
+            cli_query_runtime.clone(),
             connection_permit,
         )));
     }
+    // The accept loop exited on its own (accept failure): stop accepting new
+    // connections immediately, but let in-flight connections finish their bounded
+    // work. Daemon stop and drop still abort them by dropping this JoinSet.
+    drop(listener);
+    while connection_tasks.join_next().await.is_some() {}
 }
 
 fn peer_uid_is_allowed(stream: &UnixStream, allowed_uid: u32) -> bool {
@@ -755,8 +755,7 @@ async fn handle_connection(
     mut stream: UnixStream,
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
-    cli_query_policy: Arc<HostDaemonCliQueryPolicy>,
-    cli_query_service: Option<Arc<ContainerCliQueryService>>,
+    cli_query_runtime: ContainerCliQueryRuntime,
     _connection_permit: OwnedSemaphorePermit,
 ) {
     let Ok(request) = read_host_daemon_request(&mut stream).await else {
@@ -773,18 +772,12 @@ async fn handle_connection(
             &request,
             git_credentials.as_ref(),
             git_https_mode,
-            cli_query_policy.as_ref(),
+            &cli_query_runtime,
         ) {
             HostDaemonRequestDispatch::Respond(response) => {
                 serialize_host_daemon_response(&response)
             }
-            HostDaemonRequestDispatch::CliQuery(query) => match cli_query_service {
-                Some(service) => service.execute(query).await,
-                None => serialize_host_daemon_response(&HostDaemonResponse::error(
-                    ERROR_CODE_CLI_QUERY_FAILED,
-                    "Container CLI query failed",
-                )),
-            },
+            HostDaemonRequestDispatch::CliQuery { query, service } => service.execute(query).await,
         }
     };
     let Ok(response) = response else {
@@ -870,6 +863,7 @@ mod tests {
         host::{
             credentials::{GitCredentialCommand, GitCredentialExecutor},
             forward::{ForwardStatusSource, forward_status_dir, start_forward_status_server},
+            query::ContainerCliQueryRuntime,
         },
         runtime::command::{FakeRuntimeCommand, RuntimeOutput},
     };
@@ -1388,8 +1382,7 @@ mod tests {
                 current_uid(),
                 Arc::new(StaticGitCredentialExecutor),
                 GitHttpsMode::HostHelper,
-                HostDaemonCliQueryPolicy::Disabled,
-                None,
+                ContainerCliQueryRuntime::Disabled,
                 active_connections,
             ));
 
@@ -1416,6 +1409,63 @@ mod tests {
             drop(held_permits);
             daemon_task.abort();
             assert!(daemon_task.await.unwrap_err().is_cancelled());
+        });
+    }
+
+    #[test]
+    fn daemon_accept_loop_exit_drains_in_flight_connections() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let socket_path = temp.path().join("host-daemon.sock");
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            let active_connections = Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS));
+            let daemon_task = tokio::spawn(run_host_daemon(
+                listener,
+                current_uid(),
+                Arc::new(StaticGitCredentialExecutor),
+                GitHttpsMode::HostHelper,
+                ContainerCliQueryRuntime::Disabled,
+                Arc::clone(&active_connections),
+            ));
+
+            let mut in_flight = UnixStream::connect(&socket_path).await.unwrap();
+            in_flight.write_all(b"{").await.unwrap();
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            // Closing the semaphore fails the next admission, which exits the accept
+            // loop through the same path as an accept failure. The connection accepted
+            // with the already-held permit triggers that next admission.
+            active_connections.close();
+            let last_accepted = UnixStream::connect(&socket_path).await.unwrap();
+            let mut accept_loop_exited = false;
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+                if UnixStream::connect(&socket_path).await.is_err() {
+                    accept_loop_exited = true;
+                    break;
+                }
+            }
+            assert!(accept_loop_exited);
+
+            in_flight
+                .write_all(br#""version":1,"type":"credential"}"#)
+                .await
+                .unwrap();
+            in_flight.shutdown().await.unwrap();
+            let mut response = Vec::new();
+            in_flight.read_to_end(&mut response).await.unwrap();
+            let response: Value = serde_json::from_slice(&response).unwrap();
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"]["code"], "invalid_request");
+
+            drop(last_accepted);
+            daemon_task.await.unwrap();
         });
     }
 
