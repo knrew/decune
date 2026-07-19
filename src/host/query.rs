@@ -6,7 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use decune_container_protocol::{
     ERROR_CODE_CLI_QUERY_BUSY, ERROR_CODE_CLI_QUERY_FAILED, ERROR_CODE_CLI_QUERY_TIMEOUT,
     HostDaemonResponse,
@@ -623,7 +623,6 @@ impl ContainerQueryCoordinator {
     }
 }
 
-#[derive(Clone)]
 pub(super) struct ContainerCliQueryService {
     coordinator: ContainerQueryCoordinator,
     active_queries: Arc<Semaphore>,
@@ -661,7 +660,7 @@ impl ContainerCliQueryService {
         )
     }
 
-    pub(super) async fn execute(&self, query: ContainerCliQuery) -> HostDaemonResponse {
+    pub(super) async fn execute(&self, query: ContainerCliQuery) -> Result<Vec<u8>> {
         bounded_cli_query_response(&self.active_queries, self.query_timeout, || async {
             render_container_cli_query(&self.coordinator, query).await
         })
@@ -686,22 +685,26 @@ async fn bounded_cli_query_response<F, Fut>(
     active_queries: &Semaphore,
     query_timeout: Duration,
     execute: F,
-) -> HostDaemonResponse
+) -> Result<Vec<u8>>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<HostDaemonResponse>>,
 {
     let Ok(permit) = active_queries.try_acquire() else {
-        return HostDaemonResponse::error(
+        return serialize_cli_query_response(&HostDaemonResponse::error(
             ERROR_CODE_CLI_QUERY_BUSY,
             "Container CLI query capacity is exhausted",
-        );
+        ));
     };
-    let result = tokio::time::timeout(query_timeout, execute()).await;
+    let result = tokio::time::timeout(query_timeout, async {
+        let response = execute().await?;
+        serialize_cli_query_response(&response)
+    })
+    .await;
     drop(permit);
 
-    match result {
-        Ok(Ok(response)) => response,
+    let response = match result {
+        Ok(Ok(response)) => return Ok(response),
         Ok(Err(_error)) => {
             HostDaemonResponse::error(ERROR_CODE_CLI_QUERY_FAILED, "Container CLI query failed")
         }
@@ -709,7 +712,12 @@ where
             ERROR_CODE_CLI_QUERY_TIMEOUT,
             "Container CLI query timed out",
         ),
-    }
+    };
+    serialize_cli_query_response(&response)
+}
+
+fn serialize_cli_query_response(response: &HostDaemonResponse) -> Result<Vec<u8>> {
+    serde_json::to_vec(response).context("Failed to serialize container CLI query response")
 }
 
 async fn render_container_cli_query(
@@ -866,6 +874,10 @@ mod tests {
     const RAW_STDERR: &str = "raw-stderr-secret-marker";
     const RAW_PROJECT_LABEL: &str = "raw-project-label-secret-marker";
     const SECRET: &str = "container-secret-marker";
+
+    fn decode_response(response: Result<Vec<u8>>) -> HostDaemonResponse {
+        serde_json::from_slice(&response.unwrap()).unwrap()
+    }
 
     #[derive(Default)]
     struct FakeClock {
@@ -1482,9 +1494,9 @@ mod tests {
                 CONTAINER_CLI_QUERY_TIMEOUT,
             );
 
-            let status = service.execute(ContainerCliQuery::StatusText).await;
-            let ports_text = service.execute(ContainerCliQuery::PortsText).await;
-            let ports_json = service.execute(ContainerCliQuery::PortsJson).await;
+            let status = decode_response(service.execute(ContainerCliQuery::StatusText).await);
+            let ports_text = decode_response(service.execute(ContainerCliQuery::PortsText).await);
+            let ports_json = decode_response(service.execute(ContainerCliQuery::PortsJson).await);
 
             assert!(status.ok);
             assert!(status.error.is_none());
@@ -1537,7 +1549,7 @@ mod tests {
                 CONTAINER_CLI_QUERY_TIMEOUT,
             );
 
-            let response = service.execute(ContainerCliQuery::PortsJson).await;
+            let response = decode_response(service.execute(ContainerCliQuery::PortsJson).await);
 
             assert!(response.ok);
             assert_eq!(
@@ -1599,15 +1611,17 @@ mod tests {
             let busy_executed = Arc::new(AtomicBool::new(false));
             let busy_executed_for_query = Arc::clone(&busy_executed);
 
-            let busy = bounded_cli_query_response(
-                &active_queries,
-                CONTAINER_CLI_QUERY_TIMEOUT,
-                || async move {
-                    busy_executed_for_query.store(true, Ordering::SeqCst);
-                    Ok(HostDaemonResponse::success("must not execute"))
-                },
-            )
-            .await;
+            let busy = decode_response(
+                bounded_cli_query_response(
+                    &active_queries,
+                    CONTAINER_CLI_QUERY_TIMEOUT,
+                    || async move {
+                        busy_executed_for_query.store(true, Ordering::SeqCst);
+                        Ok(HostDaemonResponse::success("must not execute"))
+                    },
+                )
+                .await,
+            );
 
             assert!(!busy.ok);
             assert_eq!(busy.error.unwrap().code, ERROR_CODE_CLI_QUERY_BUSY);
@@ -1617,7 +1631,7 @@ mod tests {
 
             release.add_permits(ACTIVE_CONTAINER_CLI_QUERIES);
             for task in tasks {
-                assert!(task.await.unwrap().ok);
+                assert!(decode_response(task.await.unwrap()).ok);
             }
         });
     }
@@ -1640,19 +1654,21 @@ mod tests {
             });
             tokio::task::yield_now().await;
             tokio::time::advance(CONTAINER_CLI_QUERY_TIMEOUT).await;
-            let timed_out = timeout_task.await.unwrap();
+            let timed_out = decode_response(timeout_task.await.unwrap());
 
             assert!(!timed_out.ok);
             assert_eq!(timed_out.error.unwrap().code, ERROR_CODE_CLI_QUERY_TIMEOUT);
             assert!(timed_out.output.is_none());
             assert!(timed_out.warnings.is_empty());
 
-            let fatal = bounded_cli_query_response(
-                &active_queries,
-                CONTAINER_CLI_QUERY_TIMEOUT,
-                || async { anyhow::bail!("fatal error containing {SECRET} and {HOST_PATH}") },
-            )
-            .await;
+            let fatal = decode_response(
+                bounded_cli_query_response(
+                    &active_queries,
+                    CONTAINER_CLI_QUERY_TIMEOUT,
+                    || async { anyhow::bail!("fatal error containing {SECRET} and {HOST_PATH}") },
+                )
+                .await,
+            );
             let serialized = serde_json::to_string(&fatal).unwrap();
 
             assert!(!fatal.ok);
