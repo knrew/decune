@@ -1,10 +1,12 @@
 use std::{
     ffi::OsString,
-    fmt::{Debug, Display},
+    fmt::{Debug, Display, Write as _},
     ops::{Deref, DerefMut},
 };
 
 use assert_cmd::Command;
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 pub(crate) use predicates::prelude::*;
 pub(crate) use std::{
@@ -34,6 +36,27 @@ pub fn acquire_exclusive_docker_resource_lock() -> anyhow::Result<impl Drop> {
 
 const DECUNE_DOCKER_RESOURCE_LOCK_ENV: &str = "DECUNE_DOCKER_RESOURCE_LOCK";
 const DECUNE_FAKE_COMPOSE_CAPABILITIES_ENV: &str = "DECUNE_FAKE_COMPOSE_CAPABILITIES";
+const FAKE_CONTAINER_TOOL_NAMES: [&str; 3] =
+    ["git-credential-decune", "decune-forward-agent", "decune"];
+const FAKE_CONTAINER_TOOL_PLATFORMS: [&str; 2] = ["linux-amd64", "linux-arm64"];
+const FAKE_CONTAINER_TOOLS_PROTOCOL_VERSION: u32 = 1;
+const FAKE_CONTAINER_TOOLS_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct FakeContainerToolsManifest {
+    schema_version: u32,
+    protocol_version: u32,
+    tools: Vec<FakeContainerToolsManifestEntry>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+struct FakeContainerToolsManifestEntry {
+    name: String,
+    platform: String,
+    path: String,
+    sha256: String,
+}
 
 pub(crate) struct TestCommand {
     command: Command,
@@ -211,20 +234,42 @@ pub(crate) fn fake_path_with_commands(
 }
 
 pub(crate) fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {
+    let mut tools =
+        Vec::with_capacity(FAKE_CONTAINER_TOOL_NAMES.len() * FAKE_CONTAINER_TOOL_PLATFORMS.len());
+    let mut sums = String::new();
+
+    for platform in FAKE_CONTAINER_TOOL_PLATFORMS {
+        for name in FAKE_CONTAINER_TOOL_NAMES {
+            let contents = format!("fake {name} for {platform}\n");
+            let relative_path = PathBuf::from(platform).join(name);
+            let sha256 = names::hex_lower(&Sha256::digest(contents.as_bytes()));
+            workspace
+                .write_executable(
+                    Path::new("container-tools").join(&relative_path),
+                    contents.as_bytes(),
+                )
+                .must();
+            writeln!(sums, "{sha256}  {}", relative_path.display()).must();
+            tools.push(FakeContainerToolsManifestEntry {
+                name: name.to_owned(),
+                platform: platform.to_owned(),
+                path: relative_path.to_string_lossy().into_owned(),
+                sha256,
+            });
+        }
+    }
+
+    let manifest = FakeContainerToolsManifest {
+        schema_version: FAKE_CONTAINER_TOOLS_SCHEMA_VERSION,
+        protocol_version: FAKE_CONTAINER_TOOLS_PROTOCOL_VERSION,
+        tools,
+    };
+    let manifest = serde_json::to_string(&manifest).must();
     workspace
-        .write_file("container-tools/linux-amd64/decune-forward-agent", b"agent")
+        .write_file("container-tools/manifest.json", format!("{manifest}\n"))
         .must();
     workspace
-        .write_file(
-            "container-tools/linux-amd64/git-credential-decune",
-            b"helper",
-        )
-        .must();
-    workspace
-        .write_file(
-            "container-tools/manifest.json",
-            FAKE_CONTAINER_TOOLS_MANIFEST,
-        )
+        .write_file("container-tools/SHA256SUMS", sums)
         .must();
     workspace.path().join("container-tools")
 }
@@ -237,11 +282,65 @@ fn find_host_executable(name: &str) -> Option<PathBuf> {
         .find(|candidate| candidate.is_file())
 }
 
-const FAKE_CONTAINER_TOOLS_MANIFEST: &str = r#"{"schemaVersion":1,"protocolVersion":1,"tools":[{"name":"decune-forward-agent","platform":"linux-amd64","path":"linux-amd64/decune-forward-agent","sha256":"d4f0bc5a29de06b510f9aa428f1eedba926012b591fef7a518e776a7c9bd1824"},{"name":"git-credential-decune","platform":"linux-amd64","path":"linux-amd64/git-credential-decune","sha256":"e81d3b0e9d82feaaf5f6e55bdff24731d7eee08632ffa63801e6397290c5d20a"}]}"#;
-
 #[cfg(test)]
 mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
     use super::*;
+
+    #[test]
+    fn fake_container_tools_bundle_matches_complete_external_contract() {
+        let workspace = support::TempWorkspace::new().must();
+        let bundle = fake_container_tools_bundle(&workspace);
+        let manifest: FakeContainerToolsManifest =
+            serde_json::from_slice(&fs::read(bundle.join("manifest.json")).must()).must();
+        let sums = fs::read_to_string(bundle.join("SHA256SUMS")).must();
+        let sum_lines = sums.lines().count();
+        let sums = sums
+            .lines()
+            .map(|line| {
+                let (sha256, path) = line.split_once("  ").must();
+                (path.to_owned(), sha256.to_owned())
+            })
+            .collect::<BTreeMap<_, _>>();
+        let expected_tools = FAKE_CONTAINER_TOOL_PLATFORMS
+            .into_iter()
+            .flat_map(|platform| {
+                FAKE_CONTAINER_TOOL_NAMES
+                    .into_iter()
+                    .map(move |name| (name, platform))
+            })
+            .collect::<BTreeSet<_>>();
+        let actual_tools = manifest
+            .tools
+            .iter()
+            .map(|entry| (entry.name.as_str(), entry.platform.as_str()))
+            .collect::<BTreeSet<_>>();
+
+        assert_eq!(manifest.schema_version, FAKE_CONTAINER_TOOLS_SCHEMA_VERSION);
+        assert_eq!(
+            manifest.protocol_version,
+            FAKE_CONTAINER_TOOLS_PROTOCOL_VERSION
+        );
+        assert_eq!(manifest.tools.len(), expected_tools.len());
+        assert_eq!(actual_tools, expected_tools);
+        assert_eq!(sum_lines, expected_tools.len());
+        assert_eq!(sums.len(), expected_tools.len());
+
+        for entry in manifest.tools {
+            let relative_path = PathBuf::from(&entry.platform).join(&entry.name);
+            let artifact = bundle.join(&relative_path);
+            let metadata = fs::metadata(&artifact).must();
+            let contents = fs::read(&artifact).must();
+            let sha256 = names::hex_lower(&Sha256::digest(&contents));
+
+            assert_eq!(Path::new(&entry.path), relative_path);
+            assert!(metadata.is_file());
+            assert_eq!(metadata.permissions().mode() & 0o777, 0o755);
+            assert_eq!(entry.sha256, sha256);
+            assert_eq!(sums.get(&entry.path), Some(&entry.sha256));
+        }
+    }
 
     #[test]
     fn support_fixture_template_and_executable_helpers_are_available_to_cli_tests() {
