@@ -1532,7 +1532,7 @@ user-facing symlink:
 
 ## 13. 診断コード
 
-この章は decune 固有の診断コードの発生条件を定義する。対処手順は仕様の対象外であり、[usage.md](usage.md) のガイドを参照する。
+この章は decune 固有の診断コードの発生条件を定義する。対処手順は仕様の対象外であり、[ports.md](ports.md) と [clone-isolation.md](clone-isolation.md) のトラブルシューティングを参照する。
 
 ### 13.1 Compose published port
 
