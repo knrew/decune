@@ -390,7 +390,10 @@ impl QueryEvidenceCache {
                             receiver: receiver.clone(),
                         },
                     );
-                    (QueryCacheLookup::Wait(receiver), Some((key, hint, sender)))
+                    (
+                        QueryCacheLookup::Wait(receiver),
+                        Some((key.clone(), hint, sender)),
+                    )
                 }
             };
             drop(entries);
@@ -402,7 +405,7 @@ impl QueryEvidenceCache {
 
         match lookup {
             QueryCacheLookup::Hit(result) => result,
-            QueryCacheLookup::Wait(receiver) => wait_for_load(receiver).await,
+            QueryCacheLookup::Wait(receiver) => wait_for_load(&self.inner, &key, receiver).await,
         }
     }
 
@@ -480,6 +483,8 @@ fn cache_entry_is_fresh(
 }
 
 async fn wait_for_load(
+    inner: &QueryEvidenceCacheInner,
+    key: &QueryEvidenceKey,
     mut receiver: watch::Receiver<Option<QueryEvidenceResult>>,
 ) -> QueryEvidenceResult {
     loop {
@@ -488,8 +493,34 @@ async fn wait_for_load(
             return result;
         }
         if receiver.changed().await.is_err() {
+            cache_closed_load_failure(inner, key, &receiver);
             return Err(QueryEvidenceFailure::Unavailable);
         }
+    }
+}
+
+fn cache_closed_load_failure(
+    inner: &QueryEvidenceCacheInner,
+    key: &QueryEvidenceKey,
+    closed_receiver: &watch::Receiver<Option<QueryEvidenceResult>>,
+) {
+    let mut entries = inner
+        .entries
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let load_is_current = matches!(
+        entries.get(key),
+        Some(QueryCacheEntry::Loading { receiver })
+            if receiver.same_channel(closed_receiver)
+    );
+    if load_is_current {
+        entries.insert(
+            key.clone(),
+            QueryCacheEntry::Ready {
+                result: Err(QueryEvidenceFailure::Unavailable),
+                completed_at: inner.clock.now(),
+            },
+        );
     }
 }
 
@@ -719,6 +750,7 @@ mod tests {
             VecDeque<std::result::Result<ContainerQueryContainersEvidence, QueryEvidenceFailure>>,
         >,
         container_calls: AtomicUsize,
+        panic_on_container_call: Option<usize>,
     }
 
     impl QueueSource {
@@ -730,6 +762,17 @@ mod tests {
             Self {
                 container_results: Mutex::new(results.into_iter().collect()),
                 container_calls: AtomicUsize::new(0),
+                panic_on_container_call: None,
+            }
+        }
+
+        fn panic_once_then(
+            result: std::result::Result<ContainerQueryContainersEvidence, QueryEvidenceFailure>,
+        ) -> Self {
+            Self {
+                container_results: Mutex::new(VecDeque::from([result])),
+                container_calls: AtomicUsize::new(0),
+                panic_on_container_call: Some(0),
             }
         }
     }
@@ -764,7 +807,12 @@ mod tests {
             std::result::Result<ContainerQueryContainersEvidence, QueryEvidenceFailure>,
         > {
             Box::pin(async move {
-                self.container_calls.fetch_add(1, Ordering::SeqCst);
+                let call = self.container_calls.fetch_add(1, Ordering::SeqCst);
+                assert_ne!(
+                    self.panic_on_container_call,
+                    Some(call),
+                    "simulated query evidence load panic"
+                );
                 self.container_results.lock().unwrap().pop_front().unwrap()
             })
         }
@@ -1153,6 +1201,61 @@ mod tests {
             assert!(leader.await.unwrap_err().is_cancelled());
             assert_eq!(source.calls.load(Ordering::SeqCst), 1);
         });
+    }
+
+    #[test]
+    fn load_task_panic_wakes_waiter_and_allows_retry_after_failure_ttl() {
+        run_async(async {
+            let clock = Arc::new(FakeClock::default());
+            let source = Arc::new(QueueSource::panic_once_then(Ok(container_evidence(
+                "after-panic",
+            ))));
+            let cache = test_cache(Arc::clone(&source), Arc::clone(&clock), 2);
+            let key = key(WORKSPACE_ID, QueryEvidenceKind::Containers);
+
+            assert_eq!(
+                cache.get(key.clone(), empty_hint()).await,
+                Err(QueryEvidenceFailure::Unavailable)
+            );
+            clock.advance(Duration::from_millis(499));
+            assert_eq!(
+                cache.get(key.clone(), empty_hint()).await,
+                Err(QueryEvidenceFailure::Unavailable)
+            );
+            assert_eq!(source.container_calls.load(Ordering::SeqCst), 1);
+
+            clock.advance(Duration::from_millis(1));
+            assert_eq!(
+                cache.get(key, empty_hint()).await.unwrap(),
+                QueryEvidence::Containers(container_evidence("after-panic"))
+            );
+            assert_eq!(source.container_calls.load(Ordering::SeqCst), 2);
+        });
+    }
+
+    #[test]
+    fn stale_closed_load_does_not_overwrite_a_new_load_generation() {
+        let source = Arc::new(QueueSource::new([]));
+        let cache = test_cache(source, Arc::new(FakeClock::default()), 2);
+        let key = key(WORKSPACE_ID, QueryEvidenceKind::Containers);
+        let (closed_sender, closed_receiver) = watch::channel::<Option<QueryEvidenceResult>>(None);
+        let (_current_sender, current_receiver) =
+            watch::channel::<Option<QueryEvidenceResult>>(None);
+        drop(closed_sender);
+        cache.inner.entries.lock().unwrap().insert(
+            key.clone(),
+            QueryCacheEntry::Loading {
+                receiver: current_receiver.clone(),
+            },
+        );
+
+        cache_closed_load_failure(&cache.inner, &key, &closed_receiver);
+
+        assert!(matches!(
+            cache.inner.entries.lock().unwrap().get(&key),
+            Some(QueryCacheEntry::Loading { receiver })
+                if receiver.same_channel(&current_receiver)
+        ));
     }
 
     #[test]
