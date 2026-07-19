@@ -270,6 +270,7 @@ impl HostDaemon {
             git_credentials,
             git_https_mode,
             cli_query_policy,
+            Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS)),
         ));
 
         Ok(Self {
@@ -641,6 +642,7 @@ async fn run_host_daemon(
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
     cli_query_policy: HostDaemonCliQueryPolicy,
+    active_connections: Arc<Semaphore>,
 ) {
     let cli_query_service = match &cli_query_policy {
         HostDaemonCliQueryPolicy::Disabled => None,
@@ -649,7 +651,6 @@ async fn run_host_daemon(
         }
     };
     let cli_query_policy = Arc::new(cli_query_policy);
-    let active_connections = Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS));
     // Keep accepted connections owned by the accept loop so cancelling the daemon
     // also cancels every in-flight connection.
     let mut connection_tasks = JoinSet::new();
@@ -783,6 +784,7 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{UnixListener, UnixStream},
+        sync::Semaphore,
     };
 
     use super::{
@@ -790,7 +792,7 @@ mod tests {
         HOST_DAEMON_RESPONSE_WRITE_TIMEOUT, HostDaemon, HostDaemonAccess, HostDaemonGitHttpsMode,
         HostDaemonMetadata, MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket, current_gid,
         current_uid, host_daemon_metadata_is_version_incompatible, peer_uid_is_allowed,
-        write_host_daemon_response,
+        run_host_daemon, write_host_daemon_response,
     };
     use crate::host::query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy};
     use crate::{
@@ -1290,7 +1292,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_leaves_connections_beyond_thirty_two_in_listener_backlog() {
+    fn daemon_leaves_connection_in_listener_backlog_while_all_permits_are_held() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1298,48 +1300,50 @@ mod tests {
         let temp = TempDir::new().unwrap();
 
         runtime.block_on(async {
-            let daemon = HostDaemon::start(temp.path().join("runtime"))
-                .await
-                .unwrap();
-            let mut held_connections = Vec::new();
+            let socket_path = temp.path().join("host-daemon.sock");
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            let active_connections = Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS));
+            let mut held_permits = Vec::with_capacity(ACTIVE_HOST_DAEMON_CONNECTIONS);
             for _ in 0..ACTIVE_HOST_DAEMON_CONNECTIONS {
-                let mut stream = UnixStream::connect(daemon.socket_path()).await.unwrap();
-                stream.write_all(b"{").await.unwrap();
-                held_connections.push(stream);
-                tokio::task::yield_now().await;
+                held_permits.push(
+                    Arc::clone(&active_connections)
+                        .acquire_owned()
+                        .await
+                        .unwrap(),
+                );
             }
+            let daemon_task = tokio::spawn(run_host_daemon(
+                listener,
+                current_uid(),
+                Arc::new(StaticGitCredentialExecutor),
+                GitHttpsMode::HostHelper,
+                HostDaemonCliQueryPolicy::Disabled,
+                active_connections,
+            ));
 
-            let mut backlogged = UnixStream::connect(daemon.socket_path()).await.unwrap();
+            let mut backlogged = UnixStream::connect(&socket_path).await.unwrap();
             backlogged
                 .write_all(br#"{"version":1,"type":"credential"}"#)
                 .await
                 .unwrap();
             backlogged.shutdown().await.unwrap();
-            let mut response = Vec::new();
-
-            assert!(
-                tokio::time::timeout(
-                    std::time::Duration::from_millis(100),
-                    backlogged.read_to_end(&mut response),
-                )
-                .await
-                .is_err()
+            tokio::task::yield_now().await;
+            let mut byte = [0_u8; 1];
+            assert_eq!(
+                backlogged.try_read(&mut byte).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
             );
 
-            drop(held_connections.remove(0));
-            tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                backlogged.read_to_end(&mut response),
-            )
-            .await
-            .unwrap()
-            .unwrap();
+            drop(held_permits.pop());
+            let mut response = Vec::new();
+            backlogged.read_to_end(&mut response).await.unwrap();
             let response: Value = serde_json::from_slice(&response).unwrap();
             assert_eq!(response["ok"], false);
             assert_eq!(response["error"]["code"], "invalid_request");
 
-            drop(held_connections);
-            daemon.stop().await.unwrap();
+            drop(held_permits);
+            daemon_task.abort();
+            assert!(daemon_task.await.unwrap_err().is_cancelled());
         });
     }
 
