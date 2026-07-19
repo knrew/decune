@@ -140,6 +140,37 @@ struct HostDaemonMetadata {
     socket_ino: u64,
 }
 
+struct HostDaemonCliQueryRuntime {
+    policy: HostDaemonCliQueryPolicy,
+    service: Option<Arc<ContainerCliQueryService>>,
+}
+
+impl HostDaemonCliQueryRuntime {
+    fn system(policy: HostDaemonCliQueryPolicy) -> Self {
+        let service = match &policy {
+            HostDaemonCliQueryPolicy::Disabled => None,
+            HostDaemonCliQueryPolicy::Enabled(context) => {
+                Some(Arc::new(ContainerCliQueryService::new(context.clone())))
+            }
+        };
+        Self { policy, service }
+    }
+
+    #[cfg(test)]
+    fn with_runtime_command(
+        policy: HostDaemonCliQueryPolicy,
+        runtime_command: Arc<dyn crate::runtime::command::RuntimeCommandRunner>,
+    ) -> Self {
+        let service = match &policy {
+            HostDaemonCliQueryPolicy::Disabled => None,
+            HostDaemonCliQueryPolicy::Enabled(context) => Some(Arc::new(
+                ContainerCliQueryService::with_runtime_command(context.clone(), runtime_command),
+            )),
+        };
+        Self { policy, service }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 enum HostDaemonGitHttpsMode {
@@ -212,6 +243,26 @@ impl HostDaemon {
     }
 
     #[cfg(test)]
+    async fn start_with_cli_query_runner(
+        runtime_dir: impl AsRef<Path>,
+        cli_query_policy: HostDaemonCliQueryPolicy,
+        cli_query_runner: Arc<dyn crate::runtime::command::RuntimeCommandRunner>,
+    ) -> Result<Self> {
+        let cli_query_runtime =
+            HostDaemonCliQueryRuntime::with_runtime_command(cli_query_policy, cli_query_runner);
+        Self::start_with_access_and_cli_query_runtime(
+            runtime_dir,
+            HostDaemonAccess::private(),
+            current_uid(),
+            current_gid(),
+            Arc::new(SystemGitCredentialExecutor),
+            GitHttpsMode::HostHelper,
+            cli_query_runtime,
+        )
+        .await
+    }
+
+    #[cfg(test)]
     pub(crate) async fn start_with_git_credential_executor(
         runtime_dir: impl AsRef<Path>,
         git_credentials: Arc<dyn GitCredentialExecutor>,
@@ -237,6 +288,27 @@ impl HostDaemon {
         git_https_mode: GitHttpsMode,
         cli_query_policy: HostDaemonCliQueryPolicy,
     ) -> Result<Self> {
+        Self::start_with_access_and_cli_query_runtime(
+            runtime_dir,
+            access,
+            allowed_peer_uid,
+            remote_group_id,
+            git_credentials,
+            git_https_mode,
+            HostDaemonCliQueryRuntime::system(cli_query_policy),
+        )
+        .await
+    }
+
+    async fn start_with_access_and_cli_query_runtime(
+        runtime_dir: impl AsRef<Path>,
+        access: HostDaemonAccess,
+        allowed_peer_uid: u32,
+        remote_group_id: u32,
+        git_credentials: Arc<dyn GitCredentialExecutor>,
+        git_https_mode: GitHttpsMode,
+        cli_query_runtime: HostDaemonCliQueryRuntime,
+    ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
         prepare_runtime_dir(&runtime_dir, access)?;
         let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
@@ -256,7 +328,7 @@ impl HostDaemon {
             allowed_peer_uid,
             remote_group_id,
             git_https_mode,
-            &cli_query_policy.identity(),
+            &cli_query_runtime.policy.identity(),
             access,
         )
         .inspect_err(|_| {
@@ -264,12 +336,14 @@ impl HostDaemon {
             cleanup_host_daemon_socket_file(&socket_path);
         })?;
 
+        let HostDaemonCliQueryRuntime { policy, service } = cli_query_runtime;
         let task = tokio::spawn(run_host_daemon(
             listener,
             allowed_peer_uid,
             git_credentials,
             git_https_mode,
-            cli_query_policy,
+            policy,
+            service,
             Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS)),
         ));
 
@@ -642,14 +716,9 @@ async fn run_host_daemon(
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
     cli_query_policy: HostDaemonCliQueryPolicy,
+    cli_query_service: Option<Arc<ContainerCliQueryService>>,
     active_connections: Arc<Semaphore>,
 ) {
-    let cli_query_service = match &cli_query_policy {
-        HostDaemonCliQueryPolicy::Disabled => None,
-        HostDaemonCliQueryPolicy::Enabled(context) => {
-            Some(Arc::new(ContainerCliQueryService::new(context.clone())))
-        }
-    };
     let cli_query_policy = Arc::new(cli_query_policy);
     loop {
         let Ok(connection_permit) = Arc::clone(&active_connections).acquire_owned().await else {
@@ -792,6 +861,7 @@ mod tests {
             credentials::{GitCredentialCommand, GitCredentialExecutor},
             forward::{ForwardStatusSource, forward_status_dir, start_forward_status_server},
         },
+        runtime::command::{FakeRuntimeCommand, RuntimeOutput},
     };
 
     #[derive(Debug)]
@@ -1213,12 +1283,11 @@ mod tests {
                 temp.path().join("state"),
                 runtime_dir.clone(),
             );
-            let daemon = HostDaemon::start_for_remote_user_with_git_https_mode(
+            let query_runner = empty_docker_query_runner(2);
+            let daemon = HostDaemon::start_with_cli_query_runner(
                 &runtime_dir,
-                current_uid(),
-                current_gid(),
-                GitHttpsMode::HostHelper,
                 policy,
+                Arc::new(query_runner.clone()),
             )
             .await
             .unwrap();
@@ -1237,6 +1306,7 @@ mod tests {
             assert_eq!(response["version"], 1);
             assert_eq!(response["ok"], true);
             assert!(response.get("error").is_none());
+            assert!(response.get("warnings").is_none());
             let output = response["output"].as_str().unwrap();
             assert!(output.contains("Workspace ID: 012345abcdef"));
             assert!(output.contains("Live workspace: not checked"));
@@ -1244,6 +1314,7 @@ mod tests {
             assert!(!output.ends_with("\n\n"));
             let serialized = response.to_string();
             assert!(!serialized.contains(&temp.path().display().to_string()));
+            assert_empty_docker_query_commands(&query_runner);
 
             daemon.stop().await.unwrap();
         });
@@ -1308,6 +1379,7 @@ mod tests {
                 Arc::new(StaticGitCredentialExecutor),
                 GitHttpsMode::HostHelper,
                 HostDaemonCliQueryPolicy::Disabled,
+                None,
                 active_connections,
             ));
 
@@ -1411,14 +1483,13 @@ mod tests {
                 temp.path().join("state"),
                 runtime_dir.clone(),
             );
+            let query_runner = empty_docker_query_runner(4);
             // The forwarding registries belong to independent session servers and are not
             // injected into the daemon. The daemon discovers every session through status_dir.
-            let daemon = HostDaemon::start_for_remote_user_with_git_https_mode(
+            let daemon = HostDaemon::start_with_cli_query_runner(
                 &runtime_dir,
-                current_uid(),
-                current_gid(),
-                GitHttpsMode::HostHelper,
                 policy,
+                Arc::new(query_runner.clone()),
             )
             .await
             .unwrap();
@@ -1435,8 +1506,10 @@ mod tests {
             .await;
             let output = two_sessions["output"].as_str().unwrap();
             assert_eq!(two_sessions["ok"], true);
+            assert!(two_sessions.get("warnings").is_none());
             assert!(output.contains("127.0.0.1:3001"));
             assert!(output.contains("127.0.0.1:5433"));
+            assert_empty_docker_query_commands(&query_runner);
 
             first_server.stop().await;
             let one_session = send_request(
@@ -1451,6 +1524,7 @@ mod tests {
             .await;
             let output = one_session["output"].as_str().unwrap();
             assert_eq!(one_session["ok"], true);
+            assert!(one_session.get("warnings").is_none());
             assert!(!output.contains("127.0.0.1:3001"));
             assert!(output.contains("127.0.0.1:5433"));
 
@@ -1612,6 +1686,38 @@ mod tests {
             require_local: false,
             label: None,
         }
+    }
+
+    fn empty_docker_query_runner(response_count: usize) -> FakeRuntimeCommand {
+        FakeRuntimeCommand::new(
+            std::iter::repeat_with(|| {
+                Ok(RuntimeOutput {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    exit_code: 0,
+                })
+            })
+            .take(response_count)
+            .collect(),
+        )
+    }
+
+    fn assert_empty_docker_query_commands(runner: &FakeRuntimeCommand) {
+        let commands = runner.commands();
+        assert_eq!(commands.len(), 2);
+        assert!(commands.iter().all(|command| command.program() == "docker"));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command.args_vec().first().is_some_and(|arg| arg == "ps"))
+        );
+        assert!(commands.iter().any(|command| {
+            command
+                .args_vec()
+                .first()
+                .is_some_and(|arg| arg == "volume")
+                && command.args_vec().get(1).is_some_and(|arg| arg == "ls")
+        }));
     }
 
     fn mode(path: &Path) -> u32 {

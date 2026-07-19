@@ -639,6 +639,28 @@ impl ContainerCliQueryService {
         }
     }
 
+    #[cfg(test)]
+    pub(super) fn with_runtime_command(
+        context: ContainerCliQueryContext,
+        runtime_command: Arc<dyn RuntimeCommandRunner>,
+    ) -> Self {
+        let query_runner =
+            QueryRuntimeCommandRunner::new(runtime_command, QUERY_DOCKER_COMMAND_TIMEOUT);
+        let source: Arc<dyn ContainerQuerySource> = Arc::new(SystemContainerQuerySource {
+            docker: DockerCli::new(Arc::new(query_runner)),
+        });
+        let coordinator = ContainerQueryCoordinator::with_source(
+            context,
+            source,
+            Arc::new(SystemQueryClock::new()),
+        );
+        Self::with_limits(
+            coordinator,
+            ACTIVE_CONTAINER_CLI_QUERIES,
+            CONTAINER_CLI_QUERY_TIMEOUT,
+        )
+    }
+
     pub(super) async fn execute(&self, query: ContainerCliQuery) -> HostDaemonResponse {
         bounded_cli_query_response(&self.active_queries, self.query_timeout, || async {
             render_container_cli_query(&self.coordinator, query).await
