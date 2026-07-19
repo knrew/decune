@@ -58,24 +58,10 @@ pub(crate) fn container_port_inventory(ports: &[ContainerPortSnapshot]) -> Vec<P
     inventory
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the container query daemon connects this pure seam in follow-up task #431"
-    )
-)]
 pub(crate) fn render_container_ports_text(ports: &[ContainerPortSnapshot]) -> String {
     render_ports_table(&container_port_inventory(ports), false)
 }
 
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the container query daemon connects this pure seam in follow-up task #431"
-    )
-)]
 pub(crate) fn render_container_ports_json(ports: &[ContainerPortSnapshot]) -> Result<String> {
     let inventory = container_port_inventory(ports);
     let mut output = serde_json::to_string_pretty(&inventory)

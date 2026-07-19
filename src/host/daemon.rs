@@ -10,16 +10,18 @@ use anyhow::{Context, Result, bail};
 use decune_container_protocol::ERROR_CODE_REQUEST_TOO_LARGE;
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{UnixListener, UnixStream},
-    task::JoinHandle,
+    sync::{OwnedSemaphorePermit, Semaphore},
+    task::{JoinHandle, JoinSet},
 };
 
 use crate::{
     config::types::GitHttpsMode,
     host::{
         credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
-        protocol::{HostDaemonResponse, handle_host_daemon_request},
+        protocol::{HostDaemonRequestDispatch, HostDaemonResponse, handle_host_daemon_request},
+        query::ContainerCliQueryRuntime,
         query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy},
         runtime::{
             create_runtime_dir, set_private_runtime_parent, set_runtime_dir_mode,
@@ -31,6 +33,9 @@ use crate::{
 const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
 const HOST_DAEMON_METADATA_NAME: &str = "host-daemon.json";
 const MAX_HOST_DAEMON_REQUEST_BYTES: usize = 64 * 1024;
+const ACTIVE_HOST_DAEMON_CONNECTIONS: usize = 32;
+const HOST_DAEMON_REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const HOST_DAEMON_RESPONSE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 pub(crate) const HOST_DAEMON_QUERY_IDENTITY_MISMATCH: &str = "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry";
 pub(crate) const HOST_DAEMON_VERSION_MISMATCH: &str = "An active decune up session uses an incompatible host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry";
 
@@ -122,6 +127,36 @@ impl fmt::Display for HostDaemonStartError {
 
 impl Error for HostDaemonStartError {}
 
+/// Metadata identity and dispatch runtime derived together from one policy, so the
+/// recorded reuse identity always matches the runtime serving queries.
+struct HostDaemonCliQueryStartup {
+    identity: HostDaemonCliQueryIdentity,
+    runtime: ContainerCliQueryRuntime,
+}
+
+impl HostDaemonCliQueryStartup {
+    fn from_policy(policy: &HostDaemonCliQueryPolicy) -> Self {
+        Self {
+            identity: policy.identity(),
+            runtime: ContainerCliQueryRuntime::from_policy(policy),
+        }
+    }
+
+    #[cfg(test)]
+    fn from_policy_with_runtime_command(
+        policy: &HostDaemonCliQueryPolicy,
+        runtime_command: Arc<dyn crate::runtime::command::RuntimeCommandRunner>,
+    ) -> Self {
+        Self {
+            identity: policy.identity(),
+            runtime: ContainerCliQueryRuntime::from_policy_with_runtime_command(
+                policy,
+                runtime_command,
+            ),
+        }
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 struct HostDaemonMetadata {
     protocol_version: u16,
@@ -207,6 +242,27 @@ impl HostDaemon {
     }
 
     #[cfg(test)]
+    async fn start_with_cli_query_runner(
+        runtime_dir: impl AsRef<Path>,
+        cli_query_policy: HostDaemonCliQueryPolicy,
+        cli_query_runner: Arc<dyn crate::runtime::command::RuntimeCommandRunner>,
+    ) -> Result<Self> {
+        Self::start_with_access_and_cli_query_runtime(
+            runtime_dir,
+            HostDaemonAccess::private(),
+            current_uid(),
+            current_gid(),
+            Arc::new(SystemGitCredentialExecutor),
+            GitHttpsMode::HostHelper,
+            HostDaemonCliQueryStartup::from_policy_with_runtime_command(
+                &cli_query_policy,
+                cli_query_runner,
+            ),
+        )
+        .await
+    }
+
+    #[cfg(test)]
     pub(crate) async fn start_with_git_credential_executor(
         runtime_dir: impl AsRef<Path>,
         git_credentials: Arc<dyn GitCredentialExecutor>,
@@ -232,6 +288,27 @@ impl HostDaemon {
         git_https_mode: GitHttpsMode,
         cli_query_policy: HostDaemonCliQueryPolicy,
     ) -> Result<Self> {
+        Self::start_with_access_and_cli_query_runtime(
+            runtime_dir,
+            access,
+            allowed_peer_uid,
+            remote_group_id,
+            git_credentials,
+            git_https_mode,
+            HostDaemonCliQueryStartup::from_policy(&cli_query_policy),
+        )
+        .await
+    }
+
+    async fn start_with_access_and_cli_query_runtime(
+        runtime_dir: impl AsRef<Path>,
+        access: HostDaemonAccess,
+        allowed_peer_uid: u32,
+        remote_group_id: u32,
+        git_credentials: Arc<dyn GitCredentialExecutor>,
+        git_https_mode: GitHttpsMode,
+        cli_query_startup: HostDaemonCliQueryStartup,
+    ) -> Result<Self> {
         let runtime_dir = runtime_dir.as_ref().to_path_buf();
         prepare_runtime_dir(&runtime_dir, access)?;
         let socket_path = runtime_dir.join(HOST_DAEMON_SOCKET_NAME);
@@ -251,7 +328,7 @@ impl HostDaemon {
             allowed_peer_uid,
             remote_group_id,
             git_https_mode,
-            &cli_query_policy.identity(),
+            &cli_query_startup.identity,
             access,
         )
         .inspect_err(|_| {
@@ -264,7 +341,8 @@ impl HostDaemon {
             allowed_peer_uid,
             git_credentials,
             git_https_mode,
-            cli_query_policy,
+            cli_query_startup.runtime,
+            Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS)),
         ));
 
         Ok(Self {
@@ -635,23 +713,36 @@ async fn run_host_daemon(
     allowed_peer_uid: u32,
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
-    cli_query_policy: HostDaemonCliQueryPolicy,
+    cli_query_runtime: ContainerCliQueryRuntime,
+    active_connections: Arc<Semaphore>,
 ) {
-    let cli_query_policy = Arc::new(cli_query_policy);
+    // Keep accepted connections owned by the accept loop so cancelling the daemon
+    // also cancels every in-flight connection.
+    let mut connection_tasks = JoinSet::new();
     loop {
+        while connection_tasks.try_join_next().is_some() {}
+        let Ok(connection_permit) = Arc::clone(&active_connections).acquire_owned().await else {
+            break;
+        };
         let Ok((stream, _)) = listener.accept().await else {
             break;
         };
         if !peer_uid_is_allowed(&stream, allowed_peer_uid) {
             continue;
         }
-        tokio::spawn(handle_connection(
+        drop(connection_tasks.spawn(handle_connection(
             stream,
             Arc::clone(&git_credentials),
             git_https_mode,
-            Arc::clone(&cli_query_policy),
-        ));
+            cli_query_runtime.clone(),
+            connection_permit,
+        )));
     }
+    // The accept loop exited on its own (accept failure): stop accepting new
+    // connections immediately, but let in-flight connections finish their bounded
+    // work. Daemon stop and drop still abort them by dropping this JoinSet.
+    drop(listener);
+    while connection_tasks.join_next().await.is_some() {}
 }
 
 fn peer_uid_is_allowed(stream: &UnixStream, allowed_uid: u32) -> bool {
@@ -664,45 +755,86 @@ async fn handle_connection(
     mut stream: UnixStream,
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
-    cli_query_policy: Arc<HostDaemonCliQueryPolicy>,
+    cli_query_runtime: ContainerCliQueryRuntime,
+    _connection_permit: OwnedSemaphorePermit,
 ) {
-    let mut request = Vec::new();
-    let read_failed = {
-        let Ok(limit) = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1) else {
-            return;
-        };
-        let mut limited_stream = (&mut stream).take(limit);
-        limited_stream.read_to_end(&mut request).await.is_err()
-    };
-    if read_failed {
+    let Ok(request) = read_host_daemon_request(&mut stream).await else {
         return;
-    }
+    };
 
     let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES {
-        HostDaemonResponse::error(
+        serialize_host_daemon_response(&HostDaemonResponse::error(
             ERROR_CODE_REQUEST_TOO_LARGE,
             format!("Host daemon request exceeds {MAX_HOST_DAEMON_REQUEST_BYTES} bytes"),
-        )
+        ))
     } else {
-        handle_host_daemon_request(
+        match handle_host_daemon_request(
             &request,
             git_credentials.as_ref(),
             git_https_mode,
-            cli_query_policy.as_ref(),
-        )
+            &cli_query_runtime,
+        ) {
+            HostDaemonRequestDispatch::Respond(response) => {
+                serialize_host_daemon_response(&response)
+            }
+            HostDaemonRequestDispatch::CliQuery { query, service } => service.execute(query).await,
+        }
     };
-    let Ok(response) = serde_json::to_vec(&response) else {
+    let Ok(response) = response else {
         return;
     };
 
-    _ = stream.write_all(&response).await;
-    _ = stream.shutdown().await;
+    _ = write_host_daemon_response(&mut stream, &response).await;
+}
+
+fn serialize_host_daemon_response(response: &HostDaemonResponse) -> Result<Vec<u8>> {
+    serde_json::to_vec(response).context("Failed to serialize host daemon response")
+}
+
+async fn read_host_daemon_request<R>(stream: &mut R) -> io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let limit = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1)
+        .map_err(|error| io::Error::other(format!("Invalid host daemon request limit: {error}")))?;
+    let mut request = Vec::new();
+    let read = async {
+        let mut limited_stream = stream.take(limit);
+        limited_stream.read_to_end(&mut request).await?;
+        Ok(request)
+    };
+    tokio::time::timeout(HOST_DAEMON_REQUEST_READ_TIMEOUT, read)
+        .await
+        .map_err(|_elapsed| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Timed out reading host daemon request",
+            )
+        })?
+}
+
+async fn write_host_daemon_response<W>(stream: &mut W, response: &[u8]) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let write = async {
+        stream.write_all(response).await?;
+        stream.shutdown().await
+    };
+    tokio::time::timeout(HOST_DAEMON_RESPONSE_WRITE_TIMEOUT, write)
+        .await
+        .map_err(|_elapsed| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Timed out writing host daemon response",
+            )
+        })?
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        fs, io,
         os::unix::fs::PermissionsExt,
         path::Path,
         sync::{Arc, Mutex},
@@ -714,17 +846,26 @@ mod tests {
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
         net::{UnixListener, UnixStream},
+        sync::Semaphore,
     };
 
     use super::{
-        HostDaemon, HostDaemonAccess, HostDaemonGitHttpsMode, HostDaemonMetadata,
-        MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket, current_gid, current_uid,
-        host_daemon_metadata_is_version_incompatible, peer_uid_is_allowed,
+        ACTIVE_HOST_DAEMON_CONNECTIONS, HOST_DAEMON_REQUEST_READ_TIMEOUT,
+        HOST_DAEMON_RESPONSE_WRITE_TIMEOUT, HostDaemon, HostDaemonAccess, HostDaemonGitHttpsMode,
+        HostDaemonMetadata, MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket, current_gid,
+        current_uid, host_daemon_metadata_is_version_incompatible, peer_uid_is_allowed,
+        run_host_daemon, write_host_daemon_response,
     };
     use crate::host::query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy};
     use crate::{
-        config::types::GitHttpsMode,
-        host::credentials::{GitCredentialCommand, GitCredentialExecutor},
+        config::types::{GitHttpsMode, PortProtocol},
+        docker::ports::ResolvedForwardPort,
+        host::{
+            credentials::{GitCredentialCommand, GitCredentialExecutor},
+            forward::{ForwardStatusSource, forward_status_dir, start_forward_status_server},
+            query::ContainerCliQueryRuntime,
+        },
+        runtime::command::{FakeRuntimeCommand, RuntimeOutput},
     };
 
     #[derive(Debug)]
@@ -1132,7 +1273,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_allows_cli_query_to_reach_execution_seam_when_enabled() {
+    fn daemon_executes_status_query_when_enabled() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1146,12 +1287,11 @@ mod tests {
                 temp.path().join("state"),
                 runtime_dir.clone(),
             );
-            let daemon = HostDaemon::start_for_remote_user_with_git_https_mode(
+            let query_runner = empty_docker_query_runner(2);
+            let daemon = HostDaemon::start_with_cli_query_runner(
                 &runtime_dir,
-                current_uid(),
-                current_gid(),
-                GitHttpsMode::HostHelper,
                 policy,
+                Arc::new(query_runner.clone()),
             )
             .await
             .unwrap();
@@ -1167,17 +1307,18 @@ mod tests {
             )
             .await;
 
-            assert_eq!(
-                response,
-                json!({
-                    "version": 1,
-                    "ok": false,
-                    "error": {
-                        "code": "not_implemented",
-                        "message": "Host daemon request is not implemented yet: cliQuery"
-                    }
-                })
-            );
+            assert_eq!(response["version"], 1);
+            assert_eq!(response["ok"], true);
+            assert!(response.get("error").is_none());
+            assert!(response.get("warnings").is_none());
+            let output = response["output"].as_str().unwrap();
+            assert!(output.contains("Workspace ID: 012345abcdef"));
+            assert!(output.contains("Live workspace: not checked"));
+            assert!(output.ends_with('\n'));
+            assert!(!output.ends_with("\n\n"));
+            let serialized = response.to_string();
+            assert!(!serialized.contains(&temp.path().display().to_string()));
+            assert_empty_docker_query_commands(&query_runner);
 
             daemon.stop().await.unwrap();
         });
@@ -1211,6 +1352,305 @@ mod tests {
                 })
             );
 
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_leaves_connection_in_listener_backlog_while_all_permits_are_held() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let socket_path = temp.path().join("host-daemon.sock");
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            let active_connections = Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS));
+            let mut held_permits = Vec::with_capacity(ACTIVE_HOST_DAEMON_CONNECTIONS);
+            for _ in 0..ACTIVE_HOST_DAEMON_CONNECTIONS {
+                held_permits.push(
+                    Arc::clone(&active_connections)
+                        .acquire_owned()
+                        .await
+                        .unwrap(),
+                );
+            }
+            let daemon_task = tokio::spawn(run_host_daemon(
+                listener,
+                current_uid(),
+                Arc::new(StaticGitCredentialExecutor),
+                GitHttpsMode::HostHelper,
+                ContainerCliQueryRuntime::Disabled,
+                active_connections,
+            ));
+
+            let mut backlogged = UnixStream::connect(&socket_path).await.unwrap();
+            backlogged
+                .write_all(br#"{"version":1,"type":"credential"}"#)
+                .await
+                .unwrap();
+            backlogged.shutdown().await.unwrap();
+            tokio::task::yield_now().await;
+            let mut byte = [0_u8; 1];
+            assert_eq!(
+                backlogged.try_read(&mut byte).unwrap_err().kind(),
+                io::ErrorKind::WouldBlock
+            );
+
+            drop(held_permits.pop());
+            let mut response = Vec::new();
+            backlogged.read_to_end(&mut response).await.unwrap();
+            let response: Value = serde_json::from_slice(&response).unwrap();
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"]["code"], "invalid_request");
+
+            drop(held_permits);
+            daemon_task.abort();
+            assert!(daemon_task.await.unwrap_err().is_cancelled());
+        });
+    }
+
+    #[test]
+    fn daemon_accept_loop_exit_drains_in_flight_connections() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let socket_path = temp.path().join("host-daemon.sock");
+            let listener = UnixListener::bind(&socket_path).unwrap();
+            let active_connections = Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS));
+            let daemon_task = tokio::spawn(run_host_daemon(
+                listener,
+                current_uid(),
+                Arc::new(StaticGitCredentialExecutor),
+                GitHttpsMode::HostHelper,
+                ContainerCliQueryRuntime::Disabled,
+                Arc::clone(&active_connections),
+            ));
+
+            let mut in_flight = UnixStream::connect(&socket_path).await.unwrap();
+            in_flight.write_all(b"{").await.unwrap();
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            // Closing the semaphore fails the next admission, which exits the accept
+            // loop through the same path as an accept failure. The connection accepted
+            // with the already-held permit triggers that next admission.
+            active_connections.close();
+            let last_accepted = UnixStream::connect(&socket_path).await.unwrap();
+            let mut accept_loop_exited = false;
+            for _ in 0..10 {
+                tokio::task::yield_now().await;
+                if UnixStream::connect(&socket_path).await.is_err() {
+                    accept_loop_exited = true;
+                    break;
+                }
+            }
+            assert!(accept_loop_exited);
+
+            in_flight
+                .write_all(br#""version":1,"type":"credential"}"#)
+                .await
+                .unwrap();
+            in_flight.shutdown().await.unwrap();
+            let mut response = Vec::new();
+            in_flight.read_to_end(&mut response).await.unwrap();
+            let response: Value = serde_json::from_slice(&response).unwrap();
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"]["code"], "invalid_request");
+
+            drop(last_accepted);
+            daemon_task.await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_request_read_timeout_releases_slow_client() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            tokio::time::pause();
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+            let mut stream = UnixStream::connect(daemon.socket_path()).await.unwrap();
+            stream.write_all(b"{").await.unwrap();
+            tokio::task::yield_now().await;
+
+            tokio::time::advance(HOST_DAEMON_REQUEST_READ_TIMEOUT).await;
+            tokio::task::yield_now().await;
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.unwrap();
+
+            assert!(response.is_empty());
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_stop_aborts_active_connection_tasks() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+            let mut stream = UnixStream::connect(daemon.socket_path()).await.unwrap();
+            stream.write_all(b"{").await.unwrap();
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            daemon.stop().await.unwrap();
+
+            let mut response = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                stream.read_to_end(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(response.is_empty());
+        });
+    }
+
+    #[test]
+    fn daemon_drop_aborts_active_connection_tasks() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+            let mut stream = UnixStream::connect(daemon.socket_path()).await.unwrap();
+            stream.write_all(b"{").await.unwrap();
+            tokio::task::yield_now().await;
+            tokio::task::yield_now().await;
+
+            drop(daemon);
+
+            let mut response = Vec::new();
+            tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                stream.read_to_end(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert!(response.is_empty());
+        });
+    }
+
+    #[test]
+    fn daemon_response_write_and_shutdown_share_two_second_timeout() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            tokio::time::pause();
+            let (mut writer, _reader) = tokio::io::duplex(1);
+            let task = tokio::spawn(async move {
+                write_host_daemon_response(&mut writer, &[b'x'; 4096]).await
+            });
+            tokio::task::yield_now().await;
+
+            tokio::time::advance(HOST_DAEMON_RESPONSE_WRITE_TIMEOUT).await;
+            let error = task.await.unwrap().unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        });
+    }
+
+    #[test]
+    fn daemon_aggregates_forwarding_sessions_owned_outside_daemon() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let runtime_dir = temp.path().join("runtime");
+            let status_dir = forward_status_dir(&runtime_dir);
+            let first_server = start_forward_status_server(&status_dir).await.unwrap();
+            first_server.registry().record(
+                &forward_port(3001, 3000, 3000),
+                ForwardStatusSource::Configured,
+            );
+            let second_server = start_forward_status_server(&status_dir).await.unwrap();
+            second_server
+                .registry()
+                .record(&forward_port(5433, 5432, 5432), ForwardStatusSource::Auto);
+            let policy = HostDaemonCliQueryPolicy::enabled_for_test(
+                "012345abcdef",
+                temp.path().join("state"),
+                runtime_dir.clone(),
+            );
+            let query_runner = empty_docker_query_runner(4);
+            // The forwarding registries belong to independent session servers and are not
+            // injected into the daemon. The daemon discovers every session through status_dir.
+            let daemon = HostDaemon::start_with_cli_query_runner(
+                &runtime_dir,
+                policy,
+                Arc::new(query_runner.clone()),
+            )
+            .await
+            .unwrap();
+
+            let two_sessions = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "cliQuery",
+                    "command": "ports",
+                    "format": "text"
+                }),
+            )
+            .await;
+            let output = two_sessions["output"].as_str().unwrap();
+            assert_eq!(two_sessions["ok"], true);
+            assert!(two_sessions.get("warnings").is_none());
+            assert!(output.contains("127.0.0.1:3001"));
+            assert!(output.contains("127.0.0.1:5433"));
+            assert_empty_docker_query_commands(&query_runner);
+
+            first_server.stop().await;
+            let one_session = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "cliQuery",
+                    "command": "ports",
+                    "format": "text"
+                }),
+            )
+            .await;
+            let output = one_session["output"].as_str().unwrap();
+            assert_eq!(one_session["ok"], true);
+            assert!(one_session.get("warnings").is_none());
+            assert!(!output.contains("127.0.0.1:3001"));
+            assert!(output.contains("127.0.0.1:5433"));
+
+            second_server.stop().await;
             daemon.stop().await.unwrap();
         });
     }
@@ -1355,6 +1795,51 @@ mod tests {
         stream.read_to_end(&mut response).await.unwrap();
 
         serde_json::from_slice(&response).unwrap()
+    }
+
+    fn forward_port(host: u16, requested_host: u16, container: u16) -> ResolvedForwardPort {
+        ResolvedForwardPort {
+            service: None,
+            container,
+            requested_host,
+            host,
+            host_ip: "127.0.0.1".to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
+            label: None,
+        }
+    }
+
+    fn empty_docker_query_runner(response_count: usize) -> FakeRuntimeCommand {
+        FakeRuntimeCommand::new(
+            std::iter::repeat_with(|| {
+                Ok(RuntimeOutput {
+                    stdout: Vec::new(),
+                    stderr: Vec::new(),
+                    exit_code: 0,
+                })
+            })
+            .take(response_count)
+            .collect(),
+        )
+    }
+
+    fn assert_empty_docker_query_commands(runner: &FakeRuntimeCommand) {
+        let commands = runner.commands();
+        assert_eq!(commands.len(), 2);
+        assert!(commands.iter().all(|command| command.program() == "docker"));
+        assert!(
+            commands
+                .iter()
+                .any(|command| command.args_vec().first().is_some_and(|arg| arg == "ps"))
+        );
+        assert!(commands.iter().any(|command| {
+            command
+                .args_vec()
+                .first()
+                .is_some_and(|arg| arg == "volume")
+                && command.args_vec().get(1).is_some_and(|arg| arg == "ls")
+        }));
     }
 
     fn mode(path: &Path) -> u32 {

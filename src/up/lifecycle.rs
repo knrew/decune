@@ -14,7 +14,7 @@ use crate::{
 
 mod host_daemon;
 
-pub(in crate::up) use host_daemon::start_host_daemon_for_up;
+pub(in crate::up) use host_daemon::{HostDaemonSessionMode, start_host_daemon_for_up};
 
 pub(in crate::up) fn report_up_success(started: &StartedUpContainer, elapsed: Duration) {
     let name = &started.outcome.container_name;

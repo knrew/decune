@@ -964,7 +964,7 @@ effective value が false の場合は host daemon が query を拒否する aut
 
 `container.cli.enabled` は config hash に含めない。この値だけの変更では container または Compose project の再作成を要求しない。
 
-container query の collector は daemon 起動時に固定した server-side context だけを入力にする。state は固定 state directory の `state.toml` を query ごとに 1 回だけ読み、workspace path や config path を参照先として使わない。forwarding status も固定 status directory の全 session socket を query ごとに 1 回だけ集約する。`Workspace::resolve`、config discovery、read-only up plan、build context hash は呼び出さない。
+container query の collector は daemon 起動時に固定した server-side context だけを入力にする。state は固定 state directory の `state.toml` を query ごとに 1 回だけ読み、workspace path や config path を参照先として使わない。forwarding status も固定 status directory の全 session socket を query ごとに 1 回だけ集約する。host daemon は `ForwardStatusRegistry` を所有または注入されず、daemon owner と forwarding session owner が異なる場合も共有 status directory から全 session を検出する。1 session が停止した場合は、残る session だけを次の query に反映する。`Workspace::resolve`、config discovery、read-only up plan、build context hash は呼び出さない。
 
 Docker container evidence は、固定 workspace ID の `decune.managed=true` resource と、固定 state または同 resource から導出した同一 Compose project だけを list / inspect / deduplicate する。Compose project label の候補は、固定 state に記録された値、または `decune.managed=true` かつ `decune.workspace_id` が固定 workspace ID と一致する resource の値に限定する。label value は trim 後に非空であることだけを確認し、Compose project name の形式検証は行わない。ここで検証するのは label の文字列形式ではなく、固定 query context または同一 workspace に帰属する managed resource から得た値であることを指す。request の command、format、path、resource name を Docker filter や host path に使わない。raw inspect、raw label map、stdout / stderr は container query の allowlist 型へ直ちに射影し、cache へ保存しない。status と ports は container / service / run state / health / config identity / published port を含む同じ container evidence snapshot を共有する。managed volume evidence は別 entry として取得する。
 
@@ -990,7 +990,7 @@ cache と query 専用 Docker 実行の内部固定値:
 | success cache TTL               | 2 s    |
 | failure cache TTL               | 500 ms |
 
-TTL は load 完了時刻から数える。同一 key の cold load は semantic load 全体を singleflight し、waiter は同じ typed success または sanitized typed failure を共有する。異なる key を含め、実行中の Docker evidence load は全体で 2 件までとする。expired success の refresh が失敗した場合に stale result は返さない。Docker event 監視や mutation hook による invalidation は行わず、daemon 再生成時に cache を破棄する。
+TTL は load 完了時刻から数える。同一 key の cold load は semantic load 全体を singleflight し、waiter は同じ typed success または sanitized typed failure を共有する。異なる key を含め、実行中の Docker evidence load は全体で 2 件までとする。cache hit の Docker evidence は load 完了時点から最大 2 s stale になり得る。expired success の refresh が失敗した場合に stale result は返さない。Docker event 監視や mutation hook による invalidation は行わず、daemon 再生成時に cache を破棄する。
 
 Docker evidence load は query coordinator が独立 task として所有する。呼出元の cancel だけでは load を中断せず、完了・failure・10 s timeout の全経路で waiter を wake する。query 専用 Docker command には既存 `RuntimeCommand` の timeout / kill / reap を使って 5 s timeout を設定し、通常の host `status` / `ports` / `up` の command timeout は変更しない。Docker failure は raw stderr を保持しない typed failure へ変換した後、collector の縮退規則に従って warning 付き snapshot へ変換する。query 全体の 15 s deadline と daemon admission は daemon dispatch が所有する。
 
@@ -1336,8 +1336,9 @@ host daemon は `decune up` の子タスクとして起動し、`up` 終了時�
 - Git credential helper request の処理。
 - GitHub token file の一時管理。
 - port forwarding runtime の socket 基盤。
+- attached session の current workspace に限定した container CLI query の処理。
 
-container-side tool と host daemon の JSON protocol version は `1` とする。request の `version` と `type` は top-level envelope で検証し、`credential` と `cliQuery` を request type として予約する。`cliQuery` は `version`、`type`、`command`、`format` だけを持つ strict schema とし、unknown field は拒否する。schema validation では `status` + `text` と `ports` + `text|json` を受理する。container query 用の副作用のない snapshot 変換と render は実装済みだが、host daemon の収集・dispatch は未接続のため、現時点の valid request は `not_implemented` を返す。
+container-side tool と host daemon の JSON protocol version は `1` とする。request の `version` と `type` は top-level envelope で検証し、`credential` と `cliQuery` を request type として予約する。`cliQuery` は `version`、`type`、`command`、`format` だけを持つ strict schema とし、unknown field は拒否する。`status` + `text`、`ports` + `text`、`ports` + `json` だけを実行し、`status` + `json` とその他の未対応 format は `unsupported_format`、unknown command は `unsupported_command` とする。effective `container.cli.enabled` が false の場合、valid query は `container_cli_disabled` とする。reserved `portForward` request は `not_implemented` のまま維持する。
 
 container query 用 model は、検証済み workspace ID、起動時 mode、container ID/name/service、run state/health、managed volume name、lifecycle/timestamp、sanitization 済み port だけを保持する。raw `ContainerInspect`、Docker/Compose label map、workspace/config path、raw config hash、env、build args、secret、mount source、external command の raw stderr、他 workspace の resource は model、cache、renderer へ渡さない。recorded state と runtime config identity の比較には raw hash を保持せず、domain-separated digest へ射影した非表示の比較値を使う。この比較値は `Debug` と serialization に出力しない。
 
@@ -1357,9 +1358,25 @@ container-side CLI は success warning を配列順に `Warning: <message>` と�
 
 host daemon error code は lowercase snake_case とし、`invalid_request`、`unsupported_protocol_version`、`request_too_large`、`unknown_request_type`、`not_implemented`、`credential_failed`、`unsupported_command`、`unsupported_format`、`container_cli_disabled`、`cli_query_failed`、`cli_query_busy`、`cli_query_timeout` を定義する。wire 上の `code` は将来の追加値を受理できる string とする。
 
-host daemon は effective `container.cli.enabled` と immutable query context を起動時に固定する。query context は検証済み workspace ID、その ID に対応する state directory、workspace runtime directory、そこから導出する forwarding status directory だけを保持し、`Workspace::resolve`、live config、client input から host path を再解決しない。context fingerprint は `decune-cli-query-context-v1` で domain separation した SHA-256 digest とし、canonical field order で workspace ID と固定 server path context だけを入力にする。secret、token、credential value、resolved config 全体を入力に含めない。
+host daemon の connection / query admission と I/O の固定上限は次のとおりとする。
 
-host daemon metadata には query policy と context fingerprint だけを保存し、raw context、host path、secret を保存しない。daemon reuse identity は `Disabled` または `Enabled { context_fingerprint }` とし、disabled 同士、または同じ fingerprint の enabled 同士だけを再利用できる。policy または context が異なる active daemon は暗黙に共有せず、対象 workspace のすべての active attached `decune up` を終了してから再実行するよう error にする。reused daemon を監視する session は owner 終了後も同じ policy と実体 query context で daemon を再起動する。protocol version、peer UID/GID、Git HTTPS mode、socket inode 等の既存 reuse 条件も維持する。
+| 項目                          | 上限 |
+| ----------------------------- | ---: |
+| active host daemon connection |   32 |
+| request body read timeout     |  2 s |
+| response write timeout        |  2 s |
+| active `cliQuery`             |    8 |
+| `cliQuery` total timeout      | 15 s |
+
+connection permit は listener から accept して task を生成する前に確保する。上限中は新しい connection task を生成せず、接続を listener / OS backlog 側で待たせる。credential、reserved request、`cliQuery` を含む全 connection を同じ上限に数え、既存の peer UID 検証、protocol version 検証、request body の 64 KiB 上限を維持する。request body を 2 s 以内に EOF まで読めない場合は connection を閉じる。response の `write_all` と write half shutdown は合わせて 2 s 以内に完了させる。host daemon の停止時は accept loop と accepted connection task を中断する。accept の失敗で accept loop だけが終了した場合は、新規 connection の受付を止め、処理中の connection task は中断せず完了まで待つ。read / write timeout、I/O error、または daemon 停止による task 中断では完全な wire response を保証せず、client は transport error として扱う。
+
+`cliQuery` は envelope、strict schema、policy、command / format matrix をすべて検証した後にだけ query semaphore へ入れる。credential request は query semaphore を使わない。8 件の permit は待機せず `try_acquire` し、上限時は即座に `cli_query_busy` を返す。15 s deadline は permit 取得後から state、forwarding、Docker/cache 待機、render、`HostDaemonResponse` 構築、JSON serialization までを含み、socket write の 2 s timeout は含めない。deadline 超過は `cli_query_timeout`、その他の fatal collector / render / serialization failure は `cli_query_failed` とする。いずれの error response にも partial output と warning を含めない。
+
+degradable な state、forwarding、Docker diagnostic は、prefix と末尾 newline を持たない sanitized message として success response の `warnings` に格納する。text / JSON の完成済み output は `output` だけに格納し、特に `ports` JSON へ warning を混在させない。success output / warning と error response には、secret、raw config hash / label、host path、他 workspace の情報、external command の raw stderr を含めない。container CLI query は active attached `decune up` session の host daemon が存在する間だけ利用できる。detached mode は対象外とし、lifecycle command のために host daemon が動作している間も `cliQuery` は `container_cli_disabled` で拒否する。
+
+attached session の host daemon は effective `container.cli.enabled` と immutable query context を起動時に固定し、detached session の host daemon は effective 設定値にかかわらず query policy を `Disabled` に固定する。query context は検証済み workspace ID、その ID に対応する state directory、workspace runtime directory、そこから導出する forwarding status directory だけを保持し、`Workspace::resolve`、live config、client input から host path を再解決しない。context fingerprint は `decune-cli-query-context-v1` で domain separation した SHA-256 digest とし、canonical field order で workspace ID と固定 server path context だけを入力にする。secret、token、credential value、resolved config 全体を入力に含めない。
+
+host daemon metadata には query policy と context fingerprint だけを保存し、raw context、host path、secret を保存しない。daemon reuse identity は `Disabled` または `Enabled { context_fingerprint }` とし、disabled 同士、または同じ fingerprint の enabled 同士だけを再利用できる。policy または context が異なる active daemon は暗黙に共有せず、対象 workspace のすべての active `decune up` session を終了してから再実行するよう error にする。したがって query が enabled の attached session と detached session は同時に daemon を共有しない。reused daemon を監視する session は owner 終了後も同じ policy と実体 query context で daemon を再起動する。protocol version、peer UID/GID、Git HTTPS mode、socket inode 等の既存 reuse 条件も維持する。
 
 protocol version は `1` のままとし、capability list、build SHA、daemon revision は追加しない。decune v0 段階では旧/new daemon-client の mixed-version compatibility を保証しない。upgrade 時は対象 workspace のすべての active `decune up` を終了してから、新しい version で起動し直す。reuse 判定で active daemon の metadata を現在の version として読めない場合、または protocol version が一致しない場合も暗黙に共有せず、version 不一致の可能性を示してすべての active `decune up` の終了を促す error にする。
 

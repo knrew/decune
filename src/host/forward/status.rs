@@ -573,6 +573,49 @@ mod tests {
     }
 
     #[test]
+    fn status_listing_aggregates_two_sessions_and_tracks_session_stop() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let temp = TempDir::new().unwrap();
+            let first = start_forward_status_server(temp.path()).await.unwrap();
+            first.registry().record(
+                &forward_port(3001, 3000, 3000),
+                ForwardStatusSource::Configured,
+            );
+            let second = start_forward_status_server(temp.path()).await.unwrap();
+            second
+                .registry()
+                .record(&forward_port(5433, 5432, 5432), ForwardStatusSource::Auto);
+
+            let mut active = list_active_forward_status_ports(temp.path())
+                .await
+                .unwrap()
+                .ports
+                .into_iter()
+                .map(|port| port.host_port)
+                .collect::<Vec<_>>();
+            active.sort_unstable();
+            assert_eq!(active, vec![3001, 5433]);
+
+            first.stop().await;
+            let active = list_active_forward_status_ports(temp.path()).await.unwrap();
+            assert_eq!(
+                active
+                    .ports
+                    .into_iter()
+                    .map(|port| port.host_port)
+                    .collect::<Vec<_>>(),
+                vec![5433]
+            );
+
+            second.stop().await;
+        });
+    }
+
+    #[test]
     fn missing_status_directory_lists_no_ports() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
