@@ -37,15 +37,15 @@ Git 情報を取得できない source build では `+source` suffix を付け�
 
 ## 標準検証
 
-通常の変更では formatting と lint を確認します。markdownlint の対象は Git 管理下の共有 Markdown(README.md と docs/ 配下)です。
+通常の変更では formatting と lint を確認します。lint には `markdownlint-cli2`、`shellcheck`、`shfmt`、`yamllint` を使います。バージョンは CI(`.github/workflows/ci.yaml`)に合わせます。
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-features --all-targets
-NPM_CONFIG_CACHE=/tmp/decune-npm-cache npx -y markdownlint-cli2@0.22.1 --config .markdownlint.yaml README.md docs/*.md
+markdownlint-cli2 --config .markdownlint.yaml README.md docs/*.md
+bash .github/scripts/lint-sh-bash.sh # shellcheck + shfmt
+yamllint .
 ```
-
-Shell script formatting は `.editorconfig` の shell 用設定を `shfmt` が読む形で管理します。
 
 対象を絞った test は package/module/test filter を指定して実行します。
 
