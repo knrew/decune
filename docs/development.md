@@ -1,6 +1,6 @@
 # decune の開発
 
-この文書は、コントリビューター向けの環境構築、検証、リリース成果物の作成コマンドをまとめます。利用手順は [usage.md](usage.md)、公開挙動は [specification.md](specification.md)、maintainer 向けのリリース手順は [release.md](release.md) を参照してください。
+この文書は、コントリビューター向けの環境構築、検証、リリース成果物の作成コマンド、ドキュメント執筆規約をまとめます。利用手順は [usage.md](usage.md)、公開挙動は [specification.md](specification.md)、内部実装の説明は [internals.md](internals.md)、maintainer 向けのリリース手順は [release.md](release.md) を参照してください。
 
 ## ソースからのローカルインストール
 
@@ -27,22 +27,22 @@ cargo run --locked -p xtask -- build-container-tools --locked
 cargo run --locked -p xtask -- check-container-tools
 ```
 
-コンテナ側ツールの bundle を埋め込まない build は公式インストール手順ではありません。軽いローカル確認だけならインストールせず、通常の Cargo コマンドを使ってください。
+コンテナ側ツールの bundle を埋め込まない build は公式インストール手順ではありません。軽いローカル確認だけならインストールせず、通常の Cargo コマンドを使ってください。bundle の埋め込みの仕組み、build 時の内部環境変数、開発用 override `DECUNE_CONTAINER_TOOLS_DIR` の説明は [internals.md](internals.md#6-container-tools-bundle-と-runtime-staging) にあります。
 
 ## 開発ビルドのバージョン表示
 
 リリース直後の開発中は、次のリリース番号を先に固定しないため root `Cargo.toml` の `[workspace.package]` version は直近リリース版のままにします。`decune --version` は clean な release tag では `decune 0.1.0` のように表示し、tag 外や未コミット変更を含む build では `decune 0.1.0+g<commit>` または `decune 0.1.0+g<commit>.dirty` のように Git 由来の build metadata を付けます。
 
-Git 情報を取得できない source build では `+source` suffix を付けます。この suffix は表示用であり、Docker label などの内部 metadata には Cargo が解決した package version を使います。
+Git 情報を取得できない source build では `+source` suffix を付けます。この suffix は表示用であり、Docker label などの内部 metadata には Cargo が解決した package version を使います。公式配布 artifact の version 表示規則の正は [specification.md 11 章](specification.md#11-配布の契約)です。
 
 ## 標準検証
 
-通常の変更では formatting と lint を確認します。
+通常の変更では formatting と lint を確認します。markdownlint の対象は Git 管理下の共有 Markdown(README.md と docs/ 配下)です。
 
 ```sh
 cargo fmt --all --check
 cargo clippy --workspace --all-features --all-targets
-NPM_CONFIG_CACHE=/tmp/decune-npm-cache npx -y markdownlint-cli2@0.22.1 --config .markdownlint.yaml README.md AGENTS.md docs/*.md
+NPM_CONFIG_CACHE=/tmp/decune-npm-cache npx -y markdownlint-cli2@0.22.1 --config .markdownlint.yaml README.md docs/*.md
 ```
 
 Shell script formatting は `.editorconfig` の shell 用設定を `shfmt` が読む形で管理します。
@@ -52,6 +52,19 @@ Shell script formatting は `.editorconfig` の shell 用設定を `shfmt` が�
 ```sh
 cargo test -p decune <module_or_test_name>
 ```
+
+## テストの検証範囲
+
+decune の test coverage は、少なくとも以下の挙動グループを含めます。公開挙動を変更する場合は、該当するグループの test も同じ変更で更新してください。
+
+- image-based / Dockerfile-based / Docker Compose-based の `up` / `rebuild` / `down` / `remove`。
+- Dockerfile build の入力、`.dockerignore` の扱い、`--no-cache`、`--pull`、未対応の Dockerfile/context 組み合わせ。
+- Compose の `dockerComposeFile`、`service`、`runServices`、profiles、複数 file の merge、generated override の挙動、project cleanup の安全性。
+- Feature 解決、lock の扱い、metadata merge、option env/default の扱い、local Feature の制約、UID/GID sync、entrypoint shim の挙動。
+- dotfiles、mounts、lifecycle commands、hooks、shell attach、lifecycle の二重実行防止。
+- manual/automatic port forwarding、published port の warning/error、sidecar 明示 forwarding、TCP-only の挙動。
+- credential forwarding、token redaction、state repair、resource name の sanitization、secret leak regression coverage。
+- container CLI の image/Dockerfile/Compose primary、command/stdio/exit matrix、UID/sidecar topology、attached/detached、enabled lifecycle、symlink fallback、forwarding 集約・daemon handoff、live workspace/host path 非参照。
 
 ## テスト fixture 管理
 
@@ -121,13 +134,46 @@ cargo run --locked -p xtask -- release-manifest --dist-dir target/dist --version
 
 生成済みのバイナリ成果物は Git リポジトリに commit しません。
 
-## ドキュメント管理
+## ドキュメント構成と執筆規約
 
-- [README.md](../README.md) は概要、インストール、クイックスタート、主要リンクに絞る。
-- 操作手順を中心にした利用者向け説明は [usage.md](usage.md) に置く。
-- [specification.md](specification.md) は公開挙動、CLI の契約、設定スキーマ、セキュリティ境界の正本として保つ。
-- コントリビューター向けの環境構築、検証、リリース成果物の作成コマンドはこの文書に置く。
-- maintainer 向けのリリース runbook は [release.md](release.md) に置く。
-- プロジェクト用語は [glossary.md](glossary.md) に揃える。
+この節は、decune のドキュメント構成と責務分担の唯一の定義です。各文書の冒頭にある 1 行の責務宣言と相互リンクは、この節の要約です。
 
-公開挙動、CLI option、設定 key、セキュリティ境界を変更した場合は、同じ変更で関連する利用者向けドキュメントも更新してください。
+### 文書の責務
+
+| 文書                                 | 責務                                                                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------------------ |
+| [README.md](../README.md)            | 概要と最短導線(初見の利用者向け)                                                           |
+| [usage.md](usage.md)                 | 利用者向けのインストール、日常操作、設定、応用機能のガイド                                 |
+| [specification.md](specification.md) | 公開挙動、CLI 契約、設定スキーマ、セキュリティ境界、診断コード定義の正本(リファレンス兼務) |
+| [internals.md](internals.md)         | 内部実装の説明(非規範の内部設計ノート)                                                     |
+| development.md(この文書)             | 貢献者向けの環境構築、検証、ドキュメント執筆規約                                           |
+| [release.md](release.md)             | maintainer 向けのリリース runbook                                                          |
+| [glossary.md](glossary.md)           | 用語と表記基準                                                                             |
+
+### 情報の置き場所
+
+同じ情報は 1 つの文書だけを正とし、他の文書は要約とリンクに徹します。正と矛盾する記述を他の文書に持ち込まないでください。
+
+- 公開挙動、CLI の契約、設定スキーマと既定値、セキュリティ境界、診断コードの発生条件の正は specification.md。
+- 操作手順、設定・機能の使い方、診断コードへの対処、untrusted repository での推奨設定の正は usage.md。
+- ソースからのインストール、検証コマンド、test coverage 要求、ドキュメント執筆規約の正はこの文書。
+- 実装定数、内部型名、内部環境変数、runtime file レイアウトなど内部実装の説明は internals.md。非規範であることを明記し、挙動の約束は書かない。
+- 配布物の契約(asset、検証手段、version 表示規則)の正は specification.md の配布章。リリース手順の正は release.md、開発ビルドの version 運用はこの文書。
+- 用語と表記の正は glossary.md。本文で用語を追加・変更した場合は glossary.md も更新する。
+
+### 執筆規約
+
+- 公開挙動、CLI option、設定 key、セキュリティ境界を変更した場合は、同じ変更で specification.md と関連する利用者向けドキュメントも更新する。
+- 仕様の規範記述は specification.md だけに書く。ガイドに書いてよい仕様記述は、その場面の理解に必要な要約 1〜2 文と specification.md へのリンクまでとする。
+- README と usage は仕様を要約できるが、仕様と矛盾する内容を持たない。仕様、README、usage、実装、test が矛盾する場合は、暗黙に実装を正とせず、差分の意図を確認してから揃える。
+- 実装作業ログ、milestone 履歴、PR 単位の一時 issue、agent prompt は docs/ の文書に置かない。
+
+### 意図的に許容する重複
+
+次の重複だけを意図的に許容します。「正」を更新したら、同じ変更で複製先も更新してください。この一覧にない重複は執筆時に解消します。
+
+1. install.sh ワンライナー: 正 = usage.md、複製 = README.md。リリース版番号を含むため、release PR で両方を更新する(手順は [release.md](release.md))。
+2. 最小クイックスタート(image-based の例): 正 = usage.md、複製 = README.md。README 側は最小形に切り詰めてよい。
+3. セキュリティ警告の要約(任意コード実行・credential 到達性): 正 = usage.md、複製 = README.md。
+4. ホスト要件の要約 bullet: 正 = specification.md、複製 = README.md / usage.md(要約形)。
+5. 各文書冒頭の 1 行責務宣言と相互リンク: 責務定義の正 = この節。
