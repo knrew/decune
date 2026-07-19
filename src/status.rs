@@ -9,13 +9,6 @@ use crate::{
 };
 
 mod aggregate;
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the container query daemon connects this pure model and renderer in follow-up task #431"
-    )
-)]
 pub(crate) mod container;
 mod evidence;
 mod inventory;

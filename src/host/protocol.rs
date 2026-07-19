@@ -13,6 +13,7 @@ use crate::{
     config::types::GitHttpsMode,
     host::{
         credentials::{GitCredentialExecutor, handle_git_credential_request},
+        query::ContainerCliQuery,
         query_context::HostDaemonCliQueryPolicy,
     },
 };
@@ -29,45 +30,53 @@ struct HostDaemonRequest {
     request_type: String,
 }
 
-pub(crate) fn handle_host_daemon_request(
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum HostDaemonRequestDispatch {
+    Respond(HostDaemonResponse),
+    CliQuery(ContainerCliQuery),
+}
+
+pub(super) fn handle_host_daemon_request(
     bytes: &[u8],
     git_credentials: &dyn GitCredentialExecutor,
     git_https_mode: GitHttpsMode,
     cli_query_policy: &HostDaemonCliQueryPolicy,
-) -> HostDaemonResponse {
+) -> HostDaemonRequestDispatch {
     let request = match serde_json::from_slice::<HostDaemonRequest>(bytes) {
         Ok(request) => request,
         Err(error) => {
-            return HostDaemonResponse::error(
+            return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_INVALID_REQUEST,
                 format!("Invalid host daemon request JSON: {error}"),
-            );
+            ));
         }
     };
 
     if request.version != HOST_DAEMON_PROTOCOL_VERSION {
-        return HostDaemonResponse::error(
+        return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
             ERROR_CODE_UNSUPPORTED_PROTOCOL_VERSION,
             format!(
                 "Unsupported host daemon protocol version: {}",
                 request.version
             ),
-        );
+        ));
     }
 
     match request.request_type.as_str() {
-        REQUEST_TYPE_CREDENTIAL => {
-            handle_credential_request(bytes, git_credentials, git_https_mode)
-        }
+        REQUEST_TYPE_CREDENTIAL => HostDaemonRequestDispatch::Respond(handle_credential_request(
+            bytes,
+            git_credentials,
+            git_https_mode,
+        )),
         REQUEST_TYPE_CLI_QUERY => handle_cli_query_request(bytes, cli_query_policy),
-        REQUEST_TYPE_PORT_FORWARD => HostDaemonResponse::error(
+        REQUEST_TYPE_PORT_FORWARD => HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
             ERROR_CODE_NOT_IMPLEMENTED,
             "Host daemon request is not implemented yet: portForward",
-        ),
-        _ => HostDaemonResponse::error(
+        )),
+        _ => HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
             ERROR_CODE_UNKNOWN_REQUEST_TYPE,
             format!("Unknown host daemon request type: {}", request.request_type),
-        ),
+        )),
     }
 }
 
@@ -95,60 +104,60 @@ fn handle_credential_request(
 fn handle_cli_query_request(
     bytes: &[u8],
     cli_query_policy: &HostDaemonCliQueryPolicy,
-) -> HostDaemonResponse {
+) -> HostDaemonRequestDispatch {
     let request = match serde_json::from_slice::<CliQueryRequest>(bytes) {
         Ok(request) => request,
         Err(error) => {
-            return HostDaemonResponse::error(
+            return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_INVALID_REQUEST,
                 format!("Invalid container CLI query request JSON: {error}"),
-            );
+            ));
         }
     };
 
-    match request.command.as_str() {
+    let query = match request.command.as_str() {
+        "status" if request.format == "text" => ContainerCliQuery::StatusText,
         "status" => {
-            if request.format != "text" {
-                return HostDaemonResponse::error(
-                    ERROR_CODE_UNSUPPORTED_FORMAT,
-                    format!(
-                        "Unsupported container CLI query format for status: {}",
-                        request.format
-                    ),
-                );
-            }
+            return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
+                ERROR_CODE_UNSUPPORTED_FORMAT,
+                format!(
+                    "Unsupported container CLI query format for status: {}",
+                    request.format
+                ),
+            ));
         }
-        "ports" => {
-            if !matches!(request.format.as_str(), "text" | "json") {
-                return HostDaemonResponse::error(
+        "ports" => match request.format.as_str() {
+            "text" => ContainerCliQuery::PortsText,
+            "json" => ContainerCliQuery::PortsJson,
+            _ => {
+                return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                     ERROR_CODE_UNSUPPORTED_FORMAT,
                     format!(
                         "Unsupported container CLI query format for ports: {}",
                         request.format
                     ),
-                );
+                ));
             }
-        }
+        },
         _ => {
-            return HostDaemonResponse::error(
+            return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_UNSUPPORTED_COMMAND,
                 format!(
                     "Unsupported container CLI query command: {}",
                     request.command
                 ),
-            );
+            ));
         }
-    }
+    };
 
     match cli_query_policy {
-        HostDaemonCliQueryPolicy::Disabled => HostDaemonResponse::error(
-            ERROR_CODE_CONTAINER_CLI_DISABLED,
-            "Container CLI queries are disabled",
-        ),
-        HostDaemonCliQueryPolicy::Enabled(_) => HostDaemonResponse::error(
-            ERROR_CODE_NOT_IMPLEMENTED,
-            "Host daemon request is not implemented yet: cliQuery",
-        ),
+        HostDaemonCliQueryPolicy::Disabled => {
+            HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
+                ERROR_CODE_CONTAINER_CLI_DISABLED,
+                "Container CLI queries are disabled",
+            ))
+        }
+        HostDaemonCliQueryPolicy::Enabled(_) => HostDaemonRequestDispatch::CliQuery(query),
     }
 }
 
@@ -159,10 +168,11 @@ mod tests {
     use anyhow::{Result, anyhow};
     use serde_json::json;
 
-    use super::handle_host_daemon_request;
+    use super::{HostDaemonRequestDispatch, handle_host_daemon_request};
     use crate::config::types::GitHttpsMode;
     use crate::host::{
         credentials::{GitCredentialCommand, GitCredentialExecutor},
+        query::ContainerCliQuery,
         query_context::HostDaemonCliQueryPolicy,
     };
 
@@ -217,7 +227,7 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_value(response).unwrap(),
+            serde_json::to_value(response_from_dispatch(response)).unwrap(),
             json!({
                 "version": 1,
                 "ok": true,
@@ -245,7 +255,7 @@ mod tests {
         );
 
         assert_eq!(
-            serde_json::to_value(response).unwrap(),
+            serde_json::to_value(response_from_dispatch(response)).unwrap(),
             json!({
                 "version": 1,
                 "ok": true,
@@ -269,7 +279,7 @@ mod tests {
             GitHttpsMode::HostHelper,
             &HostDaemonCliQueryPolicy::Disabled,
         );
-        let response = serde_json::to_value(response).unwrap();
+        let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
         assert_eq!(response["ok"], false);
         assert_eq!(response["error"]["code"], "credential_failed");
@@ -291,7 +301,7 @@ mod tests {
             GitHttpsMode::Off,
             &HostDaemonCliQueryPolicy::Disabled,
         );
-        let response = serde_json::to_value(response).unwrap();
+        let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
         assert_eq!(response["ok"], false);
         assert_eq!(response["error"]["code"], "credential_failed");
@@ -308,7 +318,11 @@ mod tests {
         let executor = RecordingGitCredentialExecutor::with_output("unused");
         let policy = enabled_policy();
 
-        for (command, format) in [("status", "text"), ("ports", "text"), ("ports", "json")] {
+        for (command, format, expected) in [
+            ("status", "text", ContainerCliQuery::StatusText),
+            ("ports", "text", ContainerCliQuery::PortsText),
+            ("ports", "json", ContainerCliQuery::PortsJson),
+        ] {
             let request = serde_json::to_vec(&json!({
                 "version": 1,
                 "type": "cliQuery",
@@ -317,11 +331,10 @@ mod tests {
             }))
             .unwrap();
 
-            let response =
+            let dispatch =
                 handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &policy);
-            let response = serde_json::to_value(response).unwrap();
 
-            assert_eq!(response["error"]["code"], "not_implemented");
+            assert_eq!(dispatch, HostDaemonRequestDispatch::CliQuery(expected));
         }
 
         assert!(executor.calls.lock().unwrap().is_empty());
@@ -346,7 +359,7 @@ mod tests {
                 GitHttpsMode::HostHelper,
                 &HostDaemonCliQueryPolicy::Disabled,
             );
-            let response = serde_json::to_value(response).unwrap();
+            let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
             assert_eq!(response["error"]["code"], "container_cli_disabled");
             assert_eq!(
@@ -369,7 +382,7 @@ mod tests {
             GitHttpsMode::HostHelper,
             &policy,
         );
-        let response = serde_json::to_value(response).unwrap();
+        let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
         assert_eq!(response["error"]["code"], "unsupported_command");
         assert!(executor.calls.lock().unwrap().is_empty());
@@ -391,7 +404,7 @@ mod tests {
 
             let response =
                 handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &policy);
-            let response = serde_json::to_value(response).unwrap();
+            let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
             assert_eq!(response["error"]["code"], "unsupported_format");
         }
@@ -419,7 +432,7 @@ mod tests {
 
             let response =
                 handle_host_daemon_request(&request, &executor, GitHttpsMode::HostHelper, &policy);
-            let response = serde_json::to_value(response).unwrap();
+            let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
             assert_eq!(response["error"]["code"], "invalid_request");
         }
@@ -438,7 +451,7 @@ mod tests {
             GitHttpsMode::HostHelper,
             &policy,
         );
-        let response = serde_json::to_value(response).unwrap();
+        let response = serde_json::to_value(response_from_dispatch(response)).unwrap();
 
         assert_eq!(response["error"]["code"], "invalid_request");
         assert!(executor.calls.lock().unwrap().is_empty());
@@ -450,5 +463,16 @@ mod tests {
             PathBuf::from("/state/workspace"),
             PathBuf::from("/run/decune/workspace"),
         )
+    }
+
+    fn response_from_dispatch(
+        dispatch: HostDaemonRequestDispatch,
+    ) -> decune_container_protocol::HostDaemonResponse {
+        match dispatch {
+            HostDaemonRequestDispatch::Respond(response) => response,
+            HostDaemonRequestDispatch::CliQuery(query) => {
+                panic!("expected immediate response, got query dispatch: {query:?}")
+            }
+        }
     }
 }

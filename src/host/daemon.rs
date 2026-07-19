@@ -7,11 +7,12 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use decune_container_protocol::ERROR_CODE_REQUEST_TOO_LARGE;
+use decune_container_protocol::{ERROR_CODE_CLI_QUERY_FAILED, ERROR_CODE_REQUEST_TOO_LARGE};
 use serde::{Deserialize, Serialize};
 use tokio::{
-    io::{AsyncReadExt, AsyncWriteExt},
+    io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
     net::{UnixListener, UnixStream},
+    sync::{OwnedSemaphorePermit, Semaphore},
     task::JoinHandle,
 };
 
@@ -19,7 +20,8 @@ use crate::{
     config::types::GitHttpsMode,
     host::{
         credentials::{GitCredentialExecutor, SystemGitCredentialExecutor},
-        protocol::{HostDaemonResponse, handle_host_daemon_request},
+        protocol::{HostDaemonRequestDispatch, HostDaemonResponse, handle_host_daemon_request},
+        query::ContainerCliQueryService,
         query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy},
         runtime::{
             create_runtime_dir, set_private_runtime_parent, set_runtime_dir_mode,
@@ -31,6 +33,9 @@ use crate::{
 const HOST_DAEMON_SOCKET_NAME: &str = "host-daemon.sock";
 const HOST_DAEMON_METADATA_NAME: &str = "host-daemon.json";
 const MAX_HOST_DAEMON_REQUEST_BYTES: usize = 64 * 1024;
+const ACTIVE_HOST_DAEMON_CONNECTIONS: usize = 32;
+const HOST_DAEMON_REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const HOST_DAEMON_RESPONSE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 pub(crate) const HOST_DAEMON_QUERY_IDENTITY_MISMATCH: &str = "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry";
 pub(crate) const HOST_DAEMON_VERSION_MISMATCH: &str = "An active decune up session uses an incompatible host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry";
 
@@ -637,8 +642,18 @@ async fn run_host_daemon(
     git_https_mode: GitHttpsMode,
     cli_query_policy: HostDaemonCliQueryPolicy,
 ) {
+    let cli_query_service = match &cli_query_policy {
+        HostDaemonCliQueryPolicy::Disabled => None,
+        HostDaemonCliQueryPolicy::Enabled(context) => {
+            Some(Arc::new(ContainerCliQueryService::new(context.clone())))
+        }
+    };
     let cli_query_policy = Arc::new(cli_query_policy);
+    let active_connections = Arc::new(Semaphore::new(ACTIVE_HOST_DAEMON_CONNECTIONS));
     loop {
+        let Ok(connection_permit) = Arc::clone(&active_connections).acquire_owned().await else {
+            break;
+        };
         let Ok((stream, _)) = listener.accept().await else {
             break;
         };
@@ -650,6 +665,8 @@ async fn run_host_daemon(
             Arc::clone(&git_credentials),
             git_https_mode,
             Arc::clone(&cli_query_policy),
+            cli_query_service.clone(),
+            connection_permit,
         ));
     }
 }
@@ -665,18 +682,12 @@ async fn handle_connection(
     git_credentials: Arc<dyn GitCredentialExecutor>,
     git_https_mode: GitHttpsMode,
     cli_query_policy: Arc<HostDaemonCliQueryPolicy>,
+    cli_query_service: Option<Arc<ContainerCliQueryService>>,
+    _connection_permit: OwnedSemaphorePermit,
 ) {
-    let mut request = Vec::new();
-    let read_failed = {
-        let Ok(limit) = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1) else {
-            return;
-        };
-        let mut limited_stream = (&mut stream).take(limit);
-        limited_stream.read_to_end(&mut request).await.is_err()
-    };
-    if read_failed {
+    let Ok(request) = read_host_daemon_request(&mut stream).await else {
         return;
-    }
+    };
 
     let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES {
         HostDaemonResponse::error(
@@ -684,25 +695,73 @@ async fn handle_connection(
             format!("Host daemon request exceeds {MAX_HOST_DAEMON_REQUEST_BYTES} bytes"),
         )
     } else {
-        handle_host_daemon_request(
+        match handle_host_daemon_request(
             &request,
             git_credentials.as_ref(),
             git_https_mode,
             cli_query_policy.as_ref(),
-        )
+        ) {
+            HostDaemonRequestDispatch::Respond(response) => response,
+            HostDaemonRequestDispatch::CliQuery(query) => match cli_query_service {
+                Some(service) => service.execute(query).await,
+                None => HostDaemonResponse::error(
+                    ERROR_CODE_CLI_QUERY_FAILED,
+                    "Container CLI query failed",
+                ),
+            },
+        }
     };
     let Ok(response) = serde_json::to_vec(&response) else {
         return;
     };
 
-    _ = stream.write_all(&response).await;
-    _ = stream.shutdown().await;
+    _ = write_host_daemon_response(&mut stream, &response).await;
+}
+
+async fn read_host_daemon_request<R>(stream: &mut R) -> io::Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let limit = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1)
+        .map_err(|error| io::Error::other(format!("Invalid host daemon request limit: {error}")))?;
+    let mut request = Vec::new();
+    let read = async {
+        let mut limited_stream = stream.take(limit);
+        limited_stream.read_to_end(&mut request).await?;
+        Ok(request)
+    };
+    tokio::time::timeout(HOST_DAEMON_REQUEST_READ_TIMEOUT, read)
+        .await
+        .map_err(|_elapsed| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Timed out reading host daemon request",
+            )
+        })?
+}
+
+async fn write_host_daemon_response<W>(stream: &mut W, response: &[u8]) -> io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    let write = async {
+        stream.write_all(response).await?;
+        stream.shutdown().await
+    };
+    tokio::time::timeout(HOST_DAEMON_RESPONSE_WRITE_TIMEOUT, write)
+        .await
+        .map_err(|_elapsed| {
+            io::Error::new(
+                io::ErrorKind::TimedOut,
+                "Timed out writing host daemon response",
+            )
+        })?
 }
 
 #[cfg(test)]
 mod tests {
     use std::{
-        fs,
+        fs, io,
         os::unix::fs::PermissionsExt,
         path::Path,
         sync::{Arc, Mutex},
@@ -717,14 +776,20 @@ mod tests {
     };
 
     use super::{
-        HostDaemon, HostDaemonAccess, HostDaemonGitHttpsMode, HostDaemonMetadata,
-        MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket, current_gid, current_uid,
-        host_daemon_metadata_is_version_incompatible, peer_uid_is_allowed,
+        ACTIVE_HOST_DAEMON_CONNECTIONS, HOST_DAEMON_REQUEST_READ_TIMEOUT,
+        HOST_DAEMON_RESPONSE_WRITE_TIMEOUT, HostDaemon, HostDaemonAccess, HostDaemonGitHttpsMode,
+        HostDaemonMetadata, MAX_HOST_DAEMON_REQUEST_BYTES, cleanup_host_daemon_socket, current_gid,
+        current_uid, host_daemon_metadata_is_version_incompatible, peer_uid_is_allowed,
+        write_host_daemon_response,
     };
     use crate::host::query_context::{HostDaemonCliQueryIdentity, HostDaemonCliQueryPolicy};
     use crate::{
-        config::types::GitHttpsMode,
-        host::credentials::{GitCredentialCommand, GitCredentialExecutor},
+        config::types::{GitHttpsMode, PortProtocol},
+        docker::ports::ResolvedForwardPort,
+        host::{
+            credentials::{GitCredentialCommand, GitCredentialExecutor},
+            forward::{ForwardStatusSource, forward_status_dir, start_forward_status_server},
+        },
     };
 
     #[derive(Debug)]
@@ -1132,7 +1197,7 @@ mod tests {
     }
 
     #[test]
-    fn daemon_allows_cli_query_to_reach_execution_seam_when_enabled() {
+    fn daemon_executes_status_query_when_enabled() {
         let runtime = tokio::runtime::Builder::new_current_thread()
             .enable_all()
             .build()
@@ -1167,17 +1232,16 @@ mod tests {
             )
             .await;
 
-            assert_eq!(
-                response,
-                json!({
-                    "version": 1,
-                    "ok": false,
-                    "error": {
-                        "code": "not_implemented",
-                        "message": "Host daemon request is not implemented yet: cliQuery"
-                    }
-                })
-            );
+            assert_eq!(response["version"], 1);
+            assert_eq!(response["ok"], true);
+            assert!(response.get("error").is_none());
+            let output = response["output"].as_str().unwrap();
+            assert!(output.contains("Workspace ID: 012345abcdef"));
+            assert!(output.contains("Live workspace: not checked"));
+            assert!(output.ends_with('\n'));
+            assert!(!output.ends_with("\n\n"));
+            let serialized = response.to_string();
+            assert!(!serialized.contains(&temp.path().display().to_string()));
 
             daemon.stop().await.unwrap();
         });
@@ -1211,6 +1275,182 @@ mod tests {
                 })
             );
 
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_leaves_connections_beyond_thirty_two_in_listener_backlog() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+            let mut held_connections = Vec::new();
+            for _ in 0..ACTIVE_HOST_DAEMON_CONNECTIONS {
+                let mut stream = UnixStream::connect(daemon.socket_path()).await.unwrap();
+                stream.write_all(b"{").await.unwrap();
+                held_connections.push(stream);
+                tokio::task::yield_now().await;
+            }
+
+            let mut backlogged = UnixStream::connect(daemon.socket_path()).await.unwrap();
+            backlogged
+                .write_all(br#"{"version":1,"type":"credential"}"#)
+                .await
+                .unwrap();
+            backlogged.shutdown().await.unwrap();
+            let mut response = Vec::new();
+
+            assert!(
+                tokio::time::timeout(
+                    std::time::Duration::from_millis(100),
+                    backlogged.read_to_end(&mut response),
+                )
+                .await
+                .is_err()
+            );
+
+            drop(held_connections.remove(0));
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                backlogged.read_to_end(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let response: Value = serde_json::from_slice(&response).unwrap();
+            assert_eq!(response["ok"], false);
+            assert_eq!(response["error"]["code"], "invalid_request");
+
+            drop(held_connections);
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_request_read_timeout_releases_slow_client() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            tokio::time::pause();
+            let daemon = HostDaemon::start(temp.path().join("runtime"))
+                .await
+                .unwrap();
+            let mut stream = UnixStream::connect(daemon.socket_path()).await.unwrap();
+            stream.write_all(b"{").await.unwrap();
+            tokio::task::yield_now().await;
+
+            tokio::time::advance(HOST_DAEMON_REQUEST_READ_TIMEOUT).await;
+            tokio::task::yield_now().await;
+            let mut response = Vec::new();
+            stream.read_to_end(&mut response).await.unwrap();
+
+            assert!(response.is_empty());
+            daemon.stop().await.unwrap();
+        });
+    }
+
+    #[test]
+    fn daemon_response_write_and_shutdown_share_two_second_timeout() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        runtime.block_on(async {
+            tokio::time::pause();
+            let (mut writer, _reader) = tokio::io::duplex(1);
+            let task = tokio::spawn(async move {
+                write_host_daemon_response(&mut writer, &[b'x'; 4096]).await
+            });
+            tokio::task::yield_now().await;
+
+            tokio::time::advance(HOST_DAEMON_RESPONSE_WRITE_TIMEOUT).await;
+            let error = task.await.unwrap().unwrap_err();
+
+            assert_eq!(error.kind(), io::ErrorKind::TimedOut);
+        });
+    }
+
+    #[test]
+    fn daemon_aggregates_forwarding_sessions_owned_outside_daemon() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let temp = TempDir::new().unwrap();
+
+        runtime.block_on(async {
+            let runtime_dir = temp.path().join("runtime");
+            let status_dir = forward_status_dir(&runtime_dir);
+            let first_server = start_forward_status_server(&status_dir).await.unwrap();
+            first_server.registry().record(
+                &forward_port(3001, 3000, 3000),
+                ForwardStatusSource::Configured,
+            );
+            let second_server = start_forward_status_server(&status_dir).await.unwrap();
+            second_server
+                .registry()
+                .record(&forward_port(5433, 5432, 5432), ForwardStatusSource::Auto);
+            let policy = HostDaemonCliQueryPolicy::enabled_for_test(
+                "012345abcdef",
+                temp.path().join("state"),
+                runtime_dir.clone(),
+            );
+            // The forwarding registries belong to independent session servers and are not
+            // injected into the daemon. The daemon discovers every session through status_dir.
+            let daemon = HostDaemon::start_for_remote_user_with_git_https_mode(
+                &runtime_dir,
+                current_uid(),
+                current_gid(),
+                GitHttpsMode::HostHelper,
+                policy,
+            )
+            .await
+            .unwrap();
+
+            let two_sessions = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "cliQuery",
+                    "command": "ports",
+                    "format": "text"
+                }),
+            )
+            .await;
+            let output = two_sessions["output"].as_str().unwrap();
+            assert_eq!(two_sessions["ok"], true);
+            assert!(output.contains("127.0.0.1:3001"));
+            assert!(output.contains("127.0.0.1:5433"));
+
+            first_server.stop().await;
+            let one_session = send_request(
+                daemon.socket_path(),
+                json!({
+                    "version": 1,
+                    "type": "cliQuery",
+                    "command": "ports",
+                    "format": "text"
+                }),
+            )
+            .await;
+            let output = one_session["output"].as_str().unwrap();
+            assert_eq!(one_session["ok"], true);
+            assert!(!output.contains("127.0.0.1:3001"));
+            assert!(output.contains("127.0.0.1:5433"));
+
+            second_server.stop().await;
             daemon.stop().await.unwrap();
         });
     }
@@ -1355,6 +1595,19 @@ mod tests {
         stream.read_to_end(&mut response).await.unwrap();
 
         serde_json::from_slice(&response).unwrap()
+    }
+
+    fn forward_port(host: u16, requested_host: u16, container: u16) -> ResolvedForwardPort {
+        ResolvedForwardPort {
+            service: None,
+            container,
+            requested_host,
+            host,
+            host_ip: "127.0.0.1".to_owned(),
+            protocol: PortProtocol::Tcp,
+            require_local: false,
+            label: None,
+        }
     }
 
     fn mode(path: &Path) -> u32 {
