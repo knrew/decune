@@ -105,6 +105,20 @@ impl DockerContainerLoadHint {
     }
 }
 
+enum QueryEvidenceLoad {
+    Containers(DockerContainerLoadHint),
+    Volumes,
+}
+
+impl QueryEvidenceLoad {
+    const fn kind(&self) -> QueryEvidenceKind {
+        match self {
+            Self::Containers(_) => QueryEvidenceKind::Containers,
+            Self::Volumes => QueryEvidenceKind::Volumes,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct LocalEvidenceFailure;
 
@@ -361,11 +375,10 @@ impl QueryEvidenceCache {
         }
     }
 
-    async fn get(
-        &self,
-        key: QueryEvidenceKey,
-        hint: DockerContainerLoadHint,
-    ) -> QueryEvidenceResult {
+    async fn get(&self, key: QueryEvidenceKey, load: QueryEvidenceLoad) -> QueryEvidenceResult {
+        if key.kind != load.kind() {
+            return Err(QueryEvidenceFailure::Unavailable);
+        }
         let (lookup, pending_load) = {
             let mut entries = self
                 .inner
@@ -392,15 +405,15 @@ impl QueryEvidenceCache {
                     );
                     (
                         QueryCacheLookup::Wait(receiver),
-                        Some((key.clone(), hint, sender)),
+                        Some((key.clone(), load, sender)),
                     )
                 }
             };
             drop(entries);
             decision
         };
-        if let Some((key, hint, sender)) = pending_load {
-            self.spawn_load(key, hint, sender);
+        if let Some((key, load, sender)) = pending_load {
+            self.spawn_load(key, load, sender);
         }
 
         match lookup {
@@ -412,13 +425,13 @@ impl QueryEvidenceCache {
     fn spawn_load(
         &self,
         key: QueryEvidenceKey,
-        hint: DockerContainerLoadHint,
+        load: QueryEvidenceLoad,
         sender: watch::Sender<Option<QueryEvidenceResult>>,
     ) {
         let inner = Arc::clone(&self.inner);
         tokio::spawn(async move {
             let result =
-                tokio::time::timeout(inner.load_timeout, load_query_evidence(&inner, &key, hint))
+                tokio::time::timeout(inner.load_timeout, load_query_evidence(&inner, &key, load))
                     .await
                     .map_or(Err(QueryEvidenceFailure::TimedOut), |result| result);
             let result = match result {
@@ -446,20 +459,20 @@ impl QueryEvidenceCache {
 async fn load_query_evidence(
     inner: &QueryEvidenceCacheInner,
     key: &QueryEvidenceKey,
-    hint: DockerContainerLoadHint,
+    load: QueryEvidenceLoad,
 ) -> QueryEvidenceResult {
     let permit = inner
         .docker_loads
         .acquire()
         .await
         .map_err(|_error| QueryEvidenceFailure::Unavailable)?;
-    let result = match key.kind {
-        QueryEvidenceKind::Containers => inner
+    let result = match load {
+        QueryEvidenceLoad::Containers(hint) => inner
             .source
             .load_containers(&key.workspace_id, hint)
             .await
             .map(QueryEvidence::Containers),
-        QueryEvidenceKind::Volumes => inner
+        QueryEvidenceLoad::Volumes => inner
             .source
             .load_volumes(&key.workspace_id)
             .await
@@ -559,8 +572,9 @@ impl ContainerQueryCoordinator {
             QueryEvidenceKey::from_context(&self.context, QueryEvidenceKind::Containers);
         let volume_key = QueryEvidenceKey::from_context(&self.context, QueryEvidenceKind::Volumes);
         let (containers, volumes) = futures_util::join!(
-            self.cache.get(container_key, hint.clone()),
-            self.cache.get(volume_key, hint),
+            self.cache
+                .get(container_key, QueryEvidenceLoad::Containers(hint)),
+            self.cache.get(volume_key, QueryEvidenceLoad::Volumes),
         );
 
         build_query_collection(
@@ -1062,12 +1076,12 @@ mod tests {
             let first = tokio::spawn({
                 let cache = cache.clone();
                 let key = key.clone();
-                async move { cache.get(key, empty_hint()).await }
+                async move { cache.get(key, container_load()).await }
             });
             let second = tokio::spawn({
                 let cache = cache.clone();
                 let key = key.clone();
-                async move { cache.get(key, empty_hint()).await }
+                async move { cache.get(key, container_load()).await }
             });
 
             source.started.acquire().await.unwrap().forget();
@@ -1093,7 +1107,8 @@ mod tests {
             .into_iter()
             .map(|key| {
                 let cache = cache.clone();
-                tokio::spawn(async move { cache.get(key, empty_hint()).await })
+                let load = load_for_kind(key.kind);
+                tokio::spawn(async move { cache.get(key, load).await })
             })
             .collect::<Vec<_>>();
 
@@ -1127,30 +1142,33 @@ mod tests {
             let cache = test_cache(Arc::clone(&source), Arc::clone(&clock), 2);
             let key = key(WORKSPACE_ID, QueryEvidenceKind::Containers);
 
-            let first = cache.get(key.clone(), empty_hint()).await.unwrap();
+            let first = cache.get(key.clone(), container_load()).await.unwrap();
             clock.advance(Duration::from_millis(1999));
-            assert_eq!(cache.get(key.clone(), empty_hint()).await.unwrap(), first);
+            assert_eq!(
+                cache.get(key.clone(), container_load()).await.unwrap(),
+                first
+            );
             assert_eq!(source.container_calls.load(Ordering::SeqCst), 1);
 
             clock.advance(Duration::from_millis(1));
-            let second = cache.get(key.clone(), empty_hint()).await.unwrap();
+            let second = cache.get(key.clone(), container_load()).await.unwrap();
             assert_ne!(second, first);
             assert_eq!(source.container_calls.load(Ordering::SeqCst), 2);
 
             clock.advance(SUCCESS_CACHE_TTL);
             assert_eq!(
-                cache.get(key.clone(), empty_hint()).await,
+                cache.get(key.clone(), container_load()).await,
                 Err(QueryEvidenceFailure::Unavailable)
             );
             clock.advance(Duration::from_millis(499));
             assert_eq!(
-                cache.get(key.clone(), empty_hint()).await,
+                cache.get(key.clone(), container_load()).await,
                 Err(QueryEvidenceFailure::Unavailable)
             );
             assert_eq!(source.container_calls.load(Ordering::SeqCst), 3);
 
             clock.advance(Duration::from_millis(1));
-            cache.get(key, empty_hint()).await.unwrap();
+            cache.get(key, container_load()).await.unwrap();
             assert_eq!(source.container_calls.load(Ordering::SeqCst), 4);
         });
     }
@@ -1166,11 +1184,11 @@ mod tests {
             let cache = test_cache(source, Arc::clone(&clock), 2);
             let key = key(WORKSPACE_ID, QueryEvidenceKind::Containers);
 
-            cache.get(key.clone(), empty_hint()).await.unwrap();
+            cache.get(key.clone(), container_load()).await.unwrap();
             clock.advance(SUCCESS_CACHE_TTL);
 
             assert_eq!(
-                cache.get(key, empty_hint()).await,
+                cache.get(key, container_load()).await,
                 Err(QueryEvidenceFailure::Unavailable)
             );
         });
@@ -1185,13 +1203,13 @@ mod tests {
             let leader = tokio::spawn({
                 let cache = cache.clone();
                 let key = key.clone();
-                async move { cache.get(key, empty_hint()).await }
+                async move { cache.get(key, container_load()).await }
             });
 
             source.started.acquire().await.unwrap().forget();
             let waiter = tokio::spawn({
                 let cache = cache.clone();
-                async move { cache.get(key, empty_hint()).await }
+                async move { cache.get(key, container_load()).await }
             });
             tokio::task::yield_now().await;
             leader.abort();
@@ -1214,19 +1232,19 @@ mod tests {
             let key = key(WORKSPACE_ID, QueryEvidenceKind::Containers);
 
             assert_eq!(
-                cache.get(key.clone(), empty_hint()).await,
+                cache.get(key.clone(), container_load()).await,
                 Err(QueryEvidenceFailure::Unavailable)
             );
             clock.advance(Duration::from_millis(499));
             assert_eq!(
-                cache.get(key.clone(), empty_hint()).await,
+                cache.get(key.clone(), container_load()).await,
                 Err(QueryEvidenceFailure::Unavailable)
             );
             assert_eq!(source.container_calls.load(Ordering::SeqCst), 1);
 
             clock.advance(Duration::from_millis(1));
             assert_eq!(
-                cache.get(key, empty_hint()).await.unwrap(),
+                cache.get(key, container_load()).await.unwrap(),
                 QueryEvidence::Containers(container_evidence("after-panic"))
             );
             assert_eq!(source.container_calls.load(Ordering::SeqCst), 2);
@@ -1269,12 +1287,12 @@ mod tests {
             let first = tokio::spawn({
                 let cache = cache.clone();
                 let key = key.clone();
-                async move { cache.get(key, empty_hint()).await }
+                async move { cache.get(key, container_load()).await }
             });
             let second = tokio::spawn({
                 let cache = cache.clone();
                 let key = key.clone();
-                async move { cache.get(key, empty_hint()).await }
+                async move { cache.get(key, container_load()).await }
             });
 
             source.started.acquire().await.unwrap().forget();
@@ -1284,7 +1302,7 @@ mod tests {
             assert_eq!(second.await.unwrap(), Err(QueryEvidenceFailure::TimedOut));
 
             clock.advance(FAILURE_CACHE_TTL);
-            cache.get(key, empty_hint()).await.unwrap();
+            cache.get(key, container_load()).await.unwrap();
             assert_eq!(source.calls.load(Ordering::SeqCst), 2);
         });
     }
@@ -1477,11 +1495,18 @@ mod tests {
         }
     }
 
-    fn empty_hint() -> DockerContainerLoadHint {
-        DockerContainerLoadHint {
+    fn load_for_kind(kind: QueryEvidenceKind) -> QueryEvidenceLoad {
+        match kind {
+            QueryEvidenceKind::Containers => container_load(),
+            QueryEvidenceKind::Volumes => QueryEvidenceLoad::Volumes,
+        }
+    }
+
+    fn container_load() -> QueryEvidenceLoad {
+        QueryEvidenceLoad::Containers(DockerContainerLoadHint {
             compose_project_name: None,
             published_ports: Vec::new(),
-        }
+        })
     }
 
     fn container_evidence(name: &str) -> ContainerQueryContainersEvidence {

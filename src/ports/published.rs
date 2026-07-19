@@ -90,6 +90,7 @@ pub(crate) fn container_published_port_snapshots(
     containers: &[ContainerInspect],
     published_ports: &[PublishedPortRuntimeState],
 ) -> Vec<ContainerPortSnapshot> {
+    // `include_workspace = false` below keeps these placeholder workspace fields out of entries.
     let context = WorkspacePortContext {
         workspace_id: String::new(),
         workspace_path: None,
