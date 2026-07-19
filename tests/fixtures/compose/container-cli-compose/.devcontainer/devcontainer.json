@@ -1,0 +1,12 @@
+{
+  "name": "container-cli-compose",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "runServices": ["app", "worker", "plain"],
+  "workspaceFolder": "/workspace",
+  "remoteUser": "app",
+  "updateRemoteUserUID": false,
+  "overrideCommand": true,
+  "shutdownAction": "none",
+  "postStartCommand": "decune status > /tmp/decune-lifecycle-status"
+}

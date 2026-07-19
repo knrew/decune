@@ -232,6 +232,26 @@ Compose published port で host IP が省略されている場合、通常出力
 
 `ports` は read-only command です。state の `last_used_at` は更新せず、stale forwarding metadata や Docker resource の削除も行いません。
 
+### Container 内の `decune`
+
+active な attached `decune up` session がある間、image-based / Dockerfile-based container または Docker Compose primary service の中から、現在の workspace に固定された read-only query を実行できます。
+
+```sh
+decune status
+decune ports
+decune ports --json
+```
+
+container 内の `status` は、host 側の `decune status <WORKSPACE>` と同じ live config check ではありません。起動時に記録した state と query 時の managed Docker resource を比較し、`Config snapshot: consistent` と `Live workspace: not checked` を別々に表示します。修復など host で行う操作が必要な場合は `Action (run on host)` に表示します。host workspace path、config path、raw config hash/label、mount source、secret、他 workspace の情報は表示しません。
+
+container 内の `ports --json` は host 側の単一 workspace 出力と同じ JSON array schema を使いますが、各 entry の `workspace` / `workspace_id` は省略します。warning は stderr、text/JSON output は stdout に分離されるため、stdout を単独で JSON parser に渡せます。
+
+container 内では workspace を指定できません。`status --json`、`status .`、`ports .`、`ports --all` と、`up` / `rebuild` / `down` / `remove` / `rm` / `clean` は query 前に usage error（exit `2`）になります。help と version は host daemon に接続せず表示します。
+
+container CLI と host daemon は primary container の resolved remote UID だけを認可します。root や別 UID からの接続は、認可の詳細を含まない generic error になります。decune は通常の sidecar に client/socket を注入せず、sidecar port forwarding を明示した場合も forwarding artifact だけを配置します。利用者が Compose file の mount で primary runtime を sidecar と共有した構成は、この分離保証の対象外です。
+
+query は attached `up` process の lifetime に限定されます。`up --detach` 完了後や attached session 終了後に artifact が残っていても利用できません。`/usr/local/bin/decune` を準備できなかったという warning が host 側に出た場合は、container 内で `/run/decune/decune status` のように direct path を使ってください。`[container.cli].enabled` と upgrade 手順は、[decune TOML 設定](#decune-toml-設定)と[インストール](#インストール)を参照してください。
+
 ### `decune remove` / `decune rm`
 
 ```sh

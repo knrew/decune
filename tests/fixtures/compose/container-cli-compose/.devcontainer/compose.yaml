@@ -1,0 +1,15 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    volumes:
+      - ../..:/workspace
+  worker:
+    image: alpine:3.20
+    command: sleep infinity
+  plain:
+    image: alpine:3.20
+    command: sleep infinity
+    ports:
+      - "127.0.0.1:__PUBLISHED_HOST_PORT__:3000"

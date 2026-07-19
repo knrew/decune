@@ -1416,3 +1416,4 @@ Security note:
 - dotfiles、mounts、lifecycle commands、hooks、shell attach、lifecycle の二重実行防止。
 - manual/automatic port forwarding、published port の warning/error、sidecar 明示 forwarding、TCP-only の挙動。
 - credential forwarding、token redaction、state repair、resource name の sanitization、secret leak regression coverage。
+- container CLI の image/Dockerfile/Compose primary、command/stdio/exit matrix、UID/sidecar topology、attached/detached、enabled lifecycle、symlink fallback、forwarding 集約・daemon handoff、live workspace/host path 非参照。

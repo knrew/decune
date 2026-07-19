@@ -1,0 +1,14 @@
+version = 1
+shell = "/bin/sh"
+
+[ports.auto]
+enabled = false
+
+[container.cli]
+enabled = true
+
+[credentials.git]
+enabled = false
+
+[credentials.github]
+enabled = false

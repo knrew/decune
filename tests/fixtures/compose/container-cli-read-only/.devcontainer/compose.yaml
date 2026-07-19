@@ -1,0 +1,6 @@
+services:
+  app:
+    image: alpine:3.20
+    read_only: true
+    volumes:
+      - ../..:/workspace

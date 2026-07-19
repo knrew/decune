@@ -1,0 +1,9 @@
+{
+  "name": "container-cli-read-only",
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "workspaceFolder": "/workspace",
+  "overrideCommand": true,
+  "shutdownAction": "none",
+  "updateRemoteUserUID": false
+}

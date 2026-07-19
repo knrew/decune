@@ -13,6 +13,8 @@ mod compose_ci;
 #[cfg(test)]
 mod compose_integration;
 #[cfg(test)]
+mod container_cli_compose_integration;
+#[cfg(test)]
 mod dotfiles;
 #[cfg(test)]
 mod features;
