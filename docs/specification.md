@@ -964,6 +964,36 @@ effective value が false の場合は host daemon が query を拒否する aut
 
 `container.cli.enabled` は config hash に含めない。この値だけの変更では container または Compose project の再作成を要求しない。
 
+container query の collector は daemon 起動時に固定した server-side context だけを入力にする。state は固定 state directory の `state.toml` を query ごとに 1 回だけ読み、workspace path や config path を参照先として使わない。forwarding status も固定 status directory の全 session socket を query ごとに 1 回だけ集約する。`Workspace::resolve`、config discovery、read-only up plan、build context hash は呼び出さない。
+
+Docker container evidence は、固定 workspace ID の `decune.managed=true` resource と、固定 state または同 resource から導出した同一 Compose project だけを list / inspect / deduplicate する。Compose project label の候補は、固定 state に記録された値、または `decune.managed=true` かつ `decune.workspace_id` が固定 workspace ID と一致する resource の値に限定する。label value は trim 後に非空であることだけを確認し、Compose project name の形式検証は行わない。ここで検証するのは label の文字列形式ではなく、固定 query context または同一 workspace に帰属する managed resource から得た値であることを指す。request の command、format、path、resource name を Docker filter や host path に使わない。raw inspect、raw label map、stdout / stderr は container query の allowlist 型へ直ちに射影し、cache へ保存しない。status と ports は container / service / run state / health / config identity / published port を含む同じ container evidence snapshot を共有する。managed volume evidence は別 entry として取得する。
+
+Docker evidence cache の key は server 側だけで次の値から作る。
+
+```text
+QueryEvidenceKey {
+    query_context_fingerprint,
+    workspace_id,
+    kind: Containers | Volumes,
+}
+```
+
+client input、workspace path、Docker resource name、output format は key に含めない。`Containers` は workspace container と同一 workspace の Compose project container の semantic load 全体、`Volumes` は managed volume evidence を表す。state と forwarding status は cache しない。
+
+cache と query 専用 Docker 実行の内部固定値:
+
+| 項目                            | 値     |
+| ------------------------------- | ------ |
+| concurrent Docker evidence load | 2      |
+| Docker evidence load timeout    | 10 s   |
+| query Docker command timeout    | 5 s    |
+| success cache TTL               | 2 s    |
+| failure cache TTL               | 500 ms |
+
+TTL は load 完了時刻から数える。同一 key の cold load は semantic load 全体を singleflight し、waiter は同じ typed success または sanitized typed failure を共有する。異なる key を含め、実行中の Docker evidence load は全体で 2 件までとする。expired success の refresh が失敗した場合に stale result は返さない。Docker event 監視や mutation hook による invalidation は行わず、daemon 再生成時に cache を破棄する。
+
+Docker evidence load は query coordinator が独立 task として所有する。呼出元の cancel だけでは load を中断せず、完了・failure・10 s timeout の全経路で waiter を wake する。query 専用 Docker command には既存 `RuntimeCommand` の timeout / kill / reap を使って 5 s timeout を設定し、通常の host `status` / `ports` / `up` の command timeout は変更しない。Docker failure は raw stderr を保持しない typed failure へ変換した後、collector の縮退規則に従って warning 付き snapshot へ変換する。query 全体の 15 s deadline と daemon admission は daemon dispatch が所有する。
+
 ### `[credentials.git]`
 
 ```toml

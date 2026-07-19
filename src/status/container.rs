@@ -1,9 +1,16 @@
-use std::{fmt, fmt::Write as _};
+use std::{collections::BTreeSet, fmt, fmt::Write as _};
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 
 use crate::{
+    docker::{
+        container::{ContainerInspect, ContainerState},
+        resource::{
+            compose_project_name_from_labels, compose_service_name_from_labels,
+            config_hash_from_labels, managed_workspace_id_from_labels,
+        },
+    },
     ports::{
         ContainerPortSnapshot, PortInventoryEntry, container_port_inventory, render_ports_table,
     },
@@ -18,9 +25,10 @@ use super::aggregate::{
     should_report_unhealthy,
 };
 use super::types::{
-    ContainerStatusSummary, EnvironmentStatus, HealthStatus, LifecycleStatus, RuntimeRunState,
-    StatusIssueSeverity, VolumeStatusSummary, WorkspaceMode,
+    ContainerStatusSummary, EnvironmentStatus, LifecycleStatus, StatusIssueSeverity,
+    VolumeStatusSummary, WorkspaceMode,
 };
+pub(crate) use super::types::{HealthStatus, RuntimeRunState};
 
 const SNAPSHOT_IDENTITY_DOMAIN: &[u8] = b"decune-container-query-config-identity-v1";
 
@@ -108,6 +116,12 @@ impl ContainerQueryContainerEvidence {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
+pub(crate) struct ContainerQueryContainersEvidence {
+    pub(crate) containers: Vec<ContainerQueryContainerEvidence>,
+    pub(crate) published_ports: Vec<ContainerPortSnapshot>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ContainerQueryVolumeEvidence {
     pub(crate) name: Option<String>,
@@ -132,6 +146,84 @@ pub(crate) struct ContainerQuerySnapshot {
     pub(crate) state: ContainerQueryStateEvidence,
     pub(crate) docker: ContainerQueryDockerEvidence,
     pub(crate) ports: Vec<ContainerPortSnapshot>,
+}
+
+pub(crate) fn container_query_evidence_from_inspect(
+    container: &ContainerInspect,
+    workspace_id: &str,
+    compose_projects: &BTreeSet<String>,
+) -> Option<ContainerQueryContainerEvidence> {
+    if !container_query_inspect_matches_scope(container, workspace_id, compose_projects) {
+        return None;
+    }
+    let labels = container.config.as_ref()?.labels.as_ref()?;
+    let managed_workspace_id = managed_workspace_id_from_labels(labels);
+    let managed_for_workspace = managed_workspace_id.as_deref() == Some(workspace_id);
+
+    Some(ContainerQueryContainerEvidence::new(
+        container.id.clone(),
+        container.name.clone(),
+        compose_service_name_from_labels(labels),
+        container_query_run_state(container.state.as_ref()),
+        container_query_health_status(container.state.as_ref()),
+        managed_for_workspace
+            .then(|| config_hash_from_labels(labels))
+            .flatten()
+            .as_deref(),
+    ))
+}
+
+pub(crate) fn container_query_inspect_matches_scope(
+    container: &ContainerInspect,
+    workspace_id: &str,
+    compose_projects: &BTreeSet<String>,
+) -> bool {
+    let Some(labels) = container
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+    else {
+        return false;
+    };
+    let managed_workspace_id = managed_workspace_id_from_labels(labels);
+    if managed_workspace_id.is_some() {
+        return managed_workspace_id.as_deref() == Some(workspace_id);
+    }
+    compose_project_name_from_labels(labels)
+        .as_ref()
+        .is_some_and(|project| compose_projects.contains(project))
+}
+
+fn container_query_run_state(state: Option<&ContainerState>) -> RuntimeRunState {
+    let Some(state) = state else {
+        return RuntimeRunState::Unknown;
+    };
+    if state.running == Some(true) {
+        return RuntimeRunState::Running;
+    }
+    if state.running == Some(false) {
+        return RuntimeRunState::Stopped;
+    }
+    match state.status.as_deref() {
+        Some("running") => RuntimeRunState::Running,
+        Some("created" | "exited" | "dead" | "paused" | "restarting" | "removing") => {
+            RuntimeRunState::Stopped
+        }
+        Some(_) | None => RuntimeRunState::Unknown,
+    }
+}
+
+fn container_query_health_status(state: Option<&ContainerState>) -> HealthStatus {
+    match state
+        .and_then(|state| state.health.as_ref())
+        .and_then(|health| health.status.as_deref())
+    {
+        Some("healthy") => HealthStatus::Healthy,
+        Some("unhealthy") => HealthStatus::Unhealthy,
+        Some("starting") => HealthStatus::Starting,
+        Some(_) => HealthStatus::Unknown,
+        None => HealthStatus::None,
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]

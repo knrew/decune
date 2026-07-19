@@ -14,6 +14,9 @@ pub(crate) use collect::{collect_all_ports, collect_workspace_ports};
 pub(crate) use render::{render_ports_table, sort_ports};
 pub(crate) use types::{ContainerPortSnapshot, PortInventory, PortInventoryEntry, PortUsageType};
 
+pub(crate) use collect::container_forwarded_port_snapshots;
+pub(crate) use published::container_published_port_snapshots;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct PortsOptions {
     pub(crate) workspace: Option<PathBuf>,

@@ -21,7 +21,7 @@ use super::{
         PublishedContainerInspect, compose_project_name_from_container,
         dedupe_published_containers, published_ports_from_container_entries,
     },
-    types::{PortInventory, PortInventoryEntry, PortUsageType},
+    types::{ContainerPortSnapshot, PortInventory, PortInventoryEntry, PortUsageType},
 };
 
 pub(crate) async fn collect_workspace_ports(
@@ -230,13 +230,34 @@ fn forwarded_inventory_entry(
     context: &WorkspacePortContext,
     include_workspace: bool,
 ) -> PortInventoryEntry {
+    let workspace = include_workspace
+        .then(|| context.workspace_path.clone())
+        .flatten();
+    let workspace_id = include_workspace.then(|| context.workspace_id.clone());
+    forwarded_inventory_entry_with_identity(port, workspace, workspace_id)
+}
+
+pub(crate) fn container_forwarded_port_snapshots(
+    ports: Vec<ActiveForwardPort>,
+) -> Vec<ContainerPortSnapshot> {
+    ports
+        .into_iter()
+        .map(|port| {
+            ContainerPortSnapshot::from(&forwarded_inventory_entry_with_identity(port, None, None))
+        })
+        .collect()
+}
+
+fn forwarded_inventory_entry_with_identity(
+    port: ActiveForwardPort,
+    workspace: Option<String>,
+    workspace_id: Option<String>,
+) -> PortInventoryEntry {
     let requested = (port.host_port != port.requested_host_port)
         .then_some((port.host_ip.clone(), port.requested_host_port));
     PortInventoryEntry {
-        workspace: include_workspace
-            .then(|| context.workspace_path.clone())
-            .flatten(),
-        workspace_id: include_workspace.then(|| context.workspace_id.clone()),
+        workspace,
+        workspace_id,
         host_ip: port.host_ip,
         host_port: port.host_port,
         kind: PortUsageType::Forwarded,
