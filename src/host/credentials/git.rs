@@ -142,7 +142,7 @@ pub(super) fn prepare_git_credential_runtime_with_gitconfig(
     platform: ContainerToolPlatform,
     host_gitconfig: Option<&Path>,
 ) -> Result<GitCredentialRuntime> {
-    prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
+    prepare_git_credential_runtime_with_gitconfig_and_tool_dir(
         config,
         runtime_dir,
         platform,
@@ -151,12 +151,12 @@ pub(super) fn prepare_git_credential_runtime_with_gitconfig(
     )
 }
 
-pub(super) fn prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
+pub(super) fn prepare_git_credential_runtime_with_gitconfig_and_tool_dir(
     config: &ResolvedConfig,
     runtime_dir: &Path,
     platform: ContainerToolPlatform,
     host_gitconfig: Option<&Path>,
-    tool_source_dirs: Option<Vec<PathBuf>>,
+    tool_source_dir: Option<PathBuf>,
 ) -> Result<GitCredentialRuntime> {
     let helper_enabled = git_host_helper_enabled(&config.credentials.git);
     let copy_global_config =
@@ -170,12 +170,12 @@ pub(super) fn prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
 
     let mut cleanup_paths = Vec::new();
     if helper_enabled {
-        let helper_path = match tool_source_dirs {
-            Some(source_dirs) => crate::host::container_tools::stage_container_tool_from_dirs(
+        let helper_path = match tool_source_dir {
+            Some(source_dir) => crate::host::container_tools::stage_container_tool_from_dir(
                 ContainerTool::GitCredentialHelper,
                 platform,
                 runtime_dir,
-                &source_dirs,
+                &source_dir,
             )?,
             None => {
                 stage_container_tool(ContainerTool::GitCredentialHelper, platform, runtime_dir)?
@@ -839,12 +839,12 @@ mod tests {
         )
         .unwrap();
         let runtime_dir = temp.path().join("runtime");
-        let runtime = prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
+        let runtime = prepare_git_credential_runtime_with_gitconfig_and_tool_dir(
             &ResolvedConfig::default(),
             &runtime_dir,
             ContainerToolPlatform::LinuxAmd64,
             None,
-            Some(vec![source_dir]),
+            Some(source_dir),
         )
         .unwrap();
         let helper_path = runtime_dir.join(GIT_CREDENTIAL_HELPER_NAME);
@@ -876,12 +876,12 @@ mod tests {
         let mut config = ResolvedConfig::default();
         config.credentials.git.https = GitHttpsMode::HostHelperReadOnly;
 
-        let runtime = prepare_git_credential_runtime_with_gitconfig_and_tool_dirs(
+        let runtime = prepare_git_credential_runtime_with_gitconfig_and_tool_dir(
             &config,
             &runtime_dir,
             ContainerToolPlatform::LinuxAmd64,
             None,
-            Some(vec![source_dir]),
+            Some(source_dir),
         )
         .unwrap();
 

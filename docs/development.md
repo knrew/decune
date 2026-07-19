@@ -20,7 +20,7 @@ xtask のインストールコマンドを実行します。
 cargo run --locked -p xtask -- install --locked
 ```
 
-この command は `target/decune-xtask/container-tools-bundle` に bundle を build/check し、bundle を埋め込んだ `decune` を `cargo install` します。bundle の build/check だけを個別に確認する場合は、以下を実行します。
+この command は `target/decune-xtask/container-tools-bundle` に `git-credential-decune`、`decune-forward-agent`、container-side `decune` の 3 tools を 2 platform 向けに build/check し、6 artifact の bundle を埋め込んだ host-side `decune` を `cargo install` します。container-side `decune` の Cargo binary target は `decune-container-cli`、bundle 内の artifact name は `decune` です。bundle の build/check だけを個別に確認する場合は、以下を実行します。
 
 ```sh
 cargo run --locked -p xtask -- build-container-tools --locked

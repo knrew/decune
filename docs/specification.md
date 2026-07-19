@@ -119,7 +119,7 @@ release asset:
 - `x86_64-apple-darwin`
 - `aarch64-apple-darwin`
 
-container-side tools は release build 時に host binary へ埋め込む。Git repository には生成済み binary artifact を入れない。
+container-side tools は release build 時に host binary へ埋め込む。bundle は `git-credential-decune`、`decune-forward-agent`、`decune` の 3 tools を各 platform に 1 artifact ずつ持ち、初期 2 platform では 6 artifact を必須とする。container-side `decune` の Cargo binary target は `decune-container-cli`、bundle artifact name と container 内の user-facing command name は `decune` とする。Git repository には生成済み binary artifact を入れない。
 
 container-side tool platform:
 
@@ -133,6 +133,8 @@ source checkout からの local install は `cargo run --locked -p xtask -- inst
 `decune --version` は release tag から作る公式 artifact では `decune {version}` を表示する。source checkout からの local build では、tag 外 commit や dirty worktree を公式 artifact と区別できるように SemVer build metadata suffix を表示してよい。Git 情報を取得できない source build では source build であることを示す suffix を表示してよい。
 
 開発・debug 用 override として `DECUNE_CONTAINER_TOOLS_DIR` を残す。build-time の bundle 制御は通常 `xtask` が内部で行い、bundle dir の既定値は `target/decune-xtask/container-tools-bundle` とする。`DECUNE_CONTAINER_TOOLS_BUNDLE` と `DECUNE_CONTAINER_TOOLS_BUNDLE_DIR` は低レベル build 用の内部 override として扱い、通常の local/CI 手順では利用者に要求しない。
+
+container-side tool の runtime staging は、container に mount する runtime directory 内へ temporary file を作らない。host-private かつ target と同一 filesystem の親 directory に排他的 create で temporary file を作り、開いた file descriptor への artifact bytes の書き込み、mode `0755` の設定、最終 staged bytes の SHA-256 検証が完了した後、runtime target を atomic rename で置換する。既存 target が symlink の場合は link 先を変更せず symlink entry 自体を置換し、directory など安全に置換できない file type は runtime corruption error とする。失敗時は temporary file を削除し、partial target を公開しない。
 
 ## CLI
 
@@ -1343,7 +1345,7 @@ container 専用 status は host の workspace detail model/renderer を流用�
 
 container query 用 port snapshot は workspace path と workspace ID field を構造上持たない。`ports` text は host の単一 workspace table と同じ column、意味、sort 順を使い、`ports` JSON は host の単一 workspace `Vec<PortInventoryEntry>` schema と同じにする。JSON の各 entry で `workspace` / `workspace_id` は `None` として省略し、text/JSON とも末尾 newline はちょうど 1 個とする。forwarding status socket の I/O と Docker evidence collector は host daemon 接続工程の責務とし、この snapshot/render 層には含めない。
 
-container-side CLI の Cargo target は `decune-container-cli` とし、`clap` には依存せず `args_os` を使って解析する。この target の user-facing command 名、container tools bundle への追加、runtime staging は別工程で接続する。socket は既定で `/run/decune/host-daemon.sock` を使う。
+container-side CLI の Cargo target は `decune-container-cli` とし、`clap` には依存せず `args_os` を使って解析する。container tools bundle では artifact name `decune` として配布し、runtime target と user-facing command は `/run/decune/decune` と `decune` とする。socket は既定で `/run/decune/host-daemon.sock` を使う。CLI の enabled/disabled lifecycle と container 内 symlink reconciliation は未接続である。
 
 container-side CLI は current workspace だけを対象とし、`status` は `status` + `text`、`ports` は `ports` + `text`、`ports --json` は `ports` + `json` の query を送る。`status --json`、workspace positional（`.` を含む）、`ports --all`、重複する `ports --json` は socket へ接続する前に usage error とする。`up`、`rebuild`、`down`、`remove` / `rm`、`clean` も host-only command として local で拒否する。`--help` / `-h` / `help`、command help、`--version` / `-V` は local 表示とし、host-only command の help は host で実行する command であることを説明する。help option は argument を左から解析して到達した時点で local help を表示し、それより前に検出した unknown option や重複 option は usage error とする。引数なし、unknown command / option、non-UTF-8 argument は panic せず usage error とする。
 
