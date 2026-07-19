@@ -23,7 +23,7 @@ use crate::{
 use attach::attach_shell;
 use forwarding::{start_forwarding_for_up, stop_forwarding, warn_about_detached_forwarding};
 use lifecycle::{
-    prepare_up_lifecycle, report_up_success, run_attach_lifecycle_for_up,
+    HostDaemonSessionMode, prepare_up_lifecycle, report_up_success, run_attach_lifecycle_for_up,
     run_container_start_lifecycle_for_up, start_host_daemon_for_up,
 };
 use start::ensure_container_started;
@@ -53,7 +53,7 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     ))
     .await?;
     warn_about_detached_forwarding(&started.plan);
-    let _host_daemon = start_host_daemon_for_up(&started).await?;
+    let _host_daemon = start_host_daemon_for_up(&started, HostDaemonSessionMode::Detached).await?;
     {
         let lifecycle = prepare_up_lifecycle(&started).await?;
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
@@ -71,7 +71,7 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
         ForwardingResolution::Resolve,
     ))
     .await?;
-    let _host_daemon = start_host_daemon_for_up(&started).await?;
+    let _host_daemon = start_host_daemon_for_up(&started, HostDaemonSessionMode::Attached).await?;
     let lifecycle = prepare_up_lifecycle(&started).await?;
     run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
     let forwarding = start_forwarding_for_up(&started).await?;

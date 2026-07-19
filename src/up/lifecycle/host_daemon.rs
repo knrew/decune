@@ -17,9 +17,16 @@ use crate::{
     host::query_context::HostDaemonCliQueryPolicy,
     ui,
     up::{exec_target::resolve_up_exec_target, start::StartedUpContainer},
+    workspace::Workspace,
 };
 
 const REUSED_HOST_DAEMON_MONITOR_INTERVAL: Duration = Duration::from_millis(200);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::up) enum HostDaemonSessionMode {
+    Attached,
+    Detached,
+}
 
 #[derive(Debug)]
 pub(in crate::up) struct HostDaemonGuard {
@@ -65,6 +72,7 @@ impl Drop for HostDaemonGuard {
 
 pub(in crate::up) async fn start_host_daemon_for_up(
     started: &StartedUpContainer,
+    session_mode: HostDaemonSessionMode,
 ) -> Result<HostDaemonGuard> {
     let runtime_dir = started.workspace.paths().runtime_dir();
     let target = resolve_up_exec_target(&started.plan, &started.outcome.container_name).await?;
@@ -75,7 +83,8 @@ pub(in crate::up) async fn start_host_daemon_for_up(
         &started.plan.uid_gid_sync_plan,
     )
     .await?;
-    let cli_query_policy = HostDaemonCliQueryPolicy::for_workspace(
+    let cli_query_policy = cli_query_policy_for_up(
+        session_mode,
         started.plan.config.container.cli.enabled,
         &started.workspace,
     )?;
@@ -89,6 +98,19 @@ pub(in crate::up) async fn start_host_daemon_for_up(
         cli_query_policy,
     )
     .await
+}
+
+fn cli_query_policy_for_up(
+    session_mode: HostDaemonSessionMode,
+    configured_enabled: bool,
+    workspace: &Workspace,
+) -> Result<HostDaemonCliQueryPolicy> {
+    match session_mode {
+        HostDaemonSessionMode::Attached => {
+            HostDaemonCliQueryPolicy::for_workspace(configured_enabled, workspace)
+        }
+        HostDaemonSessionMode::Detached => Ok(HostDaemonCliQueryPolicy::Disabled),
+    }
 }
 
 const fn daemon_git_https_mode(credentials: &ResolvedGitCredentials) -> GitHttpsMode {
@@ -251,11 +273,15 @@ mod tests {
     use tempfile::TempDir;
     use tokio::net::{UnixListener, UnixStream};
 
-    use super::{daemon_git_https_mode, start_host_daemon_for_remote_user};
+    use super::{
+        HostDaemonSessionMode, cli_query_policy_for_up, daemon_git_https_mode,
+        start_host_daemon_for_remote_user,
+    };
     use crate::{
         config::{resolved::ResolvedGitCredentials, types::GitHttpsMode},
         host::daemon::HostDaemon,
         host::query_context::HostDaemonCliQueryPolicy,
+        up::test_support::test_workspace,
     };
 
     #[test]
@@ -281,6 +307,27 @@ mod tests {
             daemon_git_https_mode(&credentials),
             GitHttpsMode::HostHelperReadOnly
         );
+    }
+
+    #[test]
+    fn cli_query_policy_is_enabled_only_for_enabled_attached_sessions() {
+        let workspace = test_workspace("host-daemon-cli-query-session-mode");
+        let cases = [
+            (HostDaemonSessionMode::Attached, true, true),
+            (HostDaemonSessionMode::Attached, false, false),
+            (HostDaemonSessionMode::Detached, true, false),
+            (HostDaemonSessionMode::Detached, false, false),
+        ];
+
+        for (session_mode, configured_enabled, expected_enabled) in cases {
+            let policy =
+                cli_query_policy_for_up(session_mode, configured_enabled, &workspace).unwrap();
+            assert_eq!(
+                matches!(policy, HostDaemonCliQueryPolicy::Enabled(_)),
+                expected_enabled,
+                "unexpected query policy for {session_mode:?} with configured_enabled={configured_enabled}"
+            );
+        }
     }
 
     #[test]
