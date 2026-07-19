@@ -17,6 +17,7 @@ mod uid_gid;
 use crate::{
     config::resolved::{ResolvedDevcontainerSource, ResolvedShutdownAction},
     docker::container::stop_container,
+    host::container_cli::reconcile_container_cli_symlink,
     runtime::compose_cli::{ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli},
     state,
 };
@@ -54,6 +55,12 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
     .await?;
     warn_about_detached_forwarding(&started.plan);
     let _host_daemon = start_host_daemon_for_up(&started, HostDaemonSessionMode::Detached).await?;
+    reconcile_container_cli_symlink(
+        started.client.cli(),
+        &started.outcome.container_name,
+        started.plan.config.container.cli.enabled,
+    )
+    .await;
     {
         let lifecycle = prepare_up_lifecycle(&started).await?;
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
@@ -72,6 +79,12 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     ))
     .await?;
     let _host_daemon = start_host_daemon_for_up(&started, HostDaemonSessionMode::Attached).await?;
+    reconcile_container_cli_symlink(
+        started.client.cli(),
+        &started.outcome.container_name,
+        started.plan.config.container.cli.enabled,
+    )
+    .await;
     let lifecycle = prepare_up_lifecycle(&started).await?;
     run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
     let forwarding = start_forwarding_for_up(&started).await?;

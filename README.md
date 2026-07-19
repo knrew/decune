@@ -10,6 +10,7 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 - `decune rebuild` / `decune down` / `decune remove` による明示的なライフサイクル管理
 - `decune status` で decune が管理する workspace environment の summary/detail を確認
 - `decune ports` で実行中の port forwarding と Docker published port の host 側の利用状況を確認
+- attached `decune up` session 中は primary container 内の `decune status` / `decune ports` から同じ workspace を確認
 - `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
 - image-based / Dockerfile-based / Docker Compose-based の Dev Container 構成を起動
 - Compose clone isolation により、固定 published port・固定名・固定 IPv4 subnet・宣言済み endpoint を workspace ごとに分離

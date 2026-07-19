@@ -28,6 +28,7 @@ use crate::{
         user::{UidGidSyncPlan, uid_gid_sync_runtime_user},
     },
     host::{
+        container_cli::prepare_container_cli_artifact,
         container_tools::ContainerToolPlatform,
         credentials::{
             DECUNE_RUNTIME_TARGET, GitCredentialRuntime, GithubCliRuntime, SshAgentRuntime,

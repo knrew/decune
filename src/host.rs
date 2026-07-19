@@ -1,3 +1,4 @@
+pub(crate) mod container_cli;
 pub(crate) mod container_tools;
 pub(crate) mod credentials;
 pub(crate) mod daemon;

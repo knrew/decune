@@ -25,11 +25,26 @@ if [ "${1:-}" = compose ]; then
 fi
 if [ "${1:-}" = exec ]; then
   case " $* " in
+    *" decune-container-cli-symlink "*)
+      if [ ! -S "${DECUNE_EXPECT_HOST_DAEMON_SOCKET:?}" ]; then
+        echo "host daemon socket was unavailable before attached container CLI setup" >&2
+        exit 91
+      fi
+      printf 'ready\n'
+      exit 0
+      ;;
     *passwd*)
       printf 'root:x:0:0:root:/root:/bin/sh\n'
       exit 0
       ;;
-    *" printf post-start"* | *" printf post-attach"*)
+    *" printf post-start"*)
+      if [ ! -S "${DECUNE_EXPECT_HOST_DAEMON_SOCKET:?}" ]; then
+        echo "host daemon socket was unavailable before attached lifecycle" >&2
+        exit 92
+      fi
+      exit 0
+      ;;
+    *" printf post-attach"*)
       exit 0
       ;;
     *" /usr/local/bin/decune-shell"*)

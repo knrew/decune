@@ -21,8 +21,27 @@ if [ "${1:-}" = compose ]; then
   esac
 fi
 if [ "${1:-}" = exec ]; then
-  printf 'appuser:x:1001:1001::/home/appuser:/bin/sh\n'
-  exit 0
+  case " $* " in
+    *" decune-container-cli-symlink "*)
+      if [ ! -S "${DECUNE_EXPECT_HOST_DAEMON_SOCKET:?}" ]; then
+        echo "host daemon socket was unavailable before detached container CLI setup" >&2
+        exit 91
+      fi
+      printf 'ready\n'
+      exit 0
+      ;;
+    *" /bin/sh -lc true "*)
+      if [ ! -S "${DECUNE_EXPECT_HOST_DAEMON_SOCKET:?}" ]; then
+        echo "host daemon socket was unavailable before detached lifecycle" >&2
+        exit 92
+      fi
+      exit 0
+      ;;
+    *)
+      printf 'appuser:x:1001:1001::/home/appuser:/bin/sh\n'
+      exit 0
+      ;;
+  esac
 fi
 if [ "${1:-}" = image ] && [ "${2:-}" = inspect ]; then
   printf '[{"Id":"sha256:alpine","Os":"linux","Architecture":"amd64","Config":{"Labels":{},"Entrypoint":null,"Cmd":["/bin/sh"],"User":""}}]\n'
