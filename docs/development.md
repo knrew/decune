@@ -62,7 +62,7 @@ decune のテストの網羅範囲は、少なくとも以下の挙動グルー�
 - Compose の `dockerComposeFile`、`service`、`runServices`、profiles、複数ファイルのマージ、decune-generated Compose override の挙動、プロジェクト削除の安全性。
 - Feature の解決、lock の扱い、メタデータのマージ、オプションの環境変数 / 既定値の扱い、local Feature の制約、UID/GID 同期、entrypoint shim の挙動。
 - dotfiles、マウント、lifecycle command、decune hook、シェル接続、lifecycle の二重実行防止。
-- manual/automatic port forwarding、published port の警告 / エラー、sidecar の明示的な転送、TCP のみ対応の挙動。
+- manual/automatic port forwarding、published port の警告 / エラー、sidecar forwarding、TCP のみ対応の挙動。
 - credential forwarding、トークンの redaction、状態の修復、リソース名のサニタイズ、秘密情報の漏えいの回帰テスト。
 - decune container CLI の image/Dockerfile/Compose の primary、コマンド / stdio / exit の組み合わせ、UID / sidecar の構成、attached/detached、有効時の lifecycle、symlink のフォールバック、forwarding の集約・daemon handoff、live なワークスペース / ホスト側パスの非参照。
 
@@ -112,7 +112,7 @@ cargo run --locked -p xtask -- compose-integration
 
 `compose_integration` の Docker を使うテストは `#[ignore]` として定義します。通常の単体テストでは実行されず、`compose-integration` が Docker/Compose の利用可否を確認したうえで、`#[ignore]` の統合テストを単一のテストスレッドで実行します。
 
-この経路は通常の Compose のシナリオに加え、実際の container-side tools bundle の 3 ツール × 2 プラットフォームをビルド / 検証し、decune container CLI の image-based / Dockerfile-based / Docker Compose-based の E2E を実行します。decune container CLI の E2E は attached な `up` のプロセスと別の `docker exec` のプロセスを使い、クエリ、UID / sidecar の構成、lifecycle、forwarding の集約と daemon handoff、サニタイズ済みの開示境界を実際の Docker リソースで確認します。
+この経路は通常の Compose のシナリオに加え、実際の container-side tools bundle の 3 ツール × 2 プラットフォームをビルド / 検証し、decune container CLI の image-based / Dockerfile-based / Docker Compose-based の E2E を実行します。decune container CLI の E2E は attached session のプロセスと別の `docker exec` のプロセスを使い、クエリ、UID / sidecar の構成、lifecycle、forwarding の集約と daemon handoff、サニタイズ済みの開示境界を実際の Docker リソースで確認します。
 
 ## リリース成果物
 

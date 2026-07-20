@@ -4,14 +4,14 @@
 
 ## 設定ファイルの場所と重ね合わせ
 
-- global config: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`
-- project config: `<workspace>/.decune/config.toml`
+- global decune config: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`
+- project decune config: `<workspace>/.decune/config.toml`
 
-decune config は `devcontainer.json` に対するオーバーレイであり、ベースイメージ / ビルド / Compose 定義の置き換えには使えません。個人環境の好み(dotfiles、シェル、認証情報の方針など)は global config に、リポジトリで共有したい設定(Feature、マウント、clone isolation など)は project config に置きます。project config は Git 管理してかまいませんが、秘密情報は設定ファイルに直接書かないでください。
+decune config は `devcontainer.json` に対するオーバーレイであり、ベースイメージ / ビルド / Compose 定義の置き換えには使えません。個人環境の好み(dotfiles、シェル、認証情報の方針など)は global decune config に、リポジトリで共有したい設定(Feature、マウント、clone isolation など)は project decune config に置きます。project decune config は Git 管理してかまいませんが、秘密情報は設定ファイルに直接書かないでください。
 
-設定は複数のレイヤーを重ねて合成され、基本は後勝ちです。おおまかには global config → `devcontainer.json` → project config → CLI オプションの順で後が優先されます。イメージ / Feature のメタデータを含む完全な順序は [specification.md 5.2 節](specification.md#52-マージ順序)、フィールドごとのマージルールは [5.3 節](specification.md#53-マージルール)を参照してください。
+設定は複数のレイヤーを重ねて合成され、基本は後勝ちです。おおまかには global decune config → `devcontainer.json` → project decune config → CLI オプションの順で後が優先されます。イメージ / Feature のメタデータを含む完全な順序は [specification.md 5.2 節](specification.md#52-マージ順序)、フィールドごとのマージルールは [5.3 節](specification.md#53-マージルール)を参照してください。
 
-global config を適用したくない場合は、project config に `use_global_config = false` を書くか、`decune up --no-global-config` を使います。CLI オプションは一時的な強制無効化で、project config で再有効化できません。
+global decune config を適用したくない場合は、project decune config に `use_global_config = false` を書くか、`decune up --no-global-config` を使います。CLI オプションは一時的な強制無効化で、project decune config で再有効化できません。
 
 ## トップレベル設定
 
@@ -22,7 +22,7 @@ shell = "/bin/zsh"
 
 - `version`: 必須で、`1` だけが有効です。未知のキーはエラーになります。
 - `shell`: `decune up` で接続するシェルのパスまたはコマンド名です。
-- `use_global_config`: project config で false にすると global config を適用しません。
+- `use_global_config`: project decune config で false にすると global decune config を適用しません。
 
 ## `[features]`
 
@@ -33,7 +33,7 @@ Dev Container Feature を追加し、オプションを指定します。テー�
 version = "1.23"
 ```
 
-- `enabled = false` を指定すると、global config やイメージ / Feature メタデータ由来の Feature を project 側から無効化できます。`enabled` は decune の予約キーで、Feature のオプションとしては渡されません。
+- `enabled = false` を指定すると、global decune config やイメージ / Feature メタデータ由来の Feature を project decune config から無効化できます。`enabled` は decune の予約キーで、Feature のオプションとしては渡されません。
 - OCI Feature の解決結果は `<workspace>/.decune/features.lock.toml` に digest lock として記録されます。レジストリ / タグを再解決して lock より新しい版を取り込むには `decune rebuild --update-features` を実行します。
 
 スキーマは [specification.md 5.6 節](specification.md#56-features)、Feature の解決とビルドの契約は [7.1 節](specification.md#71-ビルドと-feature)を参照してください。
@@ -123,7 +123,7 @@ enabled = true
 ```
 
 - 有効(既定)の場合、`decune up` は primary container に decune container CLI を `/run/decune/decune` として配置し、最初の lifecycle command より前に `/usr/local/bin/decune` の symlink を準備します。
-- 通常の後勝ち設定なので、global config の `false` は project config の `true` で再有効化できます。リポジトリから解除できないセキュリティ上のオプトアウトではありません。
+- 通常の後勝ち設定なので、global decune config の `false` は project decune config の `true` で再有効化できます。リポジトリから解除できないセキュリティ上のオプトアウトではありません。
 - この設定は reuse hash に含まれないため、変更してもコンテナ / Compose プロジェクトの再作成は不要です。
 - `/usr/local/bin/decune` に既存のファイル、ディレクトリ、別の symlink がある場合や、ルートファイルシステムが read-only の場合、decune は既存の配置先を変更せず警告を出して `up` を継続します。その場合はコンテナ内で `/run/decune/decune` を直接実行してください。
 

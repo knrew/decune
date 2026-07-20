@@ -18,7 +18,8 @@
 
 ## CLI 用語
 
-- attached `decune up` session: シェル接続を維持したまま実行中の `decune up`。port forwarding、credential forwarding、コンテナ内からのクエリはこのセッションの間だけ有効。
+- attached `decune up` session: シェル接続を維持したまま実行中の `decune up`(短縮形: attached session)。port forwarding、credential forwarding、コンテナ内からのクエリはこのセッションの間だけ有効。
+- detached session: `--detach` を指定した `decune up` の session。attached `decune up` session の対語で、`up` の終了時に decune host daemon も停止し、port forwarding は維持されず、コンテナ内からのクエリは session 中も拒否する。
 - diagnostic code: 起動前検査や計画作成の失敗を識別する安定したコード(例: `compose_published_port_collision`)。定義は [specification.md 13 章](specification.md#13-diagnostic-code)、対処は [ports.md](ports.md) と [clone-isolation.md](clone-isolation.md)。
 
 ## Dev Container 用語
@@ -62,7 +63,8 @@
 - automatic published port relocation: fixed TCP published port の requested endpoint が使用できない場合に、decune が次に利用可能なホスト側ポートを自動探索するポリシー(短縮形: automatic relocation)。
 - explicit published port mapping: `[[compose.published_ports.mappings]]` で `service + protocol + target` に対応する planned endpoint を明示する設定。automatic relocation のポリシーとは独立して適用する。
 - clone isolation endpoint 宣言: 固定のネットワークアドレスを参照するサービスの環境変数を、Compose のネットワークキーと relocation 後のゲートウェイ / サブネットのプレースホルダーに対応付ける `[[compose.clone_isolation.endpoints]]` の宣言([specification.md 8.9.4 節](specification.md#894-clone-isolation-endpoint-宣言))。
-- automatic port forwarding: primary container 内で TCP で待ち受けているポートを検出して decune が転送する機能。`forwardPorts`、decune `[[ports]]`、CLI `-p` による利用者指定の転送は manual port forwarding。
+- automatic port forwarding: primary container 内で TCP で待ち受けているポートを検出して decune が転送する機能(短縮形: automatic forwarding)。`forwardPorts`、decune `[[ports]]`、CLI `-p` による利用者指定の転送は manual port forwarding(短縮形: manual forwarding)。
+- sidecar forwarding: `forwardPorts` の `"service:port"` 形式または `[[ports]].service` で明示する sidecar service への port forwarding。対象の sidecar service には port forward agent だけを配置する([specification.md 9.6 節](specification.md#96-compose-モードの-service-解決と-sidecar-forwarding))。
 
 ## セキュリティ用語
 

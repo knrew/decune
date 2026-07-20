@@ -24,7 +24,7 @@ global/project の decune config を Dev Container configuration に重ねる。
 - Docker Engine API を Rust 型で直接操作するクライアント crate(`bollard` など)は使わない。外部操作は CLI アダプターに限定する。
 - Dev Container の image-based / Dockerfile-based / Docker Compose-based configuration。
 - JSONC としての `devcontainer.json` 読み込み。
-- TOML による global/project 設定。
+- TOML による global decune config と project decune config。
 - Dev Container Features の OCI レジストリからの取得、digest lock、local Feature、インストール、メタデータのマージ。
 - Docker Compose モードでは、Feature、dotfiles、認証情報、lifecycle、リモートシェル、port forwarding を primary service に適用する。
 - Git HTTPS credential helper、SSH agent、GitHub CLI token forwarding。
@@ -349,7 +349,7 @@ container-side tools bundle はコンテナ内 CLI を artifact 名 `decune` と
 利用条件:
 
 - 実効的な `[container.cli].enabled` が true である(5.13 節)。
-- 対象ワークスペースの attached `decune up` session がホストで動作している。detached モードは対象外であり、detached な `up` の lifecycle command のために decune host daemon が動作している間もクエリは `container_cli_disabled` で拒否される。
+- 対象ワークスペースの attached `decune up` session がホストで動作している。detached session は対象外であり、detached な `up` の lifecycle command のために decune host daemon が動作している間もクエリは `container_cli_disabled` で拒否される。
 - コンテナ内 CLI は現在のワークスペースだけを対象とする。
 
 対応するコマンドとクエリ:
@@ -388,7 +388,7 @@ transport 契約:
 - クエリの transport は request の書き込み完了後に Unix ソケットの書き込み側を shutdown し、response を EOF まで読む。
 - decune host daemon の response は `version`、`ok`、任意の `output`、任意の `error`、任意の `warnings` を持つ。成功の response は `output` が必須で `error` を持たず、警告を 0 件以上持てる。エラーの response は `code` と `message` を持つ `error` が必須で、`output` と警告を持たない。クライアントはこの不変条件に違反する response を不正な response として拒否する。`warnings` がない version 1 の response は空の警告リストとして扱う。
 - コンテナ内 CLI が受理する response は最大 1 MiB(1,048,576 バイト)とし、上限を超える response は不正な response として拒否する。
-- daemon handoff 中のソケット交換を許容するため、connect の `NotFound` / `ConnectionRefused` に限り短い固定間隔で限られた回数だけ再試行する。権限エラー、request の書き込み / 読み取りエラー、不正な response、daemon のエラーは再試行しない。再試行を使い切った場合は、attached `decune up` session が必要で detached モードでは利用できないことを示す canonical unavailable error とする。他の transport のエラーは、daemon の停止や認可の失敗と断定しない一般エラーとする。
+- daemon handoff 中のソケット交換を許容するため、connect の `NotFound` / `ConnectionRefused` に限り短い固定間隔で限られた回数だけ再試行する。権限エラー、request の書き込み / 読み取りエラー、不正な response、daemon のエラーは再試行しない。再試行を使い切った場合は、attached `decune up` session が必要で detached session では利用できないことを示す canonical unavailable error とする。他の transport のエラーは、daemon の停止や認可の失敗と断定しない一般エラーとする。
 
 クエリの処理境界、認可、daemon error code は 12.5 節と 13.3 節を参照する。
 
@@ -508,7 +508,7 @@ Compose モードでは `workspaceMount` は未対応のエラーとする。ワ
 - global フォールバック: `~/.config/decune/config.toml`
 - project: `<workspace>/.decune/config.toml`
 
-project 設定は Git 管理してよい。秘密情報を設定ファイルに直接書かない。
+project decune config は Git 管理してよい。秘密情報を設定ファイルに直接書かない。
 
 ### 5.2 マージ順序
 
@@ -522,7 +522,7 @@ project 設定は Git 管理してよい。秘密情報を設定ファイルに�
 6. project decune config
 7. CLI オプション
 
-`decune up --no-global-config` / `decune rebuild --no-global-config`、または project config の `use_global_config = false` を指定した場合、4 の global decune config は読み込まず、合成対象にも含めない。global config を読み込まないため、global config ファイルのパース / 検証エラーも発生しない。CLI オプションは一時的な強制無効化として扱い、project config で再有効化できない。
+`decune up --no-global-config` / `decune rebuild --no-global-config`、または project decune config の `use_global_config = false` を指定した場合、4 の global decune config は読み込まず、合成対象にも含めない。global decune config を読み込まないため、global decune config ファイルのパース / 検証エラーも発生しない。CLI オプションは一時的な強制無効化として扱い、project decune config で再有効化できない。
 
 `--config <PATH>` は `devcontainer.json` を選択するだけであり、decune config の追加指定ではない。
 
@@ -617,7 +617,7 @@ shell = true
 ### 5.5 トップレベル
 
 - `version`: 必須。`1` のみ。
-- `use_global_config`: 任意。既定 true。project config で false にすると global decune config を適用しない。
+- `use_global_config`: 任意。既定 true。project decune config で false にすると global decune config を適用しない。
 - `shell`: 任意。`decune up` で接続するシェルのパスまたはコマンド名。
 - 未知のキーはエラー。
 
@@ -631,7 +631,7 @@ version = "1.23"
 enabled = true
 ```
 
-- `enabled = false` で global 設定 / イメージメタデータ / Feature メタデータ由来の Feature を project 側から無効化できる。
+- `enabled = false` で global decune config / イメージメタデータ / Feature メタデータ由来の Feature を project decune config から無効化できる。
 - `enabled` は decune の予約キーであり、Feature のオプションとしては渡さない。
 - それ以外のキーは Feature のオプションとして扱う。
 
@@ -639,7 +639,7 @@ enabled = true
 
 dotfiles はホスト側パスをリモートユーザーのホームディレクトリに直接 bind mount しない。`/opt/decune/dotfiles/<target>` にマウントし、コンテナのセットアップ時にホームディレクトリへ symlink を作る。`/opt/decune/dotfiles` と `/opt/decune/dotfile-backings` は decune の dotfiles 用内部パスとして予約する。
 
-- `source`: ホスト側パス。global config では `~` または絶対パス。project config の相対パスは workspace root 相対。
+- `source`: ホスト側パス。global decune config では `~` または絶対パス。project decune config の相対パスは workspace root 相対。
 - `target`: リモートユーザーのホームディレクトリからの相対パス。絶対パスは禁止。
 - `enabled`: 既定 true。false の場合は同一 `target` を無効化。
 - `read_only`: 既定 true。
@@ -990,7 +990,7 @@ Dev Container の既定値に合わせる。
 - image/Dockerfile モードの既定: `stopContainer`
 - Compose モードの既定: `stopCompose`
 
-attached な `up` でシェルが終了したとき:
+attached session でシェルが終了したとき:
 
 - `none`: コンテナ / プロジェクトを停止しない。
 - `stopContainer`: primary container だけ停止する。
@@ -1256,9 +1256,9 @@ CLI `-p` と Dev Container `appPort` のホスト IP は IPv4 / ホスト名 / �
 manual forwarding の優先順位:
 
 1. CLI `-p`
-2. project decune `[[ports]]`
+2. project decune config の `[[ports]]`
 3. devcontainer `forwardPorts`
-4. global decune `[[ports]]`
+4. global decune config の `[[ports]]`
 
 ホスト側ポートが占有済みの場合、昇順で空きポートを探索し、上限に達した場合は OS 割り当てのポートへフォールバックする。`require_local = true` なら要求したホスト側ポートと実際の転送ポートが異なる場合に警告し、false なら警告なしでフォールバックする。空き確認後に別のプロセスがポートを取得した場合も、待ち受けの bind 時に再度フォールバックする。
 
@@ -1489,8 +1489,8 @@ daemon の再利用とバージョン:
 認可と生存期間:
 
 - decune container CLI query を処理するソケット接続は、起動時に解決したリモートユーザーと peer UID が一致する場合だけ認可する。`root` または別 UID からの接続は、認可の詳細を開示しない一般の接続エラーとする。
-- クエリ用の daemon は attached な `up` の guard の生存期間中だけ提供し、detached session の daemon の lifecycle は変更しない。detached な `up` 後に artifact が残っていてもクライアントは attached session が必要であることを示す canonical unavailable error を返し、常駐の daemon や監視は追加しない。
-- decune container CLI query は、active な attached `decune up` session の decune host daemon が存在する間だけ利用できる。detached モードは対象外とし、detached な `up` の lifecycle command のために decune host daemon が動作している間も `cliQuery` は `container_cli_disabled` で拒否する。
+- クエリ用の daemon は attached session の guard の生存期間中だけ提供し、detached session の daemon の lifecycle は変更しない。detached な `up` 後に artifact が残っていてもクライアントは attached session が必要であることを示す canonical unavailable error を返し、常駐の daemon や監視は追加しない。
+- decune container CLI query は、active な attached `decune up` session の decune host daemon が存在する間だけ利用できる。detached session は対象外とし、detached な `up` の lifecycle command のために decune host daemon が動作している間も `cliQuery` は `container_cli_disabled` で拒否する。
 
 縮退:
 
@@ -1572,7 +1572,7 @@ decune host daemon error code は小文字の snake_case とする。wire 上の
 - `credential_failed`: ホスト側の Git credential 処理が失敗した。
 - `unsupported_command`: `cliQuery` の `command` が対応外である。
 - `unsupported_format`: `cliQuery` の `command` + `format` の組み合わせが対応外である。
-- `container_cli_disabled`: 実効的な `container.cli.enabled` が false、または detached なセッションの daemon にクエリが届いた。
+- `container_cli_disabled`: 実効的な `container.cli.enabled` が false、または detached session の daemon にクエリが届いた。
 - `cli_query_failed`: クエリの collector / render / serialization で致命的な失敗が起きた。
 - `cli_query_busy`: 同時に処理できる `cliQuery` の上限に達している。
 - `cli_query_timeout`: クエリが処理期限を超えた。

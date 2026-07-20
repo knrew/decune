@@ -261,10 +261,10 @@ decune clean --dry-run --json                      # 削除候補を JSON で確
 
 ## decune config
 
-decune config は `devcontainer.json` に重ねるオーバーレイ設定です。個人環境向けの global config とワークスペースごとの project config があり、複数レイヤーの後勝ちで合成されます。
+decune config は `devcontainer.json` に重ねるオーバーレイ設定です。個人環境向けの global decune config とワークスペースごとの project decune config があり、複数レイヤーの後勝ちで合成されます。
 
-- global: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`
-- project: `<workspace>/.decune/config.toml`
+- global decune config: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`
+- project decune config: `<workspace>/.decune/config.toml`
 
 最小例:
 
