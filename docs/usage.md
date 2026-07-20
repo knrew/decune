@@ -8,7 +8,7 @@
 
 ```sh
 mkdir -p "$HOME/.local/bin"
-curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.3.4/scripts/install.sh | sh -s -- --version 0.3.4 --dir "$HOME/.local/bin"
+curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.4.0/scripts/install.sh | sh -s -- --version 0.4.0 --dir "$HOME/.local/bin"
 ```
 
 `$HOME/.local/bin` が `PATH` に含まれていない場合は、利用しているシェルの設定で追加してください。
@@ -20,7 +20,7 @@ decune をアップグレードする前に、対象ワークスペースで動�
 ホストに合う target triple を選び、チェックサムを検証してからインストールします。
 
 ```sh
-version=0.3.4
+version=0.4.0
 target=x86_64-unknown-linux-musl
 archive="decune-v${version}-${target}.tar.gz"
 base="https://github.com/knrew/decune/releases/download/v${version}"
