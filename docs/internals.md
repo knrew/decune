@@ -10,7 +10,7 @@ Cargo workspace は 4 つの crate で構成します。
 
 - `decune`(リポジトリ直下): ホスト側 CLI 本体。単一バイナリ `decune` を提供する。
 - `crates/decune-container-protocol`: decune host daemon と container-side tools が共有する wire protocol 型のライブラリ。
-- `crates/decune-container-tools`: コンテナ側の 3 バイナリ。
+- `crates/decune-container-tools`: container-side tools の 3 バイナリ。
 - `xtask`: 開発・リリース用の自動化タスク。
 
 `decune-container-protocol` は、プロトコルバージョン定数(`HOST_DAEMON_PROTOCOL_VERSION = 1`)、request type(`credential` / `cliQuery`)、daemon error code の文字列定数、request / response の envelope 型(`GitCredentialHostRequest`、`CliQueryRequest`、`HostDaemonResponse`、`HostDaemonError`)、port forward agent のスキャン用 request / response 型を定義します。依存は `serde` だけで、ホスト側(`src/host/`)と container-side tools の両方が同じ型で wire format を読み書きします。
@@ -20,7 +20,7 @@ Cargo workspace は 4 つの crate で構成します。
 crate 間の依存は次の形です。
 
 - `decune` と `decune-container-tools` は `decune-container-protocol` にパス依存する。
-- `decune` は `decune-container-tools` にコンパイル時依存しない。container tools はビルドスクリプト(`build.rs`)が bundle のファイルとして埋め込む(6 節)。
+- `decune` は `decune-container-tools` にコンパイル時依存しない。container-side tools はビルドスクリプト(`build.rs`)が bundle のファイルとして埋め込む(6 節)。
 - `xtask` は workspace 内の crate に依存せず、`cargo` / `rustup` を子プロセスとして呼ぶ。
 
 ホスト側の `decune` バイナリは、argv[0] のファイル名が `git-credential-decune` または `decune-forward-agent` に一致する場合、そのツールとして動作する分岐を `src/main.rs` に持ちます。本体 crate 側にも同等の helper / agent 実装があり(`src/host/credentials/`、`src/host/forward/`)、ホスト側のテストはこの実装を in-process 実行にも使います。コンテナへ配置する artifact は `decune-container-tools` の独立したバイナリです。
@@ -68,9 +68,9 @@ daemon query context の fingerprint は、`decune-cli-query-context-v1` で dom
 
 ## 4. decune container CLI query の collector と evidence cache
 
-コンテナクエリの collector は、daemon 起動時に固定したサーバー側コンテキストだけを入力にします。状態は固定の状態ディレクトリの `state.toml` をクエリごとに 1 回だけ読み、ワークスペースパスや設定パスを参照先として使いません。forwarding status も固定の status ディレクトリの全セッションのソケットをクエリごとに 1 回だけ集約します(8.4 節)。decune host daemon は `ForwardStatusRegistry` を所有または注入されず、daemon の所有者と forwarding セッションの所有者が異なる場合も共有の status ディレクトリから全セッションを検出します。1 つのセッションが停止した場合は、残るセッションだけが次のクエリに反映されます。`Workspace::resolve`、設定の探索、read-only の up 計画、ビルドコンテキストのハッシュは呼び出しません。
+decune container CLI query の collector は、daemon 起動時に固定したサーバー側コンテキストだけを入力にします。状態は固定の状態ディレクトリの `state.toml` をクエリごとに 1 回だけ読み、ワークスペースパスや設定パスを参照先として使いません。forwarding status も固定の status ディレクトリの全セッションのソケットをクエリごとに 1 回だけ集約します(8.4 節)。decune host daemon は `ForwardStatusRegistry` を所有または注入されず、daemon の所有者と forwarding セッションの所有者が異なる場合も共有の status ディレクトリから全セッションを検出します。1 つのセッションが停止した場合は、残るセッションだけが次のクエリに反映されます。`Workspace::resolve`、設定の探索、read-only の up 計画、ビルドコンテキストのハッシュは呼び出しません。
 
-Docker のコンテナ evidence は、固定 workspace id の `decune.managed=true` リソースと、固定の状態または同リソースから導出した同一 Compose プロジェクトだけを列挙 / inspect / 重複排除します。Compose プロジェクトのラベルの候補は、固定の状態に記録された値、または `decune.managed=true` かつ `decune.workspace_id` が固定 workspace id と一致するリソースの値に限定します。ラベルの値は前後の空白を除いた後に空でないことだけを確認し、Compose プロジェクト名の形式検証は行いません。ここで確認しているのはラベルの文字列形式ではなく、固定の daemon query context または同一ワークスペースに帰属する decune 管理リソースから得た値であることです。request のコマンド、format、パス、リソース名は Docker のフィルタやホスト側パスに使いません。生の inspect、生のラベルマップ、stdout / stderr はコンテナクエリの許可リスト型へ直ちに射影し、キャッシュへ保存しません。status と ports はコンテナ / サービス / 実行状態 / ヘルス / 設定の identity / published port を含む同じコンテナ evidence のスナップショットを共有し、decune 管理ボリュームの evidence は別のエントリとして取得します。
+Docker のコンテナ evidence は、固定 workspace id の `decune.managed=true` リソースと、固定の状態または同リソースから導出した同一 Compose プロジェクトだけを列挙 / inspect / 重複排除します。Compose プロジェクトのラベルの候補は、固定の状態に記録された値、または `decune.managed=true` かつ `decune.workspace_id` が固定 workspace id と一致するリソースの値に限定します。ラベルの値は前後の空白を除いた後に空でないことだけを確認し、Compose プロジェクト名の形式検証は行いません。ここで確認しているのはラベルの文字列形式ではなく、固定の daemon query context または同一ワークスペースに帰属する decune-managed リソースから得た値であることです。request のコマンド、format、パス、リソース名は Docker のフィルタやホスト側パスに使いません。生の inspect、生のラベルマップ、stdout / stderr は decune container CLI query の許可リスト型へ直ちに射影し、キャッシュへ保存しません。status と ports はコンテナ / サービス / 実行状態 / ヘルス / 設定の identity / published port を含む同じコンテナ evidence のスナップショットを共有し、decune-managed ボリュームの evidence は別のエントリとして取得します。
 
 Docker evidence のキャッシュのキーはサーバー側だけで次の値から作ります。
 
@@ -82,7 +82,7 @@ QueryEvidenceKey {
 }
 ```
 
-クライアント入力、ワークスペースパス、Docker のリソース名、出力の format はキーに含めません。`Containers` はワークスペースのコンテナと同一ワークスペースの Compose プロジェクトのコンテナの意味単位の読み込み全体、`Volumes` は decune 管理ボリュームの evidence を表します。状態と forwarding status はキャッシュしません。
+クライアント入力、ワークスペースパス、Docker のリソース名、出力の format はキーに含めません。`Containers` はワークスペースのコンテナと同一ワークスペースの Compose プロジェクトのコンテナの意味単位の読み込み全体、`Volumes` は decune-managed ボリュームの evidence を表します。状態と forwarding status はキャッシュしません。
 
 キャッシュとクエリ専用の Docker 実行の内部固定値は次のとおりです(`src/host/query.rs` の実装定数)。
 
@@ -104,7 +104,7 @@ Docker evidence の読み込みはクエリの coordinator が独立したタス
 
 コンテナ内 CLI の transport は、daemon handoff 中のソケット交換を許容するため、connect の `NotFound` / `ConnectionRefused` だけを再試行します。接続試行は合計最大 5 回、試行間隔は 100 ms です(初回 1 回 + 再試行 4 回。`crates/decune-container-tools/src/bin/decune_container_cli/transport.rs`)。response の上限 1 MiB、再試行しないエラーの種別、canonical unavailable error は公開契約として [specification.md 3.9 節](specification.md#39-コンテナ内の-decune-cli)にあります。
 
-## 6. container tools bundle と実行時の配置
+## 6. container-side tools bundle と実行時の配置
 
 container-side tools はリリースビルド時にホストのバイナリへ埋め込みます。bundle は `git-credential-decune`、`decune-forward-agent`、`decune`(Cargo の binary target は `decune-container-cli`)の 3 ツールを各プラットフォームに 1 artifact ずつ持ち、現在の 2 プラットフォーム(`linux-amd64` = `x86_64-unknown-linux-musl`、`linux-arm64` = `aarch64-unknown-linux-musl`)で 6 artifact になります。bundle のディレクトリには、スキーマのバージョンとプロトコルバージョン、artifact ごとの名前 / プラットフォーム / パス / SHA-256 を記録した `manifest.json` を置きます。
 
@@ -115,7 +115,7 @@ container-side tools はリリースビルド時にホストのバイナリへ�
 
 `cargo run --locked -p xtask -- install --locked` は bundle をビルド / 検証し、`DECUNE_CONTAINER_TOOLS_BUNDLE=required` を設定した `cargo install --profile dist` で bundle 埋め込みの `decune` をインストールします。通常のローカル / CI 手順ではこれらの環境変数を直接使わず、`xtask` が内部で設定します。
 
-開発・デバッグ用の実行時の上書きとして `DECUNE_CONTAINER_TOOLS_DIR` があります。設定すると、埋め込みの bundle の代わりに指定ディレクトリの bundle(`manifest.json` 必須)を検証して使います。埋め込みなしのビルドで上書きも未設定の場合、container tools を必要とする操作はエラーになります。
+開発・デバッグ用の実行時の上書きとして `DECUNE_CONTAINER_TOOLS_DIR` があります。設定すると、埋め込みの bundle の代わりに指定ディレクトリの bundle(`manifest.json` 必須)を検証して使います。埋め込みなしのビルドで上書きも未設定の場合、container-side tools を必要とする操作はエラーになります。
 
 container-side tool の実行時の配置は、コンテナにマウントするランタイムディレクトリ内へ一時ファイルを作りません。ホスト専用かつ配置先と同一ファイルシステムの親ディレクトリに排他的作成で一時ファイルを作り、開いたファイルディスクリプタへの artifact のバイト列の書き込み、モード `0755` の設定、最終的に配置するバイト列の SHA-256 検証が完了した後、実行時の配置先をアトミックな rename で置換します。既存の配置先が symlink の場合はリンク先を変更せず symlink のエントリ自体を置換し、ディレクトリなど安全に置換できないファイル種別はランタイム領域の破損としてエラーにします。失敗時は一時ファイルを削除し、部分的な配置先を公開しません(公開契約は [specification.md 11 章](specification.md#11-配布の契約))。
 
@@ -126,7 +126,7 @@ container-side tool の実行時の配置は、コンテナにマウントする
 ホスト側の `decune` が読むもの:
 
 - `DECUNE_DOCKER_RESOURCE_LOCK`: Docker リソース操作をプロセス間で直列化する flock 用ファイルのパス。未設定ならロックは無効。並行テスト / CI 向けの内部の回避手段(`src/docker/lock.rs`)。
-- `DECUNE_CONTAINER_TOOLS_DIR`: 埋め込みの bundle の代わりに使う外部の container tools bundle のディレクトリ(6 節)。
+- `DECUNE_CONTAINER_TOOLS_DIR`: 埋め込みの bundle の代わりに使う外部の container-side tools bundle のディレクトリ(6 節)。
 
 ホストがコンテナ側プロセスへ渡すもの:
 
@@ -203,7 +203,7 @@ forwarding status directory はランタイムディレクトリの兄弟ディ�
 ### 8.5 コンテナ内のその他の内部パス
 
 - `/opt/decune/dotfiles` と `/opt/decune/dotfile-backings`: dotfiles のマウント先と backing のマウント。
-- `/opt/decune/cache`: decune 管理のキャッシュのマウント。
+- `/opt/decune/cache`: decune-managed キャッシュのマウント。
 - `/usr/local/share/decune/feature-entrypoint-wrapper.sh`: Feature entrypoint の wrapper。ランタイムディレクトリではなくイメージのビルド時に焼き込む。
 
 `/run/decune` と `/opt/decune` が利用者定義のマウント先として使えない制約は [specification.md](specification.md) にあります。

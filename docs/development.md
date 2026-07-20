@@ -4,11 +4,11 @@
 
 ## ソースからのローカルインストール
 
-ソースコードからのインストールは、公式のローカルインストール手順です。Git credential forwarding と port forwarding に必要なコンテナ側ツールをビルドし、ホスト側バイナリに埋め込んでから `decune` をインストールします。
+ソースコードからのインストールは、公式のローカルインストール手順です。Git credential forwarding と port forwarding に必要な container-side tools をビルドし、ホスト側バイナリに埋め込んでから `decune` をインストールします。
 
 Rust のツールチェーンは `Cargo.toml` の `rust-version` 以上の stable を使います。decune の MSRV は現行 stable への追従方針で、古い Rust のマイナーバージョンの長期サポートは対象外です。
 
-Linux 用のコンテナ側ツールをビルドするため、以下の Rust のターゲットが必要です。
+Linux 用の container-side tools をビルドするため、以下の Rust のターゲットが必要です。
 
 ```sh
 rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl
@@ -27,7 +27,7 @@ cargo run --locked -p xtask -- build-container-tools --locked
 cargo run --locked -p xtask -- check-container-tools
 ```
 
-コンテナ側ツールの bundle を埋め込まないビルドは公式インストール手順ではありません。軽いローカル確認だけならインストールせず、通常の Cargo コマンドを使ってください。bundle の埋め込みの仕組み、ビルド時の内部環境変数、開発用の上書き `DECUNE_CONTAINER_TOOLS_DIR` の説明は [internals.md](internals.md#6-container-tools-bundle-と実行時の配置) にあります。
+container-side tools bundle を埋め込まないビルドは公式インストール手順ではありません。軽いローカル確認だけならインストールせず、通常の Cargo コマンドを使ってください。bundle の埋め込みの仕組み、ビルド時の内部環境変数、開発用の上書き `DECUNE_CONTAINER_TOOLS_DIR` の説明は [internals.md](internals.md#6-container-side-tools-bundle-と実行時の配置) にあります。
 
 ## 開発ビルドのバージョン表示
 
@@ -100,7 +100,7 @@ cargo run --locked -p xtask -- workspace-test
 cargo run --locked -p xtask -- compose-integration
 ```
 
-これらのコマンドは container tools のビルドと `cargo test --verbose` の進捗を逐次出力します。テスト本体の標準出力は Rust のテストハーネスの既定どおりキャプチャされ、失敗時に表示されます。
+これらのコマンドは container-side tools のビルドと `cargo test --verbose` の進捗を逐次出力します。テスト本体の標準出力は Rust のテストハーネスの既定どおりキャプチャされ、失敗時に表示されます。
 
 Compose の統合テストだけを実行する場合:
 
@@ -112,7 +112,7 @@ cargo run --locked -p xtask -- compose-integration
 
 `compose_integration` の Docker を使うテストは `#[ignore]` として定義します。通常の単体テストでは実行されず、`compose-integration` が Docker/Compose の利用可否を確認したうえで、`#[ignore]` の統合テストを単一のテストスレッドで実行します。
 
-この経路は通常の Compose のシナリオに加え、実際の bundle のコンテナ側 3 ツール × 2 プラットフォームをビルド / 検証し、decune container CLI の image-based / Dockerfile-based / Docker Compose-based の E2E を実行します。decune container CLI の E2E は attached な `up` のプロセスと別の `docker exec` のプロセスを使い、クエリ、UID / sidecar の構成、lifecycle、forwarding の handoff、サニタイズ済みの開示境界を実際の Docker リソースで確認します。
+この経路は通常の Compose のシナリオに加え、実際の container-side tools bundle の 3 ツール × 2 プラットフォームをビルド / 検証し、decune container CLI の image-based / Dockerfile-based / Docker Compose-based の E2E を実行します。decune container CLI の E2E は attached な `up` のプロセスと別の `docker exec` のプロセスを使い、クエリ、UID / sidecar の構成、lifecycle、forwarding の集約と daemon handoff、サニタイズ済みの開示境界を実際の Docker リソースで確認します。
 
 ## リリース成果物
 

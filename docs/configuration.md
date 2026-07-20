@@ -96,7 +96,7 @@ ssh_agent = "auto"
 - `ssh_agent`(既定 `auto`)はホストの `SSH_AUTH_SOCK` が使える場合だけ SSH agent forwarding を設定します。必須にするなら `required`、不要なら `off` にします。SSH agent forwarding は HTTPS のヘルパーとは別経路なので、`https = "host-helper-read-only"` にしても無効にはなりません。
 - `copy_user`(既定 true)はホストの `git config --global` の `user.name` / `user.email` をコンテナのリモートユーザーに設定します。`copy_global_config = true` にすると `~/.gitconfig` 全体をコンテナにコピーします。
 
-信頼していないリポジトリ向けの推奨構成は [usage.md の安全な使い方](usage.md#安全な使い方)を参照してください。スキーマは [specification.md 5.14 節](specification.md#514-credentialsgit)、転送経路と到達性の境界は [12.3 節](specification.md#123-credential-転送と到達性)を参照してください。
+信頼していないリポジトリ向けの推奨構成は [usage.md の安全な使い方](usage.md#安全な使い方)を参照してください。スキーマは [specification.md 5.14 節](specification.md#514-credentialsgit)、転送経路と到達性の境界は [12.3 節](specification.md#123-credential-forwarding-と到達性)を参照してください。
 
 ## `[credentials.github]`
 

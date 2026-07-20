@@ -12,7 +12,7 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 - Dev Container Features、dotfiles、Git/GitHub credential forwarding、Linux UID/GID 同期の適用
 - decune の port forwarding と Docker published port の管理・一覧表示
 - global と project の 2 層の decune config を `devcontainer.json` へ重ね合わせ
-- 同じ Docker Compose-based リポジトリの複数クローンの同時利用(オプトインの衝突分離)
+- 同じ Docker Compose-based リポジトリの複数クローンの同時利用(オプトインの Compose clone isolation)
 
 ## 対象範囲
 

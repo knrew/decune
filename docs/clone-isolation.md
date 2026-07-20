@@ -1,4 +1,4 @@
-# decune の複数クローン同時利用ガイド (Compose clone isolation)
+# decune の複数クローン同時利用ガイド(Compose clone isolation)
 
 この文書は、同じ Docker Compose-based リポジトリの複数クローンを同じ Docker デーモン上で同時に使うための clone isolation の使い方と対処をまとめた利用者向けガイドです。挙動の契約は [specification.md 8.9 節](specification.md#89-clone-isolation)を正とします。published port の relocation 一般は [ports.md](ports.md)、設定ファイルの場所と重ね合わせは [configuration.md](configuration.md) を参照してください。
 
@@ -6,7 +6,7 @@
 
 同じ Docker Compose-based ワークスペースの複数クローンを同時に起動すると、Compose ファイルに固定値で書かれた次の要素がクローン間で衝突します。
 
-- fixed TCP published host port(例: `3000:3000`)
+- fixed TCP published port(例: `3000:3000`)
 - 明示的な `container_name`
 - トップレベルの `networks` / `volumes` / `configs` / `secrets` の固定 `name`
 - 固定 IPv4 サブネット(`ipam.config` の `subnet`)

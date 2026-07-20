@@ -124,11 +124,11 @@ decune up [OPTIONS] [WORKSPACE]
 
 役割:
 
-- 開発コンテナを作成または起動し、リモートユーザーのシェルにログインする。
+- 開発コンテナを作成または起動し、リモートユーザーのシェルに接続する。
 - image/Dockerfile モードでは単一のコンテナを作成または起動する。
-- Compose モードでは Compose プロジェクトを作成または起動し、primary service のコンテナにログインする。
-- 既に起動済みで reuse hash が一致する場合、作成処理をスキップし、シェルへのログインのみ行う。
-- decune host daemon、認証情報の中継、ポート転送処理は `up` のプロセスが生きている間だけ動作する。
+- Compose モードでは Compose プロジェクトを作成または起動し、primary service のコンテナのシェルに接続する。
+- 既に起動済みで reuse hash が一致する場合、作成処理をスキップし、シェルへの接続のみ行う。
+- decune host daemon、credential forwarding、port forwarding は `up` のプロセスが生きている間だけ動作する。
 
 主なオプション:
 
@@ -255,7 +255,7 @@ decune ports [--json] --all
 - `TYPE`: `forwarded` または `published`。
 - `TARGET`: 転送先、または Docker published port のコンテナ側エンドポイント。primary container は `container:<port>/<protocol>`、Compose サービスは `<service>:<port>/<protocol>`。
 - `SOURCE`: forwarding は `configured` または `auto`、published port は `appPort` または `compose`。
-- `REQUESTED`: port forwarding が要求エンドポイントから別のエンドポイントへフォールバックした場合、または Compose published port mapping/relocation により requested endpoint と planned endpoint が異なる場合に、要求エンドポイントを表示する。それ以外は `-`。Compose published port でホスト IP が省略されている場合は `*:<port>` と表示し、明示的な `0.0.0.0` と区別する。
+- `REQUESTED`: port forwarding が requested endpoint から別のエンドポイントへフォールバックした場合、または Compose published port mapping/relocation により requested endpoint と planned endpoint が異なる場合に、requested endpoint を表示する。それ以外は `-`。Compose published port でホスト IP が省略されている場合は `*:<port>` と表示し、明示的な `0.0.0.0` と区別する。
 - `STATE`: Compose published port mapping/relocation により requested endpoint と planned endpoint が異なる場合は `relocated`。ホスト IP だけが異なる場合も含む。それ以外は `-`。
 - `LABEL`: ポートのラベル。未指定なら `-`。
 
@@ -263,7 +263,7 @@ decune ports [--json] --all
 
 - 各エントリは `host_ip`、`host_port`、`type`、`service`、`container_port`、`protocol`、`source`、`label` を持つ。
 - `--all` では `workspace` と `workspace_id` も含める。
-- 要求エンドポイントと実際のエンドポイントが異なる forwarding のエントリでは、`requested_host_ip` と `requested_host_port` を含める。
+- requested endpoint と実際のエンドポイントが異なる forwarding のエントリでは、`requested_host_ip` と `requested_host_port` を含める。
 - decune が Compose published port relocation のメタデータを保存している published のエントリでは、`target`、`requested`、`planned`、`actual_bindings`、`relocated`、`port_entry_index` を含める。`target` は `port` と `protocol`、`requested` / `planned` は `host_ip` と `host_port` を持つ。`actual_bindings` は Docker inspect から得た現在の actual binding の配列で、各要素は `host_ip` と `host_port` を持つ。
 - 同じ published のエントリでは既存の JSON 利用側との互換のため、`requested_host_ip_kind`、`requested_host_port`、`planned_host_ip_kind`、`planned_host_port`、`relocated` も含める。
 - 同じメタデータのエンドポイントでホスト IP が明示されている場合は、`requested_host_ip` または `planned_host_ip` も含める。
@@ -369,9 +369,9 @@ container-side tools bundle はコンテナ内 CLI を artifact 名 `decune` と
 
 出力契約:
 
-- コンテナ専用の status は、記録済みの状態とクエリ時点の managed runtime evidence の比較だけを表示する。`Config snapshot: consistent` は両者が整合することだけを表し、live なワークスペース設定は常に `Live workspace: not checked` と表示する。
-- 記録済みの primary container が runtime evidence に存在しない場合、または identity を持つ decune 管理のコンテナのいずれかが記録済みの identity と一致しない場合は `runtime-mismatch` とする。既知の identity 不一致がなく、primary container の identity を取得できない場合、または状態 / runtime evidence 自体を取得できない場合は `unavailable` とし、ホスト側 status の `current` / `needs-rebuild` とは区別する。identity を持たない primary 以外のコンテナは比較から除外する。
-- ヘルスの集計が `mixed` でも、実際に `unhealthy` な decune 管理のコンテナがなければ `unhealthy-container` の問題は表示しない。この問題の条件と重大度(`error`)はホスト側 status と同じにする。
+- コンテナ専用の status は、記録済みの状態とクエリ時点の Docker evidence の比較だけを表示する。`Config snapshot: consistent` は両者が整合することだけを表し、live なワークスペース設定は常に `Live workspace: not checked` と表示する。
+- 記録済みの primary container が Docker evidence に存在しない場合、または identity を持つ decune-managed コンテナのいずれかが記録済みの identity と一致しない場合は `runtime-mismatch` とする。既知の identity 不一致がなく、primary container の identity を取得できない場合、または状態 / Docker evidence 自体を取得できない場合は `unavailable` とし、ホスト側 status の `current` / `needs-rebuild` とは区別する。identity を持たない primary 以外のコンテナは比較から除外する。
+- ヘルスの集計が `mixed` でも、実際に `unhealthy` な decune-managed コンテナがなければ `unhealthy-container` の問題は表示しない。この問題の条件と重大度(`error`)はホスト側 status と同じにする。
 - ホストのワークスペース / 設定パス、生のハッシュ / ラベルは表示せず、ホストで実行する対処は `Action (run on host)` 節に表示する。
 - コンテナ内 `ports` のテキスト出力はホストの単一ワークスペースの表と同じ列、意味、並び順を使い、JSON 出力はホストの単一ワークスペースの JSON スキーマと同じにする。JSON の各エントリで `workspace` / `workspace_id` は省略する。ポートのスナップショットは、ワークスペースパスと workspace id のフィールドを構造上持たない。
 - テキスト / JSON とも末尾の改行はちょうど 1 個とする。
@@ -718,7 +718,7 @@ host = 1502
 host_ip = "127.0.0.1"
 ```
 
-- `automatic_relocation`: 既定 false。ただし `[compose.clone_isolation].enabled = true` かつ `automatic_relocation` 未指定の場合は既定 true。true の場合、対象となる fixed TCP published host port の requested endpoint が使えなければ、ホスト側のポート番号を変更する relocation の候補を自動探索してよい。
+- `automatic_relocation`: 既定 false。ただし `[compose.clone_isolation].enabled = true` かつ `automatic_relocation` 未指定の場合は既定 true。true の場合、対象となる fixed TCP published port の requested endpoint が使えなければ、ホスト側のポート番号を変更する relocation の候補を自動探索してよい。
 - `warn_on_relocation`: 既定 false。true の場合、後続の relocation 処理は requested endpoint と planned endpoint が異なる relocation について警告を出してよい。既存 Compose プロジェクトの published binding を変更するためにコンテナの再作成を伴う場合の警告は、この設定に関係なく常に出す。
 - `mappings`: fixed TCP published port の planned endpoint を明示する配列。`automatic_relocation = false` でも有効であり、automatic relocation の有効/無効とは独立する。
 
@@ -775,7 +775,7 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
 enabled = true
 ```
 
-- `enabled` はコンテナ内の read-only の decune CLI クエリ(3.9 節)を許可するプロジェクト側の設定で、既定は true とする。
+- `enabled` はコンテナ内の read-only の decune container CLI query(3.9 節)を許可するプロジェクト側の設定で、既定は true とする。
 - global / project 間では通常の真偽値スカラーと同じ後勝ちでマージし、global の `false` は project の `true` で再有効化できる。`use_global_config = false` または `--no-global-config` では global 値を読み込まない。
 - 実効値が false の場合は decune host daemon がクエリを拒否する。強制の正は daemon の拒否であり、artifact の削除や symlink の有無ではない(12.5 節、12.6 節)。
 - この設定は、信頼していないリポジトリから解除できないセキュリティ上のオプトアウトではない。リポジトリから解除できない拒否ポリシーが必要な場合は、認証情報を含むホスト側専用のポリシー層を別途設計する。
@@ -1101,11 +1101,11 @@ decune-generated Compose override のファイルは、利用者の `dockerCompo
 
 ### 8.8 published port mapping と relocation
 
-`[compose.published_ports]`(5.11 節)の mapping と automatic relocation の対象は fixed TCP published host port に限る。計画作成は以下の契約に従う。
+`[compose.published_ports]`(5.11 節)の mapping と automatic relocation の対象は fixed TCP published port に限る。計画作成は以下の契約に従う。
 
 mapping の解決:
 
-- mapping は canonical Compose model の `service + protocol + target` に一致するポートエントリを解決する。存在しないサービス、active なサービス内で一致するエントリが 0 件または複数件、または一致エントリが fixed TCP published host port でない場合は `compose_published_port_mapping_invalid` で起動前にエラーにする。存在するが今回の active なサービス集合に含まれないサービスの mapping は、その実行では適用しない。
+- mapping は canonical Compose model の `service + protocol + target` に一致するポートエントリを解決する。存在しないサービス、active なサービス内で一致するエントリが 0 件または複数件、または一致エントリが fixed TCP published port でない場合は `compose_published_port_mapping_invalid` で起動前にエラーにする。存在するが今回の active なサービス集合に含まれないサービスの mapping は、その実行では適用しない。
 - 同じポートエントリでは explicit published port mapping、同一 Compose プロジェクトの既存バインディング、Compose ファイルの requested endpoint の順に優先する。mapping のエンドポイントが reservation または availability probe と衝突した場合は `compose_published_port_mapping_conflict` とし、automatic relocation へフォールバックしない。mapping 自身が requested endpoint と同じ場合も計画作成の対象だが、エンドポイントの差分がなければ decune-generated Compose override は不要である。
 - 同一 Compose プロジェクトで実行中の別の mapping identity が保持するエンドポイントは、再作成の計画作成でも reservation として扱う。複数の mapping のエンドポイントを相互に入れ替える場合、実行中のプロジェクトに対してアトミックな入れ替えは行わず `compose_published_port_mapping_conflict` とする。既存のバインディングを解放するため `decune down` の後に `decune rebuild` を実行する。
 - mapping によりホスト側ポートまたはホスト IP が変わる場合は relocation として扱う。既存コンテナのバインディングと異なれば再作成が必要であり、decune-generated Compose override は `published` と `host_ip` の両方を planned endpoint に合わせる。
@@ -1130,7 +1130,7 @@ reservation とプローブ:
 
 ポリシーと独立な published port の診断条件:
 
-- 実効レプリカ数が 2 以上のサービスが fixed TCP published host port を持つ場合、decune はレプリカごとの published host port の割り当てを行わず `compose_published_port_multi_replica_unsupported` でエラーにする。実効レプリカ数は Docker Compose config の `scale`、なければ `deploy.replicas` から読む。
+- 実効レプリカ数が 2 以上のサービスが fixed TCP published port を持つ場合、decune はレプリカごとのホスト側ポートの割り当てを行わず `compose_published_port_multi_replica_unsupported` でエラーにする。実効レプリカ数は Docker Compose config の `scale`、なければ `deploy.replicas` から読む。
 - 不正なホスト IP、不正な形式のポート表記、予期しない availability probe のエラーは単純な衝突として扱わず、decune が判定できる場合は `compose_published_port_invalid` でエラーにする。
 
 diagnostic code の定義一覧は 13.1 節。
@@ -1431,7 +1431,7 @@ container-side tools:
 - Docker CLI / Compose CLI の実行失敗は、実行した高レベルの操作、対象リソース、exit status、stderr の短い抜粋を含むエラーに変換する。stderr の全文に秘密情報が混じる可能性がある場合は redaction の規則を通す。
 - JSON を読む操作は、CLI の JSON 出力を型付きのスキーマへパースする。
 
-### 12.3 credential 転送と到達性
+### 12.3 credential forwarding と到達性
 
 Git HTTPS:
 
@@ -1481,7 +1481,7 @@ daemon の再利用とバージョン:
 
 クエリが扱う情報:
 
-- コンテナクエリ用のモデルは、検証済みの workspace id、起動時のモード、コンテナの ID / 名前 / サービス、実行状態 / ヘルス、decune 管理のボリューム名、lifecycle / タイムスタンプ、サニタイズ済みのポートだけを保持する。
+- decune container CLI query 用のモデルは、検証済みの workspace id、起動時のモード、コンテナの ID / 名前 / サービス、実行状態 / ヘルス、decune-managed ボリューム名、lifecycle / タイムスタンプ、サニタイズ済みのポートだけを保持する。
 - 生の `ContainerInspect`、Docker/Compose のラベルマップ、ワークスペース / 設定のパス、生の reuse hash、環境変数、ビルド引数、秘密情報、マウント元、外部コマンドの生の stderr、他のワークスペースのリソースはモデル、キャッシュ、renderer へ渡さない。
 - daemon query context は検証済みの workspace id とそこから導出する固定サーバーパスのコンテキストだけを保持し、live な設定やクライアント入力からホスト側パスを再解決しない。request のコマンド、format、パス、リソース名を Docker のフィルタやホスト側パスに使わない。
 - 成功時の出力 / 警告とエラーの response には、秘密情報、生の reuse hash / ラベル、ホスト側パス、他のワークスペースの情報、外部コマンドの生の stderr を含めない。縮退し得る状態、forwarding、Docker の診断は、プレフィックスと末尾の改行を持たないサニタイズ済みのメッセージとして成功 response の `warnings` に格納する。テキスト / JSON の完成済みの出力は `output` だけに格納し、特に `ports` の JSON へ警告を混在させない。
@@ -1513,7 +1513,7 @@ artifact の配置:
 - 有効時は `/usr/local/bin` がなければ作成し、配置先が不在なら symlink を作成する。リンク先が正確に一致するかの判定は symlink が保持するリンク文字列で行い、リンク先の存在は確認しないため、リンク先が存在しなくても正確に一致する symlink は準備済みとして変更しない。
 - 通常ファイル、ディレクトリ、正確に一致しない symlink は、そのリンク先が存在するかにかかわらず衝突として扱い、上書き・削除しない。
 - 親ディレクトリの作成失敗、read-only のルートファイルシステム、書き込み不可、衝突は、理由、既存の配置先を変更しなかったこと、直接実行するコマンド `/run/decune/decune` を含む英語の警告を出して `up` を継続する。
-- 無効時はリンク先を辿らず、正確に一致する symlink だけを decune 管理とみなして削除し、その他の配置先は変更しない。symlink の検査と削除は別々のファイルシステム操作であり、コンテナ内のプロセスがその間に配置先を差し替える場合、decune 管理の symlink だけを削除する保証は厳密ではなく、できる範囲の対応になる。decune 管理の symlink の削除失敗も同じく警告に縮退する。
+- 無効時はリンク先を辿らず、正確に一致する symlink だけを decune-managed とみなして削除し、その他の配置先は変更しない。symlink の検査と削除は別々のファイルシステム操作であり、コンテナ内のプロセスがその間に配置先を差し替える場合、decune-managed symlink だけを削除する保証は厳密ではなく、できる範囲の対応になる。decune-managed symlink の削除失敗も同じく警告に縮退する。
 - decune が作成した可能性のある空 `/usr/local/bin` は追跡・削除しない。
 
 注入対象の限定:
@@ -1540,10 +1540,10 @@ artifact の配置:
 
 発生条件の詳細は 8.8 節。
 
-- `compose_published_port_multi_replica_unsupported`: 実効レプリカ数が 2 以上のサービスが、decune が対応しない fixed TCP published host port を持つ。
+- `compose_published_port_multi_replica_unsupported`: 実効レプリカ数が 2 以上のサービスが、decune が対応しない fixed TCP published port を持つ。
 - `compose_published_port_unsupported`: 起動失敗が、ホスト側エンドポイントを安全に照合できる範囲で decune が対応しない Compose published port のエントリに関係している。
 - `compose_published_port_invalid`: 不正なホスト IP、不正な形式の表記、予期しない availability probe のエラーなど、単純な衝突ではない不正な published port の状態。
-- `compose_published_port_collision`: 要求された fixed TCP published host endpoint が使用できない。
+- `compose_published_port_collision`: fixed TCP published port の requested endpoint が使用できない。
 - `compose_published_port_automatic_relocation_failed`: automatic relocation の候補を割り当てられない。
 - `compose_published_port_bind_race`: 計画作成の後に別のプロセスが planned endpoint を取得した可能性がある。
 - `compose_published_port_mapping_invalid`: mapping のサービス / identity が canonical Compose model の fixed TCP published port に一意に対応しない。

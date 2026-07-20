@@ -62,7 +62,7 @@ decune --help
 
 ## クイックスタート
 
-### Image-Based
+### image-based
 
 対象リポジトリに Dev Container configuration を用意します。
 
@@ -86,7 +86,7 @@ decune --help
 decune up
 ```
 
-### Dockerfile-Based
+### Dockerfile-based
 
 Dockerfile から開発コンテナをビルドする場合は `build.dockerfile` を指定します。
 
@@ -114,7 +114,7 @@ Dockerfile から開発コンテナをビルドする場合は `build.dockerfile
 
 `build.dockerfile` は解決後の `build.context` 配下にある必要があります。コンテキスト外の Dockerfile を使う場合は、Dockerfile をコンテキスト内に移動するか、`build.context` を Dockerfile を含むディレクトリへ広げてください。
 
-### Docker Compose-Based
+### Docker Compose-based
 
 Docker Compose を使う場合は `dockerComposeFile` と `service` を指定します。
 
@@ -227,7 +227,7 @@ decune ports
 decune ports --json
 ```
 
-- コンテナ内の `status` は、起動時に記録した状態とクエリ時点の decune 管理 Docker リソースの比較を表示します。ホスト側のように現在の設定ファイルを読み直す確認は行わず、`Live workspace: not checked` と表示されます。ホストで行う操作が必要な場合は `Action (run on host)` に表示されます。
+- コンテナ内の `status` は、起動時に記録した状態とクエリ時点の decune-managed Docker リソースの比較を表示します。ホスト側のように現在の設定ファイルを読み直す確認は行わず、`Live workspace: not checked` と表示されます。ホストで行う操作が必要な場合は `Action (run on host)` に表示されます。
 - コンテナ内ではワークスペースを指定できません。`up` / `rebuild` / `down` / `remove` / `clean` などのホスト専用コマンドも実行できません。
 - `up --detach` の完了後や attached `decune up` session の終了後は、artifact が残っていてもクエリは利用できません。
 - `/usr/local/bin/decune` を準備できなかったという警告がホスト側に出た場合は、コンテナ内で `/run/decune/decune status` のようにパスを直接指定して実行してください。
@@ -236,7 +236,7 @@ decune ports --json
 
 ### `decune remove` / `decune rm`
 
-指定したワークスペースに対応する、decune が管理する Dev Container 環境(コンテナまたは Compose プロジェクト、decune 管理のボリューム、状態・ランタイムファイル)を削除します。利用者が管理するイメージ / ボリュームは削除しません。
+指定したワークスペースに対応する、decune が管理する Dev Container 環境(コンテナまたは Compose プロジェクト、decune-managed ボリューム、状態・ランタイムファイル)を削除します。利用者が管理するイメージ / ボリュームは削除しません。
 
 ```sh
 decune remove

@@ -8,7 +8,7 @@
 - タグは `vMAJOR.MINOR.PATCH` 形式にします。pre-release は `v0.1.1-rc.1` のように SemVer の pre-release 表記を使います。
 - リリースノートは GitHub Releases の generated release notes を使います。必要な見出しや除外条件が増えた場合は、GitHub の release notes 設定で調整します。
 - 成果物は GitHub Actions 上で作り、ローカルで作ったバイナリは配布しません。
-- 可能なら署名付きの注釈付きタグ (annotated tag) を使います。署名環境がない場合も軽量タグではなく注釈付きタグを使います。
+- 可能なら署名付きの注釈付きタグ(annotated tag)を使います。署名環境がない場合も軽量タグではなく注釈付きタグを使います。
 - 通常開発中はリポジトリルートの `Cargo.toml` の `[workspace.package]` の `version` を直近リリース版のままにし、リリース PR でだけリリース予定版へ更新します。タグから作るリリース成果物の `decune --version` は、ビルドメタデータの付かない `decune MAJOR.MINOR.PATCH` として確認します。
 
 ## 通常フロー

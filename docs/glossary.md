@@ -59,7 +59,7 @@
 - requested endpoint: 利用者設定や Compose ファイルが要求したホスト側エンドポイント。
 - planned endpoint: decune が起動前に割り当てる予定のホスト側エンドポイント。Compose published port relocation では requested endpoint と異なる場合がある。
 - actual binding: Docker が実際に publish しているホスト側のバインディング。`decune ports --json` の `actual_bindings` で確認できる。
-- automatic published port relocation: fixed TCP published host endpoint が使用できない場合に、decune が次に利用可能なホスト側ポートを自動探索するポリシー(短縮形: automatic relocation)。
+- automatic published port relocation: fixed TCP published port の requested endpoint が使用できない場合に、decune が次に利用可能なホスト側ポートを自動探索するポリシー(短縮形: automatic relocation)。
 - explicit published port mapping: `[[compose.published_ports.mappings]]` で `service + protocol + target` に対応する planned endpoint を明示する設定。automatic relocation のポリシーとは独立して適用する。
 - clone isolation endpoint 宣言: 固定のネットワークアドレスを参照するサービスの環境変数を、Compose のネットワークキーと relocation 後のゲートウェイ / サブネットのプレースホルダーに対応付ける `[[compose.clone_isolation.endpoints]]` の宣言([specification.md 8.9.4 節](specification.md#894-clone-isolation-endpoint-宣言))。
 - automatic port forwarding: primary container 内で TCP で待ち受けているポートを検出して decune が転送する機能。`forwardPorts`、decune `[[ports]]`、CLI `-p` による利用者指定の転送は manual port forwarding。
@@ -68,8 +68,11 @@
 
 - credential forwarding: ホストの Git 認証情報、SSH agent へのアクセス、GitHub CLI トークンへのアクセスをコンテナで利用可能にする仕組み。
 - decune host daemon: `decune up` の子タスクとして動き、`up` のプロセスが生きている間だけ credential forwarding、port forwarding の支援、attached `decune up` session の decune container CLI query を担当するプロセス。
+- daemon handoff: decune host daemon を所有する `decune up` session の終了時に、daemon を再利用している別のセッションが同じポリシーと daemon query context で daemon を再起動して引き継ぐ処理([specification.md 12.4 節](specification.md#124-decune-host-daemon))。
+- container-side tools: decune がコンテナ内で実行するために配置する 3 ツール(`git-credential-decune`、port forward agent の `decune-forward-agent`、decune container CLI)の総称。リリースビルドでは bundle としてホスト側バイナリへ埋め込む([specification.md 11 章](specification.md#11-配布の契約))。
 - decune container CLI: primary container 内へ `/run/decune/decune` として配置され、通常は `/usr/local/bin/decune` の symlink から実行するコンテナ側クライアント。
 - decune container CLI query: コンテナ内の decune CLI が decune host daemon 経由で `status` / `ports` などの read-only 情報を問い合わせる仕組み。
 - daemon query context: decune host daemon が decune container CLI query の対象として起動時に固定する、検証済みの workspace id と固定サーバーパスの集合。live な設定やクライアント入力からは再解決しない。
+- Docker evidence: decune が Docker の列挙 / inspect から取得する、decune-managed コンテナ / ボリュームの観測スナップショット。ホスト側 `status` の判定と decune container CLI query の応答に使う。
 - secret-sensitive value: `containerEnv`、`remoteEnv`、`build.args` などで `${localEnv:...}` から来たため、decune が秘密情報として追跡する値。
-- セキュリティ境界 (security boundary): ホストとコンテナの間で decune が何を公開し、何を公開しないかを定義する境界([specification.md 12 章](specification.md#12-セキュリティ境界))。
+- セキュリティ境界(security boundary): ホストとコンテナの間で decune が何を公開し、何を公開しないかを定義する境界([specification.md 12 章](specification.md#12-セキュリティ境界))。

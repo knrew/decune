@@ -55,9 +55,9 @@ on_auto_forward = "silent"
 
 `appPort` は Docker published port としてコンテナ作成時に確定します。既存コンテナへ後付けできないため、変更を反映するには `decune rebuild` を実行します。ホスト IP を指定しない場合は Docker の既定ですべてのインターフェースに公開され得るため、警告が表示されます([specification.md 9.3 節](specification.md#93-appport))。
 
-### Docker Compose-based configuration: service の `ports`
+### Docker Compose-based configuration: Compose サービスの `ports`
 
-Docker published port は Compose サービスの `ports` に書きます。Compose モードでは `appPort` は未対応のエラーになります([specification.md 8.1 節](specification.md#81-委譲原則と制限))。
+Docker published port は Compose サービスの `ports` に書きます。Docker Compose-based configuration では `appPort` は未対応のエラーになります([specification.md 8.1 節](specification.md#81-委譲原則と制限))。
 
 ## `--detach` とポート
 
@@ -118,7 +118,7 @@ mapping または relocation で実際にホスト側ポートかホスト IP �
 現在有効なホスト側ポートは `decune ports` で確認します。forwarding と published port が同じ一覧に表示されます。
 
 - `TYPE` は `forwarded` / `published`、`SOURCE` は forwarding では `configured` / `auto`、published port では `appPort` / `compose` です。
-- forwarding が別のホスト側ポートへフォールバックした場合や、mapping / relocation により requested endpoint と異なるエンドポイントを使っている場合は、`REQUESTED` に要求したエンドポイントが表示されます。relocation は `STATE` に `relocated` と表示され、ホスト IP だけが異なる場合も含みます。
+- forwarding が別のホスト側ポートへフォールバックした場合や、mapping / relocation により requested endpoint と異なるエンドポイントを使っている場合は、`REQUESTED` に requested endpoint が表示されます。relocation は `STATE` に `relocated` と表示され、ホスト IP だけが異なる場合も含みます。
 - ホスト IP を省略した Compose published port は `*:<port>` と表示され、明示的な `0.0.0.0` と区別されます。
 - ワークスペース横断は `decune ports --all`、機械可読な出力は `decune ports --json` を使います。JSON では `requested` / `planned` / `actual_bindings` / `relocated` で relocation の詳細を確認できます。
 
@@ -128,11 +128,11 @@ mapping または relocation で実際にホスト側ポートかホスト IP �
 
 Compose published port の diagnostic code への対処は次のとおりです。発生条件の定義は [specification.md 13.1 節](specification.md#131-compose-published-port)を参照してください。
 
-- `compose_published_port_collision`: 要求したホスト側エンドポイントが使用中です。使用中のプロセス、コンテナ、ワークスペースを停止するか、Compose `ports` を変更するか、automatic relocation を有効化してください。
+- `compose_published_port_collision`: requested endpoint が使用中です。使用中のプロセス、コンテナ、ワークスペースを停止するか、Compose `ports` を変更するか、automatic relocation を有効化してください。
 - `compose_published_port_automatic_relocation_failed`: 要求したホスト側ポート以降に利用可能な relocation の候補が見つかりません。使用中のホスト側ポートを解放するか、Compose `ports` を変更してください。
 - `compose_published_port_bind_race`: 計画作成の後に別プロセスが planned endpoint を取得した可能性があります。再実行するか、該当エンドポイントを使っているプロセスを停止してください。
 - `compose_published_port_unsupported`: 起動失敗が relocation 対象外のポートエントリに関係しています。UDP、ポート範囲、`network_mode: host` などの Compose `ports` を確認してください。
 - `compose_published_port_invalid`: 不正なホスト IP や不正な形式のポート表記など、単純な衝突ではない状態です。Compose `ports` の記述を確認してください。
-- `compose_published_port_multi_replica_unsupported`: レプリカ数が 2 以上のサービスが fixed TCP published host port を持っています。コンテナ側のみのポート、明示的に分けた複数サービス、Compose のポート範囲、またはレプリカ数 1 を使ってください。
+- `compose_published_port_multi_replica_unsupported`: レプリカ数が 2 以上のサービスが fixed TCP published port を持っています。コンテナ側のみのポート、明示的に分けた複数サービス、Compose のポート範囲、またはレプリカ数 1 を使ってください。
 - `compose_published_port_mapping_invalid`: mapping が active なサービスの fixed TCP published port に一意に対応しません。mapping の `service` / `target` / `protocol` と Compose `ports` を確認してください。
 - `compose_published_port_mapping_conflict`: mapping が要求するエンドポイントが使用中または予約済みです。使用中の forwarding、プロセス、コンテナ、ワークスペースを停止するか、mapping の `host` / `host_ip` を変更してください。複数の mapping のエンドポイントを入れ替えている場合は、`decune down` の後に `decune rebuild` を実行してください。
