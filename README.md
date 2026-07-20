@@ -2,35 +2,23 @@
 
 `decune` は、VS Code に依存せず、Rust 製の単一 CLI から Dev Container を起動、接続、停止、削除するためのツールです。
 
-Dev Containers Specification の image-based / Dockerfile-based / Docker Compose-based 構成を読み込み、Docker CLI と Docker Compose v2 CLI プラグイン経由で Docker コンテナまたは Compose プロジェクトを操作します。
+Dev Containers Specification の image-based / Dockerfile-based / Docker Compose-based configuration を読み込み、Docker CLI と Docker Compose v2 CLI プラグイン経由で Docker コンテナまたは Compose プロジェクトを操作します。
 
 ## 主な機能
 
-- `decune up` で development container を起動し、remote user のシェルに接続
-- `decune rebuild` / `decune down` / `decune remove` による明示的なライフサイクル管理
-- `decune status` で decune が管理する workspace environment の summary/detail を確認
-- `decune ports` で実行中の port forwarding と Docker published port の host 側の利用状況を確認
-- attached `decune up` session 中は primary container 内の `decune status` / `decune ports` から同じ workspace を確認（[利用方法](docs/usage.md#container-内の-decune)）
-- `.devcontainer/devcontainer.json`、`.devcontainer.json`、`.devcontainer/<name>/devcontainer.json` の検出
-- image-based / Dockerfile-based / Docker Compose-based の Dev Container 構成を起動
-- Compose clone isolation により、固定 published port・固定名・固定 IPv4 subnet・宣言済み endpoint を workspace ごとに分離
-- Dev Container Features、dotfiles、Git/GitHub 認証情報転送、ポートフォワーディング、Linux UID/GID 同期を適用
-- global と project の decune TOML 設定を重ね合わせ
-- GitHub Releases のビルド済みアーカイブ配布
+- image-based / Dockerfile-based / Docker Compose-based configuration の検出と起動
+- `decune up` だけでビルド、起動、リモートユーザーのシェル接続までを実行
+- `rebuild` / `down` / `status` / `ports` / `remove` / `clean` による明示的な lifecycle 管理と状態確認
+- Dev Container Features、dotfiles、Git/GitHub credential forwarding、Linux UID/GID 同期の適用
+- decune の port forwarding と Docker published port の管理・一覧表示
+- global と project の 2 層の decune config を `devcontainer.json` へ重ね合わせ
+- 同じ Docker Compose-based リポジトリの複数クローンの同時利用(オプトインの Compose clone isolation)
 
 ## 対象範囲
 
-Linux / macOS ホストと Docker CLI / Docker Compose v2 を対象にします。Docker Compose-based 構成では、`devcontainer.json` の `service` で指定した Compose サービスを primary service として扱い、シェル接続、ライフサイクルコマンド、Features、dotfiles、認証情報、automatic port forwarding を適用します。
+Linux / macOS ホストと Docker CLI / Docker Compose v2 プラグインを対象にします(旧 `docker-compose` v1 の単体バイナリは対象外)。Docker Compose-based configuration では、`service` で指定した Compose サービスを主対象にシェル接続と lifecycle 管理を適用し、Compose ファイルの解釈と実行時設定は Docker Compose に委譲します。
 
-以下を意図的に対象外にします。
-
-- 旧 `docker-compose` v1 standalone binary の公式対応
-- Kubernetes、Swarm stack、Docker Desktop UI、cloud provider 固有 orchestrator の直接サポート
-- VS Code extension installation と `customizations.vscode` の適用
-- GPG agent forwarding
-- コンテナから任意のホストコマンドを実行する API
-- Windows ホスト向け公式配布
-- crates.io または `cargo install --git` による公式インストール
+Kubernetes などのオーケストレーターと Docker Desktop UI の直接サポート、VS Code 拡張機能のインストールと `customizations.vscode` の適用、GPG agent forwarding、コンテナから任意のホストコマンドを実行する API、Windows ホスト向け公式配布、crates.io 経由の公式インストールは対象外です。対象範囲と対象外の正確な一覧は [docs/specification.md](docs/specification.md#1-スコープ) を参照してください。
 
 ## 要件
 
@@ -38,14 +26,14 @@ Linux / macOS ホストと Docker CLI / Docker Compose v2 を対象にします�
 - Docker CLI `docker`
 - Docker Compose v2 プラグイン
 - Docker デーモンへ接続できる権限
-- Git 認証情報転送を使う場合: ホスト側の `git`
-- GitHub CLI token 転送を使う場合: ホスト側の `gh`
+- Git credential forwarding を使う場合: ホスト側の `git`
+- GitHub CLI token forwarding を使う場合: ホスト側の `gh`
 
-必要な Docker Compose の機能は [docs/specification.md](docs/specification.md#ホスト要件) を参照してください。
+必要な Docker Compose の機能は [docs/specification.md](docs/specification.md#21-ホスト要件) を参照してください。
 
 ## インストール
 
-公式の導入手順は GitHub Releases のビルド済みアーカイブです。インストールスクリプトはバージョンを明示指定し、選択したアーカイブを `SHA256SUMS` で検証します。
+公式の導入手順は GitHub Releases のビルド済みアーカイブです。インストールスクリプトはバージョンを明示指定し、ダウンロードしたアーカイブを `SHA256SUMS` で検証します。
 
 ```sh
 mkdir -p "$HOME/.local/bin"
@@ -54,48 +42,31 @@ curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.3.4/scripts/install
 
 `$HOME/.local/bin` が `PATH` に含まれていない場合は、利用しているシェルの設定で追加してください。
 
-手動アーカイブインストールとソースコードからのインストールは [docs/usage.md](docs/usage.md#インストール) と [docs/development.md](docs/development.md#ソースからのローカルインストール) を参照してください。
+手動アーカイブインストールとアップグレード時の注意は [docs/usage.md](docs/usage.md#インストール)、ソースからのインストールは [docs/development.md](docs/development.md#ソースからのローカルインストール) を参照してください。
 
 ## クイックスタート
 
-対象リポジトリに Dev Container 構成を用意します。
+対象リポジトリに Dev Container configuration を用意します。
 
 ```jsonc
 // .devcontainer/devcontainer.json
 {
   "name": "example",
   "image": "mcr.microsoft.com/devcontainers/base:ubuntu",
-  "remoteUser": "vscode",
-  "features": {
-    "ghcr.io/devcontainers/features/github-cli:1": {}
-  },
-  "forwardPorts": [5173],
-  "postCreateCommand": "echo ready"
+  "remoteUser": "vscode"
 }
 ```
 
-起動して接続します。
+起動してリモートユーザーのシェルに接続します。
 
 ```sh
 decune up
 ```
 
-コンテナを再作成します。
-
-```sh
-decune rebuild --no-cache
-```
-
-decune が管理するコンテナまたは Compose プロジェクトを停止します。volume、state、image は保持します。
+作業を終えたら停止します。ボリューム、状態、イメージは保持され、次の `decune up` で再利用されます。
 
 ```sh
 decune down
-```
-
-decune が管理する Dev Container 環境を削除します。
-
-```sh
-decune remove --no-confirm
 ```
 
 Dockerfile-based / Docker Compose-based の例は [docs/usage.md](docs/usage.md#クイックスタート) を参照してください。
@@ -108,36 +79,34 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 
 `WORKSPACE` の既定値はカレントディレクトリです。Git リポジトリ内ではリポジトリルートを workspace root として扱います。
 
-- `decune up`: development container を作成または起動し、シェルに接続
-- `decune rebuild`: development container または Compose プロジェクトを再作成
-- `decune down`: decune が管理するリソースを停止し、volume、状態、image を保持
-- `decune status`: decune が管理する workspace environment の実行状態、設定状態、health、port count、issue を read-only で表示
-- `decune ports`: decune が管理している workspace について、現在有効な host 側 port の利用状況を read-only で表示。port forwarding と Docker published port を区別して確認
-- `decune remove` / `decune rm`: decune が管理する Dev Container 環境を削除。`--all-workspaces` ですべての workspace を対象にし、`--images` で decune が生成した image も削除
-- `decune clean`: stale な decune の生成データを確認・削除。既定では workspace cache/state/runtime だけを対象にし、`--include-feature-cache` で共有 Feature archive cache も対象に追加
+- `decune up`: 開発コンテナを作成または起動し、シェルに接続
+- `decune rebuild`: 開発コンテナまたは Compose プロジェクトを再作成
+- `decune down`: decune が管理するリソースを停止(ボリューム、状態、イメージは保持)
+- `decune status`: decune が管理するワークスペース環境の状態を read-only で表示
+- `decune ports`: 現在有効なホスト側ポートの利用状況を read-only で表示
+- `decune remove` / `decune rm`: decune が管理する Dev Container 環境を削除
+- `decune clean`: stale な decune-managed data を確認・削除
 
-実際にインストールされた CLI のリファレンスは `decune --help` または `decune <COMMAND> --help` で確認してください。詳しい利用手順は [docs/usage.md](docs/usage.md#コマンド) を参照してください。
+使い方と例は [docs/usage.md](docs/usage.md#コマンド)、各コマンドの正確な契約と全オプションは [docs/specification.md](docs/specification.md#3-cli) を参照してください。
 
-## 注意点
+## セキュリティ上の注意
 
-- `forwardPorts`、decune `[[ports]]`、`decune up -p` は decune のポートフォワーディングであり、Docker の published port ではありません。
-- `decune status` は JSON 出力や `--ports` / `--resources` option を持たず、`LAST_USED` は state の `last_used_at` だけから表示します。
-- `decune ports` は decune が現在維持している port forwarding と Docker published port の両方を表示し、`TYPE` で `forwarded` / `published`、`STATE` で relocated Compose published port を区別します。workspace 横断では `decune ports --all`、JSON 出力では `decune ports --json` を使います。
-- container 内の `decune status` / `decune ports` は primary container の current workspace に固定された read-only query で、active な attached `decune up` session がある間だけ利用できます。
-- `appPort` は image/Dockerfile モードの Docker published port です。
-- Docker Compose-based 構成では Docker published port を Compose サービスの `ports` に書きます。`appPort`、`workspaceMount`、`runArgs` は Compose モードでは unsupported error です。
-- Compose automatic published port relocation policy は既定で無効です。`[compose.published_ports].automatic_relocation = true` または `decune up --automatic-published-port-relocation` / `decune rebuild --automatic-published-port-relocation` で、この実行の policy を有効化できます。`[[compose.published_ports.mappings]]` では、policy と独立に fixed TCP published port の host endpoint を明示できます。実際に host port または host IP を変更する場合は Docker Compose v2.24.4 以上が必要です。
-- Compose clone isolation は既定で無効です。`[compose.clone_isolation].enabled = true` にすると、明示的な `container_name` と non-external な top-level resource の固定 `name` を workspace 固有名へ書き換え、複数 clone の同時起動時の名前衝突を避けます。固定名 volume のデータも clone ごとに分離されます。固定 IPv4 IPAM subnet も分離する場合は、`[compose.clone_isolation.networks].relocation = true` と `subnet_pool` を設定します。固定 gateway / subnet を environment から参照する場合は `[[compose.clone_isolation.endpoints]]` で relocation 後の値への書き換えを宣言できます。固定 IPv4 subnet がある構成では Docker Compose v2.24.4 以上が必要です。
-- `decune up` は Dockerfile instruction、Compose build、Feature `install.sh`、ライフサイクルコマンド、hook、シェル起動ファイルを実行し得ます。信頼していないリポジトリでは起動前に内容を確認してください。
-- 認証情報転送は、ホストの Git 認証情報、SSH agent、GitHub token file への到達性をコンテナ内プロセスに与え得ます。信頼していないリポジトリでは無効化または read-only に制限してください。
+- `decune up` は、ビルド、Feature のインストールスクリプト、lifecycle command、decune hook などの任意コードを実行し得ます。信頼していないリポジトリでは、起動前に内容を確認してください。
+- credential forwarding は、ホストの Git 認証情報、SSH agent、GitHub トークンファイルへの到達性をコンテナ内プロセスに与え得ます。信頼していないリポジトリでは、無効化するか read-only に制限してください。
+
+確認ポイントと推奨設定は [docs/usage.md](docs/usage.md#安全な使い方)、セキュリティ境界の定義は [docs/specification.md](docs/specification.md#12-セキュリティ境界) を参照してください。
 
 ## ドキュメント
 
-- [docs/usage.md](docs/usage.md): 利用手順、利用例、インストール詳細、運用上の注意
-- [docs/specification.md](docs/specification.md): 公開挙動、設定スキーマ、セキュリティ境界
-- [docs/development.md](docs/development.md): 開発環境の準備、ローカルインストール、検証、リリース成果物の作成コマンド
-- [docs/release.md](docs/release.md): maintainer 向けのリリース手順
-- [docs/glossary.md](docs/glossary.md): プロジェクト用語と表記基準
+- [docs/usage.md](docs/usage.md): インストール、クイックスタート、日常操作の基本ガイド
+- [docs/configuration.md](docs/configuration.md): decune config の使い方と挙動説明のガイド
+- [docs/ports.md](docs/ports.md): port forwarding と published port の利用ガイド
+- [docs/clone-isolation.md](docs/clone-isolation.md): 複数クローン同時利用(Compose clone isolation)のガイド
+- [docs/specification.md](docs/specification.md): 公開挙動、CLI 契約、設定スキーマ、セキュリティ境界、diagnostic code 定義の正本
+- [docs/internals.md](docs/internals.md): 内部実装の説明(非規範の内部設計ノート)
+- [docs/development.md](docs/development.md): コントリビューター向けの環境構築、検証、ドキュメント執筆規約
+- [docs/release.md](docs/release.md): メンテナー向けのリリース手順書
+- [docs/glossary.md](docs/glossary.md): 用語の定義
 
 ## ライセンス
 
