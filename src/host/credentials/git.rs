@@ -87,11 +87,11 @@ pub(crate) fn git_credential_helper_request_json(
 
 pub(crate) fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<String> {
     let response: HostDaemonResponse =
-        serde_json::from_slice(bytes).context("Invalid host daemon response JSON")?;
+        serde_json::from_slice(bytes).context("Invalid decune host daemon response JSON")?;
 
     if response.version != HOST_DAEMON_PROTOCOL_VERSION {
         bail!(
-            "Unsupported host daemon protocol version: {}",
+            "Unsupported decune host daemon protocol version: {}",
             response.version
         );
     }
@@ -99,11 +99,11 @@ pub(crate) fn parse_git_credential_helper_response(bytes: &[u8]) -> Result<Strin
     match response.into_result() {
         Ok(Ok(output)) => Ok(output),
         Ok(Err(error)) => Err(anyhow!(
-            "Host daemon request failed ({}): {}",
+            "decune host daemon request failed ({}): {}",
             error.code,
             error.message
         )),
-        Err(_validation_error) => Err(anyhow!("Invalid host daemon response")),
+        Err(_validation_error) => Err(anyhow!("Invalid decune host daemon response")),
     }
 }
 
@@ -430,7 +430,7 @@ pub(crate) fn run_git_credential_helper() -> Result<()> {
     })?;
     stream
         .write_all(request.as_bytes())
-        .context("Failed to write Git credential request to host daemon")?;
+        .context("Failed to write Git credential request to decune host daemon")?;
     stream
         .shutdown(std::net::Shutdown::Write)
         .context("Failed to close Git credential request stream")?;
@@ -438,7 +438,7 @@ pub(crate) fn run_git_credential_helper() -> Result<()> {
     let mut response = Vec::new();
     stream
         .read_to_end(&mut response)
-        .context("Failed to read Git credential response from host daemon")?;
+        .context("Failed to read Git credential response from decune host daemon")?;
     let output = parse_git_credential_helper_response(&response)?;
     std::io::stdout()
         .write_all(output.as_bytes())
@@ -685,7 +685,7 @@ mod tests {
         let error =
             parse_git_credential_helper_response(br#"{"version":1,"ok":true}"#).unwrap_err();
 
-        assert_eq!(error.to_string(), "Invalid host daemon response");
+        assert_eq!(error.to_string(), "Invalid decune host daemon response");
     }
 
     #[test]

@@ -42,7 +42,7 @@ enum Commands {
     /// Remove a managed dev environment.
     #[command(visible_alias = "rm")]
     Remove(RemoveArgs),
-    /// Remove stale decune generated data.
+    /// Remove stale decune-managed data.
     Clean(CleanArgs),
 }
 
@@ -197,10 +197,10 @@ struct CleanArgs {
 
 #[derive(Debug, Args)]
 struct CleanSafetyArgs {
-    /// Show cleanup candidates without removing generated data.
+    /// Show cleanup candidates without removing decune-managed data.
     #[arg(long)]
     dry_run: bool,
-    /// Remove generated data without confirmation.
+    /// Remove decune-managed data without confirmation.
     #[arg(long)]
     no_confirm: bool,
 }

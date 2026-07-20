@@ -36,8 +36,8 @@ const MAX_HOST_DAEMON_REQUEST_BYTES: usize = 64 * 1024;
 const ACTIVE_HOST_DAEMON_CONNECTIONS: usize = 32;
 const HOST_DAEMON_REQUEST_READ_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 const HOST_DAEMON_RESPONSE_WRITE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-pub(crate) const HOST_DAEMON_QUERY_IDENTITY_MISMATCH: &str = "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry";
-pub(crate) const HOST_DAEMON_VERSION_MISMATCH: &str = "An active decune up session uses an incompatible host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry";
+pub(crate) const HOST_DAEMON_QUERY_IDENTITY_MISMATCH: &str = "An active decune up session uses a different decune container CLI policy or daemon query context; stop all decune up sessions for this workspace and retry";
+pub(crate) const HOST_DAEMON_VERSION_MISMATCH: &str = "An active decune up session uses an incompatible decune host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct HostDaemonAccess {
@@ -117,7 +117,7 @@ impl fmt::Display for HostDaemonStartError {
             Self::SocketAlreadyInUse { socket_path } => {
                 write!(
                     formatter,
-                    "Host daemon socket is already in use: {}",
+                    "decune host daemon socket is already in use: {}",
                     socket_path.display()
                 )
             }
@@ -317,7 +317,7 @@ impl HostDaemon {
         fs::set_permissions(&socket_path, fs::Permissions::from_mode(access.socket_mode))
             .with_context(|| {
                 format!(
-                    "Failed to set host daemon socket permissions: {}",
+                    "Failed to set decune host daemon socket permissions: {}",
                     socket_path.display()
                 )
             })?;
@@ -384,10 +384,10 @@ impl Drop for HostDaemon {
 }
 
 fn prepare_runtime_dir(runtime_dir: &Path, access: HostDaemonAccess) -> Result<()> {
-    create_runtime_dir(runtime_dir, "host daemon")?;
+    create_runtime_dir(runtime_dir, "decune host daemon")?;
     set_private_runtime_parent(runtime_dir)?;
-    set_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")?;
-    validate_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")
+    set_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "decune host daemon")?;
+    validate_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "decune host daemon")
 }
 
 #[cfg(unix)]
@@ -419,14 +419,14 @@ async fn bind_host_daemon_socket(socket_path: &Path) -> Result<UnixListener> {
             remove_stale_socket(socket_path).await?;
             UnixListener::bind(socket_path).with_context(|| {
                 format!(
-                    "Failed to bind host daemon socket after removing stale socket: {}",
+                    "Failed to bind decune host daemon socket after removing stale socket: {}",
                     socket_path.display()
                 )
             })
         }
         Err(error) => Err(error).with_context(|| {
             format!(
-                "Failed to bind host daemon socket: {}",
+                "Failed to bind decune host daemon socket: {}",
                 socket_path.display()
             )
         }),
@@ -444,7 +444,7 @@ fn write_host_daemon_metadata(
 ) -> Result<()> {
     let socket_metadata = fs::symlink_metadata(socket_path).with_context(|| {
         format!(
-            "Failed to inspect host daemon socket metadata: {}",
+            "Failed to inspect decune host daemon socket metadata: {}",
             socket_path.display()
         )
     })?;
@@ -460,16 +460,16 @@ fn write_host_daemon_metadata(
         socket_ino: socket_metadata.ino(),
     };
     let content =
-        serde_json::to_vec(&metadata).context("Failed to serialize host daemon metadata")?;
+        serde_json::to_vec(&metadata).context("Failed to serialize decune host daemon metadata")?;
     fs::write(metadata_path, content).with_context(|| {
         format!(
-            "Failed to write host daemon metadata: {}",
+            "Failed to write decune host daemon metadata: {}",
             metadata_path.display()
         )
     })?;
     fs::set_permissions(metadata_path, fs::Permissions::from_mode(0o600)).with_context(|| {
         format!(
-            "Failed to set host daemon metadata permissions: {}",
+            "Failed to set decune host daemon metadata permissions: {}",
             metadata_path.display()
         )
     })
@@ -515,12 +515,12 @@ pub(crate) fn ensure_host_daemon_access_for_remote_user(
         remote_user_id,
         remote_group_id,
     ));
-    set_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")?;
-    validate_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "host daemon")?;
+    set_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "decune host daemon")?;
+    validate_runtime_dir_mode(runtime_dir, access.runtime_dir_mode, "decune host daemon")?;
     fs::set_permissions(&socket_path, fs::Permissions::from_mode(access.socket_mode))
         .with_context(|| {
             format!(
-                "Failed to set host daemon socket permissions: {}",
+                "Failed to set decune host daemon socket permissions: {}",
                 socket_path.display()
             )
         })?;
@@ -584,7 +584,7 @@ pub(crate) async fn ensure_host_daemon_available_for_remote_user(
         }
         Err(error) => Err(error).with_context(|| {
             format!(
-                "Failed to probe host daemon socket: {}",
+                "Failed to probe decune host daemon socket: {}",
                 socket_path.display()
             )
         }),
@@ -598,7 +598,7 @@ async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
         Err(error) => {
             return Err(error).with_context(|| {
                 format!(
-                    "Failed to inspect host daemon socket path: {}",
+                    "Failed to inspect decune host daemon socket path: {}",
                     socket_path.display()
                 )
             });
@@ -607,7 +607,7 @@ async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
 
     if !metadata.file_type().is_socket() {
         bail!(
-            "Host daemon socket path exists but is not a socket: {}",
+            "decune host daemon socket path exists but is not a socket: {}",
             socket_path.display()
         );
     }
@@ -625,14 +625,14 @@ async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
         {
             remove_socket_file(socket_path).with_context(|| {
                 format!(
-                    "Failed to remove stale host daemon socket: {}",
+                    "Failed to remove stale decune host daemon socket: {}",
                     socket_path.display()
                 )
             })
         }
         Err(error) => Err(error).with_context(|| {
             format!(
-                "Failed to probe host daemon socket: {}",
+                "Failed to probe decune host daemon socket: {}",
                 socket_path.display()
             )
         }),
@@ -643,7 +643,7 @@ async fn remove_stale_socket(socket_path: &Path) -> Result<()> {
 fn remove_socket_if_present(socket_path: &Path) -> Result<()> {
     remove_socket_file(socket_path).with_context(|| {
         format!(
-            "Failed to remove host daemon socket: {}",
+            "Failed to remove decune host daemon socket: {}",
             socket_path.display()
         )
     })
@@ -653,7 +653,7 @@ fn remove_socket_if_present(socket_path: &Path) -> Result<()> {
 fn remove_metadata_if_present(metadata_path: &Path) -> Result<()> {
     remove_metadata_file(metadata_path).with_context(|| {
         format!(
-            "Failed to remove host daemon metadata: {}",
+            "Failed to remove decune host daemon metadata: {}",
             metadata_path.display()
         )
     })
@@ -665,7 +665,7 @@ pub(crate) async fn cleanup_host_daemon_socket(runtime_dir: &Path) {
         Ok(()) => cleanup_host_daemon_metadata_file(&runtime_dir.join(HOST_DAEMON_METADATA_NAME)),
         Err(error) => {
             crate::ui::warn(&format!(
-                "Failed to remove stale host daemon socket: {}. Remove it manually if no decune process is running: {error:#}",
+                "Failed to remove stale decune host daemon socket: {}. Remove it manually if no decune process is running: {error:#}",
                 socket_path.display()
             ));
         }
@@ -676,7 +676,7 @@ fn cleanup_host_daemon_socket_file(socket_path: &Path) {
     match remove_socket_file(socket_path) {
         Ok(()) => {}
         Err(error) => crate::ui::warn(&format!(
-            "Failed to remove host daemon socket: {}. Remove it manually if no decune process is running: {error}",
+            "Failed to remove decune host daemon socket: {}. Remove it manually if no decune process is running: {error}",
             socket_path.display()
         )),
     }
@@ -686,7 +686,7 @@ fn cleanup_host_daemon_metadata_file(metadata_path: &Path) {
     match remove_metadata_file(metadata_path) {
         Ok(()) => {}
         Err(error) => crate::ui::warn(&format!(
-            "Failed to remove host daemon metadata: {}. Remove it manually if no decune process is running: {error}",
+            "Failed to remove decune host daemon metadata: {}. Remove it manually if no decune process is running: {error}",
             metadata_path.display()
         )),
     }
@@ -765,7 +765,7 @@ async fn handle_connection(
     let response = if request.len() > MAX_HOST_DAEMON_REQUEST_BYTES {
         serialize_host_daemon_response(&HostDaemonResponse::error(
             ERROR_CODE_REQUEST_TOO_LARGE,
-            format!("Host daemon request exceeds {MAX_HOST_DAEMON_REQUEST_BYTES} bytes"),
+            format!("decune host daemon request exceeds {MAX_HOST_DAEMON_REQUEST_BYTES} bytes"),
         ))
     } else {
         match handle_host_daemon_request(
@@ -788,15 +788,16 @@ async fn handle_connection(
 }
 
 fn serialize_host_daemon_response(response: &HostDaemonResponse) -> Result<Vec<u8>> {
-    serde_json::to_vec(response).context("Failed to serialize host daemon response")
+    serde_json::to_vec(response).context("Failed to serialize decune host daemon response")
 }
 
 async fn read_host_daemon_request<R>(stream: &mut R) -> io::Result<Vec<u8>>
 where
     R: AsyncRead + Unpin,
 {
-    let limit = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1)
-        .map_err(|error| io::Error::other(format!("Invalid host daemon request limit: {error}")))?;
+    let limit = u64::try_from(MAX_HOST_DAEMON_REQUEST_BYTES + 1).map_err(|error| {
+        io::Error::other(format!("Invalid decune host daemon request limit: {error}"))
+    })?;
     let mut request = Vec::new();
     let read = async {
         let mut limited_stream = stream.take(limit);
@@ -808,7 +809,7 @@ where
         .map_err(|_elapsed| {
             io::Error::new(
                 io::ErrorKind::TimedOut,
-                "Timed out reading host daemon request",
+                "Timed out reading decune host daemon request",
             )
         })?
 }
@@ -826,7 +827,7 @@ where
         .map_err(|_elapsed| {
             io::Error::new(
                 io::ErrorKind::TimedOut,
-                "Timed out writing host daemon response",
+                "Timed out writing decune host daemon response",
             )
         })?
 }
@@ -1094,7 +1095,7 @@ mod tests {
                     "ok": false,
                     "error": {
                         "code": "unsupported_protocol_version",
-                        "message": "Unsupported host daemon protocol version: 999"
+                        "message": "Unsupported decune host daemon protocol version: 999"
                     }
                 })
             );
@@ -1263,7 +1264,7 @@ mod tests {
                     "ok": false,
                     "error": {
                         "code": "container_cli_disabled",
-                        "message": "Container CLI queries are disabled"
+                        "message": "decune container CLI queries are disabled"
                     }
                 })
             );
@@ -1347,7 +1348,7 @@ mod tests {
                     "ok": false,
                     "error": {
                         "code": "request_too_large",
-                        "message": "Host daemon request exceeds 65536 bytes"
+                        "message": "decune host daemon request exceeds 65536 bytes"
                     }
                 })
             );
@@ -1731,7 +1732,7 @@ mod tests {
                     "ok": false,
                     "error": {
                         "code": "unknown_request_type",
-                        "message": "Unknown host daemon request type: runHostCommand"
+                        "message": "Unknown decune host daemon request type: runHostCommand"
                     }
                 })
             );
@@ -1769,7 +1770,7 @@ mod tests {
                     "ok": false,
                     "error": {
                         "code": "not_implemented",
-                        "message": "Host daemon request is not implemented yet: portForward"
+                        "message": "decune host daemon request is not implemented yet: portForward"
                     }
                 })
             );

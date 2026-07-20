@@ -363,7 +363,7 @@ mod tests {
         assert!(stdout.is_empty());
         assert_eq!(
             stderr,
-            b"Error: decune received an invalid response from the host daemon\n"
+            b"Error: decune received an invalid response from the decune host daemon\n"
         );
     }
 
@@ -384,7 +384,7 @@ mod tests {
         assert!(stdout.is_empty());
         assert_eq!(
             stderr,
-            b"Error: decune could not communicate with the host daemon\n"
+            b"Error: decune could not communicate with the decune host daemon\n"
         );
     }
 

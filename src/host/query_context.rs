@@ -39,7 +39,7 @@ impl ContainerCliQueryContext {
     ) -> Result<Self> {
         let workspace_id = workspace_id.into();
         if !is_valid_workspace_id(&workspace_id) {
-            bail!("Invalid workspace ID for container CLI query context");
+            bail!("Invalid workspace ID for daemon query context");
         }
         let forward_status_dir = forward_status_dir(&runtime_dir);
         let context_fingerprint =
@@ -210,7 +210,7 @@ mod tests {
 
         assert_eq!(
             error.to_string(),
-            "Invalid workspace ID for container CLI query context"
+            "Invalid workspace ID for daemon query context"
         );
     }
 

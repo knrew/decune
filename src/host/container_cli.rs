@@ -77,7 +77,7 @@ pub(crate) fn prepare_container_cli_artifact(
     platform: ContainerToolPlatform,
     runtime_dir: &Path,
 ) -> Result<()> {
-    prepare_private_runtime_dir(runtime_dir, "container CLI")?;
+    prepare_private_runtime_dir(runtime_dir, "decune container CLI")?;
     if enabled {
         stage_container_tool(ContainerTool::Decune, platform, runtime_dir)?;
     } else {

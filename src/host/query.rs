@@ -725,7 +725,7 @@ where
     let Ok(permit) = active_queries.try_acquire() else {
         return serialize_cli_query_response(&HostDaemonResponse::error(
             ERROR_CODE_CLI_QUERY_BUSY,
-            "Container CLI query capacity is exhausted",
+            "decune container CLI query capacity is exhausted",
         ));
     };
     let result = tokio::time::timeout(query_timeout, async {
@@ -737,19 +737,20 @@ where
 
     let response = match result {
         Ok(Ok(response)) => return Ok(response),
-        Ok(Err(_error)) => {
-            HostDaemonResponse::error(ERROR_CODE_CLI_QUERY_FAILED, "Container CLI query failed")
-        }
+        Ok(Err(_error)) => HostDaemonResponse::error(
+            ERROR_CODE_CLI_QUERY_FAILED,
+            "decune container CLI query failed",
+        ),
         Err(_elapsed) => HostDaemonResponse::error(
             ERROR_CODE_CLI_QUERY_TIMEOUT,
-            "Container CLI query timed out",
+            "decune container CLI query timed out",
         ),
     };
     serialize_cli_query_response(&response)
 }
 
 fn serialize_cli_query_response(response: &HostDaemonResponse) -> Result<Vec<u8>> {
-    serde_json::to_vec(response).context("Failed to serialize container CLI query response")
+    serde_json::to_vec(response).context("Failed to serialize decune container CLI query response")
 }
 
 async fn render_container_cli_query(
