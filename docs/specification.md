@@ -376,55 +376,55 @@ workspace root から以下の順で検出する。
 
 ### 構成モードの判定
 
-| mode           | 必須 property                  | 禁止 property                           | 備考                                      |
-| -------------- | ------------------------------ | --------------------------------------- | ----------------------------------------- |
-| image          | `image`                        | `build`, `dockerComposeFile`, `service` | image を pull して container を作る       |
-| Dockerfile     | `build.dockerfile`             | `image`, `dockerComposeFile`, `service` | Dockerfile を build して container を作る |
-| Docker Compose | `dockerComposeFile`, `service` | `image`, `build`                        | Compose が image/build を持つ             |
+| mode | 必須 property | 禁止 property | 備考 |
+| --- | --- | --- | --- |
+| image | `image` | `build`, `dockerComposeFile`, `service` | image を pull して container を作る |
+| Dockerfile | `build.dockerfile` | `image`, `dockerComposeFile`, `service` | Dockerfile を build して container を作る |
+| Docker Compose | `dockerComposeFile`, `service` | `image`, `build` | Compose が image/build を持つ |
 
 `dockerComposeFile` と `service` は片方だけ指定してはならない。`runServices` は Compose モード専用であり、指定する場合は `dockerComposeFile` と `service` も必須である。
 
 ### 対応プロパティ
 
-| property                      | image   | Dockerfile | Compose | 備考                                                                                                                                                         |
-| ----------------------------- | ------- | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `image`                       | yes     | no         | no      | image-based mode                                                                                                                                             |
-| `build.dockerfile`            | no      | yes        | no      | Dockerfile-based モード                                                                                                                                      |
-| `build.context`               | no      | yes        | no      | `devcontainer.json` からの相対 path                                                                                                                          |
-| `build.args`                  | no      | yes        | no      | string value のみ                                                                                                                                            |
-| `build.options`               | no      | partial    | no      | Docker build argv に渡す。decune が管理する option と context path は不可                                                                                    |
-| `build.target`                | no      | yes        | no      | multi-stage build target                                                                                                                                     |
-| `build.cacheFrom`             | no      | partial    | no      | Docker CLI で扱える形式                                                                                                                                      |
-| `dockerComposeFile`           | no      | no         | yes     | string / string array。local path のみ                                                                                                                       |
-| `service`                     | no      | no         | yes     | primary service                                                                                                                                              |
-| `runServices`                 | no      | no         | yes     | 未指定時は全 service。primary service は常に含める                                                                                                           |
-| `features`                    | yes     | yes        | yes     | Compose モードは primary service final image に適用                                                                                                          |
-| `overrideFeatureInstallOrder` | yes     | yes        | yes     | Feature install order に反映                                                                                                                                 |
-| `overrideCommand`             | yes     | yes        | yes     | image/Dockerfile 既定 true、Compose 既定 false                                                                                                               |
-| `mounts`                      | partial | partial    | partial | bind/volume 対応。Compose モードは primary service に override として追加。tmpfs は error                                                                    |
-| `workspaceMount`              | yes     | yes        | no      | Compose モードは unsupported error。Compose file の primary service `volumes` を使う                                                                         |
-| `workspaceFolder`             | yes     | yes        | yes     | Compose モードの既定は `/`                                                                                                                                   |
-| `containerEnv`                | yes     | yes        | yes     | Compose モードは primary service `environment` override。secret storage ではない                                                                             |
-| `remoteEnv`                   | yes     | yes        | yes     | exec/lifecycle/shell に適用。`${localEnv:...}` 由来 value は argv/log redaction 対象                                                                         |
-| `remoteUser`                  | yes     | yes        | yes     | shell/lifecycle user                                                                                                                                         |
-| `containerUser`               | yes     | yes        | yes     | Compose モードは primary service `user` override                                                                                                             |
-| `updateRemoteUserUID`         | yes     | yes        | yes     | Linux host で既定 true                                                                                                                                       |
-| `userEnvProbe`                | yes     | yes        | yes     | `none`, `loginShell`, `interactiveShell`, `loginInteractiveShell`                                                                                            |
-| `forwardPorts`                | yes     | yes        | yes     | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードは `"service:port"` を受け付ける                             |
-| `portsAttributes`             | partial | partial    | partial | `label`, `onAutoForward`, `requireLocalPort`。`protocol`, `elevateIfNeeded` は warning して無視                                                              |
-| `otherPortsAttributes`        | partial | partial    | partial | automatic forwarding の既定。unsupported fields は warning                                                                                                   |
-| `appPort`                     | yes     | yes        | no      | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードは unsupported error。Compose file の service `ports` を使う |
-| `runArgs`                     | partial | partial    | no      | Compose モードは unsupported error。Compose file の service attributes を使う                                                                                |
-| `init`                        | yes     | yes        | yes     | Compose モードは primary service `init` override                                                                                                             |
-| `privileged`                  | yes     | yes        | yes     | Compose モードは primary service `privileged` override                                                                                                       |
-| `capAdd`                      | yes     | yes        | yes     | Compose モードは primary service `cap_add` override                                                                                                          |
-| `securityOpt`                 | yes     | yes        | yes     | Compose モードは primary service `security_opt` override                                                                                                     |
-| lifecycle commands            | yes     | yes        | yes     | Feature metadata 由来 command は user command より前に実行                                                                                                   |
-| `waitFor`                     | partial | partial    | partial | parse するが attached `up` は `postAttachCommand` まで同期実行                                                                                               |
-| `name`                        | ignored | ignored    | ignored | runtime behavior には使わない                                                                                                                                |
-| `shutdownAction`              | partial | partial    | partial | attached `up` 終了時に適用。明示 `down` / `remove` が正                                                                                                      |
-| `hostRequirements`            | ignored | ignored    | ignored | warning                                                                                                                                                      |
-| `customizations`              | ignored | ignored    | ignored | preserve するが実行しない                                                                                                                                    |
+| property | image | Dockerfile | Compose | 備考 |
+| --- | --- | --- | --- | --- |
+| `image` | yes | no | no | image-based mode |
+| `build.dockerfile` | no | yes | no | Dockerfile-based モード |
+| `build.context` | no | yes | no | `devcontainer.json` からの相対 path |
+| `build.args` | no | yes | no | string value のみ |
+| `build.options` | no | partial | no | Docker build argv に渡す。decune が管理する option と context path は不可 |
+| `build.target` | no | yes | no | multi-stage build target |
+| `build.cacheFrom` | no | partial | no | Docker CLI で扱える形式 |
+| `dockerComposeFile` | no | no | yes | string / string array。local path のみ |
+| `service` | no | no | yes | primary service |
+| `runServices` | no | no | yes | 未指定時は全 service。primary service は常に含める |
+| `features` | yes | yes | yes | Compose モードは primary service final image に適用 |
+| `overrideFeatureInstallOrder` | yes | yes | yes | Feature install order に反映 |
+| `overrideCommand` | yes | yes | yes | image/Dockerfile 既定 true、Compose 既定 false |
+| `mounts` | partial | partial | partial | bind/volume 対応。Compose モードは primary service に override として追加。tmpfs は error |
+| `workspaceMount` | yes | yes | no | Compose モードは unsupported error。Compose file の primary service `volumes` を使う |
+| `workspaceFolder` | yes | yes | yes | Compose モードの既定は `/` |
+| `containerEnv` | yes | yes | yes | Compose モードは primary service `environment` override。secret storage ではない |
+| `remoteEnv` | yes | yes | yes | exec/lifecycle/shell に適用。`${localEnv:...}` 由来 value は argv/log redaction 対象 |
+| `remoteUser` | yes | yes | yes | shell/lifecycle user |
+| `containerUser` | yes | yes | yes | Compose モードは primary service `user` override |
+| `updateRemoteUserUID` | yes | yes | yes | Linux host で既定 true |
+| `userEnvProbe` | yes | yes | yes | `none`, `loginShell`, `interactiveShell`, `loginInteractiveShell` |
+| `forwardPorts` | yes | yes | yes | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードは `"service:port"` を受け付ける |
+| `portsAttributes` | partial | partial | partial | `label`, `onAutoForward`, `requireLocalPort`。`protocol`, `elevateIfNeeded` は warning して無視 |
+| `otherPortsAttributes` | partial | partial | partial | automatic forwarding の既定。unsupported fields は warning |
+| `appPort` | yes | yes | no | TCP-only。protocol suffix なしは TCP、`/tcp` は許可、`/udp` は unsupported error。Compose モードは unsupported error。Compose file の service `ports` を使う |
+| `runArgs` | partial | partial | no | Compose モードは unsupported error。Compose file の service attributes を使う |
+| `init` | yes | yes | yes | Compose モードは primary service `init` override |
+| `privileged` | yes | yes | yes | Compose モードは primary service `privileged` override |
+| `capAdd` | yes | yes | yes | Compose モードは primary service `cap_add` override |
+| `securityOpt` | yes | yes | yes | Compose モードは primary service `security_opt` override |
+| lifecycle commands | yes | yes | yes | Feature metadata 由来 command は user command より前に実行 |
+| `waitFor` | partial | partial | partial | parse するが attached `up` は `postAttachCommand` まで同期実行 |
+| `name` | ignored | ignored | ignored | runtime behavior には使わない |
+| `shutdownAction` | partial | partial | partial | attached `up` 終了時に適用。明示 `down` / `remove` が正 |
+| `hostRequirements` | ignored | ignored | ignored | warning |
+| `customizations` | ignored | ignored | ignored | preserve するが実行しない |
 
 ### JSONC
 
@@ -471,11 +471,11 @@ Compose モードでは `workspaceMount` は unsupported error とする。works
 
 Compose モードでは Compose service の runtime 設定を Docker Compose に委譲する。decune は以下の Dev Container properties を generated Compose override へ自動変換せず、metadata validation で unsupported error とする。
 
-| Dev Container property | Compose モードの扱い | 代替                                                                                                                                                |
-| ---------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `workspaceMount`       | unsupported error    | workspace bind mount を primary service の `volumes` に書く                                                                                         |
-| `appPort`              | unsupported error    | Docker published port 設定を Compose service の `ports` に書く                                                                                      |
-| `runArgs`              | unsupported error    | `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose service の field に書く |
+| Dev Container property | Compose モードの扱い | 代替 |
+| --- | --- | --- |
+| `workspaceMount` | unsupported error | workspace bind mount を primary service の `volumes` に書く |
+| `appPort` | unsupported error | Docker published port 設定を Compose service の `ports` に書く |
+| `runArgs` | unsupported error | `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose service の field に書く |
 
 Docker published port 設定は Compose file に委譲する。Compose モードで外部公開が必要な port は Compose service の `ports` を使い、decune port forwarding は `forwardPorts`、decune `[[ports]]`、CLI `-p` を使う。
 
@@ -526,11 +526,11 @@ docker compose --project-name <project> --project-directory <dir> -f <file>... c
 
 Compose-based configuration の複数 clone を同一 Docker daemon 上で同時利用するとき、decune は次の境界で resource を分離する。
 
-| Category                | Resources                                                                    |
-| ----------------------- | ---------------------------------------------------------------------------- |
-| Always workspace-scoped | project name、generated image、default network / volume                      |
-| Opt-in rewrite          | fixed TCP port / name / IPv4 subnet、declared endpoint                       |
-| No automatic rewrite    | external resource、IPv6、static service address、undeclared endpoint         |
+| Category | Resources |
+| --- | --- |
+| Always workspace-scoped | project name、generated image、default network / volume |
+| Opt-in rewrite | fixed TCP port / name / IPv4 subnet、declared endpoint |
+| No automatic rewrite | external resource、IPv6、static service address、undeclared endpoint |
 
 常に workspace scope となる resource は、`safe_workspace_slug` と `workspace_id`、または workspace 固有の Compose project name により clone ごとに分離する。
 
@@ -982,13 +982,13 @@ client input、workspace path、Docker resource name、output format は key に
 
 cache と query 専用 Docker 実行の内部固定値:
 
-| 項目                            | 値     |
-| ------------------------------- | ------ |
-| concurrent Docker evidence load | 2      |
-| Docker evidence load timeout    | 10 s   |
-| query Docker command timeout    | 5 s    |
-| success cache TTL               | 2 s    |
-| failure cache TTL               | 500 ms |
+| 項目 | 値 |
+| --- | --- |
+| concurrent Docker evidence load | 2 |
+| Docker evidence load timeout | 10 s |
+| query Docker command timeout | 5 s |
+| success cache TTL | 2 s |
+| failure cache TTL | 500 ms |
 
 TTL は load 完了時刻から数える。同一 key の cold load は semantic load 全体を singleflight し、waiter は同じ typed success または sanitized typed failure を共有する。異なる key を含め、実行中の Docker evidence load は全体で 2 件までとする。cache hit の Docker evidence は load 完了時点から最大 2 s stale になり得る。expired success の refresh が失敗した場合に stale result は返さない。Docker event 監視や mutation hook による invalidation は行わず、daemon 再生成時に cache を破棄する。
 
@@ -1368,13 +1368,13 @@ host daemon error code は lowercase snake_case とし、`invalid_request`、`un
 
 host daemon の connection / query admission と I/O の固定上限は次のとおりとする。
 
-| 項目                          | 上限 |
-| ----------------------------- | ---: |
-| active host daemon connection |   32 |
-| request body read timeout     |  2 s |
-| response write timeout        |  2 s |
-| active `cliQuery`             |    8 |
-| `cliQuery` total timeout      | 15 s |
+| 項目 | 上限 |
+| --- | ---: |
+| active host daemon connection | 32 |
+| request body read timeout | 2 s |
+| response write timeout | 2 s |
+| active `cliQuery` | 8 |
+| `cliQuery` total timeout | 15 s |
 
 connection permit は listener から accept して task を生成する前に確保する。上限中は新しい connection task を生成せず、接続を listener / OS backlog 側で待たせる。credential、reserved request、`cliQuery` を含む全 connection を同じ上限に数え、既存の peer UID 検証、protocol version 検証、request body の 64 KiB 上限を維持する。request body を 2 s 以内に EOF まで読めない場合は connection を閉じる。response の `write_all` と write half shutdown は合わせて 2 s 以内に完了させる。host daemon の停止時は accept loop と accepted connection task を中断する。accept の失敗で accept loop だけが終了した場合は、新規 connection の受付を止め、処理中の connection task は中断せず完了まで待つ。read / write timeout、I/O error、または daemon 停止による task 中断では完全な wire response を保証せず、client は transport error として扱う。
 
