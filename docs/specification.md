@@ -14,7 +14,7 @@
 2. Dockerfile-based: `build.dockerfile`
 3. Docker Compose-based: `dockerComposeFile` + `service`
 
-global/project の decune TOML 設定を Dev Container configuration に重ねる。VS Code Dev Containers が暗黙に提供する Git/GitHub 認証、dotfiles、port forwarding、UID/GID sync も decune の責務として明示的に扱う。
+global/project の decune config を Dev Container configuration に重ねる。VS Code Dev Containers が暗黙に提供する Git/GitHub 認証、dotfiles、port forwarding、UID/GID sync も decune の責務として明示的に扱う。
 
 ### 1.2 対応する挙動
 
@@ -22,7 +22,7 @@ global/project の decune TOML 設定を Dev Container configuration に重ね�
 - Docker image / container / exec / copy / inspect 操作を `docker` CLI adapter 経由で行う。
 - Docker Compose 操作を `docker compose` v2 CLI adapter 経由で行う。
 - Docker Engine API を Rust 型で直接操作する client crate(`bollard` など)は使わない。外部操作は CLI adapter に限定する。
-- Dev Container の image-based / Dockerfile-based / Docker Compose-based 構成。
+- Dev Container の image-based / Dockerfile-based / Docker Compose-based configuration。
 - JSONC としての `devcontainer.json` 読み込み。
 - TOML による global/project 設定。
 - Dev Container Features の OCI registry 取得、digest lock、local Feature、インストール、metadata merge。
@@ -36,7 +36,7 @@ global/project の decune TOML 設定を Dev Container configuration に重ね�
 
 ### 1.3 Docker Compose サポートの定義
 
-この文書における「Docker Compose 完全サポート」とは、Dev Containers Specification が定義する Docker Compose-based 構成を、image/Dockerfile 構成と同じ decune 機能群で扱えることを指す。
+この文書における「Docker Compose 完全サポート」とは、Dev Containers Specification が定義する Docker Compose-based configuration を、image-based / Dockerfile-based configuration と同じ decune 機能群で扱えることを指す。
 
 具体的には以下を満たす。
 
@@ -112,7 +112,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `WORKSPACE` の既定値はカレントディレクトリ。
 - `WORKSPACE` は実在するディレクトリでなければならない。
 - Git repository 内では repository root を workspace root とする。Git repository でなければ指定ディレクトリを workspace root とする。
-- `devcontainer.json` を必須とする。decune TOML は overlay であり、base image/build/Compose 定義の置き換えには使わない。
+- `devcontainer.json` を必須とする。decune config は overlay であり、base image/build/Compose 定義の置き換えには使わない。
 - CLI output、log、error message は英語にする。
 - 設定変更が既存 container/project に反映できない場合、`up` は暗黙 rebuild を行わず、`Run decune rebuild` を促して終了する。
 
@@ -299,7 +299,7 @@ decune clean [--dry-run] [--no-confirm] [--json]
 decune clean --include-feature-cache [--dry-run] [--no-confirm] [--json]
 ```
 
-`clean` は decune が管理している generated data を削除する maintenance command とする。Docker container、Compose project、Docker volume、Docker image、Docker builder cache、利用者が管理している filesystem は削除しない。`--all` と `--force` は提供しない。
+`clean` は decune が管理している生成データを削除する maintenance command とする。Docker container、Compose project、Docker volume、Docker image、Docker builder cache、利用者が管理している filesystem は削除しない。`--all` と `--force` は提供しない。
 
 既定の cleanup 対象は stale な workspace data だけである。
 
@@ -373,7 +373,7 @@ usage error と local 動作:
 - recorded primary container が runtime evidence に存在しない場合、または identity を持つ managed container のいずれかが recorded identity と一致しない場合は `runtime-mismatch` とする。既知の identity 不一致がなく、primary container の identity を取得できない場合、または state / runtime evidence 自体を取得できない場合は `unavailable` とし、host status の `current` / `needs-rebuild` とは区別する。identity を持たない non-primary container は比較から除外する。
 - health summary が `mixed` でも、実際に `unhealthy` な managed container がなければ `unhealthy-container` issue は表示しない。この issue の条件と severity(`error`)は host status と同じにする。
 - host の workspace/config path、raw hash / label は表示せず、host で実行する action は `Action (run on host)` section に表示する。
-- container 内 `ports` の text 出力は host の単一 workspace table と同じ column、意味、sort 順を使い、JSON 出力は host の単一 workspace JSON schema と同じにする。JSON の各 entry で `workspace` / `workspace_id` は省略する。port snapshot は workspace path と workspace ID field を構造上持たない。
+- container 内 `ports` の text 出力は host の単一 workspace table と同じ column、意味、sort 順を使い、JSON 出力は host の単一 workspace JSON schema と同じにする。JSON の各 entry で `workspace` / `workspace_id` は省略する。port snapshot は workspace path と workspace id field を構造上持たない。
 - text / JSON とも末尾 newline はちょうど 1 個とする。
 
 exit code と stream の分離:
@@ -500,7 +500,7 @@ image/Dockerfile モードでは、`workspaceMount` を明示する場合は `wo
 
 Compose モードでは `workspaceMount` は unsupported error とする。workspace の mount は Compose file の primary service `volumes` に定義する。`workspaceFolder` 未指定時の既定は `/` である。
 
-## 5. decune TOML 設定
+## 5. decune config
 
 ### 5.1 配置
 
@@ -524,7 +524,7 @@ project 設定は Git 管理してよい。秘密情報を設定 file に直接�
 
 `decune up --no-global-config` / `decune rebuild --no-global-config`、または project config の `use_global_config = false` を指定した場合、4 の global decune config は読み込まず、合成対象にも含めない。global config を読み込まないため、global config file の parse / validation error も発生しない。CLI option は一時的な強制無効化として扱い、project config で再有効化できない。
 
-`--config <PATH>` は `devcontainer.json` を選択するだけであり、decune TOML overlay の追加指定ではない。
+`--config <PATH>` は `devcontainer.json` を選択するだけであり、decune config の追加指定ではない。
 
 ### 5.3 merge rule
 
@@ -533,7 +533,7 @@ project 設定は Git 管理してよい。秘密情報を設定 file に直接�
 - `init` / `privileged`: boolean scalar として後勝ち。上位 layer の `false` は下位 layer の `true` を打ち消せる。
 - `capAdd` / `securityOpt`: security list として deduped union。
 - map: key ごとに merge。同一 key は後勝ち。
-- decune TOML の array: 原則 append。ただし identity を持つ要素は置換。
+- decune config の array: 原則 append。ただし identity を持つ要素は置換。
 - feature identity: canonical Feature ID と concrete ref。同一 concrete ref は option を merge する。`enabled = false` は canonical Feature ID 単位で無効化する。
 - mount identity: `target`。
 - dotfile identity: `target`。
@@ -703,7 +703,7 @@ automatic port forwarding の設定。挙動は 9.7 節。
 
 ### 5.11 `[compose.published_ports]`
 
-Docker Compose-based 構成の Compose service `ports` に対する automatic published port relocation policy と explicit mapping。planning の挙動契約は 8.8 節。
+Docker Compose-based configuration の Compose service `ports` に対する automatic published port relocation policy と explicit mapping。planning の挙動契約は 8.8 節。
 
 ```toml
 [compose.published_ports]
@@ -889,7 +889,7 @@ shell = true
 
 `status <WORKSPACE>` の current config hash 計算では read-only のため、`create = "directory"` / `bind-create-src` で指定された missing path は作成しない。`resolve_symlink = true` の場合は既存 ancestor を canonicalize し、missing tail を合成した path を resolved mount として扱う。`resolve_symlink = false` の場合は既存 ancestor の存在を確認した上で、元の absolute path を resolved mount として扱う。`create` がない missing source は通常通り error とする。
 
-Compose file 内の environment interpolation は Docker Compose CLI に委譲する。decune は `devcontainer.json` と decune TOML の値だけを自前で展開する。
+Compose file 内の environment interpolation は Docker Compose CLI に委譲する。decune は `devcontainer.json` と decune config の値だけを自前で展開する。
 
 ## 7. 実行モデル
 
@@ -908,7 +908,7 @@ Compose file 内の environment interpolation は Docker Compose CLI に委譲�
 1. `build.context` と `build.dockerfile` を `devcontainer.json` 相対で解決する。
 2. Dockerfile-specific ignore file `<Dockerfile>.dockerignore` があれば context root の `.dockerignore` より優先する。
 3. Docker CLI build へ tar context または context directory を渡す。
-4. Dockerfile build 結果 image の `devcontainer.metadata` label を読み、image metadata layer として `devcontainer.json` や decune TOML と merge する。
+4. Dockerfile build 結果 image の `devcontainer.metadata` label を読み、image metadata layer として `devcontainer.json` や decune config と merge する。
 5. Dockerfile build 結果 image に Feature を重ねる。
 6. 必要なら UID/GID sync layer と entrypoint shim layer を重ねる。
 
@@ -919,7 +919,7 @@ Compose file 内の environment interpolation は Docker Compose CLI に委譲�
 Known limitations:
 
 - Dockerfile が build context 外にある構成を unsupported error とする。decune は build context tar を生成して `docker build -` に渡すため、`--file` は tar 内の path を指す必要がある。このため `build.dockerfile` は解決後の `build.context` 配下に存在しなければならない。回避策は、`build.context` を Dockerfile を含む上位 directory に広げるか、Dockerfile を context 内へ移動することである。将来互換性を上げる場合は、context 外 Dockerfile を synthetic tar entry として追加し、Dockerfile-specific ignore file と context digest の semantics を Docker CLI と揃える必要がある。
-- Dockerfile build 後に判明する `devcontainer.metadata` label は build 入力には使わない。このため `build.args`、`build.target`、`build.cacheFrom` の `${remoteUser}` は、`devcontainer.json` や decune TOML など build 前に解決できる `remoteUser` / `containerUser` だけを参照できる。
+- Dockerfile build 後に判明する `devcontainer.metadata` label は build 入力には使わない。このため `build.args`、`build.target`、`build.cacheFrom` の `${remoteUser}` は、`devcontainer.json` や decune config など build 前に解決できる `remoteUser` / `containerUser` だけを参照できる。
 
 #### Docker Compose-based
 
@@ -1131,7 +1131,7 @@ policy と独立な published port の診断条件:
 - effective replica count が 2 以上の service が fixed TCP published host port を持つ場合、decune は replica ごとの published host port allocation を行わず `compose_published_port_multi_replica_unsupported` で error にする。effective replica count は Docker Compose config の `scale`、なければ `deploy.replicas` から読む。
 - invalid host IP、malformed port syntax、unexpected host port availability probe error は simple collision として扱わず、decune が判定できる場合は `compose_published_port_invalid` で error にする。
 
-診断コードの定義一覧は 13.1 節。
+diagnostic code の定義一覧は 13.1 節。
 
 ### 8.9 clone isolation
 
@@ -1225,7 +1225,7 @@ hash の扱い:
 - name rewrite の結果値である書き換え後の container/resource name、元 `container_name` のために生成する network alias、および追随して書き換える container name 参照は generated override semantic hash input に含めない。これらは workspace id と canonical Compose model から決定的に導出される relocation 結果値として扱う。
 - name rewrite policy 自体と user Compose file の元名・元参照は従来どおり config hash input に含める。
 
-clone isolation の診断コードの定義一覧は 13.2 節。
+clone isolation の diagnostic code の定義一覧は 13.2 節。
 
 ## 9. ポート
 
@@ -1479,9 +1479,9 @@ daemon の再利用と version:
 
 query が扱う情報:
 
-- container query 用 model は、検証済み workspace ID、起動時 mode、container ID/name/service、run state/health、managed volume name、lifecycle/timestamp、sanitization 済み port だけを保持する。
+- container query 用 model は、検証済み workspace id、起動時 mode、container ID/name/service、run state/health、managed volume name、lifecycle/timestamp、sanitization 済み port だけを保持する。
 - raw `ContainerInspect`、Docker/Compose label map、workspace/config path、raw config hash、env、build args、secret、mount source、external command の raw stderr、他 workspace の resource は model、cache、renderer へ渡さない。
-- query context は検証済み workspace ID とそこから導出する固定 server path context だけを保持し、live config、client input から host path を再解決しない。request の command、format、path、resource name を Docker filter や host path に使わない。
+- query context は検証済み workspace id とそこから導出する固定 server path context だけを保持し、live config、client input から host path を再解決しない。request の command、format、path、resource name を Docker filter や host path に使わない。
 - success output / warning と error response には、secret、raw config hash / label、host path、他 workspace の情報、external command の raw stderr を含めない。degradable な state、forwarding、Docker diagnostic は、prefix と末尾 newline を持たない sanitized message として success response の `warnings` に格納する。text / JSON の完成済み output は `output` だけに格納し、特に `ports` JSON へ warning を混在させない。
 
 認可と lifetime:
@@ -1530,9 +1530,9 @@ user-facing symlink:
 
 `decune up` は、意図した設定どおりに動作する security surface については `Notice:` として表示する。設定が無視される、機能が縮退する、または補助処理の失敗から継続する場合は `Warning:` として表示する。
 
-## 13. 診断コード
+## 13. diagnostic code
 
-この章は decune 固有の診断コードの発生条件を定義する。対処手順は仕様の対象外であり、[ports.md](ports.md) と [clone-isolation.md](clone-isolation.md) のトラブルシューティングを参照する。
+この章は decune 固有の diagnostic code の発生条件を定義する。対処手順は仕様の対象外であり、[ports.md](ports.md) と [clone-isolation.md](clone-isolation.md) のトラブルシューティングを参照する。
 
 ### 13.1 Compose published port
 

@@ -7,21 +7,21 @@
 container の port を host 側で使えるようにする経路は 2 つあります。
 
 - port forwarding: `forwardPorts`、decune `[[ports]]`、CLI `-p` による decune の機能です。Docker published port ではありません。既定では host 側 `127.0.0.1` で listen し、container-side agent 経由で container port へ転送します。container 内で localhost にだけ listen しているプロセスにも届きます。
-- published port: Docker が publish する host 側 binding です。image-based / Dockerfile-based 構成では Dev Container `appPort`、Docker Compose-based 構成では Compose サービスの `ports` で指定します。
+- published port: Docker が publish する host 側 binding です。image-based / Dockerfile-based configuration では Dev Container `appPort`、Docker Compose-based configuration では Compose service の `ports` で指定します。
 
 使い分けの目安:
 
 - 手元の開発作業からアクセスできれば十分な port は port forwarding を使います。attached `decune up` session の間だけ維持され、既定では `127.0.0.1` に閉じます。
 - attached session と無関係に公開し続けたい port や、`decune up --detach` で使う port は published port を使います。
 
-decune の port forwarding と、`appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error になります。Compose サービス `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧には表示されます。区別の契約は [specification.md 9.1 節](specification.md#91-forwarding-と-published-port-の区別)と [9.2 節](specification.md#92-tcp-only)を参照してください。
+decune の port forwarding と、`appPort` から decune が生成する published port metadata は TCP-only です。これらの設定で `/udp` を指定すると unsupported error になります。Compose service `ports` などで Docker が実際に publish している UDP binding は、`decune ports` の一覧には表示されます。区別の契約は [specification.md 9.1 節](specification.md#91-forwarding-と-published-port-の区別)と [9.2 節](specification.md#92-tcp-only)を参照してください。
 
 ## manual port forwarding
 
 port forwarding は次の 3 か所で指定できます。
 
 - `devcontainer.json` の `forwardPorts`(例: `[5173]`)
-- decune TOML の `[[ports]]`(スキーマは [specification.md 5.9 節](specification.md#59-ports))
+- decune config の `[[ports]]`(スキーマは [specification.md 5.9 節](specification.md#59-ports))
 - CLI の `decune up -p <SPEC>`(例: `-p 3000`、`-p 8080:3000`、`-p 127.0.0.1:8080:3000`。全形式は [specification.md 3.2 節](specification.md#32-up))
 
 ```toml
@@ -34,7 +34,7 @@ label = "web"
 
 - `host` を省略すると container port と同じ番号を試し、使用中なら空き port へ fallback します。fallback を warning で知りたい場合は `require_local = true` を設定します。実際に使われた endpoint は `decune ports` で確認できます。
 - 同じ port を複数の場所で指定した場合の優先順位と fallback の契約は [specification.md 9.5 節](specification.md#95-manual-forwarding-の優先順位と-fallback)を参照してください。
-- Docker Compose-based 構成で primary service(`service` で指定した Compose service)以外へ転送する場合は、`forwardPorts` の `"service:port"` 形式(例: `"db:5432"`)または `[[ports]].service` を明示します。対象の sidecar service には forwarding 用の artifact だけが配置されます([specification.md 9.6 節](specification.md#96-compose-モードの-service-解決と-sidecar-forwarding))。
+- Docker Compose-based configuration で primary service(`service` で指定した Compose service)以外へ転送する場合は、`forwardPorts` の `"service:port"` 形式(例: `"db:5432"`)または `[[ports]].service` を明示します。対象の sidecar service には forwarding 用の artifact だけが配置されます([specification.md 9.6 節](specification.md#96-compose-モードの-service-解決と-sidecar-forwarding))。
 
 ## automatic port forwarding
 
@@ -51,17 +51,17 @@ on_auto_forward = "silent"
 
 ## published port の指定
 
-### image-based / Dockerfile-based 構成: `appPort`
+### image-based / Dockerfile-based configuration: `appPort`
 
 `appPort` は Docker published port としてコンテナ作成時に確定します。既存コンテナへ後付けできないため、変更を反映するには `decune rebuild` を実行します。host IP を指定しない場合は Docker の既定で全 interface に公開され得るため、warning が表示されます([specification.md 9.3 節](specification.md#93-appport))。
 
-### Docker Compose-based 構成: サービスの `ports`
+### Docker Compose-based configuration: service の `ports`
 
-Docker published port は Compose サービスの `ports` に書きます。Compose モードでは `appPort` は unsupported error です([specification.md 8.1 節](specification.md#81-委譲原則と制限))。
+Docker published port は Compose service の `ports` に書きます。Compose モードでは `appPort` は unsupported error です([specification.md 8.1 節](specification.md#81-委譲原則と制限))。
 
 ## `--detach` とポート
 
-`decune up --detach` では `up` 終了時に host daemon も停止するため、manual / automatic port forwarding は維持されません。`--detach` と CLI `-p` の併用は error になり、設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視されます。detached container で公開が必要な port は published port(`appPort` または Compose サービスの `ports`)を使ってください([specification.md 3.2 節](specification.md#32-up))。
+`decune up --detach` では `up` 終了時に host daemon も停止するため、manual / automatic port forwarding は維持されません。`--detach` と CLI `-p` の併用は error になり、設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視されます。detached container で公開が必要な port は published port(`appPort` または Compose service の `ports`)を使ってください([specification.md 3.2 節](specification.md#32-up))。
 
 relocation(後述)された endpoint も Docker/Compose の published binding のままであり、decune forwarding ではありません。そのため `--detach` で起動した後も維持されます。
 

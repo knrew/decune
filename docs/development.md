@@ -140,28 +140,28 @@ cargo run --locked -p xtask -- release-manifest --dist-dir target/dist --version
 
 ### 文書の責務
 
-| 文書                                     | 責務                                                                                       |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------ |
-| [README.md](../README.md)                | 概要と最短導線(初見の利用者向け)                                                           |
-| [usage.md](usage.md)                     | 利用者向けのインストール、クイックスタート、日常操作の基本ガイド                           |
-| [configuration.md](configuration.md)     | decune TOML 設定の使い方と挙動説明のガイド                                                 |
-| [ports.md](ports.md)                     | port forwarding と published port の利用ガイド                                             |
-| [clone-isolation.md](clone-isolation.md) | 複数 clone 同時利用(Compose clone isolation)のガイド                                       |
-| [specification.md](specification.md)     | 公開挙動、CLI 契約、設定スキーマ、セキュリティ境界、診断コード定義の正本(リファレンス兼務) |
-| [internals.md](internals.md)             | 内部実装の説明(非規範の内部設計ノート)                                                     |
-| development.md(この文書)                 | 貢献者向けの環境構築、検証、ドキュメント執筆規約                                           |
-| [release.md](release.md)                 | maintainer 向けのリリース runbook                                                          |
-| [glossary.md](glossary.md)               | 用語と表記基準                                                                             |
+| 文書                                     | 責務                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| [README.md](../README.md)                | 概要と最短導線(初見の利用者向け)                                                                 |
+| [usage.md](usage.md)                     | 利用者向けのインストール、クイックスタート、日常操作の基本ガイド                                 |
+| [configuration.md](configuration.md)     | decune config の使い方と挙動説明のガイド                                                         |
+| [ports.md](ports.md)                     | port forwarding と published port の利用ガイド                                                   |
+| [clone-isolation.md](clone-isolation.md) | 複数 clone 同時利用(Compose clone isolation)のガイド                                             |
+| [specification.md](specification.md)     | 公開挙動、CLI 契約、設定スキーマ、セキュリティ境界、diagnostic code 定義の正本(リファレンス兼務) |
+| [internals.md](internals.md)             | 内部実装の説明(非規範の内部設計ノート)                                                           |
+| development.md(この文書)                 | 貢献者向けの環境構築、検証、ドキュメント執筆規約                                                 |
+| [release.md](release.md)                 | maintainer 向けのリリース runbook                                                                |
+| [glossary.md](glossary.md)               | 用語と表記基準                                                                                   |
 
 ### 情報の置き場所
 
 同じ情報は 1 つの文書だけを正とし、他の文書は要約とリンクに徹します。正と矛盾する記述を他の文書に持ち込まないでください。
 
-- 公開挙動、CLI の契約、設定スキーマと既定値、セキュリティ境界、診断コードの発生条件の正は specification.md。
+- 公開挙動、CLI の契約、設定スキーマと既定値、セキュリティ境界、diagnostic code の発生条件の正は specification.md。
 - インストールと日常操作の手順、untrusted repository での推奨設定の正は usage.md。
 - 設定(features / dotfiles / mounts / credentials / hooks / container.cli)の使い方・挙動説明の正は configuration.md。
 - forwarding と published port の概念説明・使い分け、relocation / mapping の確認方法の正は ports.md。clone isolation の使い方の正は clone-isolation.md。
-- 診断コードへの対処の正は ports.md と clone-isolation.md のトラブルシューティング。specification.md には対処を書かない。
+- diagnostic code への対処の正は ports.md と clone-isolation.md のトラブルシューティング。specification.md には対処を書かない。
 - ソースからのインストール、検証コマンド、test coverage 要求、ドキュメント執筆規約の正はこの文書。
 - 実装定数、内部型名、内部環境変数、runtime file レイアウトなど内部実装の説明は internals.md。非規範であることを明記し、挙動の約束は書かない。
 - 配布物の契約(asset、検証手段、version 表示規則)の正は specification.md の配布章。リリース手順の正は release.md、開発ビルドの version 運用はこの文書。

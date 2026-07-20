@@ -55,8 +55,8 @@ decune --help
 - Docker CLI `docker`
 - Docker Compose v2 プラグイン
 - Docker デーモンへ接続できる権限
-- Git 認証情報転送を使う場合: ホスト側の `git`
-- GitHub CLI token 転送を使う場合: ホスト側の `gh`
+- Git credential forwarding を使う場合: ホスト側の `git`
+- GitHub CLI token forwarding を使う場合: ホスト側の `gh`
 
 必要な Docker Compose の機能は [specification.md](specification.md#21-ホスト要件) を参照してください。
 
@@ -64,7 +64,7 @@ decune --help
 
 ### Image-Based
 
-対象リポジトリに Dev Container 構成を用意します。
+対象リポジトリに Dev Container configuration を用意します。
 
 ```jsonc
 // .devcontainer/devcontainer.json
@@ -148,7 +148,7 @@ services:
       POSTGRES_PASSWORD: postgres
 ```
 
-Docker Compose-based 構成では Compose サービスの実行時設定を Docker Compose に委譲します。workspace の bind mount は `service` で指定した service の `volumes` に、Docker published port は Compose サービスの `ports` に書いてください(ポートの使い分けは [ports.md](ports.md))。
+Docker Compose-based configuration では Compose service の実行時設定を Docker Compose に委譲します。workspace の bind mount は `service` で指定した service の `volumes` に、Docker published port は Compose service の `ports` に書いてください(ポートの使い分けは [ports.md](ports.md))。
 
 ## コマンド
 
@@ -259,9 +259,9 @@ decune clean --dry-run --json                      # 削除候補を JSON で確
 
 既定では共有 Feature archive cache (`$XDG_CACHE_HOME/decune/features`) を削除しません。対象の判定規則と JSON schema の契約は [specification.md 3.8 節](specification.md#38-clean) を参照してください。
 
-## decune TOML 設定
+## decune config
 
-decune TOML は `devcontainer.json` に重ねる overlay 設定です。個人環境向けの global config と workspace ごとの project config があり、複数 layer の後勝ちで合成されます。
+decune config は `devcontainer.json` に重ねる overlay 設定です。個人環境向けの global config と workspace ごとの project config があり、複数 layer の後勝ちで合成されます。
 
 - global: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`
 - project: `<workspace>/.decune/config.toml`
@@ -277,11 +277,11 @@ source = "~/.config/nvim"
 target = ".config/nvim"
 ```
 
-各設定の使い方と挙動は [configuration.md](configuration.md)、ポート関連の設定は [ports.md](ports.md)、clone isolation は [clone-isolation.md](clone-isolation.md)、スキーマと merge rule は [specification.md 5 章](specification.md#5-decune-toml-設定) を参照してください。
+各設定の使い方と挙動は [configuration.md](configuration.md)、ポート関連の設定は [ports.md](ports.md)、clone isolation は [clone-isolation.md](clone-isolation.md)、スキーマと merge rule は [specification.md 5 章](specification.md#5-decune-config) を参照してください。
 
 ## 安全な使い方
 
-`decune up` は Dockerfile instruction、Compose サービス build、local/OCI Feature `install.sh`、lifecycle command、hook、`userEnvProbe` 対象シェル起動ファイルを実行し得ます。信頼していないリポジトリでは、起動前に `.devcontainer/`、Compose file、local Feature、mount、credentials、`privileged`、`capAdd`、`securityOpt`、`appPort`、Compose `ports` を確認してください。
+`decune up` は Dockerfile instruction、Compose service build、local/OCI Feature `install.sh`、lifecycle command、hook、`userEnvProbe` 対象シェル起動ファイルを実行し得ます。信頼していないリポジトリでは、起動前に `.devcontainer/`、Compose file、local Feature、mount、credentials、`privileged`、`capAdd`、`securityOpt`、`appPort`、Compose `ports` を確認してください。
 
 信頼していないリポジトリでは、credential forwarding を無効化するか、Git HTTPS lookup を read-only に制限します。
 

@@ -1,13 +1,13 @@
-# decune TOML 設定ガイド
+# decune config ガイド
 
-この文書は、decune TOML 設定の使い方と挙動の説明をまとめた利用者向けガイドです。スキーマ、既定値、merge rule の正は [specification.md 5 章](specification.md#5-decune-toml-設定)、変数展開は [6 章](specification.md#6-変数展開と-path-解決)です。ポート関連の設定(`[[ports]]`、`[ports.auto]`、`[compose.published_ports]`)は [ports.md](ports.md)、`[compose.clone_isolation]` は [clone-isolation.md](clone-isolation.md) を参照してください。
+この文書は、decune config の使い方と挙動の説明をまとめた利用者向けガイドです。スキーマ、既定値、merge rule の正は [specification.md 5 章](specification.md#5-decune-config)、変数展開は [6 章](specification.md#6-変数展開と-path-解決)です。ポート関連の設定(`[[ports]]`、`[ports.auto]`、`[compose.published_ports]`)は [ports.md](ports.md)、`[compose.clone_isolation]` は [clone-isolation.md](clone-isolation.md) を参照してください。
 
 ## 設定ファイルの場所と重ね合わせ
 
 - global config: `$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`
 - project config: `<workspace>/.decune/config.toml`
 
-decune TOML は `devcontainer.json` に対する overlay であり、base image / build / Compose 定義の置き換えには使えません。個人環境の好み(dotfiles、shell、credentials の方針など)は global config に、リポジトリで共有したい設定(Features、mounts、clone isolation など)は project config に置きます。project config は Git 管理してかまいませんが、秘密情報は設定 file に直接書かないでください。
+decune config は `devcontainer.json` に対する overlay であり、base image / build / Compose 定義の置き換えには使えません。個人環境の好み(dotfiles、shell、credentials の方針など)は global config に、リポジトリで共有したい設定(Features、mounts、clone isolation など)は project config に置きます。project config は Git 管理してかまいませんが、秘密情報は設定 file に直接書かないでください。
 
 設定は複数の layer を重ねて合成され、基本は後勝ちです。おおまかには global config → `devcontainer.json` → project config → CLI options の順で後が優先されます。image/Feature metadata を含む完全な順序は [specification.md 5.2 節](specification.md#52-merge-順序)、field ごとの merge rule は [5.3 節](specification.md#53-merge-rule)を参照してください。
 
@@ -78,7 +78,7 @@ type = "bind"
 - `create = "directory"` にすると、存在しない bind source directory を作成してから mount します。file の自動作成はありません。
 - `resolve_symlink`(既定 true)は bind source の symlink を canonicalize します。
 - `target` に `/opt/decune` と `/run/decune` の配下、および workspace mount target と同一の path は使えません。decune の internal path として予約されています。
-- Docker Compose-based 構成では primary service(`service` で指定した Compose service)に generated override として追加されます。
+- Docker Compose-based configuration では primary service(`service` で指定した Compose service)に generated override として追加されます。
 
 スキーマは [specification.md 5.8 節](specification.md#58-mounts)を参照してください。
 

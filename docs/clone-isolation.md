@@ -14,7 +14,7 @@
 
 Compose project name と既定命名の network / volume は、clone isolation の有効無効にかかわらず常に workspace ごとの名前になります。clone isolation は、上記のような固定値を workspace ごとの値へ書き換える opt-in 機能で、既定では無効です。有効にしても `external: true` の resource は共有契約とみなして書き換えません。
 
-固定 subnet と固定名の衝突は、clone isolation の有効無効にかかわらず `docker compose up` の前に preflight で検出されます。opt-in していない対象は検出のみを行い、衝突があれば診断コードで停止します([specification.md 8.9.2 節](specification.md#892-preflight))。
+固定 subnet と固定名の衝突は、clone isolation の有効無効にかかわらず `docker compose up` の前に preflight で検出されます。opt-in していない対象は検出のみを行い、衝突があれば diagnostic code で停止します([specification.md 8.9.2 節](specification.md#892-preflight))。
 
 ## 有効化
 
