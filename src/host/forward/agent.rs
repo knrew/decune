@@ -45,10 +45,11 @@ impl ForwardAgentAccess {
     }
 
     fn from_env() -> Result<Self> {
-        let secret = env::var(FORWARD_AGENT_SECRET_ENV)
-            .with_context(|| format!("Missing {FORWARD_AGENT_SECRET_ENV} for forward agent"))?;
+        let secret = env::var(FORWARD_AGENT_SECRET_ENV).with_context(|| {
+            format!("Missing {FORWARD_AGENT_SECRET_ENV} for port forward agent")
+        })?;
         if secret.is_empty() {
-            bail!("Forward agent secret is empty");
+            bail!("Port forward agent secret is empty");
         }
         let allowed_ports = parse_allowed_ports_env(
             &env::var(FORWARD_AGENT_ALLOWED_PORTS_ENV).unwrap_or_default(),
@@ -434,7 +435,7 @@ fn parse_allowed_ports_env(value: &str) -> Result<BTreeSet<u16>> {
     for raw in value.split(',').filter(|part| !part.is_empty()) {
         let port = raw
             .parse::<u16>()
-            .with_context(|| format!("Invalid forward agent allowed port: {raw}"))?;
+            .with_context(|| format!("Invalid port forward agent allowed port: {raw}"))?;
         ports.insert(port);
     }
     Ok(ports)

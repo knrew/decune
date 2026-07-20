@@ -50,7 +50,7 @@ pub(super) fn handle_host_daemon_request(
         Err(error) => {
             return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_INVALID_REQUEST,
-                format!("Invalid host daemon request JSON: {error}"),
+                format!("Invalid decune host daemon request JSON: {error}"),
             ));
         }
     };
@@ -59,7 +59,7 @@ pub(super) fn handle_host_daemon_request(
         return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
             ERROR_CODE_UNSUPPORTED_PROTOCOL_VERSION,
             format!(
-                "Unsupported host daemon protocol version: {}",
+                "Unsupported decune host daemon protocol version: {}",
                 request.version
             ),
         ));
@@ -74,11 +74,14 @@ pub(super) fn handle_host_daemon_request(
         REQUEST_TYPE_CLI_QUERY => handle_cli_query_request(bytes, cli_query_runtime),
         REQUEST_TYPE_PORT_FORWARD => HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
             ERROR_CODE_NOT_IMPLEMENTED,
-            "Host daemon request is not implemented yet: portForward",
+            "decune host daemon request is not implemented yet: portForward",
         )),
         _ => HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
             ERROR_CODE_UNKNOWN_REQUEST_TYPE,
-            format!("Unknown host daemon request type: {}", request.request_type),
+            format!(
+                "Unknown decune host daemon request type: {}",
+                request.request_type
+            ),
         )),
     }
 }
@@ -113,7 +116,7 @@ fn handle_cli_query_request(
         Err(error) => {
             return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_INVALID_REQUEST,
-                format!("Invalid container CLI query request JSON: {error}"),
+                format!("Invalid decune container CLI query request JSON: {error}"),
             ));
         }
     };
@@ -124,7 +127,7 @@ fn handle_cli_query_request(
             return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_UNSUPPORTED_FORMAT,
                 format!(
-                    "Unsupported container CLI query format for status: {}",
+                    "Unsupported decune container CLI query format for status: {}",
                     request.format
                 ),
             ));
@@ -136,7 +139,7 @@ fn handle_cli_query_request(
                 return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                     ERROR_CODE_UNSUPPORTED_FORMAT,
                     format!(
-                        "Unsupported container CLI query format for ports: {}",
+                        "Unsupported decune container CLI query format for ports: {}",
                         request.format
                     ),
                 ));
@@ -146,7 +149,7 @@ fn handle_cli_query_request(
             return HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_UNSUPPORTED_COMMAND,
                 format!(
-                    "Unsupported container CLI query command: {}",
+                    "Unsupported decune container CLI query command: {}",
                     request.command
                 ),
             ));
@@ -157,7 +160,7 @@ fn handle_cli_query_request(
         ContainerCliQueryRuntime::Disabled => {
             HostDaemonRequestDispatch::Respond(HostDaemonResponse::error(
                 ERROR_CODE_CONTAINER_CLI_DISABLED,
-                "Container CLI queries are disabled",
+                "decune container CLI queries are disabled",
             ))
         }
         ContainerCliQueryRuntime::Enabled(service) => HostDaemonRequestDispatch::CliQuery {
@@ -376,7 +379,7 @@ mod tests {
             assert_eq!(response["error"]["code"], "container_cli_disabled");
             assert_eq!(
                 response["error"]["message"],
-                "Container CLI queries are disabled"
+                "decune container CLI queries are disabled"
             );
         }
 

@@ -125,7 +125,7 @@ pub struct HostDaemonResponseValidationError;
 
 impl fmt::Display for HostDaemonResponseValidationError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str("host daemon response violates the protocol invariant")
+        formatter.write_str("decune host daemon response violates the protocol invariant")
     }
 }
 

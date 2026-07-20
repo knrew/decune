@@ -59,7 +59,7 @@ pub(crate) fn resolve_build_context(
 pub(crate) fn build_hash_input(context: &ResolvedBuildContext) -> Result<BuildHashInput> {
     let dockerfile = fs::read(&context.dockerfile_path).with_context(|| {
         format!(
-            "Failed to read Dockerfile for config hash: {}",
+            "Failed to read Dockerfile for reuse hash: {}",
             context.dockerfile_path.display()
         )
     })?;
@@ -67,7 +67,7 @@ pub(crate) fn build_hash_input(context: &ResolvedBuildContext) -> Result<BuildHa
         Some(path) => {
             let contents = fs::read(path).with_context(|| {
                 format!(
-                    "Failed to read .dockerignore for config hash: {}",
+                    "Failed to read .dockerignore for reuse hash: {}",
                     path.display()
                 )
             })?;

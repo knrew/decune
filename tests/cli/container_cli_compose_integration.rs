@@ -469,7 +469,7 @@ fn compose_integration_container_cli_attached_detached_disabled_and_overlap_life
     assert!(!overlap.status.success());
     assert!(overlap.stdout.is_empty());
     assert!(String::from_utf8_lossy(&overlap.stderr).contains(
-        "An active decune up session uses a different container CLI policy or query context"
+        "An active decune up session uses a different decune container CLI policy or daemon query context"
     ));
 
     enabled.stop();
@@ -495,7 +495,7 @@ fn compose_integration_container_cli_attached_detached_disabled_and_overlap_life
     assert!(stale.stdout.is_empty());
     assert_eq!(
         stale.stderr_text(),
-        "Error: Container CLI queries are disabled\n"
+        "Error: decune container CLI queries are disabled\n"
     );
     disabled.stop();
 

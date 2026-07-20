@@ -162,20 +162,22 @@ async fn start_host_daemon_for_remote_user(
                             return Err(anyhow::anyhow!(HOST_DAEMON_VERSION_MISMATCH))
                                 .with_context(|| {
                                     format!(
-                                        "Failed to start host daemon for workspace: {workspace_id}"
+                                        "Failed to start decune host daemon for workspace: {workspace_id}"
                                     )
                                 });
                         }
                     }
                     Err(access_error) => {
                         return Err(access_error).with_context(|| {
-                            format!("Failed to start host daemon for workspace: {workspace_id}")
+                            format!(
+                                "Failed to start decune host daemon for workspace: {workspace_id}"
+                            )
                         });
                     }
                 }
             }
             Err(error).with_context(|| {
-                format!("Failed to start host daemon for workspace: {workspace_id}")
+                format!("Failed to start decune host daemon for workspace: {workspace_id}")
             })
         }
     }
@@ -257,7 +259,7 @@ fn warn_once_about_host_daemon_monitor_failure(warned: &mut bool, error: &anyhow
     }
     *warned = true;
     ui::warn(&format!(
-        "Failed to keep host daemon available for this session: {error:#}"
+        "Failed to keep decune host daemon available for this session: {error:#}"
     ));
 }
 
@@ -443,7 +445,7 @@ mod tests {
             .unwrap_err();
 
             assert!(format!("{error:#}").contains(
-                "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry"
+                "An active decune up session uses a different decune container CLI policy or daemon query context; stop all decune up sessions for this workspace and retry"
             ));
 
             existing.stop().await.unwrap();
@@ -484,7 +486,7 @@ mod tests {
             .unwrap_err();
 
             assert!(format!("{error:#}").contains(
-                "An active decune up session uses a different container CLI policy or query context; stop all decune up sessions for this workspace and retry"
+                "An active decune up session uses a different decune container CLI policy or daemon query context; stop all decune up sessions for this workspace and retry"
             ));
 
             existing.stop().await.unwrap();
@@ -527,7 +529,7 @@ mod tests {
             .unwrap_err();
 
             assert!(format!("{error:#}").contains(
-                "An active decune up session uses an incompatible host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry"
+                "An active decune up session uses an incompatible decune host daemon metadata or protocol version, possibly from a different decune version; stop all decune up sessions for this workspace and retry"
             ));
 
             existing.stop().await.unwrap();
@@ -643,7 +645,7 @@ mod tests {
             .unwrap_err();
 
             assert!(
-                format!("{error:#}").contains("Host daemon socket is already in use"),
+                format!("{error:#}").contains("decune host daemon socket is already in use"),
                 "{error:#}"
             );
 
@@ -680,11 +682,11 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("Failed to start host daemon for workspace: workspace-test")
+                    .contains("Failed to start decune host daemon for workspace: workspace-test")
             );
             assert!(
                 format!("{error:#}")
-                    .contains("host daemon runtime directory must not be a symlink")
+                    .contains("decune host daemon runtime directory must not be a symlink")
             );
         });
     }
@@ -716,9 +718,9 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("Failed to start host daemon for workspace: workspace-test")
+                    .contains("Failed to start decune host daemon for workspace: workspace-test")
             );
-            assert!(format!("{error:#}").contains("Host daemon socket is already in use"));
+            assert!(format!("{error:#}").contains("decune host daemon socket is already in use"));
         });
     }
 
@@ -738,7 +740,7 @@ mod tests {
         .await
         .unwrap_or_else(|_| {
             panic!(
-                "host daemon socket did not become connectable: {}",
+                "decune host daemon socket did not become connectable: {}",
                 socket_path.display()
             )
         });

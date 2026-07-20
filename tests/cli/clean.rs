@@ -58,7 +58,7 @@ fn clean_no_confirm_removes_stale_workspace_and_keeps_feature_cache_by_default()
         .success()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains(
-            "Removed stale decune generated data",
+            "Removed stale decune-managed data",
         ));
 
     assert!(!paths.cache_dir.exists());
@@ -85,7 +85,7 @@ fn clean_include_feature_cache_adds_shared_feature_cache_target() {
         .success()
         .stdout(predicate::str::is_empty())
         .stderr(predicate::str::contains(
-            "Removed stale decune generated data",
+            "Removed stale decune-managed data",
         ));
 
     assert!(!paths.cache_dir.exists());

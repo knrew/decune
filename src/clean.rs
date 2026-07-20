@@ -179,11 +179,11 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
             serde_json::to_string_pretty(&report).context("Failed to serialize clean report")?
         );
     } else if report.summary.remove_candidates == 0 {
-        ui::done("No stale decune generated data found");
+        ui::done("No stale decune-managed data found");
     } else if options.safety.dry_run {
-        ui::done("Dry run completed without removing generated data");
+        ui::done("Dry run completed without removing decune-managed data");
     } else {
-        ui::done("Removed stale decune generated data");
+        ui::done("Removed stale decune-managed data");
     }
 
     Ok(())
@@ -449,10 +449,7 @@ fn path_is_unsafe_generated_dir(root: &Path, path: &Path) -> Result<bool> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(error) => {
             return Err(error).with_context(|| {
-                format!(
-                    "Failed to inspect decune generated data: {}",
-                    path.display()
-                )
+                format!("Failed to inspect decune-managed data: {}", path.display())
             });
         }
     };
@@ -464,18 +461,18 @@ fn path_is_unsafe_generated_dir(root: &Path, path: &Path) -> Result<bool> {
 
 fn directory_contains_symlink(path: &Path) -> Result<bool> {
     for entry in fs::read_dir(path)
-        .with_context(|| format!("Failed to read decune generated data: {}", path.display()))?
+        .with_context(|| format!("Failed to read decune-managed data: {}", path.display()))?
     {
         let entry = entry.with_context(|| {
             format!(
-                "Failed to read decune generated data entry: {}",
+                "Failed to read decune-managed data entry: {}",
                 path.display()
             )
         })?;
         let entry_path = entry.path();
         let metadata = entry_path.symlink_metadata().with_context(|| {
             format!(
-                "Failed to inspect decune generated data entry: {}",
+                "Failed to inspect decune-managed data entry: {}",
                 entry_path.display()
             )
         })?;
@@ -612,7 +609,7 @@ fn ensure_clean_confirmed(confirmation: CleanConfirmation) -> Result<()> {
     }
     if !confirmation.no_confirm && !confirmation.stdin_is_terminal {
         bail!(
-            "Cannot confirm clean in a non-interactive terminal; rerun with --no-confirm to remove generated data"
+            "Cannot confirm clean in a non-interactive terminal; rerun with --no-confirm to remove decune-managed data"
         );
     }
     if !confirmation.no_confirm && confirmation.stdin_is_terminal && !confirm_clean()? {
@@ -624,7 +621,7 @@ fn ensure_clean_confirmed(confirmation: CleanConfirmation) -> Result<()> {
 fn confirm_clean() -> Result<bool> {
     let mut stderr = io::stderr();
     stderr
-        .write_all(b"Remove stale decune generated data? [y/N] ")
+        .write_all(b"Remove stale decune-managed data? [y/N] ")
         .context("Failed to write clean confirmation prompt")?;
     stderr
         .flush()
@@ -643,7 +640,7 @@ fn print_clean_summary(report: &CleanReport, dry_run: bool) {
         return;
     }
     ui::notice(&format!(
-        "{} {} decune generated data target(s)",
+        "{} {} decune-managed data target(s)",
         if dry_run {
             "Would inspect"
         } else {
@@ -748,7 +745,7 @@ fn remove_dir_if_exists(path: &Path) -> Result<()> {
         Ok(()) => Ok(()),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
         Err(error) => Err(error)
-            .with_context(|| format!("Failed to remove decune generated data: {}", path.display())),
+            .with_context(|| format!("Failed to remove decune-managed data: {}", path.display())),
     }
 }
 

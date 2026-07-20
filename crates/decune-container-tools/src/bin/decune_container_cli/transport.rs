@@ -18,9 +18,10 @@ const MAX_HOST_DAEMON_RESPONSE_BYTES: usize = 1024 * 1024;
 const RETRY_INTERVAL: Duration = Duration::from_millis(100);
 
 pub const UNAVAILABLE_MESSAGE: &str = "decune host daemon is unavailable; keep an active attached \"decune up\" session running on the host (detached mode is not supported)";
-pub const TRANSPORT_ERROR_MESSAGE: &str = "decune could not communicate with the host daemon";
+pub const TRANSPORT_ERROR_MESSAGE: &str =
+    "decune could not communicate with the decune host daemon";
 pub const INVALID_RESPONSE_MESSAGE: &str =
-    "decune received an invalid response from the host daemon";
+    "decune received an invalid response from the decune host daemon";
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct QuerySuccess {
