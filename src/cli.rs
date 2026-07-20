@@ -86,20 +86,20 @@ struct UpStartupArgs {
 
 #[derive(Debug, Args)]
 struct UpBuildArgs {
-    /// Do not use build cache for Dockerfile or Feature layers.
+    /// Do not use build cache for Dockerfile, Compose service, or Feature layer builds.
     #[arg(long)]
     no_cache: bool,
-    /// Pull the base image before create or build.
+    /// Pull the base image or Compose service images before create or build.
     #[arg(long)]
     pull: bool,
 }
 
 #[derive(Debug, Args)]
 struct RebuildBuildArgs {
-    /// Do not use build cache for Dockerfile or Feature layers.
+    /// Do not use build cache for Dockerfile, Compose service, or Feature layer builds.
     #[arg(long)]
     no_cache: bool,
-    /// Pull the base image before create or build.
+    /// Pull the base image or Compose service images before create or build.
     #[arg(long)]
     pull: bool,
     /// Resolve Feature references without using the lock file.
@@ -112,10 +112,10 @@ struct UpForwardingArgs {
     /// Disable automatic port forwarding.
     #[arg(long)]
     no_auto_forward: bool,
-    /// Enable automatic Docker/Compose published port relocation.
+    /// Enable Compose automatic published port relocation for this run.
     #[arg(long, conflicts_with = "no_automatic_published_port_relocation")]
     automatic_published_port_relocation: bool,
-    /// Disable automatic Docker/Compose published port relocation.
+    /// Disable Compose automatic published port relocation for this run.
     #[arg(long, conflicts_with = "automatic_published_port_relocation")]
     no_automatic_published_port_relocation: bool,
 }
