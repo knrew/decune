@@ -7,18 +7,18 @@ Dev Containers Specification の image-based / Dockerfile-based / Docker Compose
 ## 主な機能
 
 - image-based / Dockerfile-based / Docker Compose-based configuration の検出と起動
-- `decune up` だけで build、起動、remote user のシェル接続までを実行
-- `rebuild` / `down` / `status` / `ports` / `remove` / `clean` による明示的なライフサイクル管理と状態確認
+- `decune up` だけでビルド、起動、リモートユーザーのシェル接続までを実行
+- `rebuild` / `down` / `status` / `ports` / `remove` / `clean` による明示的な lifecycle 管理と状態確認
 - Dev Container Features、dotfiles、Git/GitHub credential forwarding、Linux UID/GID 同期の適用
-- decune のポートフォワーディングと Docker published port の管理・一覧表示
+- decune の port forwarding と Docker published port の管理・一覧表示
 - global と project の 2 層の decune config を `devcontainer.json` へ重ね合わせ
-- 同じ Docker Compose-based リポジトリの複数 clone の同時利用(opt-in の衝突分離)
+- 同じ Docker Compose-based リポジトリの複数クローンの同時利用(オプトインの衝突分離)
 
 ## 対象範囲
 
-Linux / macOS ホストと Docker CLI / Docker Compose v2 プラグインを対象にします(旧 `docker-compose` v1 standalone binary は対象外)。Docker Compose-based configuration では、`service` で指定した Compose service を主対象にシェル接続とライフサイクル管理を適用し、Compose file の解釈と実行時設定は Docker Compose に委譲します。
+Linux / macOS ホストと Docker CLI / Docker Compose v2 プラグインを対象にします(旧 `docker-compose` v1 の単体バイナリは対象外)。Docker Compose-based configuration では、`service` で指定した Compose サービスを主対象にシェル接続と lifecycle 管理を適用し、Compose ファイルの解釈と実行時設定は Docker Compose に委譲します。
 
-Kubernetes などの orchestrator と Docker Desktop UI の直接サポート、VS Code extension のインストールと `customizations.vscode` の適用、GPG agent forwarding、コンテナから任意のホストコマンドを実行する API、Windows ホスト向け公式配布、crates.io 経由の公式インストールは対象外です。対象範囲と対象外の正確な一覧は [docs/specification.md](docs/specification.md#1-スコープ) を参照してください。
+Kubernetes などのオーケストレーターと Docker Desktop UI の直接サポート、VS Code 拡張機能のインストールと `customizations.vscode` の適用、GPG agent forwarding、コンテナから任意のホストコマンドを実行する API、Windows ホスト向け公式配布、crates.io 経由の公式インストールは対象外です。対象範囲と対象外の正確な一覧は [docs/specification.md](docs/specification.md#1-スコープ) を参照してください。
 
 ## 要件
 
@@ -42,7 +42,7 @@ curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.3.4/scripts/install
 
 `$HOME/.local/bin` が `PATH` に含まれていない場合は、利用しているシェルの設定で追加してください。
 
-手動アーカイブインストールと upgrade 時の注意は [docs/usage.md](docs/usage.md#インストール)、ソースからのインストールは [docs/development.md](docs/development.md#ソースからのローカルインストール) を参照してください。
+手動アーカイブインストールとアップグレード時の注意は [docs/usage.md](docs/usage.md#インストール)、ソースからのインストールは [docs/development.md](docs/development.md#ソースからのローカルインストール) を参照してください。
 
 ## クイックスタート
 
@@ -57,13 +57,13 @@ curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.3.4/scripts/install
 }
 ```
 
-起動して remote user のシェルに接続します。
+起動してリモートユーザーのシェルに接続します。
 
 ```sh
 decune up
 ```
 
-作業を終えたら停止します。volume、状態、image は保持され、次の `decune up` で再利用されます。
+作業を終えたら停止します。ボリューム、状態、イメージは保持され、次の `decune up` で再利用されます。
 
 ```sh
 decune down
@@ -79,11 +79,11 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 
 `WORKSPACE` の既定値はカレントディレクトリです。Git リポジトリ内ではリポジトリルートを workspace root として扱います。
 
-- `decune up`: development container を作成または起動し、シェルに接続
-- `decune rebuild`: development container または Compose プロジェクトを再作成
-- `decune down`: decune が管理するリソースを停止(volume、状態、image は保持)
-- `decune status`: decune が管理する workspace environment の状態を read-only で表示
-- `decune ports`: 現在有効な host 側 port の利用状況を read-only で表示
+- `decune up`: 開発コンテナを作成または起動し、シェルに接続
+- `decune rebuild`: 開発コンテナまたは Compose プロジェクトを再作成
+- `decune down`: decune が管理するリソースを停止(ボリューム、状態、イメージは保持)
+- `decune status`: decune が管理するワークスペース環境の状態を read-only で表示
+- `decune ports`: 現在有効なホスト側ポートの利用状況を read-only で表示
 - `decune remove` / `decune rm`: decune が管理する Dev Container 環境を削除
 - `decune clean`: stale な decune-managed data を確認・削除
 
@@ -91,8 +91,8 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 
 ## セキュリティ上の注意
 
-- `decune up` は、build、Feature の install script、lifecycle command、decune hook などの任意コードを実行し得ます。信頼していないリポジトリでは、起動前に内容を確認してください。
-- credential forwarding は、ホストの Git credentials、SSH agent、GitHub token file への到達性をコンテナ内プロセスに与え得ます。信頼していないリポジトリでは、無効化するか read-only に制限してください。
+- `decune up` は、ビルド、Feature のインストールスクリプト、lifecycle command、decune hook などの任意コードを実行し得ます。信頼していないリポジトリでは、起動前に内容を確認してください。
+- credential forwarding は、ホストの Git 認証情報、SSH agent、GitHub トークンファイルへの到達性をコンテナ内プロセスに与え得ます。信頼していないリポジトリでは、無効化するか read-only に制限してください。
 
 確認ポイントと推奨設定は [docs/usage.md](docs/usage.md#安全な使い方)、セキュリティ境界の定義は [docs/specification.md](docs/specification.md#12-セキュリティ境界) を参照してください。
 
@@ -101,12 +101,12 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - [docs/usage.md](docs/usage.md): インストール、クイックスタート、日常操作の基本ガイド
 - [docs/configuration.md](docs/configuration.md): decune config の使い方と挙動説明のガイド
 - [docs/ports.md](docs/ports.md): port forwarding と published port の利用ガイド
-- [docs/clone-isolation.md](docs/clone-isolation.md): 複数 clone 同時利用(Compose clone isolation)のガイド
+- [docs/clone-isolation.md](docs/clone-isolation.md): 複数クローン同時利用(Compose clone isolation)のガイド
 - [docs/specification.md](docs/specification.md): 公開挙動、CLI 契約、設定スキーマ、セキュリティ境界、diagnostic code 定義の正本
 - [docs/internals.md](docs/internals.md): 内部実装の説明(非規範の内部設計ノート)
-- [docs/development.md](docs/development.md): 貢献者向けの環境構築、検証、ドキュメント執筆規約
-- [docs/release.md](docs/release.md): maintainer 向けのリリース runbook
-- [docs/glossary.md](docs/glossary.md): 用語と表記基準
+- [docs/development.md](docs/development.md): コントリビューター向けの環境構築、検証、ドキュメント執筆規約
+- [docs/release.md](docs/release.md): メンテナー向けのリリース手順書
+- [docs/glossary.md](docs/glossary.md): 用語の定義
 
 ## ライセンス
 
