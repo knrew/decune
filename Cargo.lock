@@ -274,7 +274,7 @@ dependencies = [
 
 [[package]]
 name = "decune"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "assert_cmd",
@@ -301,7 +301,7 @@ dependencies = [
 
 [[package]]
 name = "decune-container-protocol"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "serde",
  "serde_json",
@@ -309,7 +309,7 @@ dependencies = [
 
 [[package]]
 name = "decune-container-tools"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "decune-container-protocol",
@@ -2266,7 +2266,7 @@ dependencies = [
 
 [[package]]
 name = "xtask"
-version = "0.3.4"
+version = "0.4.0"
 dependencies = [
  "anyhow",
  "clap",
