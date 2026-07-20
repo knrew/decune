@@ -85,13 +85,13 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 - `decune status`: decune が管理する workspace environment の状態を read-only で表示
 - `decune ports`: 現在有効な host 側 port の利用状況を read-only で表示
 - `decune remove` / `decune rm`: decune が管理する Dev Container 環境を削除
-- `decune clean`: stale な decune の生成データを確認・削除
+- `decune clean`: stale な decune-managed data を確認・削除
 
 使い方と例は [docs/usage.md](docs/usage.md#コマンド)、各コマンドの正確な契約と全オプションは [docs/specification.md](docs/specification.md#3-cli) を参照してください。
 
 ## セキュリティ上の注意
 
-- `decune up` は、build、Feature の install script、lifecycle command、hook などの任意コードを実行し得ます。信頼していないリポジトリでは、起動前に内容を確認してください。
+- `decune up` は、build、Feature の install script、lifecycle command、decune hook などの任意コードを実行し得ます。信頼していないリポジトリでは、起動前に内容を確認してください。
 - credential forwarding は、ホストの Git credentials、SSH agent、GitHub token file への到達性をコンテナ内プロセスに与え得ます。信頼していないリポジトリでは、無効化するか read-only に制限してください。
 
 確認ポイントと推奨設定は [docs/usage.md](docs/usage.md#安全な使い方)、セキュリティ境界の定義は [docs/specification.md](docs/specification.md#12-セキュリティ境界) を参照してください。

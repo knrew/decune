@@ -61,7 +61,7 @@ Docker published port は Compose service の `ports` に書きます。Compose 
 
 ## `--detach` とポート
 
-`decune up --detach` では `up` 終了時に host daemon も停止するため、manual / automatic port forwarding は維持されません。`--detach` と CLI `-p` の併用は error になり、設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視されます。detached container で公開が必要な port は published port(`appPort` または Compose service の `ports`)を使ってください([specification.md 3.2 節](specification.md#32-up))。
+`decune up --detach` では `up` 終了時に decune host daemon も停止するため、manual / automatic port forwarding は維持されません。`--detach` と CLI `-p` の併用は error になり、設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視されます。detached container で公開が必要な port は published port(`appPort` または Compose service の `ports`)を使ってください([specification.md 3.2 節](specification.md#32-up))。
 
 relocation(後述)された endpoint も Docker/Compose の published binding のままであり、decune forwarding ではありません。そのため `--detach` で起動した後も維持されます。
 
@@ -70,7 +70,7 @@ relocation(後述)された endpoint も Docker/Compose の published binding �
 複数 clone の同時起動などで requested endpoint が使えない場合に備えて、decune は Compose の fixed TCP published port の host endpoint を調整する 2 つの仕組みを持ちます。planning の規則は [specification.md 8.8 節](specification.md#88-published-port-mapping-と-relocation)を正とします。
 
 - automatic relocation: requested host port が使えないとき、次に利用可能な host port を自動探索する policy です。既定は無効です。
-- explicit mapping: 特定の published port の host endpoint を明示的に固定します。automatic relocation の有効/無効とは独立に適用されます。
+- explicit published port mapping: 特定の published port の host endpoint を明示的に固定します。automatic relocation の有効/無効とは独立に適用されます。
 
 対象は fixed TCP published port(`3000:3000` や `127.0.0.1:3000:3000` のように host port を明示した entry)だけです。UDP、port range、host port を省略した entry(`3000` だけ等)、`network_mode: host` の service にある port は対象外です。
 
@@ -89,7 +89,7 @@ automatic_relocation = true
 
 設定 key の定義は [specification.md 5.11 節](specification.md#511-composepublished_ports)を参照してください。
 
-### explicit mapping
+### explicit published port mapping
 
 特定の fixed TCP published port を常に同じ host endpoint へ割り当てる場合は `[[compose.published_ports.mappings]]` を使います。
 
@@ -111,7 +111,7 @@ field と layer 間 merge の定義は [specification.md 5.11 節](specification
 
 ### Docker Compose v2.24.4 が必要になる場合
 
-mapping または relocation で実際に host port か host IP が変わる場合、generated Compose override に Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要です。version を判定できない、または古い Compose では起動前に error になります。条件の一覧は [specification.md 2.2 節](specification.md#22-docker-compose-v2244-が必要になる条件)を参照してください。
+mapping または relocation で実際に host port か host IP が変わる場合、decune-generated Compose override に Compose `!override` tag を使うため Docker Compose v2.24.4 以上が必要です。version を判定できない、または古い Compose では起動前に error になります。条件の一覧は [specification.md 2.2 節](specification.md#22-docker-compose-v2244-が必要になる条件)を参照してください。
 
 ## `decune ports` での確認
 

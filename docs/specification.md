@@ -30,7 +30,7 @@ global/project の decune config を Dev Container configuration に重ねる。
 - Git HTTPS credential helper、SSH agent、GitHub CLI token forwarding。
 - manual port forwarding と automatic port forwarding。
 - Linux host での `updateRemoteUserUID` による UID/GID sync。
-- lifecycle command と decune 固有 hooks。
+- lifecycle command と decune hook。
 - `up`、`rebuild`、`down`、`status`、`ports`、`remove` / `rm`、`clean` コマンド。
 - GitHub Releases のビルド済みアーカイブによる公式配布。
 
@@ -83,7 +83,7 @@ global/project の decune config を Dev Container configuration に重ねる。
 
 ### 2.2 Docker Compose v2.24.4 が必要になる条件
 
-decune は generated Compose override で Compose `!override` tag を使う場合に Docker Compose v2.24.4 以上を要求する。version 判定不能または古い Compose は、Docker resource を変更する前に error にする。`!override` tag を使うのは次の場合である。
+decune は decune-generated Compose override で Compose `!override` tag を使う場合に Docker Compose v2.24.4 以上を要求する。version 判定不能または古い Compose は、Docker resource を変更する前に error にする。`!override` tag を使うのは次の場合である。
 
 - Compose published port mapping / automatic relocation が実際に host port または host IP を変更し、service `ports` を置換する場合(8.8 節)。
 - clone isolation の network relocation が固定 IPv4 subnet を検出し、`networks.<key>.ipam.config` を置換する場合(8.9 節)。
@@ -127,7 +127,7 @@ decune up [OPTIONS] [WORKSPACE]
 - Development container を作成または起動し、remote user の shell にログインする。
 - image/Dockerfile モードでは単一 container を作成または起動する。
 - Compose モードでは Compose project を作成または起動し、primary service container にログインする。
-- 既に起動済みで config hash が一致する場合、作成処理をスキップし、shell ログインのみ行う。
+- 既に起動済みで reuse hash が一致する場合、作成処理をスキップし、shell ログインのみ行う。
 - decune host daemon、credential bridge、port forwarder は `up` process が生きている間だけ動作する。
 
 主なオプション:
@@ -136,7 +136,7 @@ decune up [OPTIONS] [WORKSPACE]
 - `--detach`: shell に接続せず起動だけ行う。
 - `--rebuild`: 既存 container/project を破棄または再作成する。decune が管理する volume は保持する。
 - `--no-cache`: Dockerfile build、Compose service build、Feature layer build で cache を使わない。
-- `--pull`: base image または Compose service image を pull してから build/create する。Compose モードでは config hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
+- `--pull`: base image または Compose service image を pull してから build/create する。Compose モードでは reuse hash が一致する running container でも reuse fast path に入らず、pulled image を反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-global-config`: global decune config を適用しない。
 - `--no-auto-forward`: automatic port forwarding を無効化する。
 - `--automatic-published-port-relocation`: Compose automatic published port relocation policy をこの実行で有効化する。
@@ -158,7 +158,7 @@ decune up [OPTIONS] [WORKSPACE]
 
 automatic published port relocation policy は後続の Compose automatic published port relocation 処理(8.8 節)が参照する設定である。既定は無効である。`--no-auto-forward` は automatic port forwarding だけを無効化し、automatic published port relocation policy は変更しない。
 
-`--detach` では `up` process 終了時に host daemon も停止するため、manual/automatic forwarding と Git HTTPS host-helper は維持されない。detached container で外部公開が必要な port は、image/Dockerfile モードでは `appPort`、Compose モードでは Compose file の `ports` を使う。`--detach` と CLI `-p` / `--port` の併用は error とする。設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視する。
+`--detach` では `up` process 終了時に decune host daemon も停止するため、manual/automatic forwarding と Git HTTPS host-helper は維持されない。detached container で外部公開が必要な port は、image/Dockerfile モードでは `appPort`、Compose モードでは Compose file の `ports` を使う。`--detach` と CLI `-p` / `--port` の併用は error とする。設定由来の `forwardPorts` / `[[ports]]` は warning を出して無視する。
 
 ### 3.3 `rebuild`
 
@@ -226,8 +226,8 @@ detail:
 - detail は header (`Workspace`, `ID`, `Mode`) と、`Summary`、`Config`、issue がある場合の `Issues`、Compose mode の `Services`、`Runtime`、`Ports`、`Resources`、未完了 lifecycle がある場合の `Lifecycle`、必要な場合の `Action` を表示する。`Issues` は `code [severity]: message`、`Action` は action を持つ全 issue を `code: action` 形式で表示する。
 - lifecycle が正常完了している場合は lifecycle step detail を表示しない。
 - `Ports` section は `decune ports` の単一 workspace table と同じ形式を使う。active port がない場合は `No active ports for this workspace` を表示する。
-- current config hash は、workspace path と config が読める場合に read-only で計算し、state または Docker label 由来の config hash と比較して `current` / `needs-rebuild` を判定する。`[[mounts]].create = "directory"` および Dev Container bind mount の `bind-create-src` は、missing host path を作成せず、既存 ancestor を canonicalize して missing tail を合成した path で hash を計算する。計算できない場合は `unreadable` または `unknown` issue として表示し、state、host path、Docker resource は変更しない。
-- output には secret value、raw label、raw Compose model、container env、build arg、mount source の過剰な列挙、config hash 値を出してはならない。
+- current reuse hash は、workspace path と config が読める場合に read-only で計算し、state または Docker label 由来の reuse hash と比較して `current` / `needs-rebuild` を判定する。`[[mounts]].create = "directory"` および Dev Container bind mount の `bind-create-src` は、missing host path を作成せず、既存 ancestor を canonicalize して missing tail を合成した path で hash を計算する。計算できない場合は `unreadable` または `unknown` issue として表示し、state、host path、Docker resource は変更しない。
+- output には secret value、raw label、raw Compose model、container env、build arg、mount source の過剰な列挙、reuse hash 値を出してはならない。
 - JSON 出力、`--ports`、`--resources` などの status option は提供しない。
 
 ### 3.6 `ports`
@@ -299,7 +299,7 @@ decune clean [--dry-run] [--no-confirm] [--json]
 decune clean --include-feature-cache [--dry-run] [--no-confirm] [--json]
 ```
 
-`clean` は decune が管理している生成データを削除する maintenance command とする。Docker container、Compose project、Docker volume、Docker image、Docker builder cache、利用者が管理している filesystem は削除しない。`--all` と `--force` は提供しない。
+`clean` は decune-managed data を削除する maintenance command とする。Docker container、Compose project、Docker volume、Docker image、Docker builder cache、利用者が管理している filesystem は削除しない。`--all` と `--force` は提供しない。
 
 既定の cleanup 対象は stale な workspace data だけである。
 
@@ -349,7 +349,7 @@ container-side tools bundle は container 内 CLI を artifact name `decune` と
 利用条件:
 
 - effective `[container.cli].enabled` が true である(5.13 節)。
-- 対象 workspace の attached `decune up` session が host で動作している。detached mode は対象外であり、detached `up` の lifecycle command のために host daemon が動作している間も query は `container_cli_disabled` で拒否される。
+- 対象 workspace の attached `decune up` session が host で動作している。detached mode は対象外であり、detached `up` の lifecycle command のために decune host daemon が動作している間も query は `container_cli_disabled` で拒否される。
 - container 内 CLI は current workspace だけを対象とする。
 
 対応 command と query:
@@ -386,7 +386,7 @@ exit code と stream の分離:
 transport 契約:
 
 - query transport は request の write 完了後に Unix socket の write half を shutdown し、response を EOF まで読む。
-- host daemon response は `version`、`ok`、任意の `output`、任意の `error`、任意の `warnings` を持つ。success response は `output` が必須で `error` を持たず、warning を 0 件以上持てる。error response は `code` と `message` を持つ `error` が必須で、`output` と warning を持たない。client はこの invariant に違反する response を invalid response として拒否する。`warnings` がない version 1 response は空 warning list として扱う。
+- decune host daemon response は `version`、`ok`、任意の `output`、任意の `error`、任意の `warnings` を持つ。success response は `output` が必須で `error` を持たず、warning を 0 件以上持てる。error response は `code` と `message` を持つ `error` が必須で、`output` と warning を持たない。client はこの invariant に違反する response を invalid response として拒否する。`warnings` がない version 1 response は空 warning list として扱う。
 - container 内 CLI が受理する response は最大 1 MiB(1,048,576 bytes)とし、上限を超える response は invalid response として拒否する。
 - daemon handoff 中の socket 交換を許容するため、connect の `NotFound` / `ConnectionRefused` に限り短い固定間隔で限られた回数だけ再試行する。permission error、request write/read error、invalid response、daemon error は再試行しない。再試行を使い切った場合は、attached `decune up` session が必要で detached mode では利用できないことを示す canonical unavailable error とする。他の transport error は daemon 停止や authorization failure と断定しない generic error とする。
 
@@ -539,7 +539,7 @@ project 設定は Git 管理してよい。秘密情報を設定 file に直接�
 - dotfile identity: `target`。
 - port identity: `protocol + service + container + host_ip`。service 未指定は primary service を表す。
 - Compose published port mapping identity: `service + protocol + target`。同一 identity は後の layer が置換し、`enabled = false` は下位 layer の mapping を削除する。
-- hook identity: identity なし。順序を保って append。
+- decune hook identity: identity なし。順序を保って append。
 
 ### 5.4 設定例
 
@@ -676,7 +676,7 @@ Compose モードでは primary service に dotfiles bind mount と setup lifecy
 - `resolve_symlink`: bind source にのみ適用。既定 true。
 - `create`: `false`, `"directory"`。既定 false。file の自動作成は行わない。
 
-Compose モードでは primary service に generated override として追加する。
+Compose モードでは primary service に decune-generated Compose override として追加する。
 
 ### 5.9 `[[ports]]`
 
@@ -703,7 +703,7 @@ automatic port forwarding の設定。挙動は 9.7 節。
 
 ### 5.11 `[compose.published_ports]`
 
-Docker Compose-based configuration の Compose service `ports` に対する automatic published port relocation policy と explicit mapping。planning の挙動契約は 8.8 節。
+Docker Compose-based configuration の Compose service `ports` に対する automatic published port relocation policy と explicit published port mapping。planning の挙動契約は 8.8 節。
 
 ```toml
 [compose.published_ports]
@@ -731,7 +731,7 @@ host_ip = "127.0.0.1"
 - `host_ip`: 任意。IPv4 または IPv6 address。省略時は対応する Compose port entry の requested host IP を、host IP omitted を含めて継承する。
 - `enabled`: 任意。既定 true。false の entry は `service + protocol + target` だけを identity として下位 layer の mapping を削除し、`host` / `host_ip` を指定してはならない。
 
-同じ設定 file 内に同一 identity の mapping が複数ある場合は error とする。global/project 等の layer 間では通常の merge 順序に従って後の mapping が前の mapping を置換する。mapping の追加・変更・削除は config hash に含み、既存 project への反映には `decune rebuild` が必要になる場合がある。
+同じ設定 file 内に同一 identity の mapping が複数ある場合は error とする。global/project 等の layer 間では通常の merge 順序に従って後の mapping が前の mapping を置換する。mapping の追加・変更・削除は reuse hash に含み、既存 project への反映には `decune rebuild` が必要になる場合がある。
 
 CLI `--automatic-published-port-relocation` / `--no-automatic-published-port-relocation` は、この実行で `automatic_relocation` を override する。`--no-auto-forward` はこの policy を変更しない。
 
@@ -777,9 +777,9 @@ enabled = true
 
 - `enabled` は container 内の read-only decune CLI query(3.9 節)を許可する project preference で、既定は true とする。
 - global / project 間では通常の boolean scalar と同じ後勝ちで merge し、global の `false` は project の `true` で再有効化できる。`use_global_config = false` または `--no-global-config` では global 値を読み込まない。
-- effective value が false の場合は host daemon が query を拒否する。enforcement の正は daemon の拒否であり、artifact の削除や symlink の有無ではない(12.5 節、12.6 節)。
+- effective value が false の場合は decune host daemon が query を拒否する。enforcement の正は daemon の拒否であり、artifact の削除や symlink の有無ではない(12.5 節、12.6 節)。
 - この設定は untrusted repository から解除不能な security opt-out ではない。repository から解除できない deny policy が必要な場合は、credentials を含む host-only policy plane を別途設計する。
-- `container.cli.enabled` は config hash に含めない。この値だけの変更では container または Compose project の再作成を要求しない。
+- `container.cli.enabled` は reuse hash に含めない。この値だけの変更では container または Compose project の再作成を要求しない。
 - query が返す Docker evidence は server 側で短時間 cache され、load 完了時点から最大 2 秒程度 stale になり得る。state と forwarding status は cache しない。
 
 ### 5.14 `[credentials.git]`
@@ -799,11 +799,11 @@ ssh_agent = "auto"
 - `https`: `off`, `host-helper`, `host-helper-read-only`。既定 `host-helper`。
 - `ssh_agent`: `off`, `auto`, `required`。既定 `auto`。
 
-`host-helper` は container 内に `git-credential-decune` を配置し、host daemon 経由で host の `git credential fill/approve/reject` を呼ぶ。helper は container OS/arch 用 artifact であり、host の `decune` binary をそのまま bind mount しない。
+`host-helper` は container 内に `git-credential-decune` を配置し、decune host daemon 経由で host の `git credential fill/approve/reject` を呼ぶ。helper は container OS/arch 用 artifact であり、host の `decune` binary をそのまま bind mount しない。
 
 `host-helper-read-only` は同じ helper staging/mount を使うが、container からの credential lookup だけを許可する。Git credential `get` は host の `git credential fill` に forwarding し、`store` / `erase` は host の `approve` / `reject` に渡さず success no-op として空出力を返す。untrusted repository では host credential store の mutation を避けるため、`host-helper-read-only` または `off` を推奨する。`host-helper-read-only` は SSH agent forwarding を変更しないため、SSH agent が不要な場合は `ssh_agent = "off"` も設定する。
 
-`https = "off"` または `enabled = false` の場合、host daemon は Git credential request を host の Git credential helper に渡してはならない。
+`https = "off"` または `enabled = false` の場合、decune host daemon は Git credential request を host の Git credential helper に渡してはならない。
 
 ### 5.15 `[credentials.github]`
 
@@ -820,9 +820,11 @@ install_feature_if_missing = true
 
 `gh-token-file` は host の `gh auth token` を実行し、runtime directory に mode 0600 の token file を作る。container には `/run/decune/secrets/github-token` として read-only file mount する。`GH_CONFIG_DIR=/run/decune/gh` は writable ephemeral directory として分離する。
 
-Token value は argv、image layer、Docker/Compose label、container env、state、config hash、generated Compose override file に入れない。ただし container 内プロセスは token file に到達できるため、untrusted repository では `[credentials.github].enabled = false` を推奨する。
+Token value は argv、image layer、Docker/Compose label、container env、state、reuse hash、decune-generated Compose override file に入れない。ただし container 内プロセスは token file に到達できるため、untrusted repository では `[credentials.github].enabled = false` を推奨する。
 
 ### 5.16 `[[hooks.*]]`
+
+`[[hooks.*]]` は、lifecycle stage の前後に実行する decune hook を定義する。実行順序は 7.3 節。
 
 利用可能な hook 名:
 
@@ -874,7 +876,7 @@ shell = true
 
 `${remoteUserHome}` は `/home/<user>` と推測せず、container/image 内の passwd database から解決する。`workspaceFolder`、`containerEnv`、`remoteEnv`、`mounts`、dotfiles、`runArgs` など runtime user 解決後に評価できる field では、effective remote user 決定後に `${remoteUser}` / `${remoteUserHome}` を展開する。`containerEnv` 自体の中で `${containerEnv:...}` を使う構成は error とする。
 
-`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `build.args` value は secret-sensitive として追跡する。decune はその実値を state、config hash、generated Compose override、Docker/Compose label、argv、通常の error log に平文保存してはならない。config hash では key を保持し、`containerEnv` と `build.args` は変更検出のため実値ではなく非可逆 digest を含め、`remoteEnv` は redacted marker に置き換える。Compose モードの generated override では primary service `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式の placeholder を書き、実値は `docker compose` child process の environment として渡す。placeholder variable name の `<SAFE_KEY>` は `containerEnv` key から ASCII alphanumeric / underscore のみへ正規化した値とする。Docker build args は process environment と `--build-arg KEY` で Docker CLI に渡し、argv に value を直接載せない。
+`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `build.args` value は secret-sensitive として追跡する。decune はその実値を state、reuse hash、decune-generated Compose override、Docker/Compose label、argv、通常の error log に平文保存してはならない。reuse hash では key を保持し、`containerEnv` と `build.args` は変更検出のため実値ではなく非可逆 digest を含め、`remoteEnv` は redacted marker に置き換える。Compose モードの decune-generated Compose override では primary service `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式の placeholder を書き、実値は `docker compose` child process の environment として渡す。placeholder variable name の `<SAFE_KEY>` は `containerEnv` key から ASCII alphanumeric / underscore のみへ正規化した値とする。Docker build args は process environment と `--build-arg KEY` で Docker CLI に渡し、argv に value を直接載せない。
 
 `containerEnv` は container 作成時の環境変数であり、container 内プロセスや Docker inspect から見える。`build.args` は Docker build に渡り image layer や build output に残る可能性がある。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser`、`build.target`、`build.cacheFrom` は command、state、label、container identity に出る可能性がある。decune はこれらを secret storage として保証しない。literal に書かれた secret 文字列や、decune が `${localEnv:...}` 由来と追跡できない値は自動では secret-sensitive と判定しない。build secret には Docker BuildKit secret を使う。
 
@@ -887,7 +889,7 @@ shell = true
 5. `resolve_symlink = true` なら canonicalize。
 6. 存在しない path は `create` が指定されていない限り error。
 
-`status <WORKSPACE>` の current config hash 計算では read-only のため、`create = "directory"` / `bind-create-src` で指定された missing path は作成しない。`resolve_symlink = true` の場合は既存 ancestor を canonicalize し、missing tail を合成した path を resolved mount として扱う。`resolve_symlink = false` の場合は既存 ancestor の存在を確認した上で、元の absolute path を resolved mount として扱う。`create` がない missing source は通常通り error とする。
+`status <WORKSPACE>` の current reuse hash 計算では read-only のため、`create = "directory"` / `bind-create-src` で指定された missing path は作成しない。`resolve_symlink = true` の場合は既存 ancestor を canonicalize し、missing tail を合成した path を resolved mount として扱う。`resolve_symlink = false` の場合は既存 ancestor の存在を確認した上で、元の absolute path を resolved mount として扱う。`create` がない missing source は通常通り error とする。
 
 Compose file 内の environment interpolation は Docker Compose CLI に委譲する。decune は `devcontainer.json` と decune config の値だけを自前で展開する。
 
@@ -925,7 +927,7 @@ Known limitations:
 
 Compose primary service の image/build を base image として扱う。Feature は primary service の final image にだけ適用する。sidecar service には Feature、UID/GID sync、entrypoint shim、dotfiles、credentials を自動適用しない。
 
-primary service に `build` がある場合、まず Compose CLI で service image を build する。primary service に `image` のみがある場合、必要に応じて pull する。base image 解決後、image/Dockerfile モードと同じ Feature/UID/GID/entrypoint layer pipeline を適用し、generated Compose override で primary service image を final image に差し替える。Compose モードの build 手順全体は 8.6 節。
+primary service に `build` がある場合、まず Compose CLI で service image を build する。primary service に `image` のみがある場合、必要に応じて pull する。base image 解決後、image/Dockerfile モードと同じ Feature/UID/GID/entrypoint layer pipeline を適用し、decune-generated Compose override で primary service image を final image に差し替える。Compose モードの build 手順全体は 8.6 節。
 
 #### Feature
 
@@ -941,7 +943,7 @@ primary service に `build` がある場合、まず Compose CLI で service ima
 - Feature metadata は required field `id`, `version`, `name` を要求する。
 - `installsAfter` は soft dependency として扱い、install worklist に存在しない Feature を追加しない。仕様上は version tag / digest を含められないが、互換性のため matching 用には tag / digest を落とした canonical Feature ID として扱う。
 - Feature option は Features 仕様に従って env key に変換し、default option も export する。env key collision は error。
-- Feature metadata の `containerEnv` は、Feature layer Dockerfile の `ENV` として各 Feature の `install.sh` 実行前に適用し、後続 Feature と最終 image に継承する。`PATH="/tool:${PATH}"` のような Dockerfile environment replacement は Docker builder に委譲する。Feature 由来 `containerEnv` は container create / generated Compose override の `environment` には再投入せず、user/devcontainer/project 由来の `containerEnv` だけを runtime override として適用する。
+- Feature metadata の `containerEnv` は、Feature layer Dockerfile の `ENV` として各 Feature の `install.sh` 実行前に適用し、後続 Feature と最終 image に継承する。`PATH="/tool:${PATH}"` のような Dockerfile environment replacement は Docker builder に委譲する。Feature 由来 `containerEnv` は container create / decune-generated Compose override の `environment` には再投入せず、user/devcontainer/project 由来の `containerEnv` だけを runtime override として適用する。
 
 ### 7.2 コンテナの作成・起動と user
 
@@ -958,7 +960,7 @@ user 解決:
 
 `updateRemoteUserUID` は Linux host で既定 true。remote user が明示されていれば remote user、なければ `containerUser`、image/Feature metadata `containerUser`、Compose service `user` のいずれかで container user が明示されている場合に container user を sync target とする。非 Linux host、root target、`updateRemoteUserUID = false`、passwd entry がない numeric target は no-op または warning skip とする。
 
-Compose モードで UID/GID sync が必要な場合、primary service base image に sync layer を重ねた final image を作る。running container 内で `/etc/passwd` を直接 mutation しない。UID/GID sync によって runtime user 表現が変わる場合、generated Compose override の primary service `user` には sync 後の user/group を反映し、元の numeric UID/GID で primary process を起動しない。
+Compose モードで UID/GID sync が必要な場合、primary service base image に sync layer を重ねた final image を作る。running container 内で `/etc/passwd` を直接 mutation しない。UID/GID sync によって runtime user 表現が変わる場合、decune-generated Compose override の primary service `user` には sync 後の user/group を反映し、元の numeric UID/GID で primary process を起動しない。
 
 ### 7.3 Lifecycle とシェル接続
 
@@ -1002,7 +1004,7 @@ attached `up` で shell が終了したとき:
 
 Compose モードでは Compose service の runtime 設定を Docker Compose に委譲する。Compose YAML の merge、profiles、environment interpolation、relative path、build、network、volume semantics は decune が再実装せず、Docker Compose v2 CLI の canonical model と実行結果を利用する。
 
-decune は以下の Dev Container properties を generated Compose override へ自動変換せず、metadata validation で unsupported error とする。
+decune は以下の Dev Container properties を decune-generated Compose override へ自動変換せず、metadata validation で unsupported error とする。
 
 | Dev Container property | Compose モードの扱い | 代替                                                                                                                                                |
 | ---------------------- | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -1012,7 +1014,7 @@ decune は以下の Dev Container properties を generated Compose override へ�
 
 Docker published port 設定は Compose file に委譲する。Compose モードで外部公開が必要な port は Compose service の `ports` を使い、decune port forwarding は `forwardPorts`、decune `[[ports]]`、CLI `-p` を使う。
 
-Compose モードでも decune は、対応している cross-orchestrator properties と runtime 機能を primary service または primary service container に適用する。対象は `containerEnv`、`remoteEnv`、`containerUser`、`remoteUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles mount、credentials/runtime mount、lifecycle command、remote shell、automatic forwarding である。`remoteEnv` は primary service container で実行する lifecycle command、hook、remote shell に適用する。
+Compose モードでも decune は、対応している cross-orchestrator properties と runtime 機能を primary service または primary service container に適用する。対象は `containerEnv`、`remoteEnv`、`containerUser`、`remoteUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles mount、credentials/runtime mount、lifecycle command、remote shell、automatic forwarding である。`remoteEnv` は primary service container で実行する lifecycle command、decune hook、remote shell に適用する。
 
 ### 8.2 Compose file の解決
 
@@ -1033,7 +1035,7 @@ decune-<safe_workspace_slug>-<workspace_id>
 - lowercase ASCII、decimal digits、dash のみ。
 - 先頭は `decune-` 固定。
 - `workspace_id = hex(sha256(canonical_workspace_path))[0..12]`。
-- config hash は project name に含めない。同じ workspace の rebuild で project name は安定する。
+- reuse hash は project name に含めない。同じ workspace の rebuild で project name は安定する。
 
 Compose CLI には `--project-name <project>` を渡す。`COMPOSE_PROJECT_NAME` が host env に存在しても、CLI option を優先する。
 
@@ -1072,30 +1074,30 @@ Compose モードの image creation は次の順で行う。
 3. `docker compose build` または `docker compose up -d --build` で primary service と必要な service image を準備する。`--no-cache` と `--pull` は Compose build option に反映する。
 4. primary service の base image を特定する。Compose service に `build` がある場合は Compose が tag した service image を使う。`image` がない build-only service では Compose の既定 tag `<project-name>-<service>` を使う。service に `image` のみがある場合はその image を使い、metadata 解決前に missing image を pull する。
 5. Feature、UID/GID sync、entrypoint shim が必要な場合、base image に decune generated layer を重ね、decune generated image tag を作る。
-6. generated Compose override に primary service image 差し替えを反映する。decune generated local image に差し替える場合は `pull_policy: never` も反映する。
-7. generated override 込みで `docker compose up -d` を実行する。`--pull` または `rebuild` の場合は `--force-recreate` を渡す。
+6. decune-generated Compose override に primary service image 差し替えを反映する。decune generated local image に差し替える場合は `pull_policy: never` も反映する。
+7. decune-generated Compose override 込みで `docker compose up -d` を実行する。`--pull` または `rebuild` の場合は `--force-recreate` を渡す。
 8. `docker compose ps --format json` と `docker inspect` で primary container ID を解決し、lifecycle と shell attach に進む。
 
 `--pull` は user Dockerfile build、base image pull、Compose service build/pull にだけ適用する。Feature、UID/GID sync、entrypoint shim などの decune generated layer は直前に準備した local image tag を `FROM` にすることがあるため、これらの layer build には Docker build の `--pull` を渡さない。
 
 `rebuild` は generated image と Compose service を再作成する。anonymous volume は保持する。`remove --images` 以外で user image や Compose service image を削除してはならない。
 
-### 8.7 generated Compose override
+### 8.7 decune-generated Compose override
 
-Compose モードで decune 固有機能を適用するため、state/runtime directory に generated override file を作る。この file は user が編集しない。
+Compose モードで decune 固有機能を適用するため、state/runtime directory に decune-generated Compose override file を作る。この file は user が編集しない。
 
 目的:
 
 - primary service に decune label を付与する。
 - primary service image を Feature/UID/GID/entrypoint 適用済み final image に差し替える。
-- primary service image を decune generated local image に差し替える場合、元 Compose service の `pull_policy` を引き継いで registry pull しないよう、generated override で `pull_policy: never` を明示する。
+- primary service image を decune generated local image に差し替える場合、元 Compose service の `pull_policy` を引き継いで registry pull しないよう、decune-generated Compose override で `pull_policy: never` を明示する。
 - `containerEnv`、`containerUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles mount、credential/runtime mount を primary service に追加する。
 - `overrideCommand = true` の場合、primary service command を keepalive command に差し替える。
 - Compose published port mapping/relocation で planned endpoint が requested endpoint と異なる service の `ports` を、planned `published` / `host_ip` を持つ list に置換する。
 - clone isolation の name rewrite が有効な場合、対象 service の `container_name` と top-level resource の `name` を workspace 固有名へ書き換え、元の container name を network alias として追加し、対象 container name への service 内参照を追随させる。
 - secret value は override file に書かない。GitHub token は host runtime file を bind mount し、token value 自体は file content にのみ存在する。
 
-Generated override file は user の `dockerComposeFile` より後に `-f` で渡す。計画作成時の検証、primary service/container 解決、config hash に含める canonical Compose model は user の `dockerComposeFile` だけを `docker compose config --format json` で正規化した model とする。Generated override 自体は Compose YAML として decune が生成し、hash には final canonical model ではなく generated override semantic hash input として別に含める。
+decune-generated Compose override file は user の `dockerComposeFile` より後に `-f` で渡す。計画作成時の検証、primary service/container 解決、reuse hash に含める canonical Compose model は user の `dockerComposeFile` だけを `docker compose config --format json` で正規化した model とする。decune-generated Compose override 自体は Compose YAML として decune が生成し、hash には final canonical model ではなく decune-generated Compose override semantic hash input として別に含める。
 
 ### 8.8 published port mapping と relocation
 
@@ -1104,9 +1106,9 @@ Generated override file は user の `dockerComposeFile` より後に `-f` で�
 mapping の解決:
 
 - mapping は canonical Compose model の `service + protocol + target` に一致する port entry を解決する。存在しない service、active service 内で一致する entry が 0 件または複数件、または一致 entry が fixed TCP published host port でない場合は `compose_published_port_mapping_invalid` で起動前に error にする。存在するが今回の active service set に含まれない service の mapping はその実行では適用しない。
-- 同じ port entry では explicit mapping、同一 Compose project の既存 binding、Compose file の requested endpoint の順に優先する。mapping の endpoint が reservation または availability probe と衝突した場合は `compose_published_port_mapping_conflict` とし、automatic relocation へ fallback しない。mapping 自身が requested endpoint と同じ場合も planning 対象だが、endpoint 差分がなければ generated override は不要である。
+- 同じ port entry では explicit published port mapping、同一 Compose project の既存 binding、Compose file の requested endpoint の順に優先する。mapping の endpoint が reservation または availability probe と衝突した場合は `compose_published_port_mapping_conflict` とし、automatic relocation へ fallback しない。mapping 自身が requested endpoint と同じ場合も planning 対象だが、endpoint 差分がなければ decune-generated Compose override は不要である。
 - 同一 Compose project で running 中の別 mapping identity が保持する endpoint は、rebuild planning でも reservation として扱う。複数 mapping の endpoint を相互に入れ替える場合、running project に対して atomic swap は行わず `compose_published_port_mapping_conflict` とする。既存 binding を解放するため `decune down` の後に `decune rebuild` を実行する。
-- mapping により host port または host IP が変わる場合は relocation として扱う。既存 container の binding と異なれば再作成が必要であり、generated Compose override は `published` と `host_ip` の両方を planned endpoint に合わせる。
+- mapping により host port または host IP が変わる場合は relocation として扱う。既存 container の binding と異なれば再作成が必要であり、decune-generated Compose override は `published` と `host_ip` の両方を planned endpoint に合わせる。
 
 reservation と probe:
 
@@ -1123,7 +1125,7 @@ planning:
 - Docker actual binding reservation で検出できない process が unprobeable な requested host port または既存 binding を使用していた場合、Docker/Compose 起動時の published port collision diagnostic になる。
 - 既存 container の actual published binding と新しい plan の planned endpoint が異なり、container 再作成しなければ起動できない場合、decune は published port relocation による再作成であることを warning し、`docker compose up --force-recreate` 相当で自動再作成して起動を継続する。この warning は `warn_on_relocation` と独立に常に出す。
 - relocate 済み binding は、blocker が消えて requested host port が再び利用可能になっても維持する。requested host port へ戻すのは rebuild 時のみである。
-- mapping または relocation により実際に host port か host IP を変更する場合、generated Compose override は Compose `!override` tag で service `ports` を置換する。このため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose では error にする(2.2 節)。
+- mapping または relocation により実際に host port か host IP を変更する場合、decune-generated Compose override は Compose `!override` tag で service `ports` を置換する。このため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose では error にする(2.2 節)。
 - UDP、range、container-only port entry、`expose`、`network_mode: host` の service にある port mapping は relocation 対象外であり、存在するだけでは warning しない。
 
 policy と独立な published port の診断条件:
@@ -1146,7 +1148,7 @@ Compose-based configuration の複数 clone を同一 Docker daemon 上で同時
 | No automatic rewrite    | external resource、IPv6、static service address、undeclared endpoint         |
 
 - 常に workspace scope となる resource は、`safe_workspace_slug` と `workspace_id`、または workspace 固有の Compose project name により clone ごとに分離する。
-- Opt-in rewrite は `[compose.clone_isolation].enabled = true` を master gate とし、published port と固定名を workspace 固有値へ、network relocation と endpoint 宣言を明示した対象を relocation 後の値へ書き換える。
+- Opt-in rewrite は `[compose.clone_isolation].enabled = true` を master gate とし、published port と固定名を workspace 固有値へ、network relocation と clone isolation endpoint 宣言を明示した対象を relocation 後の値へ書き換える。
 - 自動 rewrite しない resource のうち、external resource は利用者の共有契約を維持する。relocation 対象 network の IPv6 / static address は actionable diagnostic で停止する。relocation 後も environment に残る旧 endpoint address は起動前に診断するが、宣言なしに値を推測して書き換えない。
 - clone isolation は external resource の clone 別複製や共有設定を自動化しない。
 
@@ -1155,7 +1157,7 @@ Compose-based configuration の複数 clone を同一 Docker daemon 上で同時
 Compose モードの `up` / `rebuild` は、user Compose file だけから得た canonical Compose model を使い、`docker compose up -d` の前に clone isolation preflight を常時実行する。
 
 - `runServices` が指定されている場合、走査対象は primary service と `runServices`、Docker Compose がそれらの依存関係として展開した service、およびその service 群が使用する top-level resource に限定し、起動対象ではない service と未使用 resource は走査しない。`runServices` が指定されていない場合は Compose project 全体を走査する。
-- preflight 自体は user Compose file を変更しない。`[compose.clone_isolation]` の name rewrite、network relocation、endpoint rewrite が有効な対象は generated override で書き換え、衝突照合にも書き換え後の値を使う。opt-in が無い対象は検出のみを行う。
+- preflight 自体は user Compose file を変更しない。`[compose.clone_isolation]` の name rewrite、network relocation、endpoint rewrite が有効な対象は decune-generated Compose override で書き換え、衝突照合にも書き換え後の値を使う。opt-in が無い対象は検出のみを行う。
 
 対象:
 
@@ -1179,38 +1181,38 @@ Compose モードの `up` / `rebuild` は、user Compose file だけから得た
 - slot 数は `2^(subnet_prefix - pool_prefix)` とする。`subnet_prefix` 省略時は元 subnet の prefix 長を使う。
 - 初期 slot は SHA-256 の入力 `decune-clone-isolation-subnet-v1:<workspace_id>:<compose-network-key>` の先頭 8 byte を big-endian 整数として読み、slot 数で剰余を取って決める。そこから線形探索し、自 project 以外の同じ IPAM address space にある daemon network subnet、または同一 plan で割当済みの subnet と重複する slot を飛ばす。空きがなければ `compose_clone_isolation_pool_exhausted` で error にする。
 - 別 process の relocation preflight と network 作成は atomic ではない。同じ初期 slot を選ぶ複数の `decune up` を同時に実行すると、相互の network が daemon snapshot にまだ現れず、後続の Docker network 作成が subnet 重複で失敗する場合がある。その場合は、先に成功した起動の network 作成後に失敗した `decune up` を再実行し、最新の daemon snapshot から再計画する。
-- 元 IPAM config に gateway がある場合、元 subnet 内の host offset を新 subnet でも保存する。offset が新 prefix に収まらなければ `compose_clone_isolation_invalid` で error にする。元 gateway がなく、対応する endpoint 宣言から `.gateway` が参照されている場合は planned subnet の先頭 host address を明示 gateway として生成する。それ以外では gateway を生成しない。
+- 元 IPAM config に gateway がある場合、元 subnet 内の host offset を新 subnet でも保存する。offset が新 prefix に収まらなければ `compose_clone_isolation_invalid` で error にする。元 gateway がなく、対応する clone isolation endpoint 宣言から `.gateway` が参照されている場合は planned subnet の先頭 host address を明示 gateway として生成する。それ以外では gateway を生成しない。
 - 元 IPAM config に `ip_range` がある場合は CIDR prefix と元 subnet 内の network address offset を、`aux_addresses` がある場合は各 map key と address offset を新 subnet でも保存する。field が IPv4 でない、元 subnet 外にある、または offset を新 prefix に収容できない場合は、Docker resource を変更する前に `compose_clone_isolation_unsupported` または `compose_clone_isolation_invalid` で停止する。diagnostic には network key と field 名を含め、field value 全体は含めない。
 - 同じ Compose project の既存 network が、対象 Compose network key に対して pool 内の非重複 subnet を保持していれば最優先で再利用する。次に state の前回割当を再利用する。通常の `up` では blocker が消えても割当を維持し、requested subnet を再度優先するのは rebuild 時だけとする。
 - 自 project の既存 network と新 plan の subnet、元 config の明示 gateway または endpoint 参照のために生成した gateway、`ip_range`、`aux_addresses` が一致しない場合、接続 container がなければ network を削除し、Compose に再作成させる。接続 container がある場合は `compose_clone_isolation_invalid` で停止し、`decune down` で project を停止してから `decune rebuild` するよう案内する。これには、旧 decune が `ip_range` / `aux_addresses` を欠落させて作成した network も含む。
-- generated Compose override は、planned subnet が requested subnet と同じ場合も含め、top-level `networks.<key>.ipam.config: !override` で IPAM config list を置換し、`subnet`、明示 `gateway`、`ip_range`、`aux_addresses` を意味保存して再生成する。network の `driver` や IPAM の `driver` / `options` など config list 外の user 設定は変更しない。relocation が有効で固定 IPv4 subnet を検出した場合は、Compose `!override` tag のため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose は error にする(2.2 節)。
+- decune-generated Compose override は、planned subnet が requested subnet と同じ場合も含め、top-level `networks.<key>.ipam.config: !override` で IPAM config list を置換し、`subnet`、明示 `gateway`、`ip_range`、`aux_addresses` を意味保存して再生成する。network の `driver` や IPAM の `driver` / `options` など config list 外の user 設定は変更しない。relocation が有効で固定 IPv4 subnet を検出した場合は、Compose `!override` tag のため Docker Compose v2.24.4 以上が必要で、version 判定不能または古い Compose は error にする(2.2 節)。
 - canonical Compose model の IPAM config に decune が意味を解釈できない field、または `subnet` のない config entry がある場合は、list の一部を黙って破棄せず `compose_clone_isolation_unsupported` で停止する。同じ network に未知 field が複数ある場合は、field 名を決定的順序ですべて列挙し、field value は含めない。
 - `external: true` network は検出・書き換えの対象外とする。固定 IPv6 subnet、および対象 network に接続する service の `ipv4_address` / `ipv6_address` / `link_local_ips` は remap せず、`compose_clone_isolation_unsupported` で error にする。
 
 stale endpoint 検出:
 
-- network が実際に別 subnet へ relocate された場合、preflight はその network に直接接続する service と、`network_mode: service:<service>` で接続を継承する service を対象にする。canonical Compose model の `services.*.environment` に endpoint render 結果を後勝ちで重ねた実効 string value を走査し、元 subnet の基底 IPv4 address、または元 gateway が前後を数字・dot としない token 境界付きで残っていれば、`compose_clone_isolation_endpoint_unsafe` で `docker compose up` 前に error にする。endpoint 宣言があっても、同じ値に別の relocated network の旧 address が残っていれば error になる。`10.99.0.1` は `10.99.0.100` や `110.99.0.1` に一致しない。planned subnet が requested subnet と同じ場合は stale 検出を行わない。
+- network が実際に別 subnet へ relocate された場合、preflight はその network に直接接続する service と、`network_mode: service:<service>` で接続を継承する service を対象にする。canonical Compose model の `services.*.environment` に endpoint render 結果を後勝ちで重ねた実効 string value を走査し、元 subnet の基底 IPv4 address、または元 gateway が前後を数字・dot としない token 境界付きで残っていれば、`compose_clone_isolation_endpoint_unsafe` で `docker compose up` 前に error にする。clone isolation endpoint 宣言があっても、同じ値に別の relocated network の旧 address が残っていれば error になる。`10.99.0.1` は `10.99.0.100` や `110.99.0.1` に一致しない。planned subnet が requested subnet と同じ場合は stale 検出を行わない。
 - stale 検出の対象は service environment value 内の元 subnet 基底 address と元 gateway だけである。`aux_addresses` 自体は IPAM config 内で remap するが、その元 address を environment、`extra_hosts`、service command、config file 内容などから参照していても自動検出・書き換えしないため、該当する外部 endpoint 契約は利用者が確認する。
-- 診断には service 名、環境変数名、Compose network key、一致した元 address だけを含め、environment value 全体を state、label、log、config hash、診断メッセージへ残してはならない。
+- 診断には service 名、環境変数名、Compose network key、一致した元 address だけを含め、environment value 全体を state、label、log、reuse hash、診断メッセージへ残してはならない。
 
-#### 8.9.4 endpoint 宣言
+#### 8.9.4 clone isolation endpoint 宣言
 
 `endpoints.value` では `${decune.network.<compose-network-key>.gateway}` と `${decune.network.<compose-network-key>.subnet}` の 2 形式を clone isolation 専用 placeholder として予約する。これは一般の decune config 変数展開(6 章)とは別に扱う。
 
 - endpoint rewrite preflight は service と Compose network key の存在、および参照先 network が固定 IPv4 subnet relocation の対象であることを検証し、placeholder を planned gateway または CIDR 表記の planned subnet へ文字列置換する。
 - 未知または未終端の decune placeholder、存在しない service / network、relocation 対象でない network への参照は `compose_clone_isolation_invalid` で error にする。`enabled = true` でも `networks.relocation = false` のまま placeholder を参照した場合は、network relocation を有効にする設定 hint を付けて同じ diagnostic で error にする。
 - decune placeholder 以外の `$` は literal として container environment へ渡し、Compose の host environment interpolation は適用しない。
-- render 後の値は generated override の `services.<service>.environment.<env>` に map 形式で書き込み、Compose の後勝ち map merge により user Compose file の値を置き換える。`!override` tag は使わない。
+- render 後の値は decune-generated Compose override の `services.<service>.environment.<env>` に map 形式で書き込み、Compose の後勝ち map merge により user Compose file の値を置き換える。`!override` tag は使わない。
 - 元 IPAM config に gateway がなく `.gateway` placeholder が参照された場合に限り、planned subnet の先頭 host address を明示 gateway として network IPAM override に追加し、その値を render する。
 
 #### 8.9.5 name rewrite
 
-`enabled = true` の name rewrite は generated Compose override に次の規則で出力する。
+`enabled = true` の name rewrite は decune-generated Compose override に次の規則で出力する。
 
 - `names.rewrite_container_names = true` のとき、service の明示的な `container_name: <name>` を `<name>-<workspace_id>` にする。`workspace_id` は canonical workspace path から算出する 12 桁 lowercase hex である。
-- 書き換え対象 service が接続するすべての Compose network に元の `container_name` を network alias として追加する。user Compose file が service network を短縮 list 形式で指定していても、generated override の map 形式と Docker Compose の merge により alias を追加する。
+- 書き換え対象 service が接続するすべての Compose network に元の `container_name` を network alias として追加する。user Compose file が service network を短縮 list 形式で指定していても、decune-generated Compose override の map 形式と Docker Compose の merge により alias を追加する。
 - active な canonical Compose model 内で、書き換え対象 service の元 `container_name` を正確に参照する `services.*.network_mode` / `ipc` / `pid` の `container:<name>`、`volumes_from` の `container:<name>[:ro|rw]`、`external_links` の `<name>[:alias]` は、参照先だけを `<name>-<workspace_id>` へ追随させる。access mode と link alias は維持する。service 名を参照する entry と、書き換え対象ではない外部 container への entry は変更しない。
-- `volumes_from` / `external_links` は generated override の `!override` list で完全置換し、書き換え対象外の entry も元の順序と値を維持して再出力する。この list rewrite が実際に必要な場合だけ Docker Compose v2.24.4 以上を要求し、version 判定不能または古い Compose は Docker resource を変更する前に `compose_clone_isolation_unsupported` で停止する。`network_mode` / `ipc` / `pid` の scalar rewrite だけならこの追加 version 条件を課さない(2.2 節)。
+- `volumes_from` / `external_links` は decune-generated Compose override の `!override` list で完全置換し、書き換え対象外の entry も元の順序と値を維持して再出力する。この list rewrite が実際に必要な場合だけ Docker Compose v2.24.4 以上を要求し、version 判定不能または古い Compose は Docker resource を変更する前に `compose_clone_isolation_unsupported` で停止する。`network_mode` / `ipc` / `pid` の scalar rewrite だけならこの追加 version 条件を課さない(2.2 節)。
 - `names.rewrite_resource_names = true` のとき、top-level `networks` / `volumes` / `configs` / `secrets` の明示的な `name: <name>` を `<name>-<workspace_id>` にする。
 - `external: true` の top-level resource は共有契約を維持し、書き換えない。
 
@@ -1222,8 +1224,8 @@ stale endpoint 検出:
 
 hash の扱い:
 
-- name rewrite の結果値である書き換え後の container/resource name、元 `container_name` のために生成する network alias、および追随して書き換える container name 参照は generated override semantic hash input に含めない。これらは workspace id と canonical Compose model から決定的に導出される relocation 結果値として扱う。
-- name rewrite policy 自体と user Compose file の元名・元参照は従来どおり config hash input に含める。
+- name rewrite の結果値である書き換え後の container/resource name、元 `container_name` のために生成する network alias、および追随して書き換える container name 参照は decune-generated Compose override semantic hash input に含めない。これらは workspace id と canonical Compose model から決定的に導出される relocation 結果値として扱う。
+- name rewrite policy 自体と user Compose file の元名・元参照は従来どおり reuse hash input に含める。
 
 clone isolation の diagnostic code の定義一覧は 13.2 節。
 
@@ -1272,7 +1274,7 @@ forwarding の host port reservation は IP family 境界を尊重する。IPv4 
 
 `forwardPorts` の `"service:port"` 形式と `[[ports]].service` は Compose モード専用である。image/Dockerfile モードでは service 名で対象 container を解決できないため unsupported error とする。
 
-sidecar service forwarding は、その service の container ID を解決し、必要な container-side tool を runtime install して forward-agent を起動する。対象 service には forwarding runtime mount と decune identity label だけを generated override で追加し、credentials、dotfiles、GitHub token、SSH agent は自動注入しない。service の replica が 2 以上なら error とする。
+sidecar service forwarding は、その service の container ID を解決し、必要な container-side tool を runtime install して port forward agent を起動する。対象 service には forwarding runtime mount と decune identity label だけを decune-generated Compose override で追加し、credentials、dotfiles、GitHub token、SSH agent は自動注入しない。service の replica が 2 以上なら error とする。
 
 ### 9.7 automatic forwarding
 
@@ -1307,7 +1309,7 @@ Compose モード:
 
 - project: `decune-<safe_workspace_slug>-<workspace_id>`
 - generated primary image: `decune/<safe_workspace_slug>-<workspace_id>:<config_hash>`
-- generated Compose override: `$XDG_STATE_HOME/decune/<workspace_id>/compose.override.yaml`
+- decune-generated Compose override: `$XDG_STATE_HOME/decune/<workspace_id>/compose.override.yaml`
 - state/runtime directory は image/Dockerfile モードと同じ。
 
 ### 10.2 label と再利用
@@ -1322,20 +1324,20 @@ Compose モード:
 - `devcontainer.local_folder=<canonical_workspace_path>`
 - `devcontainer.config_file=<path>`
 
-Compose モードでは上記 label を primary service に追加する。明示的な sidecar service forwarding 対象 service には、forwarding runtime mount の再作成判定に必要な `decune.managed=true` と `decune.workspace_id=<workspace_id>` を追加する。Compose が付与する `com.docker.compose.project` と `com.docker.compose.service` も container identity に使う。`com.docker.compose.*` prefix を decune の generated override で上書きしてはならない。
+Compose モードでは上記 label を primary service に追加する。明示的な sidecar service forwarding 対象 service には、forwarding runtime mount の再作成判定に必要な `decune.managed=true` と `decune.workspace_id=<workspace_id>` を追加する。Compose が付与する `com.docker.compose.project` と `com.docker.compose.service` も container identity に使う。`com.docker.compose.*` prefix を decune-generated Compose override で上書きしてはならない。
 
 既存 container/project の再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他ツールの container は拾わない。
 
-### 10.3 config hash
+### 10.3 reuse hash
 
-config hash に含める入力:
+reuse hash に含める入力:
 
 - resolved metadata/config、Feature lock、relevant CLI options。
 - Dockerfile 内容、`build.options`、effective ignore file、build context digest。
 - entrypoint plan、Linux host の UID/GID sync input。
-- Compose モードでは、user Compose files から得た sanitized canonical Compose model、Compose file digest、generated override semantic hash input。
+- Compose モードでは、user Compose files から得た sanitized canonical Compose model、Compose file digest、decune-generated Compose override semantic hash input。
 
-config hash に含めない入力:
+reuse hash に含めない入力:
 
 - manual/automatic forwarding の現在値。
 - `container.cli.enabled`。
@@ -1349,25 +1351,25 @@ secret-sensitive value の扱い:
 
 - `${localEnv:...}` 由来の `containerEnv` value は平文では含めず、container 作成時環境の変更を検出するため非可逆 digest として含める。
 - Compose モードでは、user Compose files だけを対象にした `docker compose config --format json` が解決した interpolation / env file / profile / merge 結果から、`services.<service>.environment` の leaf value を平文ではなく digest marker に置き換えた canonical Compose model を hash に含める。
-- この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、config hash input に残してはならない。
+- この digest input は `decune-compose-env-value-hash-v1` で domain-separated / versioned にし、JSON path、JSON value type、canonical JSON value を含める。digest marker は `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、environment value の平文を state、label、log、reuse hash input に残してはならない。
 
-generated override semantic hash input:
+decune-generated Compose override semantic hash input:
 
 - primary service、decune が追加する label / environment / mount / user / security option / startup command、および decune generated image へ差し替えるかどうかを含める。
 - `${localEnv:...}` 由来の `containerEnv` value は redacted marker または placeholder として扱い、実値を content hash 入力にしない。
-- generated override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
+- decune-generated Compose override 内の `decune.config_hash` label や hash 由来 image tag など、hash 自身から派生する値は循環を避けるため hash 入力にしない。
 
 clone isolation の relocation 結果値:
 
-- clone isolation name rewrite により生成される container/resource name、元 `container_name` のために生成する network alias、追随して書き換える container name 参照、network relocation により生成される subnet / gateway、endpoint placeholder の render 後 environment value は relocation 結果値なので、generated override semantic hash input には含めない。
-- clone isolation policy と endpoint の未展開 template は resolved config hash input に含める。
+- clone isolation name rewrite により生成される container/resource name、元 `container_name` のために生成する network alias、追随して書き換える container name 参照、network relocation により生成される subnet / gateway、endpoint placeholder の render 後 environment value は relocation 結果値なので、decune-generated Compose override semantic hash input には含めない。
+- clone isolation policy と endpoint の未展開 template は reuse hash input に含める。
 
 ### 10.4 state file
 
 state file は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` に保存する。state file は decune の内部形式であり、以下の互換性契約だけを公開挙動とする。
 
 - write は atomic に行う。
-- Docker/Compose label と state が矛盾する場合、container/project identity と config hash は runtime label を正とする。
+- Docker/Compose label と state が矛盾する場合、container/project identity と reuse hash は runtime label を正とする。
 - lifecycle 完了 marker と `devcontainer.json` path は state に記録し、creation lifecycle の二重実行や `up --config` 後の Compose project lifecycle 復元に使う。
 - state には起動時の mode を `image` / `dockerfile` / `compose` の snapshot として記録する。new container と reused container のどちらでも、その起動で解決した mode へ同期する。mode field がない既存の version 1 state は `unknown` として読み、state version は `1` を維持する。resolved config 全体や config 内容を mode snapshot のために保存しない。
 - Compose published port relocation では、requested endpoint、planned endpoint、`relocated`、起動時に Docker inspect で観測した actual binding を表示補助 metadata として state に記録する。この metadata は現在有効な Docker binding の正本ではない。
@@ -1416,7 +1418,7 @@ source checkout からの local install は `cargo run --locked -p xtask -- inst
 
 ### 12.1 実行され得るコードと到達性
 
-- `decune up` は Dockerfile、Compose service build、local/OCI Feature の `install.sh`、Feature/lifecycle command、hook、`userEnvProbe` 対象 shell startup file を実行し得る。
+- `decune up` は Dockerfile、Compose service build、local/OCI Feature の `install.sh`、Feature/lifecycle command、decune hook、`userEnvProbe` 対象 shell startup file を実行し得る。
 - Dev Container metadata と Compose file は bind mount、`privileged`、`capAdd`、`securityOpt`、published port、SSH agent forwarding、Git/GitHub credential forwarding により host や secret への強い到達性を container へ与え得る。
 - GitHub token forwarding を有効にすると、container 内 process は token file にアクセスできる。
 - untrusted repository では `.devcontainer/`、Compose file、local Feature を確認し、必要に応じて `[credentials.git].https = "host-helper-read-only"`、`[credentials.git].ssh_agent = "off"`、`[credentials.git].enabled = false`、`[credentials.github].enabled = false` を設定する。
@@ -1433,9 +1435,9 @@ source checkout からの local install は `cargo run --locked -p xtask -- inst
 
 Git HTTPS:
 
-- `[credentials.git].https = "host-helper"` の場合、container 内に `git-credential-decune` を配置し、Git credential helper として設定する。helper は host daemon に versioned JSON request を送り、host の `git credential fill/approve/reject` を実行する。
-- `[credentials.git].https = "host-helper-read-only"` の場合も container helper protocol は同じである。host daemon が policy を適用し、`get` は `fill` として実行する一方、`store` / `erase` は host credential store に伝播せず success no-op とする。
-- `https = "off"` または `enabled = false` の場合、host daemon は Git credential request を host の Git credential helper に渡してはならない。
+- `[credentials.git].https = "host-helper"` の場合、container 内に `git-credential-decune` を配置し、Git credential helper として設定する。helper は decune host daemon に versioned JSON request を送り、host の `git credential fill/approve/reject` を実行する。
+- `[credentials.git].https = "host-helper-read-only"` の場合も container helper protocol は同じである。decune host daemon が policy を適用し、`get` は `fill` として実行する一方、`store` / `erase` は host credential store に伝播せず success no-op とする。
+- `https = "off"` または `enabled = false` の場合、decune host daemon は Git credential request を host の Git credential helper に渡してはならない。
 
 SSH agent:
 
@@ -1447,55 +1449,55 @@ GitHub CLI:
 - host の `gh auth token` が成功した場合、token を runtime directory に mode 0600 の file として作り、container には `/run/decune/secrets/github-token` として read-only mount する。`GH_CONFIG_DIR=/run/decune/gh` は writable ephemeral directory とする。token file は `up` 終了時に scrub し、`down` / `remove` で削除する。
 - Compose モードでは GitHub token file mount は primary service にのみ追加する。
 
-### 12.4 host daemon
+### 12.4 decune host daemon
 
-host daemon は `decune up` の子タスクとして起動し、`up` 終了時に停止する。常駐 system daemon ではない。
+decune host daemon は `decune up` の子タスクとして起動し、`up` 終了時に停止する。常駐 system daemon ではない。
 
 責務:
 
 - Git credential helper request の処理。
 - GitHub token file の一時管理。
 - port forwarding runtime の socket 基盤。
-- attached session の current workspace に限定した container CLI query の処理。
+- attached session の current workspace に限定した decune container CLI query の処理。
 
 protocol:
 
-- container-side tool と host daemon の JSON protocol version は `1` とする。request の `version` と `type` は top-level envelope で検証し、`credential` と `cliQuery` を request type として予約する。
+- container-side tool と decune host daemon の JSON protocol version は `1` とする。request の `version` と `type` は top-level envelope で検証し、`credential` と `cliQuery` を request type として予約する。
 - `cliQuery` は `version`、`type`、`command`、`format` だけを持つ strict schema とし、unknown field は拒否する。`status` + `text`、`ports` + `text`、`ports` + `json` だけを実行し、`status` + `json` とその他の未対応 format は `unsupported_format`、unknown command は `unsupported_command` とする。effective `container.cli.enabled` が false の場合、valid query は `container_cli_disabled` とする。reserved `portForward` request は `not_implemented` のまま維持する。
 - request body、connection 数、同時 query 数、query 処理時間には固定上限を設け、超過はそれぞれ `request_too_large`、接続待機、`cli_query_busy`、`cli_query_timeout` として扱う(13.3 節)。
 
 socket と権限:
 
 - socket は既定で `/run/decune/host-daemon.sock` を container 側 path として使う。
-- runtime directory は 0700、socket は 0600 を基本とする。permission 調整時も host daemon は Unix socket peer UID を検証する。
+- runtime directory は 0700、socket は 0600 を基本とする。permission 調整時も decune host daemon は Unix socket peer UID を検証する。
 
 daemon の再利用と version:
 
-- attached session の host daemon は effective `container.cli.enabled` と query context を起動時に固定し、detached session の host daemon は effective 設定値にかかわらず query policy を `Disabled` に固定する。
-- query policy または query context が異なる active daemon は暗黙に共有せず、対象 workspace のすべての active `decune up` session を終了してから再実行するよう error にする。したがって query が enabled の attached session と detached session は同時に daemon を共有しない。reused daemon を監視する session は owner 終了後も同じ policy と実体 query context で daemon を再起動する。protocol version、peer UID/GID、Git HTTPS mode、socket inode 等の既存 reuse 条件も維持する。
+- attached session の decune host daemon は effective `container.cli.enabled` と daemon query context を起動時に固定し、detached session の decune host daemon は effective 設定値にかかわらず query policy を `Disabled` に固定する。
+- query policy または daemon query context が異なる active daemon は暗黙に共有せず、対象 workspace のすべての active `decune up` session を終了してから再実行するよう error にする。したがって query が enabled の attached session と detached session は同時に daemon を共有しない。reused daemon を監視する session は owner 終了後も同じ policy と実体 daemon query context で daemon を再起動する。protocol version、peer UID/GID、Git HTTPS mode、socket inode 等の既存 reuse 条件も維持する。
 - protocol version は `1` のままとし、capability list、build SHA、daemon revision は追加しない。decune v0 段階では旧/new daemon-client の mixed-version compatibility を保証しない。upgrade 時は対象 workspace のすべての active `decune up` を終了してから、新しい version で起動し直す。reuse 判定で active daemon の metadata を現在の version として読めない場合、または protocol version が一致しない場合も暗黙に共有せず、version 不一致の可能性を示してすべての active `decune up` の終了を促す error にする。
 
-### 12.5 container CLI query の境界
+### 12.5 decune container CLI query の境界
 
 query が扱う情報:
 
 - container query 用 model は、検証済み workspace id、起動時 mode、container ID/name/service、run state/health、managed volume name、lifecycle/timestamp、sanitization 済み port だけを保持する。
-- raw `ContainerInspect`、Docker/Compose label map、workspace/config path、raw config hash、env、build args、secret、mount source、external command の raw stderr、他 workspace の resource は model、cache、renderer へ渡さない。
-- query context は検証済み workspace id とそこから導出する固定 server path context だけを保持し、live config、client input から host path を再解決しない。request の command、format、path、resource name を Docker filter や host path に使わない。
-- success output / warning と error response には、secret、raw config hash / label、host path、他 workspace の情報、external command の raw stderr を含めない。degradable な state、forwarding、Docker diagnostic は、prefix と末尾 newline を持たない sanitized message として success response の `warnings` に格納する。text / JSON の完成済み output は `output` だけに格納し、特に `ports` JSON へ warning を混在させない。
+- raw `ContainerInspect`、Docker/Compose label map、workspace/config path、raw reuse hash、env、build args、secret、mount source、external command の raw stderr、他 workspace の resource は model、cache、renderer へ渡さない。
+- daemon query context は検証済み workspace id とそこから導出する固定 server path context だけを保持し、live config、client input から host path を再解決しない。request の command、format、path、resource name を Docker filter や host path に使わない。
+- success output / warning と error response には、secret、raw reuse hash / label、host path、他 workspace の情報、external command の raw stderr を含めない。degradable な state、forwarding、Docker diagnostic は、prefix と末尾 newline を持たない sanitized message として success response の `warnings` に格納する。text / JSON の完成済み output は `output` だけに格納し、特に `ports` JSON へ warning を混在させない。
 
 認可と lifetime:
 
-- container CLI query を処理する socket connection は、起動時に解決した remote user と peer UID が一致する場合だけ認可する。root または別 UID からの接続は authorization detail を開示しない generic connection error とする。
+- decune container CLI query を処理する socket connection は、起動時に解決した remote user と peer UID が一致する場合だけ認可する。root または別 UID からの接続は authorization detail を開示しない generic connection error とする。
 - query daemon は attached `up` の guard lifetime 中だけ提供し、detached session の daemon lifecycle は変更しない。detached `up` 後に artifact が残っていても client は attached session が必要であることを示す canonical unavailable error を返し、background daemon または supervision は追加しない。
-- container CLI query は active attached `decune up` session の host daemon が存在する間だけ利用できる。detached mode は対象外とし、detached `up` の lifecycle command のために host daemon が動作している間も `cliQuery` は `container_cli_disabled` で拒否する。
+- decune container CLI query は active attached `decune up` session の decune host daemon が存在する間だけ利用できる。detached mode は対象外とし、detached `up` の lifecycle command のために decune host daemon が動作している間も `cliQuery` は `container_cli_disabled` で拒否する。
 
 縮退:
 
 - query が返す Docker evidence は server 側で短時間 cache され、load 完了時点から最大 2 秒程度 stale になり得る。state と forwarding status は cache しない。
 - Docker への問い合わせが失敗・縮退した場合は、raw stderr を含まない sanitized warning 付きの snapshot として返す。
 
-### 12.6 container CLI artifact と symlink
+### 12.6 decune container CLI artifact と symlink
 
 artifact staging:
 
@@ -1507,7 +1509,7 @@ artifact staging:
 
 user-facing symlink:
 
-- container 起動後、host daemon を利用可能にしてから最初の user lifecycle command を実行する前に、root exec で `/usr/local/bin/decune -> /run/decune/decune` を reconcile する。
+- container 起動後、decune host daemon を利用可能にしてから最初の user lifecycle command を実行する前に、root exec で `/usr/local/bin/decune -> /run/decune/decune` を reconcile する。
 - enabled 時は `/usr/local/bin` がなければ作成し、destination が不在なら symlink を作成する。exact target の判定は symlink が保持する link 文字列で行い、link 先の存在は確認しないため、link 先が存在しない exact target symlink も ready として変更しない。
 - regular file、directory、exact target でない symlink は、その link 先が存在するかにかかわらず collision として上書き・削除しない。
 - parent 作成失敗、read-only root filesystem、write 不可、collision は、理由、既存 destination を変更しなかったこと、direct command `/run/decune/decune` を含む英語 warning を出して `up` を継続する。
@@ -1516,8 +1518,8 @@ user-facing symlink:
 
 注入対象の限定:
 
-- artifact、primary runtime mount、host daemon socket、user-facing symlink の自動注入は image/Dockerfile container または Compose primary service container だけを対象とする。forwarding を指定しない sidecar service へ `/run/decune` を追加しない。
-- 明示的な sidecar forwarding は service 固有 runtime directory へ forward agent だけを stage し、host daemon socket、container CLI artifact、symlink を追加しない。
+- artifact、primary runtime mount、decune host daemon socket、user-facing symlink の自動注入は image/Dockerfile container または Compose primary service container だけを対象とする。forwarding を指定しない sidecar service へ `/run/decune` を追加しない。
+- 明示的な sidecar forwarding は service 固有 runtime directory へ port forward agent だけを stage し、decune host daemon socket、decune container CLI artifact、symlink を追加しない。
 - 利用者が Compose file その他の user-authored mount で primary runtime の内容を sidecar と共有する構成は検出・拒否せず、decune の分離保証の対象外とする。
 
 ### 12.7 禁止事項
@@ -1545,7 +1547,7 @@ user-facing symlink:
 - `compose_published_port_automatic_relocation_failed`: automatic relocation candidate を割り当てられない。
 - `compose_published_port_bind_race`: planning 後に別 process が planned endpoint を取得した可能性がある。
 - `compose_published_port_mapping_invalid`: mapping の service/identity が canonical Compose model の fixed TCP published port に一意に対応しない。
-- `compose_published_port_mapping_conflict`: explicit mapping の desired endpoint が reservation または availability probe と衝突した。automatic relocation へは fallback しない。
+- `compose_published_port_mapping_conflict`: explicit published port mapping の desired endpoint が reservation または availability probe と衝突した。automatic relocation へは fallback しない。
 
 ### 13.2 Compose clone isolation
 
@@ -1558,9 +1560,9 @@ user-facing symlink:
 - `compose_clone_isolation_pool_exhausted`: `subnet_pool` 内に割り当て可能な空き slot がない。
 - `compose_clone_isolation_endpoint_unsafe`: network relocation 後の service environment に元 subnet / 元 gateway の address が残っている。
 
-### 13.3 host daemon error code
+### 13.3 decune host daemon error code
 
-host daemon error code は lowercase snake_case とする。wire 上の `code` は将来の追加値を受理できる string とする。
+decune host daemon error code は lowercase snake_case とする。wire 上の `code` は将来の追加値を受理できる string とする。
 
 - `invalid_request`: request を envelope として解釈できない、または schema に違反している。
 - `unsupported_protocol_version`: request の `version` が daemon の protocol version と一致しない。

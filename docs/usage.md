@@ -13,7 +13,7 @@ curl -fsSL https://raw.githubusercontent.com/knrew/decune/v0.3.4/scripts/install
 
 `$HOME/.local/bin` が `PATH` に含まれていない場合は、利用しているシェルの設定で追加してください。
 
-decune を upgrade する前に、対象 workspace で動いている attached `decune up` session をすべて終了してください。binary を更新した後、新しい version で `decune up` を起動し直します。旧/new host daemon と container-side client の mixed-version compatibility は保証されません。
+decune を upgrade する前に、対象 workspace で動いている attached `decune up` session をすべて終了してください。binary を更新した後、新しい version で `decune up` を起動し直します。旧/new decune host daemon と container-side client の mixed-version compatibility は保証されません。
 
 ### 手動アーカイブインストール
 
@@ -248,7 +248,7 @@ decune remove --all-workspaces --no-confirm  # すべての workspace を対象�
 
 ### `decune clean`
 
-stale な decune の生成データ(workspace の cache / state / runtime data)を workspace id 単位で確認・削除します。使用中の workspace と、Docker 上に再利用可能なリソースが残っている workspace はスキップされます。
+stale な decune-managed data(workspace の cache / state / runtime data)を workspace id 単位で確認・削除します。使用中の workspace と、Docker 上に再利用可能なリソースが残っている workspace はスキップされます。
 
 ```sh
 decune clean --dry-run                             # 削除候補の確認だけ行う
@@ -281,7 +281,7 @@ target = ".config/nvim"
 
 ## 安全な使い方
 
-`decune up` は Dockerfile instruction、Compose service build、local/OCI Feature `install.sh`、lifecycle command、hook、`userEnvProbe` 対象シェル起動ファイルを実行し得ます。信頼していないリポジトリでは、起動前に `.devcontainer/`、Compose file、local Feature、mount、credentials、`privileged`、`capAdd`、`securityOpt`、`appPort`、Compose `ports` を確認してください。
+`decune up` は Dockerfile instruction、Compose service build、local/OCI Feature `install.sh`、lifecycle command、decune hook、`userEnvProbe` 対象シェル起動ファイルを実行し得ます。信頼していないリポジトリでは、起動前に `.devcontainer/`、Compose file、local Feature、mount、credentials、`privileged`、`capAdd`、`securityOpt`、`appPort`、Compose `ports` を確認してください。
 
 信頼していないリポジトリでは、credential forwarding を無効化するか、Git HTTPS lookup を read-only に制限します。
 
@@ -298,6 +298,6 @@ enabled = false
 
 `host-helper-read-only` は Git credential `get` request だけをホストに forwarding し、`store` / `erase` は success no-op として扱います。SSH agent forwarding は別経路なので、不要な場合は `ssh_agent = "off"` も設定してください。
 
-GitHub CLI integration は一時 token file を read-only で container に mount します。token value は Docker label、container env、state、config hash、generated image、generated Compose override file に保存しませんが、container 内プロセスからは token file に到達できます。
+GitHub CLI integration は一時 token file を read-only で container に mount します。token value は Docker label、container env、state、reuse hash、generated image、decune-generated Compose override file に保存しませんが、container 内プロセスからは token file に到達できます。
 
 credential 設定の詳細は [configuration.md](configuration.md#credentialsgit)、セキュリティ境界の定義は [specification.md 12 章](specification.md#12-セキュリティ境界) を参照してください。

@@ -38,7 +38,7 @@ value = "http://${decune.network.appnet.gateway}:9000"
 
 `enabled = true` にすると次が有効になります。
 
-- fixed TCP published port は空いている host port へ relocation されます。`[compose.published_ports].automatic_relocation` 未指定時の既定が true に切り替わります。確認方法と explicit mapping は [ports.md](ports.md) を参照してください。
+- fixed TCP published port は空いている host port へ relocation されます。`[compose.published_ports].automatic_relocation` 未指定時の既定が true に切り替わります。確認方法と explicit published port mapping は [ports.md](ports.md) を参照してください。
 - 明示的な `container_name` と、non-external な top-level resource の固定 `name` は workspace 固有名(`<name>-<workspace_id>`)へ書き換えられます。`[compose.clone_isolation.names]` の `rewrite_container_names` / `rewrite_resource_names`(いずれも既定 true)で個別に無効化できます。
 - `[compose.clone_isolation.networks].relocation = true` と `subnet_pool` を設定した場合、固定 IPv4 subnet は pool 内の workspace 固有 subnet へ移ります。
 
@@ -64,11 +64,11 @@ subnet_pool = "10.224.0.0/16"
 
 - `subnet_pool` は relocation 先を割り当てる IPv4 CIDR pool で、`relocation = true` のとき必須です。`subnet_prefix` を省略すると元 subnet の prefix 長を維持します。
 - 元 IPAM config の `gateway` / `ip_range` / `aux_addresses` は、元 subnet 内の相対位置(offset)を保って新しい subnet へ移ります。`subnet_prefix` を狭めた結果それらを収容できない場合は、起動前に error になります。
-- 固定 IPv4 subnet を検出した構成では、割り当て結果が元 subnet と同じでも generated Compose override に Compose `!override` tag を使うため、Docker Compose v2.24.4 以上が必要です。
+- 固定 IPv4 subnet を検出した構成では、割り当て結果が元 subnet と同じでも decune-generated Compose override に Compose `!override` tag を使うため、Docker Compose v2.24.4 以上が必要です。
 
 割り当て規則と再利用の契約は [specification.md 8.9.3 節](specification.md#893-network-relocation)を参照してください。
 
-## endpoint 宣言
+## clone isolation endpoint 宣言
 
 固定 gateway や subnet を service の environment に埋め込んでいる構成では、`[[compose.clone_isolation.endpoints]]` で対象 service・環境変数・値 template を宣言します。
 
@@ -84,7 +84,7 @@ value = "grpc://${decune.network.grpc.gateway}:50051"
 - この stale 検出の対象は service の environment だけです。`extra_hosts`、command、config file 内の旧 address は自動で検出・書き換えされないため、利用者が追随させてください。
 - endpoint を宣言したまま `[compose.clone_isolation].enabled = false` にすると、宣言は無効として扱われ warning が表示されます。
 
-placeholder と render の契約は [specification.md 8.9.4 節](specification.md#894-endpoint-宣言)を参照してください。
+placeholder と render の契約は [specification.md 8.9.4 節](specification.md#894-clone-isolation-endpoint-宣言)を参照してください。
 
 ## 制限
 

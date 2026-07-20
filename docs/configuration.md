@@ -78,7 +78,7 @@ type = "bind"
 - `create = "directory"` にすると、存在しない bind source directory を作成してから mount します。file の自動作成はありません。
 - `resolve_symlink`(既定 true)は bind source の symlink を canonicalize します。
 - `target` に `/opt/decune` と `/run/decune` の配下、および workspace mount target と同一の path は使えません。decune の internal path として予約されています。
-- Docker Compose-based configuration では primary service(`service` で指定した Compose service)に generated override として追加されます。
+- Docker Compose-based configuration では primary service(`service` で指定した Compose service)に decune-generated Compose override として追加されます。
 
 スキーマは [specification.md 5.8 節](specification.md#58-mounts)を参照してください。
 
@@ -109,7 +109,7 @@ mode = "gh-token-file"
 
 - `mode = "gh-token-file"`(既定)は host の `gh auth token` から一時 token file を作り、container に `/run/decune/secrets/github-token` として read-only mount します。
 - `install_feature_if_missing`(既定 true)は、host token が取得でき container に `gh` がない場合に GitHub CLI Feature を追加します。
-- token value は Docker label、container env、state、config hash、generated Compose override には保存されませんが、container 内プロセスは token file に到達できます。信頼していないリポジトリでは `enabled = false` にしてください([usage.md の安全な使い方](usage.md#安全な使い方))。
+- token value は Docker label、container env、state、reuse hash、decune-generated Compose override には保存されませんが、container 内プロセスは token file に到達できます。信頼していないリポジトリでは `enabled = false` にしてください([usage.md の安全な使い方](usage.md#安全な使い方))。
 
 スキーマは [specification.md 5.15 節](specification.md#515-credentialsgithub)を参照してください。
 
@@ -124,14 +124,14 @@ enabled = true
 
 - 有効(既定)の場合、`decune up` は primary container に container-side CLI を `/run/decune/decune` として配置し、最初の lifecycle command より前に `/usr/local/bin/decune` symlink を準備します。
 - 通常の後勝ち設定なので、global config の `false` は project config の `true` で再有効化できます。repository から解除不能な security opt-out ではありません。
-- この設定は config hash に含まれないため、変更しても container / Compose project の rebuild は不要です。
+- この設定は reuse hash に含まれないため、変更しても container / Compose project の rebuild は不要です。
 - `/usr/local/bin/decune` に既存の file、directory、別の symlink がある場合や、root filesystem が read-only の場合、decune は既存の destination を変更せず warning を出して `up` を継続します。その場合は container 内で `/run/decune/decune` を直接実行してください。
 
-スキーマは [specification.md 5.13 節](specification.md#513-containercli)、artifact と symlink の扱いは [12.6 節](specification.md#126-container-cli-artifact-と-symlink)を参照してください。
+スキーマは [specification.md 5.13 節](specification.md#513-containercli)、artifact と symlink の扱いは [12.6 節](specification.md#126-decune-container-cli-artifact-と-symlink)を参照してください。
 
 ## `[[hooks.*]]`
 
-lifecycle stage の前後に decune 固有の command を実行します。hook 名は `before_` / `after_` + lifecycle stage 名です(`before_post_create`、`after_initialize` など。一覧は [specification.md 5.16 節](specification.md#516-hooks))。
+lifecycle stage の前後に実行する decune hook を定義します。hook 名は `before_` / `after_` + lifecycle stage 名です(`before_post_create`、`after_initialize` など。一覧は [specification.md 5.16 節](specification.md#516-hooks))。
 
 ```toml
 [[hooks.before_post_create]]
@@ -147,7 +147,7 @@ shell = true
 - `workdir` 省略時は、host hook は workspace root、container hook は `workspaceFolder` で実行されます。
 - hook は識別子を持たず、設定 layer をまたいで順序を保って追加されます。後の layer で置換・削除はできません。
 
-lifecycle の順序と hook の実行タイミングは [specification.md 7.3 節](specification.md#73-lifecycle-とシェル接続)を参照してください。
+lifecycle の順序と decune hook の実行タイミングは [specification.md 7.3 節](specification.md#73-lifecycle-とシェル接続)を参照してください。
 
 ## ポートと clone isolation の設定
 

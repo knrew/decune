@@ -9,11 +9,11 @@
 Cargo workspace は 4 つの crate で構成します。
 
 - `decune`(リポジトリ直下): host 側 CLI 本体。単一 binary `decune` を提供する。
-- `crates/decune-container-protocol`: host daemon と container-side tools が共有する wire protocol 型の library。
+- `crates/decune-container-protocol`: decune host daemon と container-side tools が共有する wire protocol 型の library。
 - `crates/decune-container-tools`: container 側の 3 binary。
 - `xtask`: 開発・リリース用の automation task。
 
-`decune-container-protocol` は、protocol version 定数(`HOST_DAEMON_PROTOCOL_VERSION = 1`)、request type(`credential` / `cliQuery`)、daemon error code の文字列定数、request / response envelope 型(`GitCredentialHostRequest`、`CliQueryRequest`、`HostDaemonResponse`、`HostDaemonError`)、forward agent の scan request / response 型を定義します。依存は `serde` だけで、host 側(`src/host/`)と container-side tools の両方が同じ型で wire format を読み書きします。
+`decune-container-protocol` は、protocol version 定数(`HOST_DAEMON_PROTOCOL_VERSION = 1`)、request type(`credential` / `cliQuery`)、daemon error code の文字列定数、request / response envelope 型(`GitCredentialHostRequest`、`CliQueryRequest`、`HostDaemonResponse`、`HostDaemonError`)、port forward agent の scan request / response 型を定義します。依存は `serde` だけで、host 側(`src/host/`)と container-side tools の両方が同じ型で wire format を読み書きします。
 
 `decune-container-tools` の binary は `decune-container-cli`、`decune-forward-agent`、`git-credential-decune` の 3 つです。`clap` に依存せず、container 内 CLI は `args_os` を手続き的に解析します(`src/bin/decune_container_cli/parser.rs`)。bundle への格納時に `decune-container-cli` は artifact name `decune` へ改名します(`xtask/src/container_tools.rs` の対応表)。container 内 `/run/decune/decune` の実体はこの binary であり、host 側 `decune` binary ではありません。
 
@@ -45,32 +45,32 @@ JSON を読む操作は、次の CLI JSON 出力を serde 型へ parse します
 
 argv 実行原則、error 変換、redaction の契約は specification.md 12.2 節、Podman 互換性は [2.4 節](specification.md#24-podman-互換性)にあります。
 
-## 3. host daemon の実装
+## 3. decune host daemon の実装
 
-host daemon の connection / query admission と I/O の固定上限は次のとおりです(`src/host/daemon.rs`、`src/host/query.rs` の実装定数)。
+decune host daemon の connection / query admission と I/O の固定上限は次のとおりです(`src/host/daemon.rs`、`src/host/query.rs` の実装定数)。
 
-| 項目                          | 現在値 |
-| ----------------------------- | -----: |
-| active host daemon connection |     32 |
-| request body 上限             | 64 KiB |
-| request body read timeout     |    2 s |
-| response write timeout        |    2 s |
-| active `cliQuery`             |      8 |
-| `cliQuery` total timeout      |   15 s |
+| 項目                                 | 現在値 |
+| ------------------------------------ | ------ |
+| active decune host daemon connection | 32     |
+| request body 上限                    | 64 KiB |
+| request body read timeout            | 2 s    |
+| response write timeout               | 2 s    |
+| active `cliQuery`                    | 8      |
+| `cliQuery` total timeout             | 15 s   |
 
 connection permit は listener から accept して task を生成する前に確保します。上限中は新しい connection task を生成せず、接続は listener / OS backlog 側で待たせます。credential、reserved request、`cliQuery` を含む全 connection を同じ上限で数え、peer UID 検証、protocol version 検証、request body の 64 KiB 上限を適用します。request body を 2 s 以内に EOF まで読めない場合は connection を閉じ、response の `write_all` と write half shutdown は合わせて 2 s 以内に完了させます。
 
-host daemon の停止時は accept loop と accepted connection task を中断します。accept の失敗で accept loop だけが終了した場合は、新規 connection の受付を止め、処理中の connection task は中断せず完了まで待ちます。read / write timeout、I/O error、daemon 停止による task 中断では完全な wire response を保証せず、client は transport error として扱います([specification.md 3.9 節](specification.md#39-container-内の-decune-cli))。
+decune host daemon の停止時は accept loop と accepted connection task を中断します。accept の失敗で accept loop だけが終了した場合は、新規 connection の受付を止め、処理中の connection task は中断せず完了まで待ちます。read / write timeout、I/O error、daemon 停止による task 中断では完全な wire response を保証せず、client は transport error として扱います([specification.md 3.9 節](specification.md#39-container-内の-decune-cli))。
 
-`cliQuery` は envelope、strict schema、policy、command / format matrix をすべて検証した後にだけ query semaphore へ入れます。credential request は query semaphore を使いません。8 件の permit は待機せず `try_acquire` し、上限時は即座に `cli_query_busy` を返します。15 s deadline は permit 取得後から state、forwarding、Docker/cache 待機、render、response 構築、JSON serialization までを含み、socket write の 2 s timeout は含みません。deadline 超過は `cli_query_timeout`、その他の fatal collector / render / serialization failure は `cli_query_failed` になります。いずれの error response にも partial output と warning を含めません(error code の定義は [specification.md 13.3 節](specification.md#133-host-daemon-error-code))。
+`cliQuery` は envelope、strict schema、policy、command / format matrix をすべて検証した後にだけ query semaphore へ入れます。credential request は query semaphore を使いません。8 件の permit は待機せず `try_acquire` し、上限時は即座に `cli_query_busy` を返します。15 s deadline は permit 取得後から state、forwarding、Docker/cache 待機、render、response 構築、JSON serialization までを含み、socket write の 2 s timeout は含みません。deadline 超過は `cli_query_timeout`、その他の fatal collector / render / serialization failure は `cli_query_failed` になります。いずれの error response にも partial output と warning を含めません(error code の定義は [specification.md 13.3 節](specification.md#133-decune-host-daemon-error-code))。
 
-query context fingerprint は、`decune-cli-query-context-v1` で domain separation した SHA-256 digest です。canonical field order で workspace id と固定 server path context だけを入力にし、secret、token、credential value、resolved config 全体を入力に含めません。host daemon metadata(runtime directory の `host-daemon.json`)には query policy と context fingerprint だけを保存し、raw context、host path、secret を保存しません。daemon reuse identity は `Disabled` または `Enabled { context_fingerprint }` の 2 値です。
+daemon query context fingerprint は、`decune-cli-query-context-v1` で domain separation した SHA-256 digest です。canonical field order で workspace id と固定 server path context だけを入力にし、secret、token、credential value、resolved config 全体を入力に含めません。decune host daemon metadata(runtime directory の `host-daemon.json`)には query policy と context fingerprint だけを保存し、raw context、host path、secret を保存しません。daemon reuse identity は `Disabled` または `Enabled { context_fingerprint }` の 2 値です。
 
-## 4. container CLI query の collector と evidence cache
+## 4. decune container CLI query の collector と evidence cache
 
-container query の collector は、daemon 起動時に固定した server-side context だけを入力にします。state は固定 state directory の `state.toml` を query ごとに 1 回だけ読み、workspace path や config path を参照先として使いません。forwarding status も固定 status directory の全 session socket を query ごとに 1 回だけ集約します(8.4 節)。host daemon は `ForwardStatusRegistry` を所有または注入されず、daemon owner と forwarding session owner が異なる場合も共有 status directory から全 session を検出します。1 session が停止した場合は、残る session だけが次の query に反映されます。`Workspace::resolve`、config discovery、read-only up plan、build context hash は呼び出しません。
+container query の collector は、daemon 起動時に固定した server-side context だけを入力にします。state は固定 state directory の `state.toml` を query ごとに 1 回だけ読み、workspace path や config path を参照先として使いません。forwarding status も固定 status directory の全 session socket を query ごとに 1 回だけ集約します(8.4 節)。decune host daemon は `ForwardStatusRegistry` を所有または注入されず、daemon owner と forwarding session owner が異なる場合も共有 status directory から全 session を検出します。1 session が停止した場合は、残る session だけが次の query に反映されます。`Workspace::resolve`、config discovery、read-only up plan、build context hash は呼び出しません。
 
-Docker container evidence は、固定 workspace id の `decune.managed=true` resource と、固定 state または同 resource から導出した同一 Compose project だけを list / inspect / deduplicate します。Compose project label の候補は、固定 state に記録された値、または `decune.managed=true` かつ `decune.workspace_id` が固定 workspace id と一致する resource の値に限定します。label value は trim 後に非空であることだけを確認し、Compose project name の形式検証は行いません。ここで確認しているのは label の文字列形式ではなく、固定 query context または同一 workspace に帰属する managed resource から得た値であることです。request の command、format、path、resource name は Docker filter や host path に使いません。raw inspect、raw label map、stdout / stderr は container query の allowlist 型へ直ちに射影し、cache へ保存しません。status と ports は container / service / run state / health / config identity / published port を含む同じ container evidence snapshot を共有し、managed volume evidence は別 entry として取得します。
+Docker container evidence は、固定 workspace id の `decune.managed=true` resource と、固定 state または同 resource から導出した同一 Compose project だけを list / inspect / deduplicate します。Compose project label の候補は、固定 state に記録された値、または `decune.managed=true` かつ `decune.workspace_id` が固定 workspace id と一致する resource の値に限定します。label value は trim 後に非空であることだけを確認し、Compose project name の形式検証は行いません。ここで確認しているのは label の文字列形式ではなく、固定 daemon query context または同一 workspace に帰属する managed resource から得た値であることです。request の command、format、path、resource name は Docker filter や host path に使いません。raw inspect、raw label map、stdout / stderr は container query の allowlist 型へ直ちに射影し、cache へ保存しません。status と ports は container / service / run state / health / config identity / published port を含む同じ container evidence snapshot を共有し、managed volume evidence は別 entry として取得します。
 
 Docker evidence cache の key は server 側だけで次の値から作ります。
 
@@ -94,7 +94,7 @@ cache と query 専用 Docker 実行の内部固定値は次のとおりです(`
 | success cache TTL               | 2 s    |
 | failure cache TTL               | 500 ms |
 
-TTL は load 完了時刻から数えます。同一 key の cold load は semantic load 全体を singleflight し、waiter は同じ typed success または sanitized typed failure を共有します。異なる key を含め、実行中の Docker evidence load は全体で 2 件までです。cache hit の Docker evidence は load 完了時点から最大 2 s stale になり得ます(公開契約としての縮退記述は [specification.md 12.5 節](specification.md#125-container-cli-query-の境界))。expired success の refresh が失敗した場合に stale result は返しません。Docker event 監視や mutation hook による invalidation は行わず、daemon 再生成時に cache を破棄します。
+TTL は load 完了時刻から数えます。同一 key の cold load は semantic load 全体を singleflight し、waiter は同じ typed success または sanitized typed failure を共有します。異なる key を含め、実行中の Docker evidence load は全体で 2 件までです。cache hit の Docker evidence は load 完了時点から最大 2 s stale になり得ます(公開契約としての縮退記述は [specification.md 12.5 節](specification.md#125-decune-container-cli-query-の境界))。expired success の refresh が失敗した場合に stale result は返しません。Docker event 監視や mutation hook による invalidation は行わず、daemon 再生成時に cache を破棄します。
 
 Docker evidence load は query coordinator が独立 task として所有します。呼出元の cancel だけでは load を中断せず、完了・failure・10 s timeout の全経路で waiter を wake します。query 専用 Docker command には `RuntimeCommand` の timeout / kill / reap を使って 5 s timeout を設定し、通常の host `status` / `ports` / `up` の command timeout は変更しません。Docker failure は raw stderr を保持しない typed failure へ変換した後、collector の縮退規則に従って warning 付き snapshot へ変換します。query 全体の 15 s deadline と daemon admission は daemon dispatch が所有します(3 節)。
 
@@ -130,9 +130,9 @@ host 側 `decune` が読むもの:
 
 host が container 側 process へ渡すもの:
 
-- `DECUNE_FORWARD_AGENT_SOCKET` / `DECUNE_FORWARD_AGENT_SECRET` / `DECUNE_FORWARD_AGENT_ALLOWED_PORTS`: forward agent を `docker exec` で起動するときの env。socket は agent が listen する container 内 Unix socket path、secret は host と agent の接続認証に使う random hex(redaction 登録済みで、agent は起動後に自 process の環境から除去する)、allowed ports は転送を許可する container port のカンマ区切りリスト。
+- `DECUNE_FORWARD_AGENT_SOCKET` / `DECUNE_FORWARD_AGENT_SECRET` / `DECUNE_FORWARD_AGENT_ALLOWED_PORTS`: port forward agent を `docker exec` で起動するときの env。socket は agent が listen する container 内 Unix socket path、secret は host と agent の接続認証に使う random hex(redaction 登録済みで、agent は起動後に自 process の環境から除去する)、allowed ports は転送を許可する container port のカンマ区切りリスト。
 - `DECUNE_REMOTE_USER` や `DECUNE_GH_CONFIG_OWNER` など、decune が生成する exec script 向けの補助変数。
-- generated Compose override は `${DECUNE_CONTAINER_ENV_<KEY>}` 形式の placeholder を参照し、secret-sensitive な containerEnv 値を override file に直書きせず子 process の環境として渡す。
+- decune-generated Compose override は `${DECUNE_CONTAINER_ENV_<KEY>}` 形式の placeholder を参照し、secret-sensitive な containerEnv 値を override file に直書きせず子 process の環境として渡す。
 
 container-side tools が読むもの:
 
@@ -173,21 +173,21 @@ state directory 直下に生成する file:
 
 runtime directory は全体を container の `/run/decune` へ bind mount します。配下の file と作り手は次のとおりです。
 
-| file                              | 作り手                       | 内容                                                                                     |
-| --------------------------------- | ---------------------------- | ---------------------------------------------------------------------------------------- |
-| `host-daemon.sock`                | host daemon                  | credential / `cliQuery` 用 Unix socket                                                   |
-| `host-daemon.json`                | host daemon                  | daemon reuse metadata(query policy と context fingerprint。0600)                         |
-| `decune`                          | host(staging)                | container CLI artifact(実体は `decune-container-cli`)                                    |
-| `git-credential-decune`           | host(staging)                | Git credential helper artifact                                                           |
-| `host-gitconfig`                  | host                         | host の `~/.gitconfig` の copy(`copy_global_config` 有効時。0600)                        |
-| `decune-forward-agent`            | host(staging)                | forward agent artifact                                                                   |
-| `forward-agent-<session_id>.sock` | container 内の forward agent | forwarding session の Unix socket(単一 session 名は `forward-agent.sock`)                |
-| `forward-agent.err`               | container 内の forward agent | agent 失敗時の診断 message                                                               |
-| `forward-agent.status`            | container 内の forward agent | agent の終了 status(host が起動失敗の検出に読む)                                         |
-| `secrets/github-token`            | host                         | GitHub CLI token(directory 0700 / file 0600。container へは read-only file mount)        |
-| `feature-entrypoints-complete`    | host                         | Feature entrypoint 完了を伝える sentinel                                                 |
-| `feature-entrypoints-token`       | host                         | Feature entrypoint 用 token                                                              |
-| `forward/<service_key>/`          | host                         | Compose sidecar forwarding 用の service 固有 runtime directory(forward agent だけを含む) |
+| file                              | 作り手                            | 内容                                                                                          |
+| --------------------------------- | --------------------------------- | --------------------------------------------------------------------------------------------- |
+| `host-daemon.sock`                | decune host daemon                | credential / `cliQuery` 用 Unix socket                                                        |
+| `host-daemon.json`                | decune host daemon                | daemon reuse metadata(query policy と context fingerprint。0600)                              |
+| `decune`                          | host(staging)                     | decune container CLI artifact(実体は `decune-container-cli`)                                  |
+| `git-credential-decune`           | host(staging)                     | Git credential helper artifact                                                                |
+| `host-gitconfig`                  | host                              | host の `~/.gitconfig` の copy(`copy_global_config` 有効時。0600)                             |
+| `decune-forward-agent`            | host(staging)                     | port forward agent artifact                                                                   |
+| `forward-agent-<session_id>.sock` | container 内の port forward agent | forwarding session の Unix socket(単一 session 名は `forward-agent.sock`)                     |
+| `forward-agent.err`               | container 内の port forward agent | agent 失敗時の診断 message                                                                    |
+| `forward-agent.status`            | container 内の port forward agent | agent の終了 status(host が起動失敗の検出に読む)                                              |
+| `secrets/github-token`            | host                              | GitHub CLI token(directory 0700 / file 0600。container へは read-only file mount)             |
+| `feature-entrypoints-complete`    | host                              | Feature entrypoint 完了を伝える sentinel                                                      |
+| `feature-entrypoints-token`       | host                              | Feature entrypoint 用 token                                                                   |
+| `forward/<service_key>/`          | host                              | Compose sidecar forwarding 用の service 固有 runtime directory(port forward agent だけを含む) |
 
 container 側だけに現れる関連 mount として、`/run/decune/gh`(GitHub CLI 設定用の writable tmpfs。`GH_CONFIG_DIR` が指す)と `/run/decune/ssh-agent.sock`(host の `SSH_AUTH_SOCK` socket の bind mount)があります。これらの source は runtime directory 内の file ではありません。
 
@@ -198,7 +198,7 @@ forwarding status directory は runtime directory の兄弟 directory `<runtime_
 - `forward-status-<session_id>.sock`: session の forwarding 一覧を返す Unix socket(0600)。
 - `forward-status-<session_id>.json`: version、session id、socket name、pid を持つ metadata(0600)。
 
-集約(`decune ports` の host 表示や container CLI query の forwarding 情報)は、status directory の metadata file を列挙・sort し、各 socket へ `list` request を送って全 session の forwarding を連結します。connect が `NotFound` / `ConnectionRefused` になる socket は stale として黙って skip し、その他の failure は warning にします。session の停止時は socket と metadata を削除し、次回の集約から自然に消えます。host daemon はこの仕組みだけで全 session を発見するため、forwarding session の owner process と daemon owner が異なっても集約できます(4 節)。
+集約(`decune ports` の host 表示や decune container CLI query の forwarding 情報)は、status directory の metadata file を列挙・sort し、各 socket へ `list` request を送って全 session の forwarding を連結します。connect が `NotFound` / `ConnectionRefused` になる socket は stale として黙って skip し、その他の failure は warning にします。session の停止時は socket と metadata を削除し、次回の集約から自然に消えます。decune host daemon はこの仕組みだけで全 session を発見するため、forwarding session の owner process と daemon owner が異なっても集約できます(4 節)。
 
 ### 8.5 container 内のその他の internal path
 
@@ -225,7 +225,7 @@ state file の公開挙動は [specification.md 10.4 節](specification.md#104-s
 | `mode`                 | 起動時 mode snapshot(`image` / `dockerfile` / `compose`。field がない state は `unknown`)                                                                                               |
 | `container_id`         | primary container の ID                                                                                                                                                                 |
 | `image`                | 起動に使った image                                                                                                                                                                      |
-| `config_hash`          | config hash(10 節)                                                                                                                                                                      |
+| `config_hash`          | reuse hash(10 節)                                                                                                                                                                       |
 | `config_file`          | `--config` で指定した `devcontainer.json` path(省略可)                                                                                                                                  |
 | `compose_project_name` | Compose project name(Compose モードのみ)                                                                                                                                                |
 | `created_at`           | 作成時刻(`unix:<seconds>` 形式)                                                                                                                                                         |
@@ -247,12 +247,12 @@ state file の公開挙動は [specification.md 10.4 節](specification.md#104-s
 
 atomic write は、state directory に `state.toml.tmp.<pid>.<nanos>` を排他的 create(mode 0600)し、内容の書き込みと fsync の後に `state.toml` へ rename し、最後に親 directory を fsync する実装です。container が存在しない workspace の state は reconcile 時に削除します。
 
-## 10. config hash 入力の実装構成
+## 10. reuse hash 入力の実装構成
 
-config hash の公開契約(含める入力・含めない入力・secret-sensitive value の扱い)は [specification.md 10.3 節](specification.md#103-config-hash)にあります。実装(`src/config/hash.rs`)は次の構成です。
+reuse hash の公開契約(含める入力・含めない入力・secret-sensitive value の扱い)は [specification.md 10.3 節](specification.md#103-reuse-hash)にあります。実装(`src/config/hash.rs`)は次の構成です。
 
 - canonical writer(`src/config/canonical.rs`)で決定論的な正規化 text を構築し、SHA-256 の hex digest にする。先頭に version tag `decune-config-hash-v1` を含める。
-- トップレベルの入力 field は version、resolved config、feature locks、CLI flags、internal versions、build 入力、Compose 関連(compose files digest、generated override semantic hash 入力、sanitized canonical Compose model。Compose モードのときだけ)、resolved mounts、startup command、UID/GID sync 入力。
+- トップレベルの入力 field は version、resolved config、feature locks、CLI flags、internal versions、build 入力、Compose 関連(compose files digest、decune-generated Compose override semantic hash 入力、sanitized canonical Compose model。Compose モードのときだけ)、resolved mounts、startup command、UID/GID sync 入力。
 - resolved config のうち `ports`(forwarding は up 実行時の runtime 設定)と `container.cli.enabled`(daemon の query policy にだけ影響)は書き込み時に明示的に除外する。
 - secret-sensitive value は生値を canonical text に入れず、`${localEnv:...}` 由来の containerEnv / build args は domain 付き SHA-256 marker へ、remoteEnv は固定 marker へ置換する。置換規則の契約は specification.md 10.3 節。
 - internal versions は Feature layer 生成と entrypoint shim 生成の内部 version tag で、decune 側の生成 logic が変わったときに既存 container を rebuild 対象へ倒すために使う。

@@ -59,12 +59,12 @@ decune の test coverage は、少なくとも以下の挙動グループを含�
 
 - image-based / Dockerfile-based / Docker Compose-based の `up` / `rebuild` / `down` / `remove`。
 - Dockerfile build の入力、`.dockerignore` の扱い、`--no-cache`、`--pull`、未対応の Dockerfile/context 組み合わせ。
-- Compose の `dockerComposeFile`、`service`、`runServices`、profiles、複数 file の merge、generated override の挙動、project cleanup の安全性。
+- Compose の `dockerComposeFile`、`service`、`runServices`、profiles、複数 file の merge、decune-generated Compose override の挙動、project cleanup の安全性。
 - Feature 解決、lock の扱い、metadata merge、option env/default の扱い、local Feature の制約、UID/GID sync、entrypoint shim の挙動。
-- dotfiles、mounts、lifecycle commands、hooks、shell attach、lifecycle の二重実行防止。
+- dotfiles、mounts、lifecycle commands、decune hook、shell attach、lifecycle の二重実行防止。
 - manual/automatic port forwarding、published port の warning/error、sidecar 明示 forwarding、TCP-only の挙動。
 - credential forwarding、token redaction、state repair、resource name の sanitization、secret leak regression coverage。
-- container CLI の image/Dockerfile/Compose primary、command/stdio/exit matrix、UID/sidecar topology、attached/detached、enabled lifecycle、symlink fallback、forwarding 集約・daemon handoff、live workspace/host path 非参照。
+- decune container CLI の image/Dockerfile/Compose primary、command/stdio/exit matrix、UID/sidecar topology、attached/detached、enabled lifecycle、symlink fallback、forwarding 集約・daemon handoff、live workspace/host path 非参照。
 
 ## テスト fixture 管理
 
@@ -112,7 +112,7 @@ cargo run --locked -p xtask -- compose-integration
 
 `compose_integration` の Docker-backed test は `#[ignore]` として定義します。通常の unit test では実行されず、`compose-integration` が Docker/Compose availability を確認したうえで ignored integration test を one test thread で実行します。
 
-この経路は通常の Compose scenario に加え、実 bundle の container-side 3 tools × 2 platforms を build/check し、container CLI の image-based / Dockerfile-based / Docker Compose-based E2E を実行します。container CLI E2E は attached `up` process と別の `docker exec` process を使い、query、UID/sidecar topology、lifecycle、forwarding handoff、sanitized disclosure boundary を real Docker resource で確認します。
+この経路は通常の Compose scenario に加え、実 bundle の container-side 3 tools × 2 platforms を build/check し、decune container CLI の image-based / Dockerfile-based / Docker Compose-based E2E を実行します。decune container CLI E2E は attached `up` process と別の `docker exec` process を使い、query、UID/sidecar topology、lifecycle、forwarding handoff、sanitized disclosure boundary を real Docker resource で確認します。
 
 ## リリース成果物
 
