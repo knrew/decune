@@ -49,14 +49,14 @@ argv 実行原則、エラー変換、redaction の契約は specification.md 12
 
 decune host daemon の接続 / クエリの受け入れ制御と I/O の固定上限は次のとおりです(`src/host/daemon.rs`、`src/host/query.rs` の実装定数)。
 
-| 項目                                  | 現在値 |
-| ------------------------------------- | ------ |
-| active な decune host daemon の接続数 | 32     |
-| request body 上限                     | 64 KiB |
-| request body の読み取りタイムアウト   | 2 s    |
-| response の書き込みタイムアウト       | 2 s    |
-| active な `cliQuery`                  | 8      |
-| `cliQuery` の合計タイムアウト         | 15 s   |
+| 項目 | 現在値 |
+| --- | --- |
+| active な decune host daemon の接続数 | 32 |
+| request body 上限 | 64 KiB |
+| request body の読み取りタイムアウト | 2 s |
+| response の書き込みタイムアウト | 2 s |
+| active な `cliQuery` | 8 |
+| `cliQuery` の合計タイムアウト | 15 s |
 
 接続の permit は listener から accept してタスクを生成する前に確保します。上限中は新しい接続タスクを生成せず、接続は listener / OS の backlog 側で待たせます。credential、予約済みの request、`cliQuery` を含む全接続を同じ上限で数え、peer UID の検証、プロトコルバージョンの検証、request body の 64 KiB 上限を適用します。request body を 2 s 以内に EOF まで読めない場合は接続を閉じ、response の `write_all` と書き込み側の shutdown は合わせて 2 s 以内に完了させます。
 
@@ -86,13 +86,13 @@ QueryEvidenceKey {
 
 キャッシュとクエリ専用の Docker 実行の内部固定値は次のとおりです(`src/host/query.rs` の実装定数)。
 
-| 項目                                   | 現在値 |
-| -------------------------------------- | ------ |
-| 同時 Docker evidence 読み込み          | 2      |
-| Docker evidence 読み込みのタイムアウト | 10 s   |
-| クエリ用 Docker コマンドのタイムアウト | 5 s    |
-| 成功キャッシュの TTL                   | 2 s    |
-| 失敗キャッシュの TTL                   | 500 ms |
+| 項目 | 現在値 |
+| --- | --- |
+| 同時 Docker evidence 読み込み | 2 |
+| Docker evidence 読み込みのタイムアウト | 10 s |
+| クエリ用 Docker コマンドのタイムアウト | 5 s |
+| 成功キャッシュの TTL | 2 s |
+| 失敗キャッシュの TTL | 500 ms |
 
 TTL は読み込み完了時刻から数えます。同一キーのコールドな読み込みは意味単位の読み込み全体を singleflight し、待機側は同じ型付きの成功またはサニタイズ済みの型付きの失敗を共有します。異なるキーを含め、実行中の Docker evidence の読み込みは全体で 2 件までです。キャッシュヒットした Docker evidence は読み込み完了時点から最大 2 s stale になり得ます(公開契約としての縮退の記述は [specification.md 12.5 節](specification.md#125-decune-container-cli-query-の境界))。期限切れの成功の再読み込みが失敗した場合に stale な結果は返しません。Docker のイベント監視や変更フックによる無効化は行わず、daemon の再生成時にキャッシュを破棄します。
 
@@ -150,12 +150,12 @@ container-side tools が読むもの:
 
 workspace id は、正規化した workspace root のパスの SHA-256 digest の先頭 12 桁の 16 進文字です(`src/workspace.rs`)。ワークスペース単位のディレクトリは次の場所に作ります。
 
-| ディレクトリ           | 場所                                     | XDG 未設定時のフォールバック       |
-| ---------------------- | ---------------------------------------- | ---------------------------------- |
-| 状態ディレクトリ       | `$XDG_STATE_HOME/decune/<workspace_id>`  | `~/.local/state/decune/...`        |
+| ディレクトリ | 場所 | XDG 未設定時のフォールバック |
+| --- | --- | --- |
+| 状態ディレクトリ | `$XDG_STATE_HOME/decune/<workspace_id>` | `~/.local/state/decune/...` |
 | ランタイムディレクトリ | `$XDG_RUNTIME_DIR/decune/<workspace_id>` | `/tmp/decune-<uid>/<workspace_id>` |
-| キャッシュディレクトリ | `$XDG_CACHE_HOME/decune/<workspace_id>`  | `~/.cache/decune/...`              |
-| Feature archive cache  | `$XDG_CACHE_HOME/decune/features`        | `~/.cache/decune/features`         |
+| キャッシュディレクトリ | `$XDG_CACHE_HOME/decune/<workspace_id>` | `~/.cache/decune/...` |
+| Feature archive cache | `$XDG_CACHE_HOME/decune/features` | `~/.cache/decune/features` |
 
 ランタイムディレクトリの親(`decune` / `decune-<uid>`)とランタイムディレクトリ自体は 0700 に設定・検証します(`src/host/runtime.rs`)。
 
@@ -173,21 +173,21 @@ workspace id は、正規化した workspace root のパスの SHA-256 digest �
 
 ランタイムディレクトリは全体をコンテナの `/run/decune` へ bind mount します。配下のファイルと作り手は次のとおりです。
 
-| ファイル                          | 作り手                          | 内容                                                                                                  |
-| --------------------------------- | ------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `host-daemon.sock`                | decune host daemon              | credential / `cliQuery` 用の Unix ソケット                                                            |
-| `host-daemon.json`                | decune host daemon              | daemon の再利用メタデータ(クエリポリシーと context fingerprint。0600)                                 |
-| `decune`                          | ホスト(配置)                    | decune container CLI artifact(実体は `decune-container-cli`)                                          |
-| `git-credential-decune`           | ホスト(配置)                    | Git credential helper artifact                                                                        |
-| `host-gitconfig`                  | ホスト                          | ホストの `~/.gitconfig` のコピー(`copy_global_config` 有効時。0600)                                   |
-| `decune-forward-agent`            | ホスト(配置)                    | port forward agent artifact                                                                           |
-| `forward-agent-<session_id>.sock` | コンテナ内の port forward agent | forwarding セッションの Unix ソケット(単一セッション名は `forward-agent.sock`)                        |
-| `forward-agent.err`               | コンテナ内の port forward agent | agent 失敗時の診断メッセージ                                                                          |
-| `forward-agent.status`            | コンテナ内の port forward agent | agent の終了 status(ホストが起動失敗の検出に読む)                                                     |
-| `secrets/github-token`            | ホスト                          | GitHub CLI のトークン(ディレクトリ 0700 / ファイル 0600。コンテナへは read-only でマウント)           |
-| `feature-entrypoints-complete`    | ホスト                          | Feature entrypoint の完了を伝えるマーカー                                                             |
-| `feature-entrypoints-token`       | ホスト                          | Feature entrypoint 用のトークン                                                                       |
-| `forward/<service_key>/`          | ホスト                          | Compose の sidecar forwarding 用のサービス固有のランタイムディレクトリ(port forward agent だけを含む) |
+| ファイル | 作り手 | 内容 |
+| --- | --- | --- |
+| `host-daemon.sock` | decune host daemon | credential / `cliQuery` 用の Unix ソケット |
+| `host-daemon.json` | decune host daemon | daemon の再利用メタデータ(クエリポリシーと context fingerprint。0600) |
+| `decune` | ホスト(配置) | decune container CLI artifact(実体は `decune-container-cli`) |
+| `git-credential-decune` | ホスト(配置) | Git credential helper artifact |
+| `host-gitconfig` | ホスト | ホストの `~/.gitconfig` のコピー(`copy_global_config` 有効時。0600) |
+| `decune-forward-agent` | ホスト(配置) | port forward agent artifact |
+| `forward-agent-<session_id>.sock` | コンテナ内の port forward agent | forwarding セッションの Unix ソケット(単一セッション名は `forward-agent.sock`) |
+| `forward-agent.err` | コンテナ内の port forward agent | agent 失敗時の診断メッセージ |
+| `forward-agent.status` | コンテナ内の port forward agent | agent の終了 status(ホストが起動失敗の検出に読む) |
+| `secrets/github-token` | ホスト | GitHub CLI のトークン(ディレクトリ 0700 / ファイル 0600。コンテナへは read-only でマウント) |
+| `feature-entrypoints-complete` | ホスト | Feature entrypoint の完了を伝えるマーカー |
+| `feature-entrypoints-token` | ホスト | Feature entrypoint 用のトークン |
+| `forward/<service_key>/` | ホスト | Compose の sidecar forwarding 用のサービス固有のランタイムディレクトリ(port forward agent だけを含む) |
 
 コンテナ側だけに現れる関連マウントとして、`/run/decune/gh`(GitHub CLI 設定用の書き込み可能な tmpfs。`GH_CONFIG_DIR` が指す)と `/run/decune/ssh-agent.sock`(ホストの `SSH_AUTH_SOCK` ソケットの bind mount)があります。これらの実体はランタイムディレクトリ内のファイルではありません。
 
@@ -218,20 +218,20 @@ GitHub トークンの旧形式のランタイムパス `gh-token/token`(コン�
 
 トップレベルのキー:
 
-| キー                   | 内容                                                                                                                                                                                          |
-| ---------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `version`              | 状態の version。現在 `1`                                                                                                                                                                      |
-| `workspace`            | workspace root の表示用パス                                                                                                                                                                   |
-| `mode`                 | 起動時のモードのスナップショット(`image` / `dockerfile` / `compose`。フィールドがない状態は `unknown`)                                                                                        |
-| `container_id`         | primary container の ID                                                                                                                                                                       |
-| `image`                | 起動に使ったイメージ                                                                                                                                                                          |
-| `config_hash`          | reuse hash(10 節)                                                                                                                                                                             |
-| `config_file`          | `--config` で指定した `devcontainer.json` のパス(省略可)                                                                                                                                      |
-| `compose_project_name` | Compose のプロジェクト名(Compose モードのみ)                                                                                                                                                  |
-| `created_at`           | 作成時刻(`unix:<seconds>` 形式)                                                                                                                                                               |
-| `last_started_at`      | 最終起動時刻(同上)                                                                                                                                                                            |
-| `last_used_at`         | 最終利用時刻(同上。ない状態もある)                                                                                                                                                            |
-| lifecycle 完了フラグ   | `on_create_completed` / `after_on_create_completed` / `update_content_completed` / `after_update_content_completed` / `post_create_completed` / `after_post_create_completed` の 6 つの真偽値 |
+| キー | 内容 |
+| --- | --- |
+| `version` | 状態の version。現在 `1` |
+| `workspace` | workspace root の表示用パス |
+| `mode` | 起動時のモードのスナップショット(`image` / `dockerfile` / `compose`。フィールドがない状態は `unknown`) |
+| `container_id` | primary container の ID |
+| `image` | 起動に使ったイメージ |
+| `config_hash` | reuse hash(10 節) |
+| `config_file` | `--config` で指定した `devcontainer.json` のパス(省略可) |
+| `compose_project_name` | Compose のプロジェクト名(Compose モードのみ) |
+| `created_at` | 作成時刻(`unix:<seconds>` 形式) |
+| `last_started_at` | 最終起動時刻(同上) |
+| `last_used_at` | 最終利用時刻(同上。ない状態もある) |
+| lifecycle 完了フラグ | `on_create_completed` / `after_on_create_completed` / `update_content_completed` / `after_update_content_completed` / `post_create_completed` / `after_post_create_completed` の 6 つの真偽値 |
 
 `[[published_ports]]`(Compose published port relocation の表示補助メタデータ):
 

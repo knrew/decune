@@ -140,18 +140,18 @@ cargo run --locked -p xtask -- release-manifest --dist-dir target/dist --version
 
 ### 文書の責務
 
-| 文書                                     | 責務                                                                                             |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| [README.md](../README.md)                | 概要と最短導線(初見の利用者向け)                                                                 |
-| [usage.md](usage.md)                     | 利用者向けのインストール、クイックスタート、日常操作の基本ガイド                                 |
-| [configuration.md](configuration.md)     | decune config の使い方と挙動説明のガイド                                                         |
-| [ports.md](ports.md)                     | port forwarding と published port の利用ガイド                                                   |
-| [clone-isolation.md](clone-isolation.md) | 複数クローン同時利用(Compose clone isolation)のガイド                                            |
-| [specification.md](specification.md)     | 公開挙動、CLI 契約、設定スキーマ、セキュリティ境界、diagnostic code 定義の正本(リファレンス兼務) |
-| [internals.md](internals.md)             | 内部実装の説明(非規範の内部設計ノート)                                                           |
-| development.md(この文書)                 | コントリビューター向けの環境構築、検証、ドキュメント執筆規約                                     |
-| [release.md](release.md)                 | メンテナー向けのリリース手順書                                                                   |
-| [glossary.md](glossary.md)               | 用語の定義                                                                                       |
+| 文書 | 責務 |
+| --- | --- |
+| [README.md](../README.md) | 概要と最短導線(初見の利用者向け) |
+| [usage.md](usage.md) | 利用者向けのインストール、クイックスタート、日常操作の基本ガイド |
+| [configuration.md](configuration.md) | decune config の使い方と挙動説明のガイド |
+| [ports.md](ports.md) | port forwarding と published port の利用ガイド |
+| [clone-isolation.md](clone-isolation.md) | 複数クローン同時利用(Compose clone isolation)のガイド |
+| [specification.md](specification.md) | 公開挙動、CLI 契約、設定スキーマ、セキュリティ境界、diagnostic code 定義の正本(リファレンス兼務) |
+| [internals.md](internals.md) | 内部実装の説明(非規範の内部設計ノート) |
+| development.md(この文書) | コントリビューター向けの環境構築、検証、ドキュメント執筆規約 |
+| [release.md](release.md) | メンテナー向けのリリース手順書 |
+| [glossary.md](glossary.md) | 用語の定義 |
 
 ### 情報の置き場所
 

@@ -145,12 +145,12 @@ decune up [OPTIONS] [WORKSPACE]
 
 `-p` / `--port <SPEC>` は次の 4 形式を受け付ける。
 
-| 形式                     | 例                                       | 意味                                                                                                             |
-| ------------------------ | ---------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `container`              | `3000`、`3000/tcp`                       | ホスト IP は既定 `127.0.0.1`。ホスト側ポートはコンテナのポートと同じ番号を試し、占有済みなら空きポートを探索する |
-| `host:container`         | `8080:3000`                              | ホスト側ポートを明示する                                                                                         |
-| `host_ip:container`      | `127.0.0.1:3000`、`[::1]:3000`           | ホスト IP を明示し、ホスト側ポートはコンテナのポートと同じ番号から探索する                                       |
-| `host_ip:host:container` | `127.0.0.1:8080:3000`、`[::1]:8080:3000` | ホスト IP とホスト側ポートを明示する                                                                             |
+| 形式 | 例 | 意味 |
+| --- | --- | --- |
+| `container` | `3000`、`3000/tcp` | ホスト IP は既定 `127.0.0.1`。ホスト側ポートはコンテナのポートと同じ番号を試し、占有済みなら空きポートを探索する |
+| `host:container` | `8080:3000` | ホスト側ポートを明示する |
+| `host_ip:container` | `127.0.0.1:3000`、`[::1]:3000` | ホスト IP を明示し、ホスト側ポートはコンテナのポートと同じ番号から探索する |
+| `host_ip:host:container` | `127.0.0.1:8080:3000`、`[::1]:8080:3000` | ホスト IP とホスト側ポートを明示する |
 
 - ホスト IP の `localhost` は `127.0.0.1` に正規化する。
 - プロトコルサフィックスなしは TCP、`/tcp` は許可、`/udp` は未対応のエラーとする。
@@ -354,11 +354,11 @@ container-side tools bundle はコンテナ内 CLI を artifact 名 `decune` と
 
 対応するコマンドとクエリ:
 
-| コンテナ内のコマンド  | 送信するクエリ    |
-| --------------------- | ----------------- |
-| `decune status`       | `status` + `text` |
-| `decune ports`        | `ports` + `text`  |
-| `decune ports --json` | `ports` + `json`  |
+| コンテナ内のコマンド | 送信するクエリ |
+| --- | --- |
+| `decune status` | `status` + `text` |
+| `decune ports` | `ports` + `text` |
+| `decune ports --json` | `ports` + `json` |
 
 使い方のエラーとローカル動作:
 
@@ -406,11 +406,11 @@ workspace root から以下の順で検出する。
 
 ### 4.2 構成モードの判定
 
-| mode           | 必須 property                  | 禁止 property                           | 備考                                  |
-| -------------- | ------------------------------ | --------------------------------------- | ------------------------------------- |
-| image          | `image`                        | `build`, `dockerComposeFile`, `service` | イメージを pull してコンテナを作る    |
-| Dockerfile     | `build.dockerfile`             | `image`, `dockerComposeFile`, `service` | Dockerfile をビルドしてコンテナを作る |
-| Docker Compose | `dockerComposeFile`, `service` | `image`, `build`                        | Compose が image/build を持つ         |
+| mode | 必須 property | 禁止 property | 備考 |
+| --- | --- | --- | --- |
+| image | `image` | `build`, `dockerComposeFile`, `service` | イメージを pull してコンテナを作る |
+| Dockerfile | `build.dockerfile` | `image`, `dockerComposeFile`, `service` | Dockerfile をビルドしてコンテナを作る |
+| Docker Compose | `dockerComposeFile`, `service` | `image`, `build` | Compose が image/build を持つ |
 
 `dockerComposeFile` と `service` は片方だけ指定してはならない。`runServices` は Compose モード専用であり、指定する場合は `dockerComposeFile` と `service` も必須である。
 
@@ -424,46 +424,46 @@ JSON5 全体はサポートしない。単引用符の文字列、引用符な�
 
 この表は decune が認識する Dev Container プロパティと各モードでの扱いを定義する。利用者の `devcontainer.json`、Dockerfile / イメージの `devcontainer.metadata` ラベル、Feature メタデータの各レイヤーを同じスキーマで解釈し、レイヤー固有の制約(イメージメタデータのレイヤーは `initializeCommand` を指定できない)に違反する場合はエラーにする。表にないプロパティはエラーにも警告にもせず保持し、実行時挙動には使わない。
 
-| property                      | image   | Dockerfile | Compose | 備考                                                                                                                                                          |
-| ----------------------------- | ------- | ---------- | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `image`                       | yes     | no         | no      | image-based モード                                                                                                                                            |
-| `build.dockerfile`            | no      | yes        | no      | Dockerfile-based モード                                                                                                                                       |
-| `build.context`               | no      | yes        | no      | `devcontainer.json` からの相対パス                                                                                                                            |
-| `build.args`                  | no      | yes        | no      | 文字列の値のみ                                                                                                                                                |
-| `build.options`               | no      | partial    | no      | Docker ビルドの argv に渡す。decune が管理するオプションとコンテキストパスは不可                                                                              |
-| `build.target`                | no      | yes        | no      | multi-stage build の target                                                                                                                                   |
-| `build.cacheFrom`             | no      | partial    | no      | Docker CLI で扱える形式                                                                                                                                       |
-| `dockerComposeFile`           | no      | no         | yes     | 文字列 / 文字列の配列。ローカルパスのみ                                                                                                                       |
-| `service`                     | no      | no         | yes     | primary service                                                                                                                                               |
-| `runServices`                 | no      | no         | yes     | 未指定時は全サービス。primary service は常に含める                                                                                                            |
-| `features`                    | yes     | yes        | yes     | Compose モードは primary service の最終イメージに適用                                                                                                         |
-| `overrideFeatureInstallOrder` | yes     | yes        | yes     | Feature のインストール順序に反映                                                                                                                              |
-| `overrideCommand`             | yes     | yes        | yes     | image/Dockerfile 既定 true、Compose 既定 false                                                                                                                |
-| `mounts`                      | partial | partial    | partial | bind/volume 対応。Compose モードは primary service に override として追加。tmpfs はエラー                                                                     |
-| `workspaceMount`              | yes     | yes        | no      | Compose モードは未対応のエラー。Compose ファイルの primary service の `volumes` を使う                                                                        |
-| `workspaceFolder`             | yes     | yes        | yes     | Compose モードの既定は `/`                                                                                                                                    |
-| `containerEnv`                | yes     | yes        | yes     | Compose モードは primary service の `environment` を上書き。秘密情報の保存先ではない                                                                          |
-| `remoteEnv`                   | yes     | yes        | yes     | exec / lifecycle command / シェルに適用。`${localEnv:...}` 由来の値は argv / ログの redaction 対象                                                            |
-| `remoteUser`                  | yes     | yes        | yes     | シェル / lifecycle command のユーザー                                                                                                                         |
-| `containerUser`               | yes     | yes        | yes     | Compose モードは primary service の `user` を上書き                                                                                                           |
-| `updateRemoteUserUID`         | yes     | yes        | yes     | Linux ホストで既定 true                                                                                                                                       |
-| `userEnvProbe`                | yes     | yes        | yes     | `none`, `loginShell`, `interactiveShell`, `loginInteractiveShell`                                                                                             |
-| `forwardPorts`                | yes     | yes        | yes     | TCP のみ。プロトコルサフィックスなしは TCP、`/tcp` は許可、`/udp` は未対応のエラー。Compose モードは `"service:port"` を受け付ける                            |
-| `portsAttributes`             | partial | partial    | partial | `label`, `onAutoForward`, `requireLocalPort`。`protocol`, `elevateIfNeeded` は警告して無視                                                                    |
-| `otherPortsAttributes`        | partial | partial    | partial | automatic forwarding の既定。未対応のフィールドは警告                                                                                                         |
-| `appPort`                     | yes     | yes        | no      | TCP のみ。プロトコルサフィックスなしは TCP、`/tcp` は許可、`/udp` は未対応のエラー。Compose モードは未対応のエラー。Compose ファイルのサービス `ports` を使う |
-| `runArgs`                     | partial | partial    | no      | Compose モードは未対応のエラー。Compose ファイルのサービス属性を使う                                                                                          |
-| `init`                        | yes     | yes        | yes     | Compose モードは primary service の `init` を上書き                                                                                                           |
-| `privileged`                  | yes     | yes        | yes     | Compose モードは primary service の `privileged` を上書き                                                                                                     |
-| `capAdd`                      | yes     | yes        | yes     | Compose モードは primary service の `cap_add` を上書き                                                                                                        |
-| `securityOpt`                 | yes     | yes        | yes     | Compose モードは primary service の `security_opt` を上書き                                                                                                   |
-| `entrypoint`                  | yes     | yes        | yes     | 主にイメージのラベル / Feature メタデータのレイヤーで指定する。収集した entrypoint は entrypoint shim に反映(7.1 節)                                          |
-| lifecycle commands            | yes     | yes        | yes     | Feature メタデータ由来のコマンドは利用者のコマンドより前に実行                                                                                                |
-| `waitFor`                     | partial | partial    | partial | パースするが attached `up` は `postAttachCommand` まで同期実行                                                                                                |
-| `name`                        | ignored | ignored    | ignored | 無視する。実行時挙動には使わない                                                                                                                              |
-| `shutdownAction`              | partial | partial    | partial | attached `up` 終了時に適用。明示 `down` / `remove` が正                                                                                                       |
-| `hostRequirements`            | ignored | ignored    | ignored | 検証せず無視する                                                                                                                                              |
-| `customizations`              | ignored | ignored    | ignored | 保持するが実行しない                                                                                                                                          |
+| property | image | Dockerfile | Compose | 備考 |
+| --- | --- | --- | --- | --- |
+| `image` | yes | no | no | image-based モード |
+| `build.dockerfile` | no | yes | no | Dockerfile-based モード |
+| `build.context` | no | yes | no | `devcontainer.json` からの相対パス |
+| `build.args` | no | yes | no | 文字列の値のみ |
+| `build.options` | no | partial | no | Docker ビルドの argv に渡す。decune が管理するオプションとコンテキストパスは不可 |
+| `build.target` | no | yes | no | multi-stage build の target |
+| `build.cacheFrom` | no | partial | no | Docker CLI で扱える形式 |
+| `dockerComposeFile` | no | no | yes | 文字列 / 文字列の配列。ローカルパスのみ |
+| `service` | no | no | yes | primary service |
+| `runServices` | no | no | yes | 未指定時は全サービス。primary service は常に含める |
+| `features` | yes | yes | yes | Compose モードは primary service の最終イメージに適用 |
+| `overrideFeatureInstallOrder` | yes | yes | yes | Feature のインストール順序に反映 |
+| `overrideCommand` | yes | yes | yes | image/Dockerfile 既定 true、Compose 既定 false |
+| `mounts` | partial | partial | partial | bind/volume 対応。Compose モードは primary service に override として追加。tmpfs はエラー |
+| `workspaceMount` | yes | yes | no | Compose モードは未対応のエラー。Compose ファイルの primary service の `volumes` を使う |
+| `workspaceFolder` | yes | yes | yes | Compose モードの既定は `/` |
+| `containerEnv` | yes | yes | yes | Compose モードは primary service の `environment` を上書き。秘密情報の保存先ではない |
+| `remoteEnv` | yes | yes | yes | exec / lifecycle command / シェルに適用。`${localEnv:...}` 由来の値は argv / ログの redaction 対象 |
+| `remoteUser` | yes | yes | yes | シェル / lifecycle command のユーザー |
+| `containerUser` | yes | yes | yes | Compose モードは primary service の `user` を上書き |
+| `updateRemoteUserUID` | yes | yes | yes | Linux ホストで既定 true |
+| `userEnvProbe` | yes | yes | yes | `none`, `loginShell`, `interactiveShell`, `loginInteractiveShell` |
+| `forwardPorts` | yes | yes | yes | TCP のみ。プロトコルサフィックスなしは TCP、`/tcp` は許可、`/udp` は未対応のエラー。Compose モードは `"service:port"` を受け付ける |
+| `portsAttributes` | partial | partial | partial | `label`, `onAutoForward`, `requireLocalPort`。`protocol`, `elevateIfNeeded` は警告して無視 |
+| `otherPortsAttributes` | partial | partial | partial | automatic forwarding の既定。未対応のフィールドは警告 |
+| `appPort` | yes | yes | no | TCP のみ。プロトコルサフィックスなしは TCP、`/tcp` は許可、`/udp` は未対応のエラー。Compose モードは未対応のエラー。Compose ファイルのサービス `ports` を使う |
+| `runArgs` | partial | partial | no | Compose モードは未対応のエラー。Compose ファイルのサービス属性を使う |
+| `init` | yes | yes | yes | Compose モードは primary service の `init` を上書き |
+| `privileged` | yes | yes | yes | Compose モードは primary service の `privileged` を上書き |
+| `capAdd` | yes | yes | yes | Compose モードは primary service の `cap_add` を上書き |
+| `securityOpt` | yes | yes | yes | Compose モードは primary service の `security_opt` を上書き |
+| `entrypoint` | yes | yes | yes | 主にイメージのラベル / Feature メタデータのレイヤーで指定する。収集した entrypoint は entrypoint shim に反映(7.1 節) |
+| lifecycle commands | yes | yes | yes | Feature メタデータ由来のコマンドは利用者のコマンドより前に実行 |
+| `waitFor` | partial | partial | partial | パースするが attached `up` は `postAttachCommand` まで同期実行 |
+| `name` | ignored | ignored | ignored | 無視する。実行時挙動には使わない |
+| `shutdownAction` | partial | partial | partial | attached `up` 終了時に適用。明示 `down` / `remove` が正 |
+| `hostRequirements` | ignored | ignored | ignored | 検証せず無視する |
+| `customizations` | ignored | ignored | ignored | 保持するが実行しない |
 
 `portsAttributes` / `otherPortsAttributes` の `onAutoForward` は `notify`、`silent`、`ignore` に加え、互換のため `openBrowser`、`openBrowserOnce`、`openPreview` を受理する。ブラウザ / プレビュー系の値は CLI では `notify` と同じ扱いにする。
 
@@ -1006,11 +1006,11 @@ Compose モードでは Compose サービスの実行時設定を Docker Compose
 
 decune は以下の Dev Container プロパティを decune-generated Compose override へ自動変換せず、メタデータ検証で未対応のエラーとする。
 
-| Dev Container property | Compose モードの扱い | 代替                                                                                                                                                   |
-| ---------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `workspaceMount`       | 未対応のエラー       | ワークスペースの bind mount を primary service の `volumes` に書く                                                                                     |
-| `appPort`              | 未対応のエラー       | Docker published port 設定を Compose サービスの `ports` に書く                                                                                         |
-| `runArgs`              | 未対応のエラー       | `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose サービスのフィールドに書く |
+| Dev Container property | Compose モードの扱い | 代替 |
+| --- | --- | --- |
+| `workspaceMount` | 未対応のエラー | ワークスペースの bind mount を primary service の `volumes` に書く |
+| `appPort` | 未対応のエラー | Docker published port 設定を Compose サービスの `ports` に書く |
+| `runArgs` | 未対応のエラー | `init`、`privileged`、`cap_add`、`security_opt`、`extra_hosts`、`dns`、`dns_search`、`devices`、`network_mode` など Compose サービスのフィールドに書く |
 
 Docker published port 設定は Compose ファイルに委譲する。Compose モードで外部公開が必要なポートは Compose サービスの `ports` を使い、decune の port forwarding は `forwardPorts`、decune `[[ports]]`、CLI `-p` を使う。
 
@@ -1141,11 +1141,11 @@ diagnostic code の定義一覧は 13.1 節。
 
 Compose-based configuration の複数クローンを同一 Docker デーモン上で同時利用するとき、decune は次の境界でリソースを分離する。
 
-| Category                | Resources                                                            |
-| ----------------------- | -------------------------------------------------------------------- |
-| Always workspace-scoped | project name、generated image、default network / volume              |
-| Opt-in rewrite          | fixed TCP port / name / IPv4 subnet、declared endpoint               |
-| No automatic rewrite    | external resource、IPv6、static service address、undeclared endpoint |
+| Category | Resources |
+| --- | --- |
+| Always workspace-scoped | project name、generated image、default network / volume |
+| Opt-in rewrite | fixed TCP port / name / IPv4 subnet、declared endpoint |
+| No automatic rewrite | external resource、IPv6、static service address、undeclared endpoint |
 
 - 常にワークスペース単位となるリソースは、`safe_workspace_slug` と `workspace_id`、またはワークスペース固有の Compose プロジェクト名によりクローンごとに分離する。
 - オプトインの書き換えは `[compose.clone_isolation].enabled = true` を全体の有効化スイッチとし、published port と固定名をワークスペース固有値へ、network relocation と clone isolation endpoint 宣言を明示した対象を relocation 後の値へ書き換える。
