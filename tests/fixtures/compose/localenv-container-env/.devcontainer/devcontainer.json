@@ -4,8 +4,5 @@
   "service": "app",
   "overrideCommand": true,
   "workspaceFolder": "/workspace",
-  "updateRemoteUserUID": false,
-  "containerEnv": {
-    "NPM_TOKEN": "${localEnv:NPM_TOKEN}"
-  }
+  "updateRemoteUserUID": false
 }

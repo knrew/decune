@@ -1,5 +1,11 @@
 #!/bin/sh
 set -eu
+case " $* " in
+  *secret-token*)
+    echo "secret value was exposed in Docker CLI arguments" >&2
+    exit 92
+    ;;
+esac
 if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
   # shellcheck disable=SC1090
   . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"

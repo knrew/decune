@@ -548,6 +548,14 @@ version = 1
 use_global_config = true
 shell = "/bin/zsh"
 
+[container_env]
+APP_ENV = "development"
+API_TOKEN = "${localEnv:DECUNE_API_TOKEN}"
+
+[remote_env]
+EDITOR = "nvim"
+PATH = "${containerEnv:PATH}:/workspace/bin"
+
 [features."ghcr.io/devcontainers/features/github-cli:1"]
 version = "latest"
 
@@ -857,6 +865,30 @@ shell = true
 - `shell`: true なら `/bin/sh -lc` で実行。文字列のコマンドの既定は true、配列のコマンドの既定は false。
 - `workdir`: 省略時、ホスト側フックは workspace root、コンテナ側フックは `workspaceFolder`。
 
+### 5.17 `[container_env]` / `[remote_env]`
+
+`[container_env]` と `[remote_env]` はトップレベルの文字列マップであり、`devcontainer.json` の `containerEnv` / `remoteEnv` と同じ最終設定へそれぞれマージする。
+
+```toml
+version = 1
+
+[container_env]
+APP_ENV = "development"
+API_TOKEN = "${localEnv:DECUNE_API_TOKEN}"
+
+[remote_env]
+EDITOR = "nvim"
+PATH = "${containerEnv:PATH}:/workspace/bin"
+```
+
+- 値は文字列だけを受理する。空文字列は環境変数を空に設定する値であり、下位レイヤーのキーを削除しない。
+- 環境変数名は `containerEnv` / `remoteEnv` と同じ扱いとし、追加の検証を行わない。
+- `[containerEnv]` / `[remoteEnv]`、`[env.container]` / `[env.remote]` は未知のキーとしてエラーにする。
+- `[container_env]` はコンテナ作成時の環境変数として扱う。image/Dockerfile-based configuration ではコンテナへ渡し、Docker Compose-based configuration では primary service の `environment` を上書きする。
+- `[remote_env]` はコンテナ内の lifecycle command、コンテナ側の decune hook、リモートシェルへ適用する。コンテナ自体の基本環境とホスト側の decune hook には追加しない。
+- map は 5.2 節のレイヤー順でキーごとにマージし、同一キーは後のレイヤーが上書きする。環境変数の CLI オプションはないため、project decune config が最上位になる。
+- `--no-global-config` または `use_global_config = false` では、global decune config 由来の `[container_env]` / `[remote_env]` も適用しない。
+
 ## 6. 変数展開とパス解決
 
 以下を文字列の値で展開する。
@@ -870,15 +902,17 @@ shell = true
 - `${remoteUser}`
 - `${remoteUserHome}`
 
-少なくとも `build.args` の値、`build.target`、`build.cacheFrom`、`workspaceFolder`、`containerEnv`、`remoteEnv`、`remoteUser`、`containerUser`、`mounts`、dotfiles、`runArgs` の値の部分で変数展開する。`workspaceFolder` は変数展開後に絶対パスの検証を行う。`workspaceFolder` 内の `${containerWorkspaceFolder}` は既定のワークスペースフォルダーを基準に展開する。`workspaceFolder` 未指定時に decune が合成する既定のワークスペースフォルダーは設定の文字列値ではないため、変数展開せずそのままのパスとして扱う。lifecycle command 本体、`dockerComposeFile`、`service`、`runServices`、`forwardPorts`、`appPort` の追加変数展開は行わない。
+少なくとも `build.args` の値、`build.target`、`build.cacheFrom`、`workspaceFolder`、`containerEnv`、`remoteEnv`、decune config の `container_env` / `remote_env`、`remoteUser`、`containerUser`、`mounts`、dotfiles、`runArgs` の値の部分で変数展開する。`workspaceFolder` は変数展開後に絶対パスの検証を行う。`workspaceFolder` 内の `${containerWorkspaceFolder}` は既定のワークスペースフォルダーを基準に展開する。`workspaceFolder` 未指定時に decune が合成する既定のワークスペースフォルダーは設定の文字列値ではないため、変数展開せずそのままのパスとして扱う。lifecycle command 本体、`dockerComposeFile`、`service`、`runServices`、`forwardPorts`、`appPort` の追加変数展開は行わない。
 
 `build.args`、`build.target`、`build.cacheFrom` は Dockerfile のビルド前に展開するため、最終イメージや実行時のコンテナからしか分からない値には依存できない。これらのフィールドで `${remoteUserHome}` を使う構成はエラーとする。`${remoteUser}` は、`remoteUser` または `containerUser` が設定 / メタデータからビルド前に決まる場合だけ使える。Dockerfile の `USER`、Compose サービスの `user`、イメージ設定の `User` 由来のユーザーは、ビルド前の `build.*` 変数展開には使わない。
 
-`${remoteUserHome}` は `/home/<user>` と推測せず、コンテナ / イメージ内の passwd データベースから解決する。`workspaceFolder`、`containerEnv`、`remoteEnv`、`mounts`、dotfiles、`runArgs` など実行時のユーザー解決後に評価できるフィールドでは、実効リモートユーザーの決定後に `${remoteUser}` / `${remoteUserHome}` を展開する。`containerEnv` 自体の中で `${containerEnv:...}` を使う構成はエラーとする。
+`${remoteUserHome}` は `/home/<user>` と推測せず、コンテナ / イメージ内の passwd データベースから解決する。`workspaceFolder`、`containerEnv`、`remoteEnv`、`container_env`、`remote_env`、`mounts`、dotfiles、`runArgs` など実行時のユーザー解決後に評価できるフィールドでは、実効リモートユーザーの決定後に `${remoteUser}` / `${remoteUserHome}` を展開する。
 
-`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `build.args` の値は secret-sensitive value として追跡する。decune はその実値を状態、reuse hash、decune-generated Compose override、Docker/Compose のラベル、argv、通常のエラーログに平文保存してはならない。reuse hash ではキーを保持し、`containerEnv` と `build.args` は変更検出のため実値ではなく非可逆な digest を含め、`remoteEnv` は redaction 済みのマーカーに置き換える。Compose モードの decune-generated Compose override では primary service の `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式のプレースホルダーを書き、実値は `docker compose` の子プロセスの環境変数として渡す。プレースホルダーの変数名の `<SAFE_KEY>` は、`containerEnv` のキーから ASCII 英数字 / アンダースコアのみへ正規化した値とする。Docker のビルド引数はプロセスの環境変数と `--build-arg KEY` で Docker CLI に渡し、argv に値を直接載せない。
+`containerEnv` とマージ済みの `container_env` はコンテナ作成計画時に展開する。このマップ自体の中で `${containerEnv:...}` を使う構成は、循環する環境依存としてエラーにする。`remoteEnv` とマージ済みの `remote_env` は lifecycle / attach の実行時に展開し、`${localEnv:...}` はその実行を行う decune プロセスの環境、`${containerEnv:...}` は実際に作成・起動したコンテナの環境を参照する。`${localEnv:VAR}` / `${containerEnv:VAR}` の参照先が存在せず既定値もない場合はエラーにする。
 
-`containerEnv` はコンテナ作成時の環境変数であり、コンテナ内プロセスや Docker inspect から見える。`build.args` は Docker のビルドに渡り、イメージレイヤーやビルド出力に残る可能性がある。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser`、`build.target`、`build.cacheFrom` はコマンド、状態、ラベル、コンテナの identity に出る可能性がある。decune はこれらを秘密情報の保存先として保証しない。直接書かれた秘密の文字列や、decune が `${localEnv:...}` 由来と追跡できない値は、自動では secret-sensitive value と判定しない。ビルド時の秘密情報には Docker BuildKit の secret を使う。
+`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `container_env` / `remote_env` / `build.args` の値は secret-sensitive value として追跡する。decune はその実値を状態、reuse hash、decune-generated Compose override、Docker/Compose のラベル、argv、通常のエラーログに平文保存してはならない。reuse hash ではキーを保持し、`containerEnv` / `container_env` と `build.args` は変更検出のため実値ではなく非可逆な digest を含め、`remoteEnv` / `remote_env` の展開後の実値は redaction 済みのマーカーに置き換える。Compose モードの decune-generated Compose override では primary service の `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式のプレースホルダーを書き、実値は `docker compose` の子プロセスの環境変数として渡す。プレースホルダーの変数名の `<SAFE_KEY>` は、マージ済みの `containerEnv` のキーから ASCII 英数字 / アンダースコアのみへ正規化した値とする。Docker のビルド引数はプロセスの環境変数と `--build-arg KEY` で Docker CLI に渡し、argv に値を直接載せない。
+
+`containerEnv` / `container_env` はコンテナ作成時の環境変数であり、コンテナ内プロセスや Docker inspect から見える。`build.args` は Docker のビルドに渡り、イメージレイヤーやビルド出力に残る可能性がある。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser`、`build.target`、`build.cacheFrom` はコマンド、状態、ラベル、コンテナの identity に出る可能性がある。decune はこれらを秘密情報の保存先として保証しない。設定ファイルへ直接書かれた秘密の文字列や、decune が `${localEnv:...}` 由来と追跡できない値は、自動では secret-sensitive value と判定しない。ビルド時の秘密情報には Docker BuildKit の secret を使う。
 
 通常の `up` / `rebuild` におけるホスト側 bind の `source` の処理順:
 
@@ -1344,19 +1378,19 @@ reuse hash に含めない入力:
 - Compose published port relocation により生成されるサービス `ports` の上書き。
 - clone isolation の network relocation により生成されるサブネット / ゲートウェイ。
 - credential のトークンの値、SSH agent のソケットパス、GitHub のトークンファイルのパス。
-- `${localEnv:...}` 由来の `remoteEnv` の値。
+- `${localEnv:...}` 由来の `remoteEnv` / `remote_env` の展開後の値。ただし設定に書かれた未展開のテンプレートは解決済み設定として含めるため、テンプレートを変更すると reuse hash も変わる。
 - Compose secrets の解決済みの値。
 
 secret-sensitive value の扱い:
 
-- `${localEnv:...}` 由来の `containerEnv` の値は平文では含めず、コンテナ作成時の環境変数の変更を検出するため非可逆な digest として含める。
+- `${localEnv:...}` 由来の `containerEnv` / `container_env` の値は平文では含めず、コンテナ作成時の環境変数の変更を検出するため非可逆な digest として含める。
 - Compose モードでは、利用者の Compose ファイルだけを対象にした `docker compose config --format json` が解決した変数展開 / env ファイル / profile / マージの結果から、`services.<service>.environment` の末端の値を平文ではなく digest マーカーに置き換えた canonical Compose model をハッシュに含める。
 - この digest の入力は `decune-compose-env-value-hash-v1` で domain separation とバージョン付けをし、JSON のパス、JSON の値の型、正規化した JSON の値を含める。digest マーカーは `decune-compose-env-value-hash-v1:sha256:<hex>` 形式とし、環境変数の値の平文を状態、ラベル、ログ、reuse hash の入力に残してはならない。
 
 decune-generated Compose override semantic hash input:
 
 - primary service、decune が追加するラベル / 環境変数 / マウント / ユーザー / セキュリティオプション / 起動コマンド、および decune が生成したイメージへ差し替えるかどうかを含める。
-- `${localEnv:...}` 由来の `containerEnv` の値は redaction 済みのマーカーまたはプレースホルダーとして扱い、実値をハッシュの入力にしない。
+- `${localEnv:...}` 由来の `containerEnv` / `container_env` の値は redaction 済みのマーカーまたはプレースホルダーとして扱い、実値をハッシュの入力にしない。
 - decune-generated Compose override 内の `decune.config_hash` ラベルやハッシュ由来のイメージタグなど、ハッシュ自身から派生する値は循環を避けるためハッシュの入力にしない。
 
 clone isolation の relocation の結果値:

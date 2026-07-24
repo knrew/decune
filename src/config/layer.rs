@@ -57,6 +57,16 @@ impl ConfigLayer {
         raw: RawDecuneConfig,
         origin: ConfigPathOrigin,
     ) -> Self {
+        let devcontainer = if raw.container_env.is_empty() && raw.remote_env.is_empty() {
+            None
+        } else {
+            Some(LayerDevcontainerMetadata {
+                container_env: raw.container_env,
+                remote_env: raw.remote_env,
+                ..LayerDevcontainerMetadata::default()
+            })
+        };
+
         Self {
             shell: raw.shell,
             features: raw
@@ -84,7 +94,7 @@ impl ConfigLayer {
             auto_ports: raw.ports.auto.map(LayerAutoPorts::from_raw),
             compose: LayerCompose::from_raw(&raw.compose),
             container: LayerContainer::from_raw(&raw.container),
-            devcontainer: None,
+            devcontainer,
             credentials: LayerCredentials::from_raw(raw.credentials),
             hooks: LayerHooks::from_raw(raw.hooks),
         }

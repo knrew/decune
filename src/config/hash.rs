@@ -2381,6 +2381,52 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
     }
 
     #[test]
+    fn decune_remote_env_template_changes_hash_but_expanded_value_does_not() {
+        let first_template = resolved_config(concat!(
+            r#"
+version = 1
+
+[remote_env]
+NPM_TOKEN = "$"#,
+            "{localEnv:FIRST_NPM_TOKEN}",
+            "\"\n",
+        ));
+        let second_template = resolved_config(concat!(
+            r#"
+version = 1
+
+[remote_env]
+NPM_TOKEN = "$"#,
+            "{localEnv:SECOND_NPM_TOKEN}",
+            "\"\n",
+        ));
+
+        assert_ne!(hash_for(&first_template), hash_for(&second_template));
+
+        let mut first_expanded = first_template;
+        first_expanded
+            .devcontainer
+            .remote_env
+            .insert("NPM_TOKEN".to_owned(), "first-secret".to_owned());
+        let mut second_expanded = first_expanded.clone();
+        second_expanded
+            .devcontainer
+            .remote_env
+            .insert("NPM_TOKEN".to_owned(), "second-secret".to_owned());
+
+        let first_hash = config_hash(&ConfigHashInput {
+            sensitive_remote_env_keys: vec!["NPM_TOKEN".to_owned()],
+            ..ConfigHashInput::new(&first_expanded)
+        });
+        let second_hash = config_hash(&ConfigHashInput {
+            sensitive_remote_env_keys: vec!["NPM_TOKEN".to_owned()],
+            ..ConfigHashInput::new(&second_expanded)
+        });
+
+        assert_eq!(first_hash, second_hash);
+    }
+
+    #[test]
     fn config_hash_keeps_compose_secret_source_metadata() {
         let config = resolved_config("version = 1\n");
         let first = config_hash(&ConfigHashInput {

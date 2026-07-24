@@ -1565,7 +1565,7 @@ fn compose_up_preserves_primary_service_image_when_no_final_layer_is_needed() {
 }
 
 #[test]
-fn compose_up_passes_local_env_derived_container_env_placeholder_env() {
+fn compose_up_passes_decune_config_local_env_container_env_placeholder_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
     workspace.create_dir(".devcontainer").unwrap();
@@ -1576,12 +1576,23 @@ fn compose_up_passes_local_env_derived_container_env_placeholder_env() {
             {
               "dockerComposeFile": "compose.yaml",
               "service": "app",
-              "overrideCommand": true,
-              "containerEnv": {
-                "NPM_TOKEN": "${localEnv:NPM_TOKEN}"
-              }
+              "overrideCommand": true
             }
             "#,
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            concat!(
+                r#"
+            version = 1
+
+            [container_env]
+            NPM_TOKEN = "$"#,
+                "{localEnv:NPM_TOKEN}",
+                "\"\n",
+            ),
         )
         .unwrap();
     workspace

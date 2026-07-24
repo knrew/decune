@@ -1370,7 +1370,7 @@ fn compose_integration_profiles_start_profile_service_when_enabled_by_host_env()
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
-fn compose_integration_localenv_container_env_is_expanded() {
+fn compose_integration_decune_config_localenv_container_env_is_expanded() {
     let workspace = compose_fixture_workspace("localenv-container-env");
     let state_home = support::TempWorkspace::new().unwrap();
     let state_home_value = state_home.path().to_string_lossy().into_owned();

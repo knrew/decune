@@ -746,6 +746,88 @@ mod tests {
     }
 
     #[test]
+    fn decune_environment_maps_follow_layer_order_and_merge_by_key() {
+        let metadata_layer = |container_value: &str, remote_value: &str| ConfigLayer {
+            devcontainer: Some(LayerDevcontainerMetadata {
+                container_env: BTreeMap::from([
+                    ("CONTAINER_SHARED".to_owned(), container_value.to_owned()),
+                    (
+                        format!("CONTAINER_{container_value}"),
+                        container_value.to_owned(),
+                    ),
+                ]),
+                remote_env: BTreeMap::from([
+                    ("REMOTE_SHARED".to_owned(), remote_value.to_owned()),
+                    (format!("REMOTE_{remote_value}"), remote_value.to_owned()),
+                ]),
+                ..LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        };
+        let global = raw_layer(
+            r#"
+version = 1
+
+[container_env]
+CONTAINER_SHARED = "global"
+CONTAINER_GLOBAL = "global"
+
+[remote_env]
+REMOTE_SHARED = "global"
+REMOTE_GLOBAL = "global"
+"#,
+        );
+        let project = raw_layer(
+            r#"
+version = 1
+
+[container_env]
+CONTAINER_SHARED = "project"
+CONTAINER_PROJECT = ""
+
+[remote_env]
+REMOTE_SHARED = "project"
+REMOTE_PROJECT = ""
+"#,
+        );
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: vec![metadata_layer("IMAGE", "IMAGE")],
+            feature_metadata: vec![metadata_layer("FEATURE", "FEATURE")],
+            global: Some(global),
+            devcontainer: Some(metadata_layer("DEVCONTAINER", "DEVCONTAINER")),
+            project: Some(project),
+            cli: None,
+        });
+
+        assert_eq!(
+            config.devcontainer.container_env,
+            BTreeMap::from([
+                (
+                    "CONTAINER_DEVCONTAINER".to_owned(),
+                    "DEVCONTAINER".to_owned(),
+                ),
+                ("CONTAINER_FEATURE".to_owned(), "FEATURE".to_owned()),
+                ("CONTAINER_GLOBAL".to_owned(), "global".to_owned()),
+                ("CONTAINER_IMAGE".to_owned(), "IMAGE".to_owned()),
+                ("CONTAINER_PROJECT".to_owned(), String::new()),
+                ("CONTAINER_SHARED".to_owned(), "project".to_owned()),
+            ])
+        );
+        assert_eq!(
+            config.devcontainer.remote_env,
+            BTreeMap::from([
+                ("REMOTE_DEVCONTAINER".to_owned(), "DEVCONTAINER".to_owned()),
+                ("REMOTE_FEATURE".to_owned(), "FEATURE".to_owned()),
+                ("REMOTE_GLOBAL".to_owned(), "global".to_owned()),
+                ("REMOTE_IMAGE".to_owned(), "IMAGE".to_owned()),
+                ("REMOTE_PROJECT".to_owned(), String::new()),
+                ("REMOTE_SHARED".to_owned(), "project".to_owned()),
+            ])
+        );
+    }
+
+    #[test]
     fn container_cli_enabled_uses_last_specified_scalar_value() {
         for (global, project, expected) in [
             (false, None, false),

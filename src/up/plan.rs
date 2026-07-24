@@ -549,7 +549,18 @@ mod tests {
         fs::create_dir_all(config_home.path().join("decune")).unwrap();
         fs::write(
             config_home.path().join("decune/config.toml"),
-            "version = 1\n\n[container.cli]\nenabled = false\n",
+            r#"
+version = 1
+
+[container.cli]
+enabled = false
+
+[container_env]
+GLOBAL_CONTAINER = "global"
+
+[remote_env]
+GLOBAL_REMOTE = "global"
+"#,
         )
         .unwrap();
         let temp = tempfile::tempdir().unwrap();
@@ -568,6 +579,8 @@ mod tests {
 
         assert!(plan.config_layers.global.is_none());
         assert!(plan.config.container.cli.enabled);
+        assert!(plan.config.devcontainer.container_env.is_empty());
+        assert!(plan.config.devcontainer.remote_env.is_empty());
     }
 
     #[test]
@@ -608,7 +621,18 @@ subnet_pool = "not-a-cidr"
         fs::create_dir_all(config_home.path().join("decune")).unwrap();
         fs::write(
             config_home.path().join("decune/config.toml"),
-            "version = 1\n\n[container.cli]\nenabled = false\n",
+            r#"
+version = 1
+
+[container.cli]
+enabled = false
+
+[container_env]
+GLOBAL_CONTAINER = "global"
+
+[remote_env]
+GLOBAL_REMOTE = "global"
+"#,
         )
         .unwrap();
         let temp = tempfile::tempdir().unwrap();
@@ -629,6 +653,8 @@ subnet_pool = "not-a-cidr"
 
         assert!(plan.config_layers.global.is_none());
         assert!(plan.config.container.cli.enabled);
+        assert!(plan.config.devcontainer.container_env.is_empty());
+        assert!(plan.config.devcontainer.remote_env.is_empty());
     }
 
     #[test]

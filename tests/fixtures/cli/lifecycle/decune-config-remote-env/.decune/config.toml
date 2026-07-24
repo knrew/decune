@@ -1,0 +1,4 @@
+version = 1
+
+[remote_env]
+DECUNE_REMOTE_SECRET = "${localEnv:DECUNE_TEST_REMOTE_SECRET}"

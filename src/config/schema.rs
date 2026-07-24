@@ -20,6 +20,10 @@ pub(crate) struct RawDecuneConfig {
     #[serde(default)]
     pub(crate) features: BTreeMap<String, RawFeatureConfig>,
     #[serde(default)]
+    pub(crate) container_env: BTreeMap<String, String>,
+    #[serde(default)]
+    pub(crate) remote_env: BTreeMap<String, String>,
+    #[serde(default)]
     pub(crate) dotfiles: Vec<RawDotfileConfig>,
     #[serde(default)]
     pub(crate) mounts: Vec<RawMountConfig>,
@@ -42,6 +46,8 @@ impl RawDecuneConfig {
             use_global_config: None,
             shell: None,
             features: BTreeMap::new(),
+            container_env: BTreeMap::new(),
+            remote_env: BTreeMap::new(),
             dotfiles: Vec::new(),
             mounts: Vec::new(),
             ports: RawPortsConfig::default(),

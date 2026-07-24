@@ -68,6 +68,14 @@ version = 1
 use_global_config = false
 shell = "/bin/zsh"
 
+[container_env]
+APP_ENV = "development"
+API_TOKEN = "${localEnv:DECUNE_API_TOKEN}"
+
+[remote_env]
+EDITOR = "nvim"
+PATH = "${containerEnv:PATH}:/workspace/bin"
+
 [features."ghcr.io/devcontainers/features/github-cli:1"]
 version = "latest"
 
@@ -225,6 +233,7 @@ shell = false
         let config = load_config_file(&path).unwrap();
 
         assert_spec_example_top_level(&config);
+        assert_spec_example_env(&config);
         assert_spec_example_features(&config);
         assert_spec_example_dotfiles(&config);
         assert_spec_example_mounts(&config);
@@ -239,6 +248,25 @@ shell = false
         assert_eq!(config.version, Some(1));
         assert_eq!(config.use_global_config, Some(false));
         assert_eq!(config.shell.as_deref(), Some("/bin/zsh"));
+    }
+
+    fn assert_spec_example_env(config: &RawDecuneConfig) {
+        assert_eq!(
+            config.container_env.get("APP_ENV").map(String::as_str),
+            Some("development")
+        );
+        assert_eq!(
+            config.container_env.get("API_TOKEN").map(String::as_str),
+            Some("${localEnv:DECUNE_API_TOKEN}")
+        );
+        assert_eq!(
+            config.remote_env.get("EDITOR").map(String::as_str),
+            Some("nvim")
+        );
+        assert_eq!(
+            config.remote_env.get("PATH").map(String::as_str),
+            Some("${containerEnv:PATH}:/workspace/bin")
+        );
     }
 
     fn assert_spec_example_features(config: &RawDecuneConfig) {
@@ -451,6 +479,64 @@ read_olny = true
 
         assert!(message.contains("Failed to parse decune config file"));
         assert!(message.contains("read_olny"));
+    }
+
+    #[test]
+    fn non_string_environment_value_is_rejected_with_key_and_path() {
+        let (_temp, path) = config_path("non-string-environment");
+        fs::write(
+            &path,
+            r"
+version = 1
+
+[container_env]
+PORT = 3000
+",
+        )
+        .unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains(&path.display().to_string()));
+        assert!(message.contains("PORT"));
+    }
+
+    #[test]
+    fn environment_table_aliases_are_rejected_with_key_and_path() {
+        for (name, contents, key) in [
+            (
+                "camel-case-container-env",
+                "version = 1\n\n[containerEnv]\nAPP_ENV = \"development\"\n",
+                "containerEnv",
+            ),
+            (
+                "camel-case-remote-env",
+                "version = 1\n\n[remoteEnv]\nEDITOR = \"nvim\"\n",
+                "remoteEnv",
+            ),
+            (
+                "nested-container-env",
+                "version = 1\n\n[env.container]\nAPP_ENV = \"development\"\n",
+                "env",
+            ),
+            (
+                "nested-remote-env",
+                "version = 1\n\n[env.remote]\nEDITOR = \"nvim\"\n",
+                "env",
+            ),
+        ] {
+            let (_temp, path) = config_path(name);
+            fs::write(&path, contents).unwrap();
+
+            let error = load_config_file(&path).unwrap_err();
+            let message = format!("{error:#}");
+
+            assert!(message.contains("Failed to parse decune config file"));
+            assert!(message.contains(&path.display().to_string()));
+            assert!(message.contains(key));
+        }
     }
 
     #[test]

@@ -1,0 +1,11 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "containerEnv": {
+    "PATH": "/lower-layer",
+    "DEVCONTAINER_ONLY": "kept"
+  },
+  "userEnvProbe": "none",
+  "postStartCommand": ["/usr/local/bin/decune-check-expanded-env"]
+}
