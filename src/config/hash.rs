@@ -436,7 +436,7 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
         writer.field("features", |writer| write_config_features(writer, config));
         writer.field("dotfiles", |writer| write_config_dotfiles(writer, config));
         writer.field("mounts", |writer| write_config_mounts(writer, config));
-        // forwarding は up 実行時の runtime 設定であり，container/image の再作成条件ではない．
+        // Port forwarding is runtime configuration for up and does not trigger container/image recreation.
         _ = &config.ports;
         writer.field("compose", |writer| {
             write_config_compose(writer, config);
