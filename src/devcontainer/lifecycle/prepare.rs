@@ -56,7 +56,8 @@ pub(crate) async fn prepare_container_lifecycle(
     )
     .await?;
     let container_env = inspect_container_env(context.client, &context.container).await?;
-    let remote_env_variables = dotfile_variable_context(&context).with_container_env(container_env);
+    let remote_env_variables = dotfile_variable_context(&context)
+        .with_container_env(container_env, context.sensitive_container_env);
     let remote_env = expand_remote_env_tracked(
         &context.config.devcontainer.remote_env,
         &remote_env_variables,

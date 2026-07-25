@@ -1,7 +1,7 @@
 use std::{collections::BTreeMap, path::Path};
 
 use crate::{
-    config::resolved::ResolvedConfig,
+    config::{resolved::ResolvedConfig, variables::SensitiveEnvMap},
     docker::{client::DockerClient, user::ResolvedRemoteUser},
 };
 
@@ -10,6 +10,7 @@ pub(crate) struct LifecycleRunContext<'a> {
     pub(crate) client: &'a DockerClient,
     pub(crate) container: String,
     pub(crate) config: &'a ResolvedConfig,
+    pub(crate) sensitive_container_env: &'a SensitiveEnvMap,
     pub(crate) workspace_root: &'a Path,
     pub(crate) workspace_basename: &'a str,
     pub(crate) workspace_id: &'a str,

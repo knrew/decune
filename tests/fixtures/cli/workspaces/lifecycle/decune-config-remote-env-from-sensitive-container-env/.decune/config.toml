@@ -1,0 +1,11 @@
+version = 1
+
+[container_env]
+DECUNE_CONTAINER_SECRET = "container-${localEnv:DECUNE_TEST_CONTAINER_SECRET}"
+
+[remote_env]
+DECUNE_REMOTE_SECRET = "remote-${containerEnv:DECUNE_CONTAINER_SECRET}"
+
+[[hooks.after_post_start]]
+command = "printf '%s' \"$DECUNE_REMOTE_SECRET\" >&2; exit 17"
+where   = "container"

@@ -48,7 +48,7 @@ PATH = "${containerEnv:PATH}:/workspace/bin"
 
 TOML ではテーブルを開始すると、次のテーブル見出しまでのキーがそのテーブルに属します。`version`、`shell`、`use_global_config` などのトップレベルのスカラーは、`[container_env]` / `[remote_env]` より前に書いてください。
 
-`${localEnv:...}` 由来の値は既存の redaction 経路で追跡されますが、`container_env` の実値はコンテナ内プロセスや Docker inspect から見えます。decune config とコンテナ環境は秘密情報の保存先として保証されません。詳しいスキーマ、展開タイミング、reuse hash の扱いは [specification.md 5.17 節](specification.md#517-container_env--remote_env)と[6 章](specification.md#6-変数展開とパス解決)を参照してください。
+`${localEnv:...}` 由来の値は既存の redaction 経路で追跡され、`[remote_env]` の `${containerEnv:...}` を介した参照でもこの追跡を引き継ぎます。ただし、`container_env` の実値はコンテナ内プロセスや Docker inspect から見えます。decune config とコンテナ環境は秘密情報の保存先として保証されません。詳しいスキーマ、展開タイミング、reuse hash の扱いは [specification.md 5.17 節](specification.md#517-container_env--remote_env)と[6 章](specification.md#6-変数展開とパス解決)を参照してください。
 
 ## `[features]`
 

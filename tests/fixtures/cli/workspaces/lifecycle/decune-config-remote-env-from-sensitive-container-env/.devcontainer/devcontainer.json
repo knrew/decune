@@ -1,0 +1,4 @@
+{
+  "image": "alpine:3.20",
+  "userEnvProbe": "none"
+}

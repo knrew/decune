@@ -1206,6 +1206,29 @@ fn up_detach_reexpands_and_redacts_decune_config_remote_env() {
 }
 
 #[test]
+fn up_detach_redacts_remote_env_derived_from_sensitive_container_env() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .copy_fixture_dir(
+            "cli/workspaces/lifecycle/decune-config-remote-env-from-sensitive-container-env",
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    with_clean_workspace_containers(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("DECUNE_TEST_CONTAINER_SECRET", "redaction-secret")
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("[REDACTED]"))
+            .stderr(predicate::str::contains("redaction-secret").not());
+    });
+}
+
+#[test]
 fn up_attached_expands_decune_config_remote_env_from_actual_container_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace

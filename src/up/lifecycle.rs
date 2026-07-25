@@ -49,6 +49,7 @@ pub(in crate::up) async fn prepare_up_lifecycle(
         client: &started.client,
         container: target.id,
         config: &started.plan.config,
+        sensitive_container_env: &started.plan.sensitive_container_env,
         workspace_root: started.workspace.root(),
         workspace_basename: started.workspace.basename(),
         workspace_id: started.workspace.id(),
