@@ -2382,24 +2382,22 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
 
     #[test]
     fn decune_remote_env_template_changes_hash_but_expanded_value_does_not() {
-        let first_template = resolved_config(concat!(
+        let first_template = resolved_config(
             r#"
 version = 1
 
 [remote_env]
-NPM_TOKEN = "$"#,
-            "{localEnv:FIRST_NPM_TOKEN}",
-            "\"\n",
-        ));
-        let second_template = resolved_config(concat!(
+NPM_TOKEN = "${localEnv:FIRST_NPM_TOKEN}"
+"#,
+        );
+        let second_template = resolved_config(
             r#"
 version = 1
 
 [remote_env]
-NPM_TOKEN = "$"#,
-            "{localEnv:SECOND_NPM_TOKEN}",
-            "\"\n",
-        ));
+NPM_TOKEN = "${localEnv:SECOND_NPM_TOKEN}"
+"#,
+        );
 
         assert_ne!(hash_for(&first_template), hash_for(&second_template));
 

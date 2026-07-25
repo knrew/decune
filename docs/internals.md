@@ -132,7 +132,7 @@ container-side tool の実行時の配置は、コンテナにマウントする
 
 - `DECUNE_FORWARD_AGENT_SOCKET` / `DECUNE_FORWARD_AGENT_SECRET` / `DECUNE_FORWARD_AGENT_ALLOWED_PORTS`: port forward agent を `docker exec` で起動するときの環境変数。socket は agent が待ち受けるコンテナ内の Unix ソケットのパス、secret はホストと agent の接続認証に使うランダムな 16 進値(redaction 登録済みで、agent は起動後に自プロセスの環境から除去する)、allowed ports は転送を許可するコンテナのポートのカンマ区切りリスト。
 - `DECUNE_REMOTE_USER` や `DECUNE_GH_CONFIG_OWNER` など、decune が生成する exec 用スクリプト向けの補助変数。
-- decune-generated Compose override は `${DECUNE_CONTAINER_ENV_<KEY>}` 形式のプレースホルダーを参照し、secret-sensitive な `containerEnv` の値を override のファイルに直書きせず子プロセスの環境変数として渡す。
+- decune-generated Compose override は `${DECUNE_CONTAINER_ENV_<KEY>}` 形式のプレースホルダーを参照し、secret-sensitive な `containerEnv` の値を override のファイルに直書きせず子プロセスの環境変数として渡す。ここでの `containerEnv` は decune config の `[container_env]` をマージした後の最終設定であり、値の由来がどのレイヤーでも同じ経路を通る。
 
 container-side tools が読むもの:
 
@@ -254,5 +254,5 @@ reuse hash の公開契約(含める入力・含めない入力・secret-sensiti
 - canonical writer(`src/config/canonical.rs`)で決定論的な正規化テキストを構築し、SHA-256 の 16 進 digest にする。先頭にバージョンタグ `decune-config-hash-v1` を含める。
 - トップレベルの入力フィールドは version、解決済み設定、Feature lock、CLI オプション、内部バージョン、ビルド入力、Compose 関連(Compose ファイルの digest、decune-generated Compose override semantic hash の入力、サニタイズ済みの canonical Compose model。Compose モードのときだけ)、解決済みマウント、起動コマンド、UID/GID 同期の入力。
 - 解決済み設定のうち `ports`(forwarding は `up` 実行時の実行時設定)と `container.cli.enabled`(daemon のクエリポリシーにだけ影響)は書き込み時に明示的に除外する。
-- secret-sensitive value は生の値を正規化テキストに入れず、`${localEnv:...}` 由来の `containerEnv` / `build.args` は domain 付きの SHA-256 マーカーへ、`remoteEnv` は固定マーカーへ置換する。置換規則の契約は specification.md 10.3 節。
+- secret-sensitive value は生の値を正規化テキストに入れず、`${localEnv:...}` 由来の `containerEnv` / `build.args` は domain 付きの SHA-256 マーカーへ、`remoteEnv` は固定マーカーへ置換する。置換規則の契約は specification.md 10.3 節。ここでの `containerEnv` / `remoteEnv` は decune config の `[container_env]` / `[remote_env]` をマージした後の最終設定を指す。
 - 内部バージョンは Feature レイヤー生成と entrypoint shim 生成の内部バージョンタグで、decune 側の生成ロジックが変わったときに既存コンテナを再作成対象へ倒すために使う。

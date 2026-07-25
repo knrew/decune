@@ -1370,7 +1370,7 @@ fn compose_integration_profiles_start_profile_service_when_enabled_by_host_env()
 
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
-fn compose_integration_decune_config_localenv_container_env_is_expanded() {
+fn compose_integration_localenv_container_env_is_expanded() {
     let workspace = compose_fixture_workspace("localenv-container-env");
     let state_home = support::TempWorkspace::new().unwrap();
     let state_home_value = state_home.path().to_string_lossy().into_owned();
@@ -1379,7 +1379,8 @@ fn compose_integration_decune_config_localenv_container_env_is_expanded() {
         .args(["up", "--detach"])
         .arg(workspace.path())
         .env("XDG_STATE_HOME", &state_home_value)
-        .env("NPM_TOKEN", "secret-token")
+        .env("NPM_TOKEN", "decune-config-secret")
+        .env("DEVCONTAINER_TOKEN", "devcontainer-secret")
         .assert()
         .success()
         .stdout(predicate::str::is_empty())
@@ -1387,8 +1388,10 @@ fn compose_integration_decune_config_localenv_container_env_is_expanded() {
     let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
 
     let npm_token = compose_primary_container_output(workspace.path(), ["printenv", "NPM_TOKEN"]);
-    assert_eq!(npm_token.trim(), "secret-token");
-    assert_ne!(npm_token.trim(), "${DECUNE_CONTAINER_ENV_NPM_TOKEN}");
+    assert_eq!(npm_token.trim(), "decune-config-secret");
+    let devcontainer_token =
+        compose_primary_container_output(workspace.path(), ["printenv", "DEVCONTAINER_TOKEN"]);
+    assert_eq!(devcontainer_token.trim(), "devcontainer-secret");
 
     let generated_override = state_home
         .path()
@@ -1397,15 +1400,21 @@ fn compose_integration_decune_config_localenv_container_env_is_expanded() {
         .join("compose.override.yaml");
     let generated_override = fs::read_to_string(&generated_override).unwrap();
     assert!(generated_override.contains("'NPM_TOKEN': '${DECUNE_CONTAINER_ENV_NPM_TOKEN}'"));
-    assert!(!generated_override.contains("secret-token"));
+    assert!(
+        generated_override
+            .contains("'DEVCONTAINER_TOKEN': '${DECUNE_CONTAINER_ENV_DEVCONTAINER_TOKEN}'")
+    );
 
     let containers = compose_project_containers(workspace.path()).unwrap();
-    assert!(
-        !containers
-            .iter()
-            .any(|container| container.labels.contains("secret-token"))
-    );
-    assert!(!stderr.contains("secret-token"));
+    for secret in ["decune-config-secret", "devcontainer-secret"] {
+        assert!(!generated_override.contains(secret));
+        assert!(
+            !containers
+                .iter()
+                .any(|container| container.labels.contains(secret))
+        );
+        assert!(!stderr.contains(secret));
+    }
 }
 
 #[cfg(unix)]

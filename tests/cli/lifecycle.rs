@@ -62,12 +62,15 @@ fn up_detach_creates_and_reuses_image_container() {
     }
 }
 
+/// `${localEnv:...}` can be set from both devcontainer.json `containerEnv` and decune config
+/// `[container_env]`. Covers both sources in one workspace: changing either must reject reuse,
+/// and neither may leave a plaintext value in container labels or state.
 #[test]
-fn up_detach_rejects_reuse_when_decune_config_local_env_container_env_changes() {
+fn up_detach_rejects_reuse_when_local_env_container_env_changes() {
     let workspace = support::TempWorkspace::new().unwrap();
     let container_tools_dir = fake_container_tools_bundle(&workspace);
     workspace
-        .copy_fixture_dir("cli/lifecycle/decune-config-local-env-container-env")
+        .copy_fixture_dir("cli/workspaces/lifecycle/local-env-container-env")
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let state_home = workspace.path().join("state");
@@ -77,101 +80,120 @@ fn up_detach_rejects_reuse_when_decune_config_local_env_container_env_changes() 
         .enable_all()
         .build()
         .unwrap();
-    let up_with_token = |token: &str| {
+    let run_with_tokens = |command: &str, decune_config_token: &str, devcontainer_token: &str| {
         decune()
-            .args(["up", "--detach"])
+            .args([command, "--detach"])
             .arg(&workspace_root)
-            .env("DECUNE_TEST_NPM_TOKEN", token)
+            .env("DECUNE_TEST_NPM_TOKEN", decune_config_token)
+            .env("DECUNE_TEST_DEVCONTAINER_TOKEN", devcontainer_token)
             .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
             .env("XDG_STATE_HOME", &state_home)
             .assert()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(decune_config_token).not())
+            .stderr(predicate::str::contains(devcontainer_token).not())
     };
 
     with_clean_workspace_containers(&workspace_root, || {
-        up_with_token("first-secret")
+        run_with_tokens("up", "npm-first", "devcontainer-first")
             .success()
-            .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("Started dev container"))
-            .stderr(predicate::str::contains("first-secret").not());
+            .stderr(predicate::str::contains("Started dev container"));
 
         let first = runtime
             .block_on(async { inspect_single_workspace_container(&workspace_root) })
             .unwrap();
         let first_id = first.id.clone().unwrap();
-        let first_labels = first.config.as_ref().unwrap().labels.as_ref().unwrap();
-        let first_hash = first_labels.get("decune.config_hash").unwrap().clone();
-        assert!(inspect_has_env(&first, "NPM_TOKEN=first-secret"));
-        assert!(!inspect_has_env(&first, "NPM_TOKEN=second-secret"));
-        assert!(
-            first_labels
-                .values()
-                .all(|value| !value.contains("first-secret"))
-        );
-        assert!(
-            !fs::read_to_string(&state_file)
-                .unwrap()
-                .contains("first-secret")
-        );
+        let first_hash = container_config_hash(&first);
+        assert!(inspect_has_env(&first, "NPM_TOKEN=npm-first"));
+        assert!(inspect_has_env(
+            &first,
+            "DEVCONTAINER_TOKEN=devcontainer-first"
+        ));
+        assert_secrets_are_not_persisted(&first, &state_file, &["npm-first", "devcontainer-first"]);
 
-        up_with_token("first-secret")
+        run_with_tokens("up", "npm-first", "devcontainer-first")
             .success()
-            .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains("Reusing running dev container"))
-            .stderr(predicate::str::contains("first-secret").not());
+            .stderr(predicate::str::contains("Reusing running dev container"));
 
-        let reused = runtime
-            .block_on(async { inspect_single_workspace_container(&workspace_root) })
-            .unwrap();
-        assert_eq!(reused.id.as_deref(), Some(first_id.as_str()));
+        for (decune_config_token, devcontainer_token) in [
+            ("npm-first", "devcontainer-second"),
+            ("npm-second", "devcontainer-first"),
+        ] {
+            run_with_tokens("up", decune_config_token, devcontainer_token)
+                .failure()
+                .stderr(predicate::str::contains(
+                    "Dev container configuration changed. Run decune rebuild to recreate it.",
+                ));
 
-        up_with_token("second-secret")
-            .failure()
-            .stdout(predicate::str::is_empty())
-            .stderr(predicate::str::contains(
-                "Dev container configuration changed. Run decune rebuild to recreate it.",
-            ))
-            .stderr(predicate::str::contains("second-secret").not());
+            let unchanged = runtime
+                .block_on(async { inspect_single_workspace_container(&workspace_root) })
+                .unwrap();
+            assert_eq!(unchanged.id.as_deref(), Some(first_id.as_str()));
+            assert!(inspect_has_env(&unchanged, "NPM_TOKEN=npm-first"));
+            assert!(inspect_has_env(
+                &unchanged,
+                "DEVCONTAINER_TOKEN=devcontainer-first"
+            ));
+        }
 
-        let unchanged = runtime
-            .block_on(async { inspect_single_workspace_container(&workspace_root) })
-            .unwrap();
-        assert_eq!(unchanged.id.as_deref(), Some(first_id.as_str()));
-        assert!(inspect_has_env(&unchanged, "NPM_TOKEN=first-secret"));
-
-        decune()
-            .args(["rebuild", "--detach"])
-            .arg(&workspace_root)
-            .env("DECUNE_TEST_NPM_TOKEN", "second-secret")
-            .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
-            .env("XDG_STATE_HOME", &state_home)
-            .assert()
+        run_with_tokens("rebuild", "npm-second", "devcontainer-second")
             .success()
-            .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains(
                 "Removed existing dev container for rebuild",
             ))
-            .stderr(predicate::str::contains("Started dev container"))
-            .stderr(predicate::str::contains("second-secret").not());
+            .stderr(predicate::str::contains("Started dev container"));
 
         let second = runtime
             .block_on(async { inspect_single_workspace_container(&workspace_root) })
             .unwrap();
-        let second_id = second.id.clone().unwrap();
-        let second_labels = second.config.as_ref().unwrap().labels.as_ref().unwrap();
-        let second_hash = second_labels.get("decune.config_hash").unwrap();
-        assert_ne!(first_id, second_id);
-        assert_ne!(&first_hash, second_hash);
-        assert!(inspect_has_env(&second, "NPM_TOKEN=second-secret"));
-        assert!(!inspect_has_env(&second, "NPM_TOKEN=first-secret"));
-        assert!(
-            second_labels.values().all(|value| {
-                !value.contains("first-secret") && !value.contains("second-secret")
-            })
+        assert_ne!(second.id.as_deref(), Some(first_id.as_str()));
+        assert_ne!(container_config_hash(&second), first_hash);
+        assert!(inspect_has_env(&second, "NPM_TOKEN=npm-second"));
+        assert!(inspect_has_env(
+            &second,
+            "DEVCONTAINER_TOKEN=devcontainer-second"
+        ));
+        assert_secrets_are_not_persisted(
+            &second,
+            &state_file,
+            &[
+                "npm-first",
+                "npm-second",
+                "devcontainer-first",
+                "devcontainer-second",
+            ],
         );
-        let state = fs::read_to_string(&state_file).unwrap();
-        assert!(!state.contains("first-secret"));
-        assert!(!state.contains("second-secret"));
     });
+}
+
+fn container_config_hash(inspect: &ContainerInspectResponse) -> String {
+    inspect
+        .config
+        .as_ref()
+        .unwrap()
+        .labels
+        .as_ref()
+        .unwrap()
+        .get("decune.config_hash")
+        .unwrap()
+        .clone()
+}
+
+fn assert_secrets_are_not_persisted(
+    inspect: &ContainerInspectResponse,
+    state_file: &Path,
+    secrets: &[&str],
+) {
+    let labels = inspect.config.as_ref().unwrap().labels.as_ref().unwrap();
+    let state = fs::read_to_string(state_file).unwrap();
+
+    for secret in secrets {
+        assert!(
+            labels.values().all(|value| !value.contains(secret)),
+            "container labels leaked {secret}"
+        );
+        assert!(!state.contains(secret), "state file leaked {secret}");
+    }
 }
 
 #[test]
@@ -980,7 +1002,7 @@ fn up_attached_shell_receives_user_env_probe() {
 fn up_detach_applies_decune_config_environment_to_container_lifecycle_and_hook() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
-        .copy_fixture_dir("cli/lifecycle/decune-config-environment")
+        .copy_fixture_dir("cli/workspaces/lifecycle/decune-config-environment")
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1030,48 +1052,7 @@ fn up_detach_applies_decune_config_environment_to_container_lifecycle_and_hook()
 fn up_detach_expands_decune_config_remote_env_from_actual_container_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
-        .write_file(
-            ".devcontainer/Dockerfile",
-            r"
-            FROM alpine:3.20
-            ENV DECUNE_FROM_IMAGE=from-image
-            ",
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/devcontainer.json",
-            r#"
-            {
-              "build": {
-                "dockerfile": "Dockerfile"
-              },
-              "userEnvProbe": "none",
-              "postStartCommand": [
-                "/bin/sh",
-                "-c",
-                "test \"$PATH\" = \"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/image-extra\" && test \"$DECUNE_IMAGE_ENV\" = from-image && printf \"%s|%s\" \"$PATH\" \"$DECUNE_IMAGE_ENV\" >/tmp/decune-actual-container-env-expansion"
-              ]
-            }
-            "#,
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".decune/config.toml",
-            concat!(
-                r#"
-            version = 1
-
-            [remote_env]
-            PATH = "$"#,
-                "{containerEnv:PATH}",
-                r#":/image-extra"
-            DECUNE_IMAGE_ENV = "$"#,
-                "{containerEnv:DECUNE_FROM_IMAGE}",
-                "\"\n",
-            ),
-        )
+        .copy_fixture_dir("cli/workspaces/lifecycle/decune-config-remote-env-from-image-env")
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1122,7 +1103,7 @@ fn up_detach_expands_decune_config_remote_env_from_actual_container_env() {
 fn up_detach_reexpands_and_redacts_decune_config_remote_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
-        .copy_fixture_dir("cli/lifecycle/decune-config-remote-env")
+        .copy_fixture_dir("cli/workspaces/lifecycle/decune-config-remote-env")
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let state_home = workspace.path().join("state");
@@ -1228,53 +1209,7 @@ fn up_detach_reexpands_and_redacts_decune_config_remote_env() {
 fn up_attached_expands_decune_config_remote_env_from_actual_container_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace
-        .write_file(
-            ".devcontainer/Dockerfile",
-            r#"
-            FROM alpine:3.20
-            ENV DECUNE_FROM_IMAGE=from-image
-            RUN printf '%s\n' \
-              '#!/bin/sh' \
-              'test "$PATH" = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/attach-extra" || exit 11' \
-              'test "$DECUNE_IMAGE_ENV" = "from-image" || exit 12' \
-              'printf "%s|%s" "$PATH" "$DECUNE_IMAGE_ENV" >/tmp/decune-attached-container-env-expansion' \
-              'exit 0' \
-              >/usr/local/bin/decune-check-attached-env \
-              && chmod +x /usr/local/bin/decune-check-attached-env
-            "#,
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/devcontainer.json",
-            r#"
-            {
-              "build": {
-                "dockerfile": "Dockerfile"
-              },
-              "userEnvProbe": "none",
-              "shutdownAction": "none"
-            }
-            "#,
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".decune/config.toml",
-            concat!(
-                r#"
-            version = 1
-            shell = "/usr/local/bin/decune-check-attached-env"
-
-            [remote_env]
-            PATH = "$"#,
-                "{containerEnv:PATH}",
-                r#":/attach-extra"
-            DECUNE_IMAGE_ENV = "$"#,
-                "{containerEnv:DECUNE_FROM_IMAGE}",
-                "\"\n",
-            ),
-        )
+        .copy_fixture_dir("cli/workspaces/lifecycle/decune-config-attached-remote-env")
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1402,30 +1337,8 @@ fn up_attached_defaults_to_stopping_image_container_after_shell_exit() {
 #[test]
 fn up_detach_rejects_decune_config_container_env_self_reference() {
     let workspace = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
     workspace
-        .write_file(
-            ".devcontainer/devcontainer.json",
-            r#"
-            {
-              "image": "alpine:3.20"
-            }
-            "#,
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".decune/config.toml",
-            concat!(
-                r#"
-            version = 1
-
-            [container_env]
-            PATH = "$"#,
-                "{containerEnv:PATH}",
-                ":/extra\"\n",
-            ),
-        )
+        .copy_fixture_dir("cli/workspaces/lifecycle/decune-config-container-env-self-reference")
         .unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1445,8 +1358,9 @@ fn up_detach_rejects_decune_config_container_env_self_reference() {
             .failure()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains(
-                "containerEnv value must not reference containerEnv",
-            ));
+                "Container environment value must not reference containerEnv",
+            ))
+            .stderr(predicate::str::contains("decune config [container_env]"));
     });
 
     runtime.block_on(async {

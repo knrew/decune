@@ -1,10 +1,7 @@
 {
-  "name": "compose-localenv-container-env",
   "dockerComposeFile": "compose.yaml",
   "service": "app",
   "overrideCommand": true,
-  "workspaceFolder": "/workspace",
-  "updateRemoteUserUID": false,
   "containerEnv": {
     "DEVCONTAINER_TOKEN": "${localEnv:DEVCONTAINER_TOKEN}"
   }

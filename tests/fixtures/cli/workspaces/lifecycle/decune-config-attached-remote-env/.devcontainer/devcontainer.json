@@ -1,0 +1,7 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "userEnvProbe": "none",
+  "shutdownAction": "none"
+}

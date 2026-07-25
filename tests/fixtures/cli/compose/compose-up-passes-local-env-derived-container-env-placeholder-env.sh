@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 case " $* " in
-  *secret-token*)
+  *decune-config-secret* | *devcontainer-secret*)
     echo "secret value was exposed in Docker CLI arguments" >&2
     exit 92
     ;;
@@ -17,7 +17,8 @@ if [ "${1:-}" = compose ]; then
       exit 0
       ;;
     *" up -d "*)
-      test "${DECUNE_CONTAINER_ENV_NPM_TOKEN:-}" = "secret-token"
+      test "${DECUNE_CONTAINER_ENV_NPM_TOKEN:-}" = "decune-config-secret"
+      test "${DECUNE_CONTAINER_ENV_DEVCONTAINER_TOKEN:-}" = "devcontainer-secret"
       previous=
       generated_override=
       for argument in "$@"; do

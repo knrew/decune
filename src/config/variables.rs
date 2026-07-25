@@ -381,7 +381,7 @@ fn reject_container_env_references(values: &BTreeMap<String, String>) -> Result<
         for expression in variable_expressions(value)? {
             if expression.starts_with("containerEnv:") {
                 return Err(anyhow!(
-                    "containerEnv value must not reference containerEnv because it would create a circular environment dependency: {key}"
+                    "Container environment value must not reference containerEnv because it would create a circular environment dependency: {key}. Check devcontainer.json containerEnv and decune config [container_env]"
                 ));
             }
         }
@@ -608,11 +608,11 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
             BTreeMap::from([("PATH".to_owned(), "${containerEnv:PATH}:/extra".to_owned())]);
         let error = expand_container_env_tracked(&values, &context()).unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("must not reference containerEnv")
-        );
+        let message = error.to_string();
+
+        assert!(message.contains("must not reference containerEnv"));
+        assert!(message.contains("devcontainer.json containerEnv"));
+        assert!(message.contains("decune config [container_env]"));
     }
 
     #[test]

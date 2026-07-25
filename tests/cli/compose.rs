@@ -1564,46 +1564,15 @@ fn compose_up_preserves_primary_service_image_when_no_final_layer_is_needed() {
     assert!(!generated_override.contains("image: 'decune/"));
 }
 
+/// `${localEnv:...}` derived values must appear as placeholders in the decune-generated Compose
+/// override, with no plaintext value, whether they come from devcontainer.json `containerEnv` or
+/// decune config `[container_env]`.
 #[test]
-fn compose_up_passes_decune_config_local_env_container_env_placeholder_env() {
+fn compose_up_passes_local_env_derived_container_env_placeholder_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     let host_tools = support::TempWorkspace::new().unwrap();
-    workspace.create_dir(".devcontainer").unwrap();
     workspace
-        .write_file(
-            ".devcontainer/devcontainer.json",
-            r#"
-            {
-              "dockerComposeFile": "compose.yaml",
-              "service": "app",
-              "overrideCommand": true
-            }
-            "#,
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".decune/config.toml",
-            concat!(
-                r#"
-            version = 1
-
-            [container_env]
-            NPM_TOKEN = "$"#,
-                "{localEnv:NPM_TOKEN}",
-                "\"\n",
-            ),
-        )
-        .unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/compose.yaml",
-            r#"
-            services:
-              app:
-                image: "alpine:3.20"
-            "#,
-        )
+        .copy_fixture_dir("cli/workspaces/compose/local-env-container-env")
         .unwrap();
     let override_log = host_tools.path().join("generated-override.yaml");
     let fake_path = fake_docker_path(
@@ -1615,7 +1584,8 @@ fn compose_up_passes_decune_config_local_env_container_env_placeholder_env() {
     decune_with_fake_container_tools(&host_tools)
         .env("PATH", &fake_path)
         .env("DECUNE_FAKE_OVERRIDE_LOG", &override_log)
-        .env("NPM_TOKEN", "secret-token")
+        .env("NPM_TOKEN", "decune-config-secret")
+        .env("DEVCONTAINER_TOKEN", "devcontainer-secret")
         .args(["up", "--detach"])
         .arg(&workspace_root)
         .assert()
@@ -1627,7 +1597,12 @@ fn compose_up_passes_decune_config_local_env_container_env_placeholder_env() {
 
     let generated_override = fs::read_to_string(override_log).unwrap();
     assert!(generated_override.contains("'NPM_TOKEN': '${DECUNE_CONTAINER_ENV_NPM_TOKEN}'"));
-    assert!(!generated_override.contains("secret-token"));
+    assert!(
+        generated_override
+            .contains("'DEVCONTAINER_TOKEN': '${DECUNE_CONTAINER_ENV_DEVCONTAINER_TOKEN}'")
+    );
+    assert!(!generated_override.contains("decune-config-secret"));
+    assert!(!generated_override.contains("devcontainer-secret"));
 }
 
 #[test]
