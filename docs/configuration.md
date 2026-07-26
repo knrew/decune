@@ -41,17 +41,17 @@ PATH = "${containerEnv:PATH}:/workspace/bin"
 ```
 
 - `[container_env]` はコンテナ作成時の環境変数です。Docker Compose-based configuration では primary service の `environment` を上書きします。
-- `[remote_env]` はコンテナ内の lifecycle command、コンテナ側の decune hook、リモートシェルへ適用し、コンテナ自体の基本環境やホスト側の decune hook には追加しません。
-- global decune config → `devcontainer.json` → project decune config の順にキーごとにマージし、同じ環境変数名は後の値が優先されます。イメージ / Feature メタデータを含む完全な順序は [specification.md 5.2 節](specification.md#52-マージ順序)を参照してください。
+- `[remote_env]` はコンテナ内の lifecycle command、コンテナ側の decune hook、リモートシェルへ適用し、コンテナ作成時の環境変数やホスト側の decune hook には追加しません。
+- global decune config → `devcontainer.json` → project decune config の順にキーごとにマージし、同じ環境変数名は後の値が優先されます。イメージメタデータを含む完全な順序は [specification.md 5.2 節](specification.md#52-マージ順序)を参照してください。Feature メタデータの `containerEnv` はイメージの `ENV` として適用され、このマージには含まれません。
 - 値は文字列だけです。空文字列を設定しても下位レイヤーのキーの削除にはならず、空の値として上書きされます。
 - テーブル名は `[container_env]` / `[remote_env]` だけです。`[containerEnv]` / `[remoteEnv]` や `[env.container]` / `[env.remote]` は未知のキーとしてエラーになります。
 - `${localEnv:...}` など、`containerEnv` / `remoteEnv` と同じ変数展開を利用できます。`[remote_env]` の `${containerEnv:...}` は実際のコンテナ環境から解決しますが、`[container_env]` 自体から `${containerEnv:...}` を参照する構成はエラーです。
 
-`[container_env]` / `[remote_env]` の設定記述は reuse hash に含まれるため、global decune config で値を追加・変更した場合も、既存のコンテナには `decune rebuild` が必要です。ただし、`[remote_env]` の `${localEnv:...}` は未展開のテンプレートが reuse hash に入り、参照先の実値だけが変わっても rebuild は必要ありません。
+`[container_env]` / `[remote_env]` の設定記述は reuse hash に含まれるため、global decune config で値を追加・変更した場合も、既存のコンテナ / Compose プロジェクトには `decune rebuild` が必要です。`[container_env]` の `${localEnv:...}` は展開後の実値の digest が reuse hash に入るため、参照先の実値だけが変わった場合も rebuild が必要です。一方、`[remote_env]` は未展開のテンプレートが reuse hash に入り、参照先の実値だけが変わっても rebuild は必要ありません。
 
-TOML ではテーブルを開始すると、次のテーブル見出しまでのキーがそのテーブルに属します。`version`、`shell`、`use_global_config` などのトップレベルのスカラーは、`[container_env]` / `[remote_env]` より前に書いてください。後に書いたキーはエラーにならず、その名前の環境変数として扱われます。
+TOML ではテーブルを開始すると、次のテーブル見出しまでのキーがそのテーブルに属します。`version`、`shell`、`use_global_config` などのトップレベルのスカラーは、`[container_env]` / `[remote_env]` より前に書いてください。後に書いた場合、`shell` のような文字列値のキーはエラーにならず、その名前の環境変数として扱われます。`version = 1` や `use_global_config = false` のような文字列でない値は、値が文字列でないというパースエラーになります。
 
-`${localEnv:...}` 由来の値は、`devcontainer.json` の `containerEnv` / `remoteEnv` と同じように secret-sensitive value として追跡され、`[remote_env]` の `${containerEnv:...}` を介した参照でもこの追跡を引き継ぎます。ただし、`container_env` の実値はコンテナ内プロセスや Docker inspect から見えます。decune config とコンテナ環境は秘密情報の保存先として保証されません。詳しいスキーマ、展開タイミング、reuse hash の扱いは [specification.md 5.17 節](specification.md#517-container_env--remote_env)と[6 章](specification.md#6-変数展開とパス解決)を参照してください。
+`${localEnv:...}` 由来の値は、`devcontainer.json` の `containerEnv` / `remoteEnv` と同じように secret-sensitive value として追跡され、`[remote_env]` の `${containerEnv:...}` を介した参照でもこの追跡を引き継ぎます。ただし、`container_env` の実値はコンテナ内プロセスや Docker inspect から見えます。decune config とコンテナ環境は秘密情報の保存先として保証されません。詳しいスキーマ、展開タイミング、reuse hash の扱いは [specification.md 5.17 節](specification.md#517-container_env--remote_env)と [6 章](specification.md#6-変数展開とパス解決)を参照してください。
 
 ## `[features]`
 
