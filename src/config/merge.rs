@@ -745,6 +745,124 @@ mod tests {
         assert!(config.credentials.github.install_feature_if_missing);
     }
 
+    fn env_metadata_layer(container_value: &str, remote_value: &str) -> ConfigLayer {
+        ConfigLayer {
+            devcontainer: Some(LayerDevcontainerMetadata {
+                container_env: BTreeMap::from([
+                    ("CONTAINER_SHARED".to_owned(), container_value.to_owned()),
+                    (
+                        format!("CONTAINER_{container_value}"),
+                        container_value.to_owned(),
+                    ),
+                ]),
+                remote_env: BTreeMap::from([
+                    ("REMOTE_SHARED".to_owned(), remote_value.to_owned()),
+                    (format!("REMOTE_{remote_value}"), remote_value.to_owned()),
+                ]),
+                ..LayerDevcontainerMetadata::default()
+            }),
+            ..ConfigLayer::default()
+        }
+    }
+
+    #[test]
+    fn decune_environment_maps_follow_layer_order_and_merge_by_key() {
+        let global = raw_layer(
+            r#"
+version = 1
+
+[container_env]
+CONTAINER_SHARED = "global"
+CONTAINER_GLOBAL = "global"
+CONTAINER_GLOBAL_DEVCONTAINER_SHARED = "global"
+
+[remote_env]
+REMOTE_SHARED = "global"
+REMOTE_GLOBAL = "global"
+REMOTE_GLOBAL_DEVCONTAINER_SHARED = "global"
+"#,
+        );
+        let project = raw_layer(
+            r#"
+version = 1
+
+[container_env]
+CONTAINER_SHARED = "project"
+CONTAINER_PROJECT = ""
+
+[remote_env]
+REMOTE_SHARED = "project"
+REMOTE_PROJECT = ""
+"#,
+        );
+        let mut devcontainer = env_metadata_layer("DEVCONTAINER", "DEVCONTAINER");
+        let devcontainer_metadata = devcontainer
+            .devcontainer
+            .as_mut()
+            .expect("test devcontainer layer should contain metadata");
+        devcontainer_metadata.container_env.insert(
+            "CONTAINER_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
+            "devcontainer".to_owned(),
+        );
+        devcontainer_metadata.remote_env.insert(
+            "REMOTE_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
+            "devcontainer".to_owned(),
+        );
+
+        // Production strips container_env from feature metadata layers before resolve_config
+        // (feature_runtime_metadata_layer): feature containerEnv is applied as image ENV and
+        // never joins this merge.
+        let mut feature = env_metadata_layer("FEATURE", "FEATURE");
+        feature
+            .devcontainer
+            .as_mut()
+            .expect("test feature layer should contain metadata")
+            .container_env
+            .clear();
+
+        let config = resolve_config(ConfigMergeInput {
+            image_metadata: vec![env_metadata_layer("IMAGE", "IMAGE")],
+            feature_metadata: vec![feature],
+            global: Some(global),
+            devcontainer: Some(devcontainer),
+            project: Some(project),
+            cli: None,
+        });
+
+        assert_eq!(
+            config.devcontainer.container_env,
+            BTreeMap::from([
+                (
+                    "CONTAINER_DEVCONTAINER".to_owned(),
+                    "DEVCONTAINER".to_owned(),
+                ),
+                ("CONTAINER_GLOBAL".to_owned(), "global".to_owned()),
+                (
+                    "CONTAINER_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
+                    "devcontainer".to_owned(),
+                ),
+                ("CONTAINER_IMAGE".to_owned(), "IMAGE".to_owned()),
+                ("CONTAINER_PROJECT".to_owned(), String::new()),
+                ("CONTAINER_SHARED".to_owned(), "project".to_owned()),
+            ])
+        );
+        assert_eq!(
+            config.devcontainer.remote_env,
+            BTreeMap::from([
+                ("REMOTE_DEVCONTAINER".to_owned(), "DEVCONTAINER".to_owned()),
+                ("REMOTE_FEATURE".to_owned(), "FEATURE".to_owned()),
+                ("REMOTE_GLOBAL".to_owned(), "global".to_owned()),
+                (
+                    "REMOTE_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
+                    "devcontainer".to_owned(),
+                ),
+                ("REMOTE_IMAGE".to_owned(), "IMAGE".to_owned()),
+                ("REMOTE_PROJECT".to_owned(), String::new()),
+                ("REMOTE_SHARED".to_owned(), "project".to_owned()),
+            ])
+        );
+    }
+
     #[test]
     fn container_cli_enabled_uses_last_specified_scalar_value() {
         for (global, project, expected) in [

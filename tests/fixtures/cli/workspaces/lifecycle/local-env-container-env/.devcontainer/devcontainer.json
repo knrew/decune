@@ -1,0 +1,6 @@
+{
+  "image": "alpine:3.20",
+  "containerEnv": {
+    "DEVCONTAINER_TOKEN": "${localEnv:DECUNE_TEST_DEVCONTAINER_TOKEN}"
+  }
+}

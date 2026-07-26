@@ -38,7 +38,7 @@ pub(in crate::up) async fn attach_shell(
         remote_user.user.clone(),
         remote_user.home.clone(),
     )
-    .with_container_env(container_env);
+    .with_container_env(container_env, &plan.sensitive_container_env);
     let remote_env =
         expand_remote_env_tracked(&plan.config.devcontainer.remote_env, &remote_env_variables)
             .with_context(|| format!("Failed to expand remoteEnv for container: {}", target.id))?;

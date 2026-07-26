@@ -47,7 +47,7 @@ pub(crate) struct ExpandedEnvMap {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpandedString {
     value: String,
-    local_env_fragments: Vec<String>,
+    redactions: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,6 +62,7 @@ pub(crate) struct VariableContext {
     remote_user: String,
     remote_user_home: Option<String>,
     container_env: BTreeMap<String, String>,
+    sensitive_container_env: SensitiveEnvMap,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,11 +91,18 @@ impl VariableContext {
             remote_user: input.remote_user,
             remote_user_home: input.remote_user_home,
             container_env: BTreeMap::new(),
+            sensitive_container_env: SensitiveEnvMap::default(),
         }
     }
 
-    pub(crate) fn with_container_env(mut self, container_env: BTreeMap<String, String>) -> Self {
+    pub(crate) fn with_container_env(
+        mut self,
+        container_env: BTreeMap<String, String>,
+        sensitive_container_env: &SensitiveEnvMap,
+    ) -> Self {
         self.container_env = container_env;
+        self.sensitive_container_env
+            .clone_from(sensitive_container_env);
         self
     }
 }
@@ -173,8 +181,8 @@ where
             expand_variables_tracked_with(value, context, &mut local_env).map_err(|error| {
                 error.context(format!("Failed to expand environment variable: {key}"))
             })?;
-        if !value.local_env_fragments.is_empty() {
-            let mut redactions = value.local_env_fragments;
+        if !value.redactions.is_empty() {
+            let mut redactions = value.redactions;
             if !redactions.iter().any(|redaction| redaction == &value.value) {
                 redactions.push(value.value.clone());
             }
@@ -230,7 +238,7 @@ where
     F: FnMut(&str) -> Result<Option<String>>,
 {
     let mut output = String::with_capacity(input.len());
-    let mut local_env_fragments = Vec::new();
+    let mut redactions = Vec::new();
     let mut rest = input;
 
     while let Some(start) = rest.find("${") {
@@ -238,14 +246,14 @@ where
         output.push_str(split.prefix);
         let resolved = resolve_expression_tracked(split.expression, context, &mut local_env)?;
         output.push_str(&resolved.value);
-        local_env_fragments.extend(resolved.local_env_fragments);
+        redactions.extend(resolved.redactions);
         rest = split.rest;
     }
 
     output.push_str(rest);
     Ok(ExpandedString {
         value: output,
-        local_env_fragments,
+        redactions,
     })
 }
 
@@ -261,7 +269,7 @@ where
         return resolve_local_env(rest, local_env);
     }
     if let Some(rest) = expression.strip_prefix("containerEnv:") {
-        return resolve_container_env(rest, context);
+        return resolve_container_env(rest, context).map(|(_, value)| value);
     }
 
     match expression {
@@ -298,57 +306,65 @@ where
     if let Some(rest) = expression.strip_prefix("localEnv:") {
         return resolve_local_env_tracked(rest, local_env);
     }
+    if let Some(rest) = expression.strip_prefix("containerEnv:") {
+        return resolve_container_env_tracked(rest, context);
+    }
 
     Ok(ExpandedString {
         value: resolve_expression(expression, context, local_env)?,
-        local_env_fragments: Vec::new(),
+        redactions: Vec::new(),
     })
 }
 
-fn resolve_container_env(expression: &str, context: &VariableContext) -> Result<String> {
-    let mut parts = expression.splitn(2, ':');
-    let name = parts.next().unwrap_or_default();
-    let default = parts.next();
-
-    if name.is_empty() {
-        return Err(anyhow!("containerEnv variable name must not be empty"));
-    }
-
-    context.container_env.get(name).map_or_else(
+fn resolve_container_env<'a>(
+    expression: &'a str,
+    context: &VariableContext,
+) -> Result<(&'a str, String)> {
+    let (name, default) = split_env_expression(expression, "containerEnv")?;
+    let value = context.container_env.get(name).map_or_else(
         || {
             default
                 .map(str::to_owned)
                 .ok_or_else(|| anyhow!("Container environment variable is not set: {name}"))
         },
         |value| Ok(value.clone()),
-    )
+    )?;
+    Ok((name, value))
+}
+
+fn resolve_container_env_tracked(
+    expression: &str,
+    context: &VariableContext,
+) -> Result<ExpandedString> {
+    let (name, value) = resolve_container_env(expression, context)?;
+    let redactions = context
+        .sensitive_container_env
+        .get(name)
+        .filter(|sensitive| sensitive.value == value)
+        .map_or_else(Vec::new, |sensitive| sensitive.redactions.clone());
+
+    Ok(ExpandedString { value, redactions })
 }
 
 fn resolve_local_env_tracked<F>(expression: &str, local_env: &mut F) -> Result<ExpandedString>
 where
     F: FnMut(&str) -> Result<Option<String>>,
 {
-    let mut parts = expression.splitn(2, ':');
-    let name = parts.next().unwrap_or_default();
-    let default = parts.next();
-
-    if name.is_empty() {
-        return Err(anyhow!("localEnv variable name must not be empty"));
-    }
+    let (name, default) = split_env_expression(expression, "localEnv")?;
 
     local_env(name)?.map_or_else(
         || {
             default
                 .map(|value| ExpandedString {
                     value: value.to_owned(),
-                    local_env_fragments: Vec::new(),
+                    redactions: Vec::new(),
                 })
                 .ok_or_else(|| anyhow!("Local environment variable is not set: {name}"))
         },
         |value| {
             Ok(ExpandedString {
                 value: value.clone(),
-                local_env_fragments: vec![value],
+                redactions: vec![value],
             })
         },
     )
@@ -358,13 +374,7 @@ fn resolve_local_env<F>(expression: &str, local_env: &mut F) -> Result<String>
 where
     F: FnMut(&str) -> Result<Option<String>>,
 {
-    let mut parts = expression.splitn(2, ':');
-    let name = parts.next().unwrap_or_default();
-    let default = parts.next();
-
-    if name.is_empty() {
-        return Err(anyhow!("localEnv variable name must not be empty"));
-    }
+    let (name, default) = split_env_expression(expression, "localEnv")?;
 
     local_env(name)?.map_or_else(
         || {
@@ -376,12 +386,26 @@ where
     )
 }
 
+fn split_env_expression<'a>(
+    expression: &'a str,
+    variable: &str,
+) -> Result<(&'a str, Option<&'a str>)> {
+    let (name, default) = expression
+        .split_once(':')
+        .map_or((expression, None), |(name, default)| (name, Some(default)));
+    if name.is_empty() {
+        return Err(anyhow!("{variable} variable name must not be empty"));
+    }
+
+    Ok((name, default))
+}
+
 fn reject_container_env_references(values: &BTreeMap<String, String>) -> Result<()> {
     for (key, value) in values {
         for expression in variable_expressions(value)? {
             if expression.starts_with("containerEnv:") {
                 return Err(anyhow!(
-                    "containerEnv value must not reference containerEnv because it would create a circular environment dependency: {key}"
+                    "Container environment value must not reference containerEnv because it would create a circular environment dependency: {key}. Check devcontainer.json containerEnv and decune config [container_env]"
                 ));
             }
         }
@@ -468,11 +492,13 @@ mod tests {
     }
 
     fn context_with_container_env(values: &[(&str, &str)]) -> VariableContext {
+        let sensitive = SensitiveEnvMap::default();
         context().with_container_env(
             values
                 .iter()
                 .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
                 .collect(),
+            &sensitive,
         )
     }
 
@@ -560,6 +586,80 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
     }
 
     #[test]
+    fn tracked_env_propagates_sensitive_container_env_redactions() {
+        let mut sensitive = SensitiveEnvMap::default();
+        sensitive.insert(
+            "TOKEN",
+            SensitiveEnvValue {
+                value: "container-secret-token".to_owned(),
+                redactions: vec![
+                    "secret-token".to_owned(),
+                    "container-secret-token".to_owned(),
+                ],
+            },
+        );
+        let context = context().with_container_env(
+            BTreeMap::from([("TOKEN".to_owned(), "container-secret-token".to_owned())]),
+            &sensitive,
+        );
+        let values = BTreeMap::from([(
+            "TOKEN_COPY".to_owned(),
+            "remote-${containerEnv:TOKEN}".to_owned(),
+        )]);
+
+        let expanded = expand_env_map_tracked_with(&values, &context, |_| Ok(None)).unwrap();
+
+        assert_eq!(
+            expanded.values.get("TOKEN_COPY").map(String::as_str),
+            Some("remote-container-secret-token")
+        );
+        assert_eq!(
+            expanded.sensitive.get("TOKEN_COPY").unwrap().redactions,
+            vec![
+                "secret-token".to_owned(),
+                "container-secret-token".to_owned(),
+                "remote-container-secret-token".to_owned(),
+            ]
+        );
+    }
+
+    #[test]
+    fn tracked_env_does_not_propagate_stale_or_defaulted_container_env_redactions() {
+        let mut sensitive = SensitiveEnvMap::default();
+        sensitive.insert(
+            "TOKEN",
+            SensitiveEnvValue {
+                value: "planned-secret".to_owned(),
+                redactions: vec!["planned-secret".to_owned()],
+            },
+        );
+        let context = context().with_container_env(
+            BTreeMap::from([("TOKEN".to_owned(), "runtime-value".to_owned())]),
+            &sensitive,
+        );
+        let values = BTreeMap::from([
+            ("TOKEN_COPY".to_owned(), "${containerEnv:TOKEN}".to_owned()),
+            (
+                "DEFAULTED".to_owned(),
+                "${containerEnv:MISSING:fallback:with:colon}".to_owned(),
+            ),
+        ]);
+
+        let expanded = expand_env_map_tracked_with(&values, &context, |_| Ok(None)).unwrap();
+
+        assert_eq!(
+            expanded.values.get("TOKEN_COPY").map(String::as_str),
+            Some("runtime-value")
+        );
+        assert_eq!(
+            expanded.values.get("DEFAULTED").map(String::as_str),
+            Some("fallback:with:colon")
+        );
+        assert!(!expanded.sensitive.contains_key("TOKEN_COPY"));
+        assert!(!expanded.sensitive.contains_key("DEFAULTED"));
+    }
+
+    #[test]
     fn local_env_default_is_used_when_missing() {
         let expanded = expand_with_env("${localEnv:DECUNE_MISSING:fallback}", &[]).unwrap();
 
@@ -603,16 +703,26 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
     }
 
     #[test]
+    fn empty_container_env_name_is_rejected() {
+        let error = expand_variables("${containerEnv:}", &context()).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "containerEnv variable name must not be empty"
+        );
+    }
+
+    #[test]
     fn container_env_value_must_not_reference_container_env() {
         let values =
             BTreeMap::from([("PATH".to_owned(), "${containerEnv:PATH}:/extra".to_owned())]);
         let error = expand_container_env_tracked(&values, &context()).unwrap_err();
 
-        assert!(
-            error
-                .to_string()
-                .contains("must not reference containerEnv")
-        );
+        let message = error.to_string();
+
+        assert!(message.contains("must not reference containerEnv"));
+        assert!(message.contains("devcontainer.json containerEnv"));
+        assert!(message.contains("decune config [container_env]"));
     }
 
     #[test]

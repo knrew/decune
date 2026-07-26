@@ -162,19 +162,14 @@ pub(in crate::devcontainer::lifecycle) async fn run_container_process(
             user: Some(user.clone()),
             working_dir: Some(working_dir),
             env: lifecycle_process_env(context, &user),
-            redactions: context.remote_env_redactions.clone(),
+            redactions: context.lifecycle_redactions.clone(),
             tty: false,
         },
     )
     .await
     .with_context(|| format!("Failed to run lifecycle stage {stage_name}"))?;
 
-    ensure_lifecycle_success(
-        stage_name,
-        &command,
-        &output,
-        &context.remote_env_redactions,
-    )
+    ensure_lifecycle_success(stage_name, &command, &output, &context.lifecycle_redactions)
 }
 
 fn lifecycle_process_env(

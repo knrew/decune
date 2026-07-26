@@ -1,5 +1,11 @@
 #!/bin/sh
 set -eu
+case " $* " in
+  *decune-config-secret* | *devcontainer-secret*)
+    echo "secret value was exposed in Docker CLI arguments" >&2
+    exit 92
+    ;;
+esac
 if [ "${1:-}" = compose ] && [ -n "${DECUNE_FAKE_COMPOSE_CAPABILITIES:-}" ]; then
   # shellcheck disable=SC1090
   . "$DECUNE_FAKE_COMPOSE_CAPABILITIES"
@@ -11,7 +17,8 @@ if [ "${1:-}" = compose ]; then
       exit 0
       ;;
     *" up -d "*)
-      test "${DECUNE_CONTAINER_ENV_NPM_TOKEN:-}" = "secret-token"
+      test "${DECUNE_CONTAINER_ENV_NPM_TOKEN:-}" = "decune-config-secret"
+      test "${DECUNE_CONTAINER_ENV_DEVCONTAINER_TOKEN:-}" = "devcontainer-secret"
       previous=
       generated_override=
       for argument in "$@"; do

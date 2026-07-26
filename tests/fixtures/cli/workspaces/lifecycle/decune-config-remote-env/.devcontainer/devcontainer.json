@@ -1,0 +1,9 @@
+{
+  "image": "alpine:3.20",
+  "userEnvProbe": "none",
+  "postStartCommand": [
+    "/bin/sh",
+    "-c",
+    "if [ \"$DECUNE_REMOTE_SECRET\" = redaction-secret ]; then printf '%s' \"$DECUNE_REMOTE_SECRET\" >&2; exit 17; fi; printf '%s' \"$DECUNE_REMOTE_SECRET\" >/tmp/decune-remote-secret"
+  ]
+}

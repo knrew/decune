@@ -1,0 +1,10 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/attach-extra"
+  },
+  "userEnvProbe": "none",
+  "shutdownAction": "none"
+}

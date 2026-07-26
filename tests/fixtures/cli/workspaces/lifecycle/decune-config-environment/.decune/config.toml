@@ -1,0 +1,14 @@
+version = 1
+
+[container_env]
+DECUNE_CONFIG_ONLY = "container"
+PATH               = "/usr/bin:/bin"
+
+[remote_env]
+DECUNE_DEFAULT_ENV = "${containerEnv:DECUNE_MISSING:fallback}"
+DECUNE_REMOTE_ONLY = "remote"
+PATH               = "${containerEnv:PATH}:/extra"
+
+[[hooks.after_post_start]]
+command = "test \"$DECUNE_REMOTE_ONLY\" = remote && printf '%s' \"$DECUNE_REMOTE_ONLY\" >/tmp/decune-hook-remote-env"
+where   = "container"

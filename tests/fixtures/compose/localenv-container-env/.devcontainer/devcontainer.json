@@ -6,6 +6,6 @@
   "workspaceFolder": "/workspace",
   "updateRemoteUserUID": false,
   "containerEnv": {
-    "NPM_TOKEN": "${localEnv:NPM_TOKEN}"
+    "DEVCONTAINER_TOKEN": "${localEnv:DEVCONTAINER_TOKEN}"
   }
 }

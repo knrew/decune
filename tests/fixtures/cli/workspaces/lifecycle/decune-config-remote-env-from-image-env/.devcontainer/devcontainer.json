@@ -1,0 +1,14 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteEnv": {
+    "PATH": "${containerEnv:PATH}:/image-extra"
+  },
+  "userEnvProbe": "none",
+  "postStartCommand": [
+    "/bin/sh",
+    "-c",
+    "test \"$PATH\" = \"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/image-extra\" && test \"$DECUNE_IMAGE_ENV\" = from-image && printf \"%s|%s\" \"$PATH\" \"$DECUNE_IMAGE_ENV\" >/tmp/decune-actual-container-env-expansion"
+  ]
+}

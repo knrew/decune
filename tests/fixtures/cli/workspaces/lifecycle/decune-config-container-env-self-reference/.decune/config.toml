@@ -1,0 +1,4 @@
+version = 1
+
+[container_env]
+PATH = "${containerEnv:PATH}:/extra"

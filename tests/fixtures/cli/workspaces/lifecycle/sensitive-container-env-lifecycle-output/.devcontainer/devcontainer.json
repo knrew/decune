@@ -1,0 +1,8 @@
+{
+  "image": "alpine:3.20",
+  "containerEnv": {
+    "DEVCONTAINER_SECRET": "devcontainer-${localEnv:DECUNE_TEST_DEVCONTAINER_SECRET}"
+  },
+  "userEnvProbe": "none",
+  "postStartCommand": "printf '%s' \"$DECUNE_CONFIG_SECRET\"; printf '%s' \"$DEVCONTAINER_SECRET\" >&2; exit 17"
+}

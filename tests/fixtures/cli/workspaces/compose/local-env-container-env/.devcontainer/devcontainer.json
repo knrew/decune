@@ -1,0 +1,8 @@
+{
+  "dockerComposeFile": "compose.yaml",
+  "service": "app",
+  "overrideCommand": true,
+  "containerEnv": {
+    "DEVCONTAINER_TOKEN": "${localEnv:DEVCONTAINER_TOKEN}"
+  }
+}
