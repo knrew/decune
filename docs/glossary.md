@@ -76,5 +76,5 @@
 - decune container CLI query: コンテナ内の decune CLI が decune host daemon 経由で `status` / `ports` などの read-only 情報を問い合わせる仕組み。
 - daemon query context: decune host daemon が decune container CLI query の対象として起動時に固定する、検証済みの workspace id と固定サーバーパスの集合。live な設定やクライアント入力からは再解決しない。
 - Docker evidence: decune が Docker の列挙 / inspect から取得する、decune-managed コンテナ / ボリュームの観測スナップショット。ホスト側 `status` の判定と decune container CLI query の応答に使う。
-- secret-sensitive value: `containerEnv`、`remoteEnv`、`build.args` などで `${localEnv:...}` から来たため、decune が秘密情報として追跡する値。
+- secret-sensitive value: `containerEnv`、`remoteEnv`、decune config の `[container_env]` / `[remote_env]`、`build.args` などで `${localEnv:...}` から来たため、decune が秘密情報として追跡する値。
 - セキュリティ境界(security boundary): ホストとコンテナの間で decune が何を公開し、何を公開しないかを定義する境界([specification.md 12 章](specification.md#12-セキュリティ境界))。

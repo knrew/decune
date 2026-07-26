@@ -159,7 +159,7 @@ cargo run --locked -p xtask -- release-manifest --dist-dir target/dist --version
 
 - 公開挙動、CLI の契約、設定スキーマと既定値、セキュリティ境界、diagnostic code の発生条件の正は specification.md。
 - インストールと日常操作の手順、信頼していないリポジトリでの推奨設定の正は usage.md。
-- 設定(features / dotfiles / mounts / credentials / hooks / container.cli)の使い方・挙動説明の正は configuration.md。
+- 設定(container_env / remote_env / features / dotfiles / mounts / credentials / hooks / container.cli)の使い方・挙動説明の正は configuration.md。
 - forwarding と published port の概念説明・使い分け、relocation / mapping の確認方法の正は ports.md。clone isolation の使い方の正は clone-isolation.md。
 - diagnostic code への対処の正は ports.md と clone-isolation.md のトラブルシューティング。specification.md には対処を書かない。
 - ソースからのインストール、検証コマンド、テストの網羅範囲の要求、ドキュメント執筆規約の正はこの文書。

@@ -886,7 +886,7 @@ PATH = "${containerEnv:PATH}:/workspace/bin"
 - `[containerEnv]` / `[remoteEnv]`、`[env.container]` / `[env.remote]` は未知のキーとしてエラーにする。
 - `[container_env]` はコンテナ作成時の環境変数として扱う。image/Dockerfile-based configuration ではコンテナへ渡し、Docker Compose-based configuration では primary service の `environment` を上書きする。
 - `[remote_env]` はコンテナ内の lifecycle command、コンテナ側の decune hook、リモートシェルへ適用する。コンテナ自体の基本環境とホスト側の decune hook には追加しない。
-- map は 5.2 節のレイヤー順でキーごとにマージし、同一キーは後のレイヤーが上書きする。環境変数の CLI オプションはないため、project decune config が最上位になる。
+- マップは 5.2 節のレイヤー順でキーごとにマージし、同一キーは後のレイヤーが上書きする。環境変数の CLI オプションはないため、project decune config が最上位になる。Feature メタデータの `containerEnv` はこのマージへ含めず、7.1 節のとおり Feature レイヤーのイメージの `ENV` として適用する。
 - `--no-global-config` または `use_global_config = false` では、global decune config 由来の `[container_env]` / `[remote_env]` も適用しない。
 
 ## 6. 変数展開とパス解決
@@ -908,9 +908,9 @@ PATH = "${containerEnv:PATH}:/workspace/bin"
 
 `${remoteUserHome}` は `/home/<user>` と推測せず、コンテナ / イメージ内の passwd データベースから解決する。`workspaceFolder`、`containerEnv`、`remoteEnv`、`container_env`、`remote_env`、`mounts`、dotfiles、`runArgs` など実行時のユーザー解決後に評価できるフィールドでは、実効リモートユーザーの決定後に `${remoteUser}` / `${remoteUserHome}` を展開する。
 
-`containerEnv` とマージ済みの `container_env` はコンテナ作成計画時に展開する。このマップ自体の中で `${containerEnv:...}` を使う構成は、循環する環境依存としてエラーにする。`remoteEnv` とマージ済みの `remote_env` は lifecycle / attach の実行時に展開し、`${localEnv:...}` はその実行を行う decune プロセスの環境、`${containerEnv:...}` は実際に作成・起動したコンテナの環境を参照する。`${localEnv:VAR}` / `${containerEnv:VAR}` の参照先が存在せず既定値もない場合はエラーにする。
+`container_env` をマージした後の `containerEnv` はコンテナ作成計画時に展開する。このマップ自体の中で `${containerEnv:...}` を使う構成は、循環する環境依存としてエラーにする。`remote_env` をマージした後の `remoteEnv` は lifecycle / attach の実行時に展開し、`${localEnv:...}` はその実行を行う decune プロセスの環境、`${containerEnv:...}` は実際に作成・起動したコンテナの環境を参照する。`${localEnv:VAR}` / `${containerEnv:VAR}` の参照先が存在せず既定値もない場合はエラーにする。
 
-`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `container_env` / `remote_env` / `build.args` の値は secret-sensitive value として追跡する。`remoteEnv` / `remote_env` が `${containerEnv:...}` を介して secret-sensitive value を参照した場合も、その追跡情報を展開後の値へ引き継ぐ。decune はその実値を状態、reuse hash、decune-generated Compose override、Docker/Compose のラベル、argv、通常のエラーログに平文保存してはならない。reuse hash ではキーを保持し、`containerEnv` / `container_env` と `build.args` は変更検出のため実値ではなく非可逆な digest を含め、`remoteEnv` / `remote_env` の展開後の実値は redaction 済みのマーカーに置き換える。Compose モードの decune-generated Compose override では primary service の `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式のプレースホルダーを書き、実値は `docker compose` の子プロセスの環境変数として渡す。プレースホルダーの変数名の `<SAFE_KEY>` は、マージ済みの `containerEnv` のキーから ASCII 英数字 / アンダースコアのみへ正規化した値とする。Docker のビルド引数はプロセスの環境変数と `--build-arg KEY` で Docker CLI に渡し、argv に値を直接載せない。
+`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `container_env` / `remote_env` / `build.args` の値は secret-sensitive value として追跡する。`remoteEnv` / `remote_env` が `${containerEnv:...}` を介して secret-sensitive value を参照した場合も、その追跡情報を展開後の値へ引き継ぐ。decune はその実値を状態、reuse hash、decune-generated Compose override、Docker/Compose のラベル、argv、通常のエラーログに平文保存してはならない。reuse hash ではキーを保持し、`containerEnv` / `container_env` と `build.args` は変更検出のため実値ではなく非可逆な digest を含め、`remoteEnv` / `remote_env` は未展開のテンプレートだけを含めて展開後の実値を入力にしない。Compose モードの decune-generated Compose override では primary service の `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式のプレースホルダーを書き、実値は `docker compose` の子プロセスの環境変数として渡す。プレースホルダーの変数名の `<SAFE_KEY>` は、マージ済みの `containerEnv` のキーから ASCII 英数字 / アンダースコアのみへ正規化した値とする。正規化では ASCII 英字を大文字にし、英数字以外の文字をアンダースコアへ置き換え、先頭が数字の場合と空になる場合はアンダースコアを前置し、正規化後に他のキーと衝突する場合は連番の接尾辞で区別する。Docker のビルド引数はプロセスの環境変数と `--build-arg KEY` で Docker CLI に渡し、argv に値を直接載せない。
 
 `containerEnv` / `container_env` はコンテナ作成時の環境変数であり、コンテナ内プロセスや Docker inspect から見える。`build.args` は Docker のビルドに渡り、イメージレイヤーやビルド出力に残る可能性がある。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser`、`build.target`、`build.cacheFrom` はコマンド、状態、ラベル、コンテナの identity に出る可能性がある。decune はこれらを秘密情報の保存先として保証しない。設定ファイルへ直接書かれた秘密の文字列や、decune が `${localEnv:...}` 由来と追跡できない値は、自動では secret-sensitive value と判定しない。ビルド時の秘密情報には Docker BuildKit の secret を使う。
 
@@ -977,7 +977,7 @@ primary service に `build` がある場合、まず Compose CLI でサービス
 - Feature のメタデータは必須フィールド `id`, `version`, `name` を要求する。
 - `installsAfter` は弱い依存関係として扱い、インストール対象の一覧に存在しない Feature を追加しない。仕様上はバージョンタグ / digest を含められないが、互換性のため照合用にはタグ / digest を落とした canonical Feature ID として扱う。
 - Feature のオプションは Features 仕様に従って環境変数キーに変換し、既定値のオプションも出力する。環境変数キーの衝突はエラー。
-- Feature メタデータの `containerEnv` は、Feature レイヤーの Dockerfile の `ENV` として各 Feature の `install.sh` 実行前に適用し、後続の Feature と最終イメージに継承する。`PATH="/tool:${PATH}"` のような Dockerfile の環境変数置換は Docker のビルダーに委譲する。Feature 由来の `containerEnv` はコンテナ作成 / decune-generated Compose override の `environment` には再投入せず、利用者 / devcontainer / project 由来の `containerEnv` だけを実行時の上書きとして適用する。
+- Feature メタデータの `containerEnv` は、Feature レイヤーの Dockerfile の `ENV` として各 Feature の `install.sh` 実行前に適用し、後続の Feature と最終イメージに継承する。`PATH="/tool:${PATH}"` のような Dockerfile の環境変数置換は Docker のビルダーに委譲する。Feature 由来の `containerEnv` はコンテナ作成 / decune-generated Compose override の `environment` には再投入せず、イメージメタデータ / decune config / `devcontainer.json` 由来の `containerEnv` だけを実行時の上書きとして適用する。
 
 ### 7.2 コンテナの作成・起動とユーザー
 
