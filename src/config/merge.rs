@@ -745,9 +745,8 @@ mod tests {
         assert!(config.credentials.github.install_feature_if_missing);
     }
 
-    #[test]
-    fn decune_environment_maps_follow_layer_order_and_merge_by_key() {
-        let metadata_layer = |container_value: &str, remote_value: &str| ConfigLayer {
+    fn env_metadata_layer(container_value: &str, remote_value: &str) -> ConfigLayer {
+        ConfigLayer {
             devcontainer: Some(LayerDevcontainerMetadata {
                 container_env: BTreeMap::from([
                     ("CONTAINER_SHARED".to_owned(), container_value.to_owned()),
@@ -763,7 +762,11 @@ mod tests {
                 ..LayerDevcontainerMetadata::default()
             }),
             ..ConfigLayer::default()
-        };
+        }
+    }
+
+    #[test]
+    fn decune_environment_maps_follow_layer_order_and_merge_by_key() {
         let global = raw_layer(
             r#"
 version = 1
@@ -792,7 +795,7 @@ REMOTE_SHARED = "project"
 REMOTE_PROJECT = ""
 "#,
         );
-        let mut devcontainer = metadata_layer("DEVCONTAINER", "DEVCONTAINER");
+        let mut devcontainer = env_metadata_layer("DEVCONTAINER", "DEVCONTAINER");
         let devcontainer_metadata = devcontainer
             .devcontainer
             .as_mut()
@@ -806,9 +809,20 @@ REMOTE_PROJECT = ""
             "devcontainer".to_owned(),
         );
 
+        // Production strips container_env from feature metadata layers before resolve_config
+        // (feature_runtime_metadata_layer): feature containerEnv is applied as image ENV and
+        // never joins this merge.
+        let mut feature = env_metadata_layer("FEATURE", "FEATURE");
+        feature
+            .devcontainer
+            .as_mut()
+            .expect("test feature layer should contain metadata")
+            .container_env
+            .clear();
+
         let config = resolve_config(ConfigMergeInput {
-            image_metadata: vec![metadata_layer("IMAGE", "IMAGE")],
-            feature_metadata: vec![metadata_layer("FEATURE", "FEATURE")],
+            image_metadata: vec![env_metadata_layer("IMAGE", "IMAGE")],
+            feature_metadata: vec![feature],
             global: Some(global),
             devcontainer: Some(devcontainer),
             project: Some(project),
@@ -822,7 +836,6 @@ REMOTE_PROJECT = ""
                     "CONTAINER_DEVCONTAINER".to_owned(),
                     "DEVCONTAINER".to_owned(),
                 ),
-                ("CONTAINER_FEATURE".to_owned(), "FEATURE".to_owned()),
                 ("CONTAINER_GLOBAL".to_owned(), "global".to_owned()),
                 (
                     "CONTAINER_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
