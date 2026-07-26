@@ -1229,6 +1229,36 @@ fn up_detach_redacts_remote_env_derived_from_sensitive_container_env() {
 }
 
 #[test]
+fn up_detach_redacts_sensitive_container_env_in_lifecycle_failure() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .copy_fixture_dir("cli/workspaces/lifecycle/sensitive-container-env-lifecycle-output")
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    with_clean_workspace_containers(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("DECUNE_TEST_CONFIG_SECRET", "config-redaction-secret")
+            .env(
+                "DECUNE_TEST_DEVCONTAINER_SECRET",
+                "devcontainer-redaction-secret",
+            )
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Lifecycle stage postStartCommand failed",
+            ))
+            .stderr(predicate::str::contains("exit code 17"))
+            .stderr(predicate::str::contains("[REDACTED]"))
+            .stderr(predicate::str::contains("config-redaction-secret").not())
+            .stderr(predicate::str::contains("devcontainer-redaction-secret").not());
+    });
+}
+
+#[test]
 fn up_attached_expands_decune_config_remote_env_from_actual_container_env() {
     let workspace = support::TempWorkspace::new().unwrap();
     workspace

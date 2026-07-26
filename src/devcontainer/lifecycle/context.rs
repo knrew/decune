@@ -28,5 +28,5 @@ pub(crate) struct PreparedLifecycleRunContext<'a> {
     pub(in crate::devcontainer::lifecycle) remote_user: ResolvedRemoteUser,
     pub(in crate::devcontainer::lifecycle) remote_env: BTreeMap<String, String>,
     pub(in crate::devcontainer::lifecycle) remote_process_env: BTreeMap<String, String>,
-    pub(in crate::devcontainer::lifecycle) remote_env_redactions: Vec<String>,
+    pub(in crate::devcontainer::lifecycle) lifecycle_redactions: Vec<String>,
 }

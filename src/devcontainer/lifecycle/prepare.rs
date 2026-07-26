@@ -68,7 +68,8 @@ pub(crate) async fn prepare_container_lifecycle(
             context.container
         )
     })?;
-    let remote_env_redactions = remote_env.sensitive.redaction_values();
+    let mut lifecycle_redactions = context.sensitive_container_env.redaction_values();
+    lifecycle_redactions.extend(remote_env.sensitive.redaction_values());
     let remote_env = remote_env.values;
     let remote_process_env = resolve_exec_env(
         context.client,
@@ -89,7 +90,7 @@ pub(crate) async fn prepare_container_lifecycle(
         remote_user: context.remote_user,
         remote_env,
         remote_process_env,
-        remote_env_redactions,
+        lifecycle_redactions,
     })
 }
 

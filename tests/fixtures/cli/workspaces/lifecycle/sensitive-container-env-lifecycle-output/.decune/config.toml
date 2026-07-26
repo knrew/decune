@@ -1,0 +1,4 @@
+version = 1
+
+[container_env]
+DECUNE_CONFIG_SECRET = "config-${localEnv:DECUNE_TEST_CONFIG_SECRET}"
