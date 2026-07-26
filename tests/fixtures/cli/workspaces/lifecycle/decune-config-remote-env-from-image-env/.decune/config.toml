@@ -2,4 +2,3 @@ version = 1
 
 [remote_env]
 DECUNE_IMAGE_ENV = "${containerEnv:DECUNE_FROM_IMAGE}"
-PATH             = "${containerEnv:PATH}:/image-extra"

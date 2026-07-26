@@ -1027,7 +1027,7 @@ fn up_detach_applies_decune_config_environment_to_container_lifecycle_and_hook()
                 )
             })
             .unwrap();
-        assert_eq!(output, "/usr/bin:/bin:/extra|fallback|remote");
+        assert_eq!(output, "/usr/bin:/bin:/extra|fallback|remote|/usr/bin:/bin");
         let hook_output = runtime
             .block_on(async {
                 exec_single_workspace_container(
@@ -1355,6 +1355,39 @@ fn up_attached_defaults_to_stopping_image_container_after_shell_exit() {
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
     }
+}
+
+#[test]
+fn up_detach_rejects_devcontainer_container_env_self_reference() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            r#"
+            {
+              "image": "alpine:3.20",
+              "containerEnv": {
+                "PATH": "${containerEnv:PATH}:/extra"
+              }
+            }
+            "#,
+        )
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    with_clean_workspace_containers(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .assert()
+            .failure()
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains(
+                "Container environment value must not reference containerEnv",
+            ))
+            .stderr(predicate::str::contains("devcontainer.json containerEnv"));
+    });
 }
 
 #[test]

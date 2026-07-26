@@ -2381,7 +2381,7 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
     }
 
     #[test]
-    fn decune_remote_env_template_changes_hash_but_expanded_value_does_not() {
+    fn decune_remote_env_template_changes_hash() {
         let first_template = resolved_config(
             r#"
 version = 1
@@ -2399,29 +2399,9 @@ NPM_TOKEN = "${localEnv:SECOND_NPM_TOKEN}"
 "#,
         );
 
+        // Production hashes the unresolved template in plan.config. Lifecycle and attach
+        // expansion keeps runtime values local and does not write them back into the plan.
         assert_ne!(hash_for(&first_template), hash_for(&second_template));
-
-        let mut first_expanded = first_template;
-        first_expanded
-            .devcontainer
-            .remote_env
-            .insert("NPM_TOKEN".to_owned(), "first-secret".to_owned());
-        let mut second_expanded = first_expanded.clone();
-        second_expanded
-            .devcontainer
-            .remote_env
-            .insert("NPM_TOKEN".to_owned(), "second-secret".to_owned());
-
-        let first_hash = config_hash(&ConfigHashInput {
-            sensitive_remote_env_keys: vec!["NPM_TOKEN".to_owned()],
-            ..ConfigHashInput::new(&first_expanded)
-        });
-        let second_hash = config_hash(&ConfigHashInput {
-            sensitive_remote_env_keys: vec!["NPM_TOKEN".to_owned()],
-            ..ConfigHashInput::new(&second_expanded)
-        });
-
-        assert_eq!(first_hash, second_hash);
     }
 
     #[test]

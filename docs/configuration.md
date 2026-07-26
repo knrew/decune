@@ -46,6 +46,8 @@ PATH = "${containerEnv:PATH}:/workspace/bin"
 - 値は文字列だけです。`[containerEnv]` / `[remoteEnv]` や `[env.container]` / `[env.remote]` は受理しません。
 - `${localEnv:...}` など、`containerEnv` / `remoteEnv` と同じ変数展開を利用できます。`[remote_env]` の `${containerEnv:...}` は実際のコンテナ環境から解決しますが、`[container_env]` 自体から `${containerEnv:...}` を参照する構成はエラーです。
 
+`[container_env]` / `[remote_env]` の設定記述は reuse hash に含まれるため、global decune config で値を追加・変更した場合も、既存のコンテナには `decune rebuild` が必要です。ただし、`[remote_env]` の `${localEnv:...}` は未展開のテンプレートが reuse hash に入り、参照先の実値だけが変わっても rebuild は必要ありません。
+
 TOML ではテーブルを開始すると、次のテーブル見出しまでのキーがそのテーブルに属します。`version`、`shell`、`use_global_config` などのトップレベルのスカラーは、`[container_env]` / `[remote_env]` より前に書いてください。
 
 `${localEnv:...}` 由来の値は既存の redaction 経路で追跡され、`[remote_env]` の `${containerEnv:...}` を介した参照でもこの追跡を引き継ぎます。ただし、`container_env` の実値はコンテナ内プロセスや Docker inspect から見えます。decune config とコンテナ環境は秘密情報の保存先として保証されません。詳しいスキーマ、展開タイミング、reuse hash の扱いは [specification.md 5.17 節](specification.md#517-container_env--remote_env)と[6 章](specification.md#6-変数展開とパス解決)を参照してください。

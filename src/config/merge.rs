@@ -771,10 +771,12 @@ version = 1
 [container_env]
 CONTAINER_SHARED = "global"
 CONTAINER_GLOBAL = "global"
+CONTAINER_GLOBAL_DEVCONTAINER_SHARED = "global"
 
 [remote_env]
 REMOTE_SHARED = "global"
 REMOTE_GLOBAL = "global"
+REMOTE_GLOBAL_DEVCONTAINER_SHARED = "global"
 "#,
         );
         let project = raw_layer(
@@ -790,12 +792,25 @@ REMOTE_SHARED = "project"
 REMOTE_PROJECT = ""
 "#,
         );
+        let mut devcontainer = metadata_layer("DEVCONTAINER", "DEVCONTAINER");
+        let devcontainer_metadata = devcontainer
+            .devcontainer
+            .as_mut()
+            .expect("test devcontainer layer should contain metadata");
+        devcontainer_metadata.container_env.insert(
+            "CONTAINER_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
+            "devcontainer".to_owned(),
+        );
+        devcontainer_metadata.remote_env.insert(
+            "REMOTE_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
+            "devcontainer".to_owned(),
+        );
 
         let config = resolve_config(ConfigMergeInput {
             image_metadata: vec![metadata_layer("IMAGE", "IMAGE")],
             feature_metadata: vec![metadata_layer("FEATURE", "FEATURE")],
             global: Some(global),
-            devcontainer: Some(metadata_layer("DEVCONTAINER", "DEVCONTAINER")),
+            devcontainer: Some(devcontainer),
             project: Some(project),
             cli: None,
         });
@@ -809,6 +824,10 @@ REMOTE_PROJECT = ""
                 ),
                 ("CONTAINER_FEATURE".to_owned(), "FEATURE".to_owned()),
                 ("CONTAINER_GLOBAL".to_owned(), "global".to_owned()),
+                (
+                    "CONTAINER_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
+                    "devcontainer".to_owned(),
+                ),
                 ("CONTAINER_IMAGE".to_owned(), "IMAGE".to_owned()),
                 ("CONTAINER_PROJECT".to_owned(), String::new()),
                 ("CONTAINER_SHARED".to_owned(), "project".to_owned()),
@@ -820,6 +839,10 @@ REMOTE_PROJECT = ""
                 ("REMOTE_DEVCONTAINER".to_owned(), "DEVCONTAINER".to_owned()),
                 ("REMOTE_FEATURE".to_owned(), "FEATURE".to_owned()),
                 ("REMOTE_GLOBAL".to_owned(), "global".to_owned()),
+                (
+                    "REMOTE_GLOBAL_DEVCONTAINER_SHARED".to_owned(),
+                    "devcontainer".to_owned(),
+                ),
                 ("REMOTE_IMAGE".to_owned(), "IMAGE".to_owned()),
                 ("REMOTE_PROJECT".to_owned(), String::new()),
                 ("REMOTE_SHARED".to_owned(), "project".to_owned()),

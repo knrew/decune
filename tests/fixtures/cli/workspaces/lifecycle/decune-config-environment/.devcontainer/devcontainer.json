@@ -6,6 +6,9 @@
     "PATH": "/lower-layer",
     "DEVCONTAINER_ONLY": "kept"
   },
+  "remoteEnv": {
+    "DEVCONTAINER_REMOTE": "${containerEnv:PATH}"
+  },
   "userEnvProbe": "none",
   "postStartCommand": ["/usr/local/bin/decune-check-expanded-env"]
 }

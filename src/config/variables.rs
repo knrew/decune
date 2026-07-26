@@ -269,7 +269,7 @@ where
         return resolve_local_env(rest, local_env);
     }
     if let Some(rest) = expression.strip_prefix("containerEnv:") {
-        return resolve_container_env(rest, context);
+        return resolve_container_env(rest, context).map(|(_, value)| value);
     }
 
     match expression {
@@ -316,31 +316,27 @@ where
     })
 }
 
-fn resolve_container_env(expression: &str, context: &VariableContext) -> Result<String> {
-    let mut parts = expression.splitn(2, ':');
-    let name = parts.next().unwrap_or_default();
-    let default = parts.next();
-
-    if name.is_empty() {
-        return Err(anyhow!("containerEnv variable name must not be empty"));
-    }
-
-    context.container_env.get(name).map_or_else(
+fn resolve_container_env<'a>(
+    expression: &'a str,
+    context: &VariableContext,
+) -> Result<(&'a str, String)> {
+    let (name, default) = split_env_expression(expression, "containerEnv")?;
+    let value = context.container_env.get(name).map_or_else(
         || {
             default
                 .map(str::to_owned)
                 .ok_or_else(|| anyhow!("Container environment variable is not set: {name}"))
         },
         |value| Ok(value.clone()),
-    )
+    )?;
+    Ok((name, value))
 }
 
 fn resolve_container_env_tracked(
     expression: &str,
     context: &VariableContext,
 ) -> Result<ExpandedString> {
-    let value = resolve_container_env(expression, context)?;
-    let name = expression.split(':').next().unwrap_or_default();
+    let (name, value) = resolve_container_env(expression, context)?;
     let redactions = context
         .sensitive_container_env
         .get(name)
@@ -354,13 +350,7 @@ fn resolve_local_env_tracked<F>(expression: &str, local_env: &mut F) -> Result<E
 where
     F: FnMut(&str) -> Result<Option<String>>,
 {
-    let mut parts = expression.splitn(2, ':');
-    let name = parts.next().unwrap_or_default();
-    let default = parts.next();
-
-    if name.is_empty() {
-        return Err(anyhow!("localEnv variable name must not be empty"));
-    }
+    let (name, default) = split_env_expression(expression, "localEnv")?;
 
     local_env(name)?.map_or_else(
         || {
@@ -384,13 +374,7 @@ fn resolve_local_env<F>(expression: &str, local_env: &mut F) -> Result<String>
 where
     F: FnMut(&str) -> Result<Option<String>>,
 {
-    let mut parts = expression.splitn(2, ':');
-    let name = parts.next().unwrap_or_default();
-    let default = parts.next();
-
-    if name.is_empty() {
-        return Err(anyhow!("localEnv variable name must not be empty"));
-    }
+    let (name, default) = split_env_expression(expression, "localEnv")?;
 
     local_env(name)?.map_or_else(
         || {
@@ -400,6 +384,20 @@ where
         },
         Ok,
     )
+}
+
+fn split_env_expression<'a>(
+    expression: &'a str,
+    variable: &str,
+) -> Result<(&'a str, Option<&'a str>)> {
+    let (name, default) = expression
+        .split_once(':')
+        .map_or((expression, None), |(name, default)| (name, Some(default)));
+    if name.is_empty() {
+        return Err(anyhow!("{variable} variable name must not be empty"));
+    }
+
+    Ok((name, default))
 }
 
 fn reject_container_env_references(values: &BTreeMap<String, String>) -> Result<()> {
@@ -643,7 +641,7 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
             ("TOKEN_COPY".to_owned(), "${containerEnv:TOKEN}".to_owned()),
             (
                 "DEFAULTED".to_owned(),
-                "${containerEnv:MISSING:fallback}".to_owned(),
+                "${containerEnv:MISSING:fallback:with:colon}".to_owned(),
             ),
         ]);
 
@@ -655,7 +653,7 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
         );
         assert_eq!(
             expanded.values.get("DEFAULTED").map(String::as_str),
-            Some("fallback")
+            Some("fallback:with:colon")
         );
         assert!(!expanded.sensitive.contains_key("TOKEN_COPY"));
         assert!(!expanded.sensitive.contains_key("DEFAULTED"));
@@ -701,6 +699,16 @@ ${devcontainerId}:${uid}:${gid}:${remoteUser}:${remoteUserHome}",
         assert_eq!(
             error.to_string(),
             "Container environment variable is not set: MISSING"
+        );
+    }
+
+    #[test]
+    fn empty_container_env_name_is_rejected() {
+        let error = expand_variables("${containerEnv:}", &context()).unwrap_err();
+
+        assert_eq!(
+            error.to_string(),
+            "containerEnv variable name must not be empty"
         );
     }
 
