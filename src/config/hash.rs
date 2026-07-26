@@ -34,7 +34,6 @@ pub(crate) struct ConfigHashInput<'a> {
     pub(crate) startup_command: Option<StartupCommandHashInput>,
     pub(crate) uid_gid_sync: Option<UidGidSyncHashInput>,
     pub(crate) sensitive_container_env_keys: Vec<String>,
-    pub(crate) sensitive_remote_env_keys: Vec<String>,
     pub(crate) sensitive_build_arg_keys: Vec<String>,
 }
 
@@ -53,7 +52,6 @@ impl<'a> ConfigHashInput<'a> {
             startup_command: None,
             uid_gid_sync: None,
             sensitive_container_env_keys: Vec::new(),
-            sensitive_remote_env_keys: Vec::new(),
             sensitive_build_arg_keys: Vec::new(),
         }
     }
@@ -449,7 +447,6 @@ fn write_resolved_config(writer: &mut CanonicalWriter, input: &ConfigHashInput<'
                 writer,
                 &config.devcontainer,
                 &input.sensitive_container_env_keys,
-                &input.sensitive_remote_env_keys,
                 &input.sensitive_build_arg_keys,
             );
         });
@@ -696,7 +693,6 @@ fn write_devcontainer(
     writer: &mut CanonicalWriter,
     devcontainer: &ResolvedDevcontainer,
     sensitive_container_env_keys: &[String],
-    sensitive_remote_env_keys: &[String],
     sensitive_build_arg_keys: &[String],
 ) {
     writer.object("Devcontainer", |writer| {
@@ -727,9 +723,11 @@ fn write_devcontainer(
             writer.map(environment.iter(), |writer, value| writer.string(value));
         });
         writer.field("remote_env", |writer| {
-            let environment =
-                redacted_env_for_hash(&devcontainer.remote_env, sensitive_remote_env_keys);
-            writer.map(environment.iter(), |writer, value| writer.string(value));
+            // remote_env is expanded at lifecycle/attach time, so the hash input is the
+            // unresolved template and runtime values never reach the canonical text.
+            writer.map(devcontainer.remote_env.iter(), |writer, value| {
+                writer.string(value);
+            });
         });
         writer.field("remote_user", |writer| {
             writer.option_string(devcontainer.remote_user.as_deref());
@@ -815,22 +813,6 @@ fn local_env_derived_container_env_digest(key: &str, value: &str) -> String {
         "<localEnv-derived-value-sha256:{}>",
         sha256_hex(writer.finish().as_bytes())
     )
-}
-
-fn redacted_env_for_hash(
-    env: &BTreeMap<String, String>,
-    sensitive_keys: &[String],
-) -> BTreeMap<String, String> {
-    env.iter()
-        .map(|(key, value)| {
-            let value = if sensitive_keys.iter().any(|sensitive| sensitive == key) {
-                "<localEnv-derived-value>".to_owned()
-            } else {
-                value.clone()
-            };
-            (key.clone(), value)
-        })
-        .collect()
 }
 
 fn write_devcontainer_mount(writer: &mut CanonicalWriter, mount: &ResolvedDevcontainerMount) {
@@ -2355,29 +2337,6 @@ value = "grpc://${decune.network.fixed_net.gateway}:50051"
             !local_env_derived_container_env_digest("NPM_TOKEN", "first-secret")
                 .contains("first-secret")
         );
-    }
-
-    #[test]
-    fn config_hash_still_redacts_local_env_derived_remote_env_values() {
-        let mut first = ResolvedConfig::default();
-        first.devcontainer.remote_env =
-            BTreeMap::from([("NPM_TOKEN".to_owned(), "first-secret".to_owned())]);
-        let mut second = first.clone();
-        second
-            .devcontainer
-            .remote_env
-            .insert("NPM_TOKEN".to_owned(), "second-secret".to_owned());
-
-        let redacted_first = config_hash(&ConfigHashInput {
-            sensitive_remote_env_keys: vec!["NPM_TOKEN".to_owned()],
-            ..ConfigHashInput::new(&first)
-        });
-        let redacted_second = config_hash(&ConfigHashInput {
-            sensitive_remote_env_keys: vec!["NPM_TOKEN".to_owned()],
-            ..ConfigHashInput::new(&second)
-        });
-
-        assert_eq!(redacted_first, redacted_second);
     }
 
     #[test]
