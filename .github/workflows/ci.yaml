@@ -91,7 +91,7 @@ jobs:
         with:
           persist-credentials: false
       - name: Check Markdown formatting
-        uses: DavidAnson/markdownlint-cli2-action@v23
+        uses: DavidAnson/markdownlint-cli2-action@v24
         with:
           config: .markdownlint.yaml
           globs: "**/*.md"
