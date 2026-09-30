@@ -18,7 +18,7 @@
 
 ## CLI 用語
 
-- attached `decune up` session: シェル接続を維持したまま実行中の `decune up`(短縮形: attached session)。port forwarding、credential forwarding、コンテナ内からのクエリはこのセッションの間だけ有効。
+- attached `decune up` session: シェル接続を維持したまま実行中の `decune up`(短縮形: attached session)。port forwarding、Git HTTPS の `host-helper`、`gh` の認証、コンテナ内からのクエリはこのセッションの間だけ有効。SSH agent の転送はホストのソケットの bind mount なので、セッションの終了後も使える。
 - detached session: `--detach` を指定した `decune up` の session。attached `decune up` session の対語で、`up` の終了時に decune host daemon も停止し、port forwarding は維持されず、コンテナ内からのクエリは session 中も拒否する。
 - diagnostic code: 起動前検査や計画作成の失敗を識別する安定したコード(例: `compose_published_port_collision`)。定義は [specification.md 13 章](specification.md#13-diagnostic-code)、対処は [ports.md](ports.md) と [clone-isolation.md](clone-isolation.md)。
 
@@ -69,7 +69,7 @@
 ## セキュリティ用語
 
 - credential forwarding: ホストの Git 認証情報、SSH agent へのアクセス、GitHub CLI トークンへのアクセスをコンテナで利用可能にする仕組み。
-- decune host daemon: `decune up` の子タスクとして動き、`up` のプロセスが生きている間だけ credential forwarding、port forwarding の支援、attached `decune up` session の decune container CLI query を担当するプロセス。
+- decune host daemon: `decune up` の子タスクとして動き、`up` のプロセスが生きている間だけ Git HTTPS の `host-helper` と GitHub CLI のトークンファイルの管理、port forwarding の支援、attached `decune up` session の decune container CLI query を担当するプロセス。SSH agent の転送はこのプロセスを介さない。
 - daemon handoff: decune host daemon を所有する `decune up` session の終了時に、daemon を再利用している別のセッションが同じポリシーと daemon query context で daemon を再起動して引き継ぐ処理([specification.md 12.4 節](specification.md#124-decune-host-daemon))。
 - container-side tools: decune がコンテナ内で実行するために配置する 3 ツール(`git-credential-decune`、port forward agent の `decune-forward-agent`、decune container CLI)の総称。リリースビルドでは bundle としてホスト側バイナリへ埋め込む([specification.md 11 章](specification.md#11-配布の契約))。
 - decune container CLI: primary container 内へ `/run/decune/decune` として配置され、通常は `/usr/local/bin/decune` の symlink から実行するコンテナ側クライアント。

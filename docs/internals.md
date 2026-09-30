@@ -245,6 +245,15 @@ GitHub トークンの旧形式のランタイムパス `gh-token/token`(コン�
 
 - `networks`: Compose のネットワークキーごとの `network`、`requested_subnet`、`planned_subnet`、`planned_gateway`(省略可)、`relocated`。
 
+`[exec_context]`(`decune exec` が使う実行の文脈。[specification.md 3.10 節](specification.md#310-exec)。`up` / `rebuild` がワークスペースを利用可能にするまでは無い):
+
+- `container_id`: primary container の完全なコンテナ ID。
+- `remote_user`: UID/GID 同期の後の実効リモートユーザー。`remote_user_home` / `remote_user_shell`: passwd から解決したホームディレクトリとログインシェル(passwd に無ければ省略)。
+- `workspace_folder`: `workspaceFolder`。
+- `user_env_probe`: 既定値を適用した後の userEnvProbe(`none` / `loginShell` / `interactiveShell` / `loginInteractiveShell`)。
+- `sensitive_container_env_keys`: secret-sensitive な `containerEnv` のキー名(値は持たない。無ければ省略)。
+- `[exec_context.remote_env]`: `[remote_env]` をマージした後の `remoteEnv` の展開前のテンプレート(無ければ省略)。
+
 アトミックな書き込みは、状態ディレクトリに `state.toml.tmp.<pid>.<nanos>` を排他的に作成(モード 0600)し、内容の書き込みと fsync の後に `state.toml` へ rename し、最後に親ディレクトリを fsync する実装です。コンテナが存在しないワークスペースの状態は整合処理時に削除します。
 
 ## 10. reuse hash 入力の実装構成
@@ -254,5 +263,5 @@ reuse hash の公開契約(含める入力・含めない入力・secret-sensiti
 - canonical writer(`src/config/canonical.rs`)で決定論的な正規化テキストを構築し、SHA-256 の 16 進 digest にする。先頭にバージョンタグ `decune-config-hash-v1` を含める。
 - トップレベルの入力フィールドは version、解決済み設定、Feature lock、CLI オプション、内部バージョン、ビルド入力、Compose 関連(Compose ファイルの digest、decune-generated Compose override semantic hash の入力、サニタイズ済みの canonical Compose model。Compose モードのときだけ)、解決済みマウント、起動コマンド、UID/GID 同期の入力。
 - 解決済み設定のうち `ports`(forwarding は `up` 実行時の実行時設定)と `container.cli.enabled`(daemon のクエリポリシーにだけ影響)は書き込み時に明示的に除外する。
-- secret-sensitive value は生の値を正規化テキストに入れず、`${localEnv:...}` 由来の `containerEnv` / `build.args` は domain 付きの SHA-256 マーカーへ置換する。`remoteEnv` は lifecycle / attach の実行時まで展開しないため、正規化テキストには未展開のテンプレートがそのまま入り、展開後の実値はハッシュ計算に現れない。置換規則の契約は specification.md 10.3 節。ここでの `containerEnv` / `remoteEnv` は decune config の `[container_env]` / `[remote_env]` をマージした後の最終設定を指す。
+- secret-sensitive value は生の値を正規化テキストに入れず、`${localEnv:...}` 由来の `containerEnv` / `build.args` は domain 付きの SHA-256 マーカーへ置換する。`remoteEnv` は lifecycle / attach の実行時と `exec` の実行時まで展開しないため、正規化テキストには未展開のテンプレートがそのまま入り、展開後の実値はハッシュ計算に現れない。置換規則の契約は specification.md 10.3 節。ここでの `containerEnv` / `remoteEnv` は decune config の `[container_env]` / `[remote_env]` をマージした後の最終設定を指す。
 - 内部バージョンは Feature レイヤー生成と entrypoint shim 生成の内部バージョンタグで、decune 側の生成ロジックが変わったときに既存コンテナを再作成対象へ倒すために使う。

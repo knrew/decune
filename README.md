@@ -77,10 +77,11 @@ Dockerfile-based / Docker Compose-based の例は [docs/usage.md](docs/usage.md#
 decune <COMMAND> [OPTIONS] [WORKSPACE]
 ```
 
-`WORKSPACE` の既定値はカレントディレクトリです。Git リポジトリ内ではリポジトリルートを workspace root として扱います。
+`WORKSPACE` の既定値はカレントディレクトリです。Git リポジトリ内ではリポジトリルートを workspace root として扱います。`decune exec` だけは、コンテナ内で実行するコマンドを `--` の後ろに置きます(`decune exec [WORKSPACE] -- <COMMAND>...`)。
 
 - `decune up`: 開発コンテナを作成または起動し、シェルに接続
 - `decune rebuild`: 開発コンテナまたは Compose プロジェクトを再作成
+- `decune exec`: 最後の `up` のシェルと同じユーザー、環境変数、作業ディレクトリで、コンテナ内のコマンドを一つ実行
 - `decune down`: decune が管理するリソースを停止(ボリューム、状態、イメージは保持)
 - `decune status`: decune が管理するワークスペース環境の状態を read-only で表示
 - `decune ports`: 現在有効なホスト側ポートの利用状況を read-only で表示
@@ -91,7 +92,7 @@ decune <COMMAND> [OPTIONS] [WORKSPACE]
 
 ## セキュリティ上の注意
 
-- `decune up` は、ビルド、Feature のインストールスクリプト、lifecycle command、decune hook などの任意コードを実行し得ます。信頼していないリポジトリでは、起動前に内容を確認してください。
+- `decune up` は、ビルド、Feature のインストールスクリプト、lifecycle command、decune hook などの任意コードを実行し得ます。`decune exec` も、実行のたびに `userEnvProbe` 対象のシェル起動ファイルを実行し得ます。信頼していないリポジトリでは、起動前に内容を確認してください。
 - credential forwarding は、ホストの Git 認証情報、SSH agent、GitHub トークンファイルへの到達性をコンテナ内プロセスに与え得ます。信頼していないリポジトリでは、無効化するか read-only に制限してください。
 
 確認ポイントと推奨設定は [docs/usage.md](docs/usage.md#安全な使い方)、セキュリティ境界の定義は [docs/specification.md](docs/specification.md#12-セキュリティ境界) を参照してください。

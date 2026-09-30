@@ -62,6 +62,7 @@ decune のテストの網羅範囲は、少なくとも以下の挙動グルー�
 - Compose の `dockerComposeFile`、`service`、`runServices`、profiles、複数ファイルのマージ、decune-generated Compose override の挙動、プロジェクト削除の安全性。
 - Feature の解決、lock の扱い、メタデータのマージ、オプションの環境変数 / 既定値の扱い、local Feature の制約、UID/GID 同期、entrypoint shim の挙動。
 - dotfiles、マウント、lifecycle command、decune hook、シェル接続、lifecycle の二重実行防止。
+- `exec` の引数の解釈、実行の文脈の記録と引き継ぎ、対象のコンテナの確認、環境、stdio と exit code、副作用が無いこと。
 - manual/automatic port forwarding、published port の警告 / エラー、sidecar forwarding、TCP のみ対応の挙動。
 - credential forwarding、トークンの redaction、状態の修復、リソース名のサニタイズ、秘密情報の漏えいの回帰テスト。
 - decune container CLI の image/Dockerfile/Compose の primary、コマンド / stdio / exit の組み合わせ、UID / sidecar の構成、attached/detached、有効時の lifecycle、symlink のフォールバック、forwarding の集約・daemon handoff、live なワークスペース / ホスト側パスの非参照。
