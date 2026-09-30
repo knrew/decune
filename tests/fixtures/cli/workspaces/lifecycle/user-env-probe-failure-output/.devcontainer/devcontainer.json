@@ -1,0 +1,15 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile"
+  },
+  "remoteUser": "decune",
+  "userEnvProbe": "loginShell",
+  "containerEnv": {
+    "DECUNE_PROBE_SECRET": "Bearer ${localEnv:DECUNE_TEST_PROBE_SECRET}",
+    "DECUNE_PROBE_UNREFERENCED_SECRET": "${localEnv:DECUNE_TEST_PROBE_UNREFERENCED_SECRET}",
+    "DECUNE_PROBE_MARKER": "probe-stdout-marker"
+  },
+  "remoteEnv": {
+    "DECUNE_PROBE_REMOTE_SECRET": "${containerEnv:DECUNE_PROBE_SECRET}"
+  }
+}

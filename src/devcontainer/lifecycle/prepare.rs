@@ -78,6 +78,7 @@ pub(crate) async fn prepare_container_lifecycle(
         context.remote_user.shell.as_deref(),
         &remote_env,
         context.config.devcontainer.user_env_probe,
+        &lifecycle_redactions,
     )
     .await?;
 
