@@ -18,7 +18,6 @@ use crate::{
         RuntimeCommand, RuntimeCommandRunner, RuntimeOutput, RuntimeStdio, TokioRuntimeCommand,
         ensure_success,
     },
-    terminal,
     up::{UpContainerSummary, UpMountSummary},
 };
 
@@ -503,11 +502,7 @@ impl DockerCli {
         container: &str,
         spec: &crate::docker::exec::ExecCommandSpec,
     ) -> Result<i64> {
-        let command = docker_exec_command(
-            container,
-            spec,
-            DockerExecMode::attached(spec.tty && terminal::stdin_is_tty()),
-        );
+        let command = docker_exec_command(container, spec, DockerExecMode::attached(spec.tty));
         let status = self
             .runner
             .run_status(command, RuntimeStdio::Inherit)

@@ -8,6 +8,7 @@ use crate::{
         exec::{ExecCommandSpec, exec_capture_output, resolve_exec_env, run_attached_exec_stdio},
         user::resolve_remote_user,
     },
+    terminal::StdioTerminals,
     up::{
         exec_target::resolve_up_exec_target,
         mounts::mount_variable_context,
@@ -120,7 +121,7 @@ pub(in crate::up) async fn attach_shell(
             working_dir: Some(working_dir),
             env,
             redactions,
-            tty: true,
+            tty: StdioTerminals::detect().allocates_shell_tty(),
         }
     };
 
