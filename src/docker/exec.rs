@@ -75,6 +75,11 @@ pub(crate) async fn run_attached_exec_stdio(
     exec_attach_stdio(client, container, spec).await
 }
 
+/// Runs userEnvProbe and merges its environment under `remote_env`.
+///
+/// When the probe fails, this warns and returns `remote_env` alone. `redactions` must hold
+/// every secret-sensitive `containerEnv` and remoteEnv value, because the probe stderr and
+/// errors that the warning includes can echo any of them.
 pub(crate) async fn resolve_exec_env(
     client: &DockerClient,
     container: &str,

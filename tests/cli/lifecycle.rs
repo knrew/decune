@@ -1564,6 +1564,10 @@ fn assert_user_env_probe_warning_omits_stdout_and_secrets(stderr: &str) {
         !stderr.contains(PROBE_LOCAL_SECRET),
         "secret leaked: {stderr}"
     );
+    assert!(
+        !stderr.contains(PROBE_UNREFERENCED_SECRET),
+        "secret not referenced by remoteEnv leaked: {stderr}"
+    );
 }
 
 // The `up --detach` warning for a failed userEnvProbe leaves out the probe stdout and hides
@@ -1622,10 +1626,6 @@ fn up_attached_user_env_probe_failure_warning_omits_stdout_and_redacts_secrets()
 
         let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
         assert_user_env_probe_warning_omits_stdout_and_secrets(&stderr);
-        assert!(
-            !stderr.contains(PROBE_UNREFERENCED_SECRET),
-            "secret not referenced by remoteEnv leaked: {stderr}"
-        );
     });
 }
 
