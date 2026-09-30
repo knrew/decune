@@ -2,6 +2,7 @@ use anyhow::Result;
 
 mod attach;
 mod build;
+mod exec_context;
 mod exec_target;
 mod existing;
 mod forwarding;
@@ -22,6 +23,7 @@ use crate::{
     state,
 };
 use attach::attach_shell;
+use exec_context::exec_context_for_up;
 use forwarding::{start_forwarding_for_up, stop_forwarding, warn_about_detached_forwarding};
 use lifecycle::{
     HostDaemonSessionMode, prepare_up_lifecycle, report_up_success, run_attach_lifecycle_for_up,
@@ -61,11 +63,12 @@ pub(crate) async fn run_detached_up(options: UpOptions) -> Result<UpOutcome> {
         started.plan.config.container.cli.enabled,
     )
     .await;
-    {
+    let exec_context = {
         let lifecycle = prepare_up_lifecycle(&started).await?;
         run_container_start_lifecycle_for_up(&started, &lifecycle).await?;
-    }
-    mark_started_workspace_used(&started)?;
+        exec_context_for_up(&started, &lifecycle).await?
+    };
+    mark_started_workspace_used(&started, exec_context)?;
     report_up_success(&started, start_time.elapsed());
 
     Ok(started.outcome)
@@ -90,7 +93,8 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     let forwarding = start_forwarding_for_up(&started).await?;
     let attach_result = async {
         run_attach_lifecycle_for_up(&lifecycle).await?;
-        mark_started_workspace_used(&started)?;
+        let exec_context = exec_context_for_up(&started, &lifecycle).await?;
+        mark_started_workspace_used(&started, exec_context)?;
         report_up_success(&started, start_time.elapsed());
 
         attach_shell(
@@ -109,8 +113,14 @@ pub(crate) async fn run_attached_up(options: UpOptions) -> Result<i32> {
     Ok(shell::clamp_exit_code(exit_code))
 }
 
-fn mark_started_workspace_used(started: &start::StartedUpContainer) -> Result<()> {
+/// Records that the workspace is ready to use, together with the exec context that
+/// `decune exec` reuses, in one atomic state write.
+fn mark_started_workspace_used(
+    started: &start::StartedUpContainer,
+    exec_context: state::ExecContextState,
+) -> Result<()> {
     let mut state = started.state.borrow_mut();
+    state.exec_context = Some(exec_context);
     state::mark_state_used(started.workspace.paths().state_dir(), &mut state)
 }
 
