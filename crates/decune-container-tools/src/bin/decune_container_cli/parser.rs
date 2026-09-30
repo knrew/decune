@@ -10,7 +10,7 @@ Supported commands:
   ports   List active ports for the current workspace
 
 Host-only commands:
-  up, rebuild, down, remove, rm, clean
+  up, rebuild, exec, down, remove, rm, clean
           Run these commands on the host
 
 Options:
@@ -153,6 +153,7 @@ pub fn parse(args: &[OsString]) -> Result<ParsedCommand, UsageError> {
         "ports" => parse_ports(&args[1..]),
         "up" => parse_host_only("up", &args[1..]),
         "rebuild" => parse_host_only("rebuild", &args[1..]),
+        "exec" => parse_host_only("exec", &args[1..]),
         "down" => parse_host_only("down", &args[1..]),
         "remove" => parse_host_only("remove", &args[1..]),
         "rm" => parse_host_only("rm", &args[1..]),
@@ -173,6 +174,7 @@ fn parse_help(args: &[&str]) -> Result<ParsedCommand, UsageError> {
         ["ports"] => Ok(ParsedCommand::PrintHelp(HelpCommand::Ports)),
         ["up"] => Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly("up"))),
         ["rebuild"] => Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly("rebuild"))),
+        ["exec"] => Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly("exec"))),
         ["down"] => Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly("down"))),
         ["remove"] => Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly("remove"))),
         ["rm"] => Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly("rm"))),
@@ -357,7 +359,7 @@ mod tests {
             assert_eq!(parse(&args(&input)), expected, "input: {input:?}");
         }
 
-        for command in ["up", "rebuild", "down", "remove", "rm", "clean"] {
+        for command in ["up", "rebuild", "exec", "down", "remove", "rm", "clean"] {
             assert_eq!(
                 parse(&args(&[command])),
                 error(&format!(
@@ -408,7 +410,7 @@ mod tests {
                 Ok(ParsedCommand::PrintHelp(HelpCommand::Ports))
             );
         }
-        for command in ["up", "rebuild", "down", "remove", "rm", "clean"] {
+        for command in ["up", "rebuild", "exec", "down", "remove", "rm", "clean"] {
             assert_eq!(
                 parse(&args(&[command, "--help"])),
                 Ok(ParsedCommand::PrintHelp(HelpCommand::HostOnly(command)))
@@ -448,6 +450,39 @@ mod tests {
                 show_root_help: false,
             })
         );
+    }
+
+    // `decune exec` with a command after `--` is rejected as host-only, even when the command
+    // itself carries `--help`.
+    #[test]
+    fn exec_with_command_is_rejected_as_host_only() {
+        for input in [
+            vec!["exec", "--", "ls", "-la"],
+            vec!["exec", ".", "--", "ls", "--help"],
+        ] {
+            assert_eq!(
+                parse(&args(&input)),
+                Err(UsageError {
+                    message: "decune exec cannot be run inside a container; run it on the host"
+                        .to_owned(),
+                    show_root_help: false,
+                }),
+                "input: {input:?}"
+            );
+        }
+    }
+
+    // The root help lists `exec` among the host-only commands.
+    #[test]
+    fn root_help_lists_exec_as_host_only() {
+        let help = HelpCommand::Root.text();
+        let host_only = help
+            .split("Host-only commands:")
+            .nth(1)
+            .and_then(|section| section.split("Options:").next())
+            .unwrap();
+
+        assert!(host_only.contains("exec"), "{help}");
     }
 
     #[test]
