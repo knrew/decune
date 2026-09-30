@@ -911,6 +911,7 @@ mod tests {
             last_started_at: "unix:2".to_owned(),
             last_used_at: None,
             lifecycle: LifecycleState::default(),
+            exec_context: None,
         }
     }
     fn temp_root(name: &str) -> (tempfile::TempDir, PathBuf) {
