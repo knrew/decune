@@ -1594,8 +1594,8 @@ fn up_detach_user_env_probe_failure_warning_omits_stdout_and_redacts_secrets() {
     });
 }
 
-// The attached `up` warning for the shell probe also hides secret-sensitive containerEnv
-// values, including one that remoteEnv does not reference.
+// The warning for the userEnvProbe that attached `up` runs before attaching the shell also
+// hides secret-sensitive containerEnv values, including one that remoteEnv does not reference.
 // The fixture's decune config selects a shell that exits 0 at once. Without it, attached
 // `up` would pick the failing login shell, whose stderr reaches the terminal without
 // passing through decune.
