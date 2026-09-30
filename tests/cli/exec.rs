@@ -535,7 +535,8 @@ fn exec_from_a_subdirectory_uses_the_git_repository_root() {
 }
 
 // `exec` keeps the context of the last `up` after `devcontainer.json` changes or disappears,
-// and a `rebuild` replaces the context with its own.
+// and a `rebuild` replaces the context with its own. It does not read the decune config either,
+// so an unreadable one does not stop it.
 #[test]
 fn exec_follows_the_last_up_rather_than_the_current_config() {
     let workspace = ExecWorkspace::new();
@@ -569,6 +570,7 @@ fn exec_follows_the_last_up_rather_than_the_current_config() {
             .stdout("decune\n");
 
         fs::remove_dir_all(workspace.root.join(".devcontainer")).must();
+        workspace.write_file(".decune/config.toml", "version = [\n");
         workspace
             .exec(&["id", "-un"])
             .assert()

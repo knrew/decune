@@ -437,7 +437,7 @@ decune exec [WORKSPACE] -- <COMMAND>...
 
 - stdin と stdout の両方が TTY のときだけ、コマンドに TTY を割り当てる。どちらかがパイプかファイルなら TTY を割り当てない。`decune exec -- <COMMAND> | <別のコマンド>` は、stdin が TTY の端末から実行してもエラーにならない。
 - stdin は、TTY の有無にかかわらず常にコマンドへつなぐ。TTY を割り当てない場合は、コマンドの stdout と stderr を decune の stdout と stderr に分けて届ける。
-- decune 自身の出力(警告、エラー)は stderr にだけ書き、stdout にはコマンドの出力だけを流す。
+- decune 自身の出力(警告、エラー)は stderr にだけ書き、stdout にはコマンドの出力だけを流す。ただし、`docker exec` がコマンドを起動できない場合(126 / 127)は、Docker 自身のエラーが stdout に出ることがある。
 - コマンドの exit code を decune の exit code として返す。`docker exec` がコマンドを起動できずに返す 126 / 127 もそのまま返す。0〜255 の範囲外の値は 1 にする。
 - decune 自身のエラー(記録が無い、コンテナが動いていない、展開のエラー、Docker に接続できないなど)は exit `1`、使い方のエラーは exit `2` とする。
 

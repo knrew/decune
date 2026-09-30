@@ -194,7 +194,7 @@ decune rebuild --update-features   # Feature lock よりレジストリ/タグ�
 decune exec -- npm test                    # 現在のワークスペースで実行する
 decune exec path/to/workspace -- ls -la    # ワークスペースを指定する
 echo input | decune exec -- cat            # stdin はコマンドにつながる
-decune exec -- make lint | tee lint.log    # stdout にはコマンドの出力だけが流れる
+decune exec -- make lint | tee lint.log    # decune の警告とエラーは stderr に出る
 ```
 
 - `up --detach` の後や、別の端末で attached `decune up` session を開いている間に使えます。コマンドの exit code がそのまま `decune exec` の exit code になります。
