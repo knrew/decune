@@ -259,12 +259,12 @@ pub(crate) async fn run() -> Result<i32> {
         return Ok(0);
     }
 
-    let cli = parse_cli(args).unwrap_or_else(|error| error.exit());
+    let cli = parse_cli(&args).unwrap_or_else(|error| error.exit());
     run_cli(cli).await
 }
 
-fn parse_cli(args: Vec<OsString>) -> std::result::Result<Cli, clap::Error> {
-    Cli::try_parse_from(&args).map_err(|error| suggest_exec_separator(&args, error))
+fn parse_cli(args: &[OsString]) -> std::result::Result<Cli, clap::Error> {
+    Cli::try_parse_from(args).map_err(|error| suggest_exec_separator(args, error))
 }
 
 /// Replaces the usage error of `decune exec` without `--` with one that shows where the
@@ -659,22 +659,26 @@ mod tests {
         ]));
     }
 
-    fn exec_args(args: &[&str]) -> Result<super::ExecArgs, clap::Error> {
+    fn parse_args(args: &[&str]) -> Result<Cli, clap::Error> {
         let args = std::iter::once("decune")
             .chain(args.iter().copied())
             .map(std::ffi::OsString::from)
-            .collect();
-        match parse_cli(args)?.command {
-            Commands::Exec(args) => Ok(args),
-            command => panic!("expected exec command, got {command:?}"),
-        }
+            .collect::<Vec<_>>();
+        parse_cli(&args)
+    }
+
+    fn exec_args(args: &[&str]) -> super::ExecArgs {
+        let Commands::Exec(args) = parse_args(args).unwrap().command else {
+            panic!("expected exec command");
+        };
+        args
     }
 
     // Everything after `--` is the container command, including arguments that look like
     // options and a second `--`.
     #[test]
     fn exec_takes_the_command_after_the_separator_verbatim() {
-        let args = exec_args(&["exec", "--", "ls", "-la", "--", "--help"]).unwrap();
+        let args = exec_args(&["exec", "--", "ls", "-la", "--", "--help"]);
 
         assert_eq!(args.workspace, PathBuf::from("."));
         assert_eq!(args.command, ["ls", "-la", "--", "--help"]);
@@ -683,7 +687,7 @@ mod tests {
     // The workspace is the one positional argument before `--`.
     #[test]
     fn exec_takes_the_workspace_before_the_separator() {
-        let args = exec_args(&["exec", "workspace", "--", "npm", "test"]).unwrap();
+        let args = exec_args(&["exec", "workspace", "--", "npm", "test"]);
 
         assert_eq!(args.workspace, PathBuf::from("workspace"));
         assert_eq!(args.command, ["npm", "test"]);
@@ -702,7 +706,7 @@ mod tests {
             vec!["exec", "ls", "-la"],
             vec!["exec", "workspace", "extra", "--", "ls"],
         ] {
-            let error = exec_args(&input).unwrap_err();
+            let error = parse_args(&input).unwrap_err();
 
             assert_eq!(error.exit_code(), 2, "input: {input:?}");
         }
@@ -720,7 +724,7 @@ mod tests {
             std::ffi::OsString::from_vec(vec![b'l', b's', 0xff]),
         ];
 
-        let error = parse_cli(args).unwrap_err();
+        let error = parse_cli(&args).unwrap_err();
 
         assert_eq!(error.kind(), clap::error::ErrorKind::InvalidUtf8);
         assert_eq!(error.exit_code(), 2);
@@ -734,7 +738,7 @@ mod tests {
             vec!["exec", "ls"],
             vec!["exec", "npm", "test"],
         ] {
-            let error = exec_args(&input).unwrap_err();
+            let error = parse_args(&input).unwrap_err();
 
             assert!(
                 error.to_string().contains("after `--`"),
