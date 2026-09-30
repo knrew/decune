@@ -450,7 +450,7 @@ impl QueryEvidenceCache {
             let result =
                 tokio::time::timeout(inner.load_timeout, load_query_evidence(&inner, &key, load))
                     .await
-                    .map_or(Err(QueryEvidenceFailure::TimedOut), |result| result);
+                    .unwrap_or(Err(QueryEvidenceFailure::TimedOut));
             let result = match result {
                 Ok(evidence) if evidence.matches_kind(key.kind) => Ok(evidence),
                 Ok(_) => Err(QueryEvidenceFailure::Unavailable),
