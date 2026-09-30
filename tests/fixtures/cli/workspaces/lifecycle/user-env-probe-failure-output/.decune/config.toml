@@ -1,2 +1,2 @@
+shell   = "/usr/local/bin/decune-attached-shell"
 version = 1
-shell = "/usr/local/bin/decune-attached-shell"
