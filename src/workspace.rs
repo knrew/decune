@@ -27,7 +27,7 @@ impl Workspace {
         let path = absolute_path(path.as_ref())?;
         ensure_existing_directory(&path)?;
 
-        let root = git_repository_root(&path).map_or(path, |root| root);
+        let root = git_repository_root(&path).unwrap_or(path);
         let root = root
             .canonicalize()
             .with_path_context("canonicalize workspace root", &root)?;

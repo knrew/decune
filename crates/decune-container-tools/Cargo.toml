@@ -12,7 +12,7 @@ version.workspace      = true
 workspace = true
 
 [dependencies]
-anyhow                    = "1.0.102"
+anyhow                    = "1.0.104"
 decune-container-protocol = {path = "../decune-container-protocol"}
-serde_json                = "1.0.150"
-tokio                     = {features = ["io-util", "net", "rt-multi-thread"], version = "1.52.3"}
+serde_json                = "1.0.151"
+tokio                     = {features = ["io-util", "net", "rt-multi-thread"], version = "1.53.1"}
