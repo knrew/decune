@@ -200,7 +200,7 @@ decune exec -- make lint | tee lint.log    # stdout にはコマンドの出力�
 - `up --detach` の後や、別の端末で attached `decune up` session を開いている間に使えます。コマンドの exit code がそのまま `decune exec` の exit code になります。
 - `exec` は `devcontainer.json` と decune config を読み直しません。設定を変えた後は、`decune up` か `decune rebuild` で反映してから実行してください。コンテナが停止している、または `up` をまだ実行していない場合は、`decune up` を促すエラーになります。コンテナを起動することはありません。
 - stdin と stdout の両方が端末のときだけ TTY を割り当てます。パイプやファイルにつないだときは TTY を割り当てず、コマンドの stdout と stderr を分けて届けます。
-- lifecycle command、decune hook、`shutdownAction` は実行しません。port forwarding と decune host daemon も起動しません。
+- lifecycle command と decune hook は実行せず、終了後に `shutdownAction` も適用しません。port forwarding と decune host daemon も起動しません。
 - attached `decune up` session が無い間は、Git HTTPS の `host-helper` と `gh` の認証を使えません。SSH agent は使えます。
 - 実行の文脈と挙動の契約は [specification.md 3.10 節](specification.md#310-exec) を参照してください。
 

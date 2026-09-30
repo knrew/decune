@@ -28,7 +28,7 @@ pub(crate) struct ExecOptions {
     pub(crate) command: Vec<String>,
 }
 
-/// Runs the command and returns its exit code, clamped to 0..=255.
+/// Runs the command and returns its exit code, or 1 when the code is outside 0..=255.
 pub(crate) async fn run_exec(options: ExecOptions) -> Result<i32> {
     let workspace = Workspace::resolve(&options.workspace)?;
     let context = load_exec_context(&workspace)?;

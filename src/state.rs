@@ -48,9 +48,9 @@ pub(crate) struct WorkspaceState {
 /// The execution context of the shell of the last `up`, which `decune exec` reuses without
 /// reading `devcontainer.json` or the decune config.
 ///
-/// It holds only values that are safe to keep in plain text: remoteEnv stays an unexpanded
-/// template, and secret-sensitive `containerEnv` entries keep only their key names, so that
-/// `exec` can expand and track them again against the running container.
+/// It holds no secret-sensitive value: remoteEnv stays an unexpanded template, and
+/// secret-sensitive `containerEnv` entries keep only their key names, so that `exec` can
+/// expand and track them again against the running container.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ExecContextState {

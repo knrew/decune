@@ -51,7 +51,7 @@ PATH = "${containerEnv:PATH}:/workspace/bin"
 
 TOML ではテーブルを開始すると、次のテーブル見出しまでのキーがそのテーブルに属します。`version`、`shell`、`use_global_config` などのトップレベルのスカラーは、`[container_env]` / `[remote_env]` より前に書いてください。後に書いた場合、`shell` のような文字列値のキーはエラーにならず、その名前の環境変数として扱われます。`version = 1` や `use_global_config = false` のような文字列でない値は、値が文字列でないというパースエラーになります。
 
-`${localEnv:...}` 由来の値は、`devcontainer.json` の `containerEnv` / `remoteEnv` と同じように secret-sensitive value として追跡され、`[remote_env]` の `${containerEnv:...}` を介した参照でもこの追跡を引き継ぎます。ただし `decune exec` は、参照先の `containerEnv` の値の全体だけを伏せます。`"Bearer ${localEnv:TOKEN}"` のように組み合わせた値では、`${localEnv:...}` 由来の部分文字列だけが単独で出た場合は伏せません。ただし、`container_env` の実値はコンテナ内プロセスや Docker inspect から見えます。decune config とコンテナ環境は秘密情報の保存先として保証されません。詳しいスキーマ、展開タイミング、reuse hash の扱いは [specification.md 5.17 節](specification.md#517-container_env--remote_env)と [6 章](specification.md#6-変数展開とパス解決)を参照してください。
+`${localEnv:...}` 由来の値は、`devcontainer.json` の `containerEnv` / `remoteEnv` と同じように secret-sensitive value として追跡され、`[remote_env]` の `${containerEnv:...}` を介した参照でもこの追跡を引き継ぎます。`decune exec` では、参照先の `containerEnv` の値の全体だけを伏せます。`"Bearer ${localEnv:TOKEN}"` のように組み合わせた値では、`${localEnv:...}` 由来の部分文字列だけが単独で出た場合は伏せません。ただし、`container_env` の実値はコンテナ内プロセスや Docker inspect から見えます。decune config とコンテナ環境は秘密情報の保存先として保証されません。詳しいスキーマ、展開タイミング、reuse hash の扱いは [specification.md 5.17 節](specification.md#517-container_env--remote_env)と [6 章](specification.md#6-変数展開とパス解決)を参照してください。
 
 ## `[features]`
 

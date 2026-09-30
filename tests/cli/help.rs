@@ -151,10 +151,10 @@ fn exec_help_shows_the_command_after_the_separator() {
         .stderr(predicate::str::is_empty());
 }
 
-// `decune exec` without a command after `--` is a usage error that exits with 2, and forms
-// without `--` point the user to it.
+// Malformed `decune exec` arguments are usage errors that exit with 2, and forms without `--`
+// point the user to it.
 #[test]
-fn exec_without_command_after_separator_is_a_usage_error() {
+fn exec_with_malformed_arguments_is_a_usage_error() {
     for args in [
         vec!["exec"],
         vec!["exec", "ls"],

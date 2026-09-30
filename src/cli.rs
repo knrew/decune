@@ -693,8 +693,8 @@ mod tests {
         assert_eq!(args.command, ["npm", "test"]);
     }
 
-    // Forms without a command, with unknown options, with extra positional arguments, or with a
-    // non-UTF-8 command are usage errors, which exit with 2.
+    // Forms without a command, with unknown options, or with extra positional arguments are
+    // usage errors, which exit with 2.
     #[test]
     fn exec_rejects_malformed_arguments_as_usage_errors() {
         for input in [
