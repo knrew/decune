@@ -1074,7 +1074,7 @@ decune hook は各 lifecycle stage の前後に実行する。Feature メタデ�
 
 lifecycle command が失敗した場合、対応する after 側のフックと後続処理は実行しない。作成時 lifecycle の成功済み stage は状態に記録し、次回の再利用時に二重実行しない。
 
-detach でない `up` / `rebuild` は lifecycle 後にリモートユーザーのシェルを TTY で接続し、シェルの exit code を CLI の exit code として返す。シェル接続は `docker exec` 相当の CLI アダプターで primary container に対して実行する。Compose モードでも `docker compose exec` ではなく、コンテナ ID を解決して `docker exec` 相当を使ってよい。
+detach でない `up` / `rebuild` は lifecycle 後にリモートユーザーのシェルを接続し(stdin が TTY のときは TTY を割り当てる)、シェルの exit code を CLI の exit code として返す。シェル接続は `docker exec` 相当の CLI アダプターで primary container に対して実行する。Compose モードでも `docker compose exec` ではなく、コンテナ ID を解決して `docker exec` 相当を使ってよい。
 
 `--detach` では接続時の lifecycle、転送のリスナー、`postAttachCommand`、シェル接続を実行しない。
 
