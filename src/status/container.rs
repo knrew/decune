@@ -694,7 +694,8 @@ mod tests {
     use crate::{
         ports::{PortInventoryEntry, PortUsageType},
         state::{
-            CloneIsolationNetworkRuntimeState, CloneIsolationRuntimeState, WorkspaceModeSnapshot,
+            CloneIsolationNetworkRuntimeState, CloneIsolationRuntimeState, ExecContextState,
+            UserEnvProbeSnapshot, WorkspaceModeSnapshot,
         },
     };
 
@@ -707,6 +708,10 @@ mod tests {
     const RAW_LABEL: &str = "raw-label-secret-marker";
     const SECRET: &str = "container-env-secret-marker";
     const MOUNT_SOURCE: &str = "/host/private/mount-source";
+    const EXEC_REMOTE_ENV_TEMPLATE: &str = "exec-remote-env-template-marker";
+    const EXEC_HOME: &str = "/home/exec-home-marker";
+    const EXEC_SHELL: &str = "/bin/exec-shell-marker";
+    const EXEC_SENSITIVE_KEY: &str = "EXEC_SENSITIVE_KEY_MARKER";
 
     #[test]
     fn consistent_snapshot_is_distinct_from_unchecked_live_workspace() {
@@ -925,6 +930,19 @@ mod tests {
                 relocated: true,
             }],
         };
+        state.exec_context = Some(ExecContextState {
+            container_id: "container-id".to_owned(),
+            remote_user: "vscode".to_owned(),
+            remote_user_home: Some(EXEC_HOME.to_owned()),
+            remote_user_shell: Some(EXEC_SHELL.to_owned()),
+            workspace_folder: "/workspaces/project".to_owned(),
+            user_env_probe: UserEnvProbeSnapshot::LoginInteractiveShell,
+            sensitive_container_env_keys: vec![EXEC_SENSITIVE_KEY.to_owned()],
+            remote_env: std::collections::BTreeMap::from([(
+                "EXEC_REMOTE_ENV".to_owned(),
+                EXEC_REMOTE_ENV_TEMPLATE.to_owned(),
+            )]),
+        });
         let unsafe_port = PortInventoryEntry {
             workspace: Some(HOST_PATH.to_owned()),
             workspace_id: Some(WORKSPACE_ID.to_owned()),
@@ -973,6 +991,10 @@ mod tests {
             RAW_LABEL,
             SECRET,
             MOUNT_SOURCE,
+            EXEC_REMOTE_ENV_TEMPLATE,
+            EXEC_HOME,
+            EXEC_SHELL,
+            EXEC_SENSITIVE_KEY,
         ] {
             assert!(!debug.contains(forbidden), "{debug}");
             assert!(!serialized.contains(forbidden), "{serialized}");
@@ -1054,6 +1076,7 @@ mod tests {
             last_started_at: "unix:2".to_owned(),
             last_used_at: Some("unix:3".to_owned()),
             lifecycle: LifecycleState::all_completed(),
+            exec_context: None,
         }
     }
 }

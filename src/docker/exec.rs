@@ -11,6 +11,8 @@ pub(crate) struct ExecCommandSpec {
     pub(crate) working_dir: Option<String>,
     pub(crate) env: BTreeMap<String, String>,
     pub(crate) redactions: Vec<String>,
+    /// Allocates a TTY for an exec attached to this process stdio. The caller decides it from
+    /// the terminals of this process (`StdioTerminals`); capture and detached execs ignore it.
     pub(crate) tty: bool,
 }
 

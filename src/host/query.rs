@@ -1914,6 +1914,7 @@ mod tests {
             last_started_at: "2026-07-19T00:00:00Z".to_owned(),
             last_used_at: None,
             lifecycle: LifecycleState::all_completed(),
+            exec_context: None,
         }
     }
 

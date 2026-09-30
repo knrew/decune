@@ -30,3 +30,15 @@ pub(crate) struct PreparedLifecycleRunContext<'a> {
     pub(in crate::devcontainer::lifecycle) remote_process_env: BTreeMap<String, String>,
     pub(in crate::devcontainer::lifecycle) lifecycle_redactions: Vec<String>,
 }
+
+impl PreparedLifecycleRunContext<'_> {
+    /// Container that the lifecycle commands run in: the container name in image and
+    /// Dockerfile modes, and the primary service container ID in Compose mode.
+    pub(crate) fn container(&self) -> &str {
+        &self.container
+    }
+
+    pub(crate) const fn remote_user(&self) -> &ResolvedRemoteUser {
+        &self.remote_user
+    }
+}

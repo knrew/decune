@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeMap,
     fs,
     fs::File,
     io::{self, Write},
@@ -8,6 +9,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+
+use crate::config::resolved::ResolvedUserEnvProbe;
 
 const STATE_VERSION: u32 = 1;
 pub(crate) fn state_file_path(state_dir: impl AsRef<Path>) -> PathBuf {
@@ -38,6 +41,64 @@ pub(crate) struct WorkspaceState {
     pub(crate) last_used_at: Option<String>,
     #[serde(default)]
     pub(crate) lifecycle: LifecycleState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) exec_context: Option<ExecContextState>,
+}
+
+/// The execution context of the shell of the last `up`, which `decune exec` reuses without
+/// reading `devcontainer.json` or the decune config.
+///
+/// It holds no secret-sensitive value: remoteEnv stays an unexpanded template, and
+/// secret-sensitive `containerEnv` entries keep only their key names, so that `exec` can
+/// expand and track them again against the running container.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExecContextState {
+    /// Full Docker ID of the primary container that the shell and lifecycle commands used.
+    pub(crate) container_id: String,
+    /// Effective remote user in its runtime form, after UID/GID sync.
+    pub(crate) remote_user: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) remote_user_home: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) remote_user_shell: Option<String>,
+    pub(crate) workspace_folder: String,
+    pub(crate) user_env_probe: UserEnvProbeSnapshot,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) sensitive_container_env_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub(crate) remote_env: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) enum UserEnvProbeSnapshot {
+    None,
+    LoginShell,
+    InteractiveShell,
+    LoginInteractiveShell,
+}
+
+impl From<ResolvedUserEnvProbe> for UserEnvProbeSnapshot {
+    fn from(probe: ResolvedUserEnvProbe) -> Self {
+        match probe {
+            ResolvedUserEnvProbe::None => Self::None,
+            ResolvedUserEnvProbe::LoginShell => Self::LoginShell,
+            ResolvedUserEnvProbe::InteractiveShell => Self::InteractiveShell,
+            ResolvedUserEnvProbe::LoginInteractiveShell => Self::LoginInteractiveShell,
+        }
+    }
+}
+
+impl From<UserEnvProbeSnapshot> for ResolvedUserEnvProbe {
+    fn from(probe: UserEnvProbeSnapshot) -> Self {
+        match probe {
+            UserEnvProbeSnapshot::None => Self::None,
+            UserEnvProbeSnapshot::LoginShell => Self::LoginShell,
+            UserEnvProbeSnapshot::InteractiveShell => Self::InteractiveShell,
+            UserEnvProbeSnapshot::LoginInteractiveShell => Self::LoginInteractiveShell,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -258,6 +319,7 @@ struct StateMetadata {
     created_at: String,
     last_started_at: String,
     last_used_at: Option<String>,
+    exec_context: Option<ExecContextState>,
 }
 
 pub(crate) fn load_state_file(state_dir: impl AsRef<Path>) -> Result<Option<WorkspaceState>> {
@@ -341,6 +403,9 @@ pub(crate) fn sync_state_with_container_and_compose_runtime(
     let last_used_at = matching_existing
         .as_ref()
         .and_then(|state| state.last_used_at.clone());
+    let exec_context = matching_existing
+        .as_ref()
+        .and_then(|state| exec_context_for_container(state, &container));
 
     write_state_for_container_with_metadata(
         state_dir,
@@ -353,6 +418,7 @@ pub(crate) fn sync_state_with_container_and_compose_runtime(
             created_at,
             last_started_at: now,
             last_used_at,
+            exec_context,
         },
     )
 }
@@ -390,6 +456,7 @@ pub(crate) fn write_reused_state_for_container_with_compose_runtime(
     } else {
         existing.last_started_at.clone()
     };
+    let exec_context = exec_context_for_container(existing, &container);
 
     write_state_for_container_with_metadata(
         state_dir,
@@ -402,6 +469,7 @@ pub(crate) fn write_reused_state_for_container_with_compose_runtime(
             created_at: existing.created_at.clone(),
             last_started_at,
             last_used_at: existing.last_used_at.clone(),
+            exec_context,
         },
     )
 }
@@ -430,6 +498,7 @@ fn write_state_for_container_with_metadata(
         last_started_at: metadata.last_started_at,
         last_used_at: metadata.last_used_at,
         lifecycle: metadata.lifecycle,
+        exec_context: metadata.exec_context,
     };
     write_state_file(state_dir, &state)?;
 
@@ -509,6 +578,24 @@ fn state_matches_container(state: &WorkspaceState, container: &StateContainerSna
         && state.config_hash == container.config_hash
 }
 
+/// Returns the exec context of `state` when it still describes `container`.
+///
+/// The context is tied to one container, so it carries over only while both its container ID
+/// and the reuse hash of the state match the container being recorded.
+fn exec_context_for_container(
+    state: &WorkspaceState,
+    container: &StateContainerSnapshot,
+) -> Option<ExecContextState> {
+    state
+        .exec_context
+        .as_ref()
+        .filter(|context| {
+            container_ids_match(&context.container_id, &container.container_id)
+                && state.config_hash == container.config_hash
+        })
+        .cloned()
+}
+
 fn temporary_state_file_path(state_dir: &Path) -> PathBuf {
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -570,16 +657,16 @@ fn remove_dir_if_exists(path: &Path) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::{fs, path::Path};
+    use std::{collections::BTreeMap, fs, path::Path};
 
     use super::{
-        CloneIsolationRuntimeState, ComposeRuntimeState, LifecycleState, OnCreateLifecycleState,
-        PostCreateLifecycleState, PublishedPortActualBinding, PublishedPortEndpointState,
-        PublishedPortHostIpKind, PublishedPortRuntimeState, PublishedPortRuntimeType,
-        PublishedPortSource, PublishedPortTarget, StateContainerSnapshot,
-        UpdateContentLifecycleState, WorkspaceModeSnapshot, load_state_file, mark_state_used,
-        reconcile_state_without_container, remove_state_runtime_dirs, state_file_path,
-        sync_state_with_container, sync_state_with_container_and_compose_project,
+        CloneIsolationRuntimeState, ComposeRuntimeState, ExecContextState, LifecycleState,
+        OnCreateLifecycleState, PostCreateLifecycleState, PublishedPortActualBinding,
+        PublishedPortEndpointState, PublishedPortHostIpKind, PublishedPortRuntimeState,
+        PublishedPortRuntimeType, PublishedPortSource, PublishedPortTarget, StateContainerSnapshot,
+        UpdateContentLifecycleState, UserEnvProbeSnapshot, WorkspaceModeSnapshot, load_state_file,
+        mark_state_used, reconcile_state_without_container, remove_state_runtime_dirs,
+        state_file_path, sync_state_with_container, sync_state_with_container_and_compose_project,
         sync_state_with_container_and_compose_runtime, write_reused_state_for_container,
         write_state_file,
     };
@@ -1092,6 +1179,195 @@ last_started_at = "unix:2"
 
         assert_eq!(repaired.container_id, "container-a");
         assert_eq!(load_state_file(&state_dir).unwrap(), Some(repaired));
+    }
+
+    fn image_snapshot(container_id: &str, config_hash: &str) -> StateContainerSnapshot {
+        StateContainerSnapshot {
+            container_id: container_id.to_owned(),
+            image: "decune/project:hash-a".to_owned(),
+            config_hash: config_hash.to_owned(),
+            config_file: None,
+            mode: WorkspaceModeSnapshot::Image,
+        }
+    }
+
+    fn exec_context(container_id: &str) -> ExecContextState {
+        ExecContextState {
+            container_id: container_id.to_owned(),
+            remote_user: "1000:1000".to_owned(),
+            remote_user_home: Some("/home/vscode".to_owned()),
+            remote_user_shell: None,
+            workspace_folder: "/workspaces/project".to_owned(),
+            user_env_probe: UserEnvProbeSnapshot::LoginInteractiveShell,
+            sensitive_container_env_keys: vec!["NPM_TOKEN".to_owned()],
+            remote_env: BTreeMap::from([("TOKEN".to_owned(), "${localEnv:TOKEN}".to_owned())]),
+        }
+    }
+
+    // A state file written without an exec context, as by versions before `decune exec`,
+    // reads as having no exec context.
+    #[test]
+    fn state_without_exec_context_reads_as_missing_exec_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        fs::create_dir_all(&state_dir).unwrap();
+        fs::write(
+            state_file_path(&state_dir),
+            r#"
+version = 1
+workspace = "/workspace/project"
+container_id = "container-a"
+image = "decune/project:hash-a"
+config_hash = "hash-a"
+created_at = "unix:1"
+last_started_at = "unix:2"
+last_used_at = "unix:3"
+"#,
+        )
+        .unwrap();
+
+        let state = load_state_file(&state_dir).unwrap().unwrap();
+
+        assert_eq!(state.exec_context, None);
+    }
+
+    // An exec context round-trips through the state file, and the file is readable only by
+    // its owner.
+    #[test]
+    fn exec_context_round_trips_through_owner_only_state_file() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let mut state = sync_state_with_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            image_snapshot("container-a", "hash-a"),
+            LifecycleState::all_completed(),
+        )
+        .unwrap();
+        state.exec_context = Some(exec_context("container-a"));
+
+        mark_state_used(&state_dir, &mut state).unwrap();
+
+        assert_eq!(load_state_file(&state_dir).unwrap(), Some(state));
+        let mode = fs::metadata(state_file_path(&state_dir))
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    // Rewriting the state for the same container and reuse hash keeps the exec context, so a
+    // failed lifecycle command in a later `up` of the same container leaves `exec` usable.
+    #[test]
+    fn state_sync_for_same_container_keeps_exec_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let mut existing = sync_state_with_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            image_snapshot("container-a", "hash-a"),
+            LifecycleState::all_completed(),
+        )
+        .unwrap();
+        existing.exec_context = Some(exec_context("container-a"));
+        write_state_file(&state_dir, &existing).unwrap();
+
+        let synced = sync_state_with_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            image_snapshot("container-a", "hash-a"),
+            LifecycleState::default(),
+        )
+        .unwrap();
+        let reused = write_reused_state_for_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            image_snapshot("container-a", "hash-a"),
+            None,
+            &existing,
+            true,
+        )
+        .unwrap();
+
+        assert_eq!(synced.exec_context, Some(exec_context("container-a")));
+        assert_eq!(reused.exec_context, Some(exec_context("container-a")));
+        assert_eq!(
+            load_state_file(&state_dir).unwrap().unwrap().exec_context,
+            Some(exec_context("container-a"))
+        );
+    }
+
+    // Rewriting the state for another container or reuse hash drops the exec context, which
+    // belongs to the old container.
+    #[test]
+    fn state_sync_for_other_container_drops_exec_context() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let mut existing = sync_state_with_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            image_snapshot("container-a", "hash-a"),
+            LifecycleState::all_completed(),
+        )
+        .unwrap();
+        existing.exec_context = Some(exec_context("container-a"));
+        write_state_file(&state_dir, &existing).unwrap();
+
+        for snapshot in [
+            image_snapshot("container-b", "hash-a"),
+            image_snapshot("container-a", "hash-b"),
+        ] {
+            write_state_file(&state_dir, &existing).unwrap();
+
+            let synced = sync_state_with_container(
+                &state_dir,
+                Path::new("/workspace/project"),
+                snapshot.clone(),
+                LifecycleState::default(),
+            )
+            .unwrap();
+
+            assert_eq!(synced.exec_context, None, "snapshot: {snapshot:?}");
+        }
+    }
+
+    // A state whose own container ID matches but whose exec context names another container
+    // does not carry that exec context over.
+    #[test]
+    fn reused_state_drops_exec_context_of_another_container() {
+        let temp = tempfile::tempdir().unwrap();
+        let state_dir = temp.path().join("state");
+        let mut existing = sync_state_with_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            image_snapshot("container-a", "hash-a"),
+            LifecycleState::all_completed(),
+        )
+        .unwrap();
+        existing.exec_context = Some(exec_context("container-old"));
+        write_state_file(&state_dir, &existing).unwrap();
+
+        let synced = sync_state_with_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            image_snapshot("container-a", "hash-a"),
+            LifecycleState::default(),
+        )
+        .unwrap();
+        let reused = write_reused_state_for_container(
+            &state_dir,
+            Path::new("/workspace/project"),
+            image_snapshot("container-a", "hash-a"),
+            None,
+            &existing,
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(synced.exec_context, None);
+        assert_eq!(reused.exec_context, None);
     }
 
     fn published_port_state(

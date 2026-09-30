@@ -296,7 +296,7 @@ pub(super) fn static_mount_variable_context(
     )
 }
 
-pub(super) fn mount_variable_context(
+pub(crate) fn mount_variable_context(
     workspace: &Workspace,
     workspace_folder: &str,
     remote_user: String,

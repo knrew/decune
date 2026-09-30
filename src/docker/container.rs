@@ -114,12 +114,18 @@ pub(crate) async fn inspect_container_env(
         .inspect_container(container)
         .await
         .with_context(|| format!("Failed to inspect Docker container environment: {container}"))?;
+
+    Ok(container_env_from_inspect(&inspect))
+}
+
+pub(crate) fn container_env_from_inspect(inspect: &ContainerInspect) -> BTreeMap<String, String> {
     let entries = inspect
         .config
-        .and_then(|config| config.env)
+        .as_ref()
+        .and_then(|config| config.env.clone())
         .unwrap_or_default();
 
-    Ok(container_env_from_entries(entries))
+    container_env_from_entries(entries)
 }
 
 pub(crate) async fn stop_container(

@@ -31,7 +31,7 @@ global/project の decune config を Dev Container configuration に重ねる。
 - manual port forwarding と automatic port forwarding。
 - Linux ホストでの `updateRemoteUserUID` による UID/GID 同期。
 - lifecycle command と decune hook。
-- `up`、`rebuild`、`down`、`status`、`ports`、`remove` / `rm`、`clean` コマンド。
+- `up`、`rebuild`、`exec`、`down`、`status`、`ports`、`remove` / `rm`、`clean` コマンド。
 - GitHub Releases のビルド済みアーカイブによる公式配布。
 
 ### 1.3 Docker Compose サポートの定義
@@ -109,10 +109,11 @@ Docker のエンドポイント、コンテキスト、credential helper、Build
 decune <COMMAND> [OPTIONS] [WORKSPACE]
 ```
 
+- `exec` は、コンテナ内で実行するコマンドを `--` の後ろに取る(`decune exec [WORKSPACE] -- <COMMAND>...`)。
 - `WORKSPACE` の既定値はカレントディレクトリ。
 - `WORKSPACE` は実在するディレクトリでなければならない。
 - Git リポジトリ内ではリポジトリルートを workspace root とする。Git リポジトリでなければ指定ディレクトリを workspace root とする。
-- `devcontainer.json` を必須とする。decune config はオーバーレイであり、ベースイメージ / ビルド / Compose 定義の置き換えには使わない。
+- `devcontainer.json` を必須とする。例外は `exec` で、最後の `up` / `rebuild` が状態に記録した実行の文脈で動き、`devcontainer.json` と decune config を読まない(3.10 節)。decune config はオーバーレイであり、ベースイメージ / ビルド / Compose 定義の置き換えには使わない。
 - CLI の出力、ログ、エラーメッセージは英語にする。
 - 設定変更が既存のコンテナ / プロジェクトに反映できない場合、`up` は暗黙の再作成を行わず、`Run decune rebuild` を促して終了する。
 
@@ -128,7 +129,7 @@ decune up [OPTIONS] [WORKSPACE]
 - image/Dockerfile モードでは単一のコンテナを作成または起動する。
 - Compose モードでは Compose プロジェクトを作成または起動し、primary service のコンテナのシェルに接続する。
 - 既に起動済みで reuse hash が一致する場合、作成処理をスキップし、シェルへの接続のみ行う。
-- decune host daemon、credential forwarding、port forwarding は `up` のプロセスが生きている間だけ動作する。
+- decune host daemon、port forwarding、Git HTTPS の `host-helper`、GitHub CLI の認証は `up` のプロセスが生きている間だけ動作する。SSH agent の転送はホストのソケットの bind mount なので、`up` のプロセスの終了後もコンテナの中から使える。
 
 主なオプション:
 
@@ -363,7 +364,7 @@ container-side tools bundle はコンテナ内 CLI を artifact 名 `decune` と
 使い方のエラーとローカル動作:
 
 - `status --json`、ワークスペースの位置引数(`.` を含む)、`ports --all`、重複する `ports --json` は、ソケットへ接続する前に使い方のエラーとする。
-- `up`、`rebuild`、`down`、`remove` / `rm`、`clean` はホスト専用コマンドとしてローカルで拒否する。
+- `up`、`rebuild`、`exec`、`down`、`remove` / `rm`、`clean` はホスト専用コマンドとしてローカルで拒否する。
 - `--help` / `-h` / `help`、コマンドのヘルプ、`--version` / `-V` はローカル表示とし、ホスト専用コマンドのヘルプはホストで実行するコマンドであることを説明する。ヘルプのオプションは引数を左からパースして到達した時点でローカルのヘルプを表示し、それより前に検出した未知のオプションや重複オプションは使い方のエラーとする。
 - 引数なし、未知のコマンド / オプション、UTF-8 でない引数は panic せず使い方のエラーとする。
 
@@ -391,6 +392,66 @@ transport 契約:
 - daemon handoff 中のソケット交換を許容するため、connect の `NotFound` / `ConnectionRefused` に限り短い固定間隔で限られた回数だけ再試行する。権限エラー、request の書き込み / 読み取りエラー、不正な response、daemon のエラーは再試行しない。再試行を使い切った場合は、attached `decune up` session が必要で detached session では利用できないことを示す canonical unavailable error とする。他の transport のエラーは、daemon の停止や認可の失敗と断定しない一般エラーとする。
 
 クエリの処理境界、認可、daemon error code は 12.5 節と 13.3 節を参照する。
+
+### 3.10 `exec`
+
+```text
+decune exec [WORKSPACE] -- <COMMAND>...
+```
+
+最後の `up` / `rebuild` のシェル接続と同じユーザー、環境変数、作業ディレクトリで、primary container の中でコマンドを一つ実行する。動いている環境に入るだけのコマンドであり、環境を作成、起動、変更しない。
+
+引数:
+
+- `--` より後ろをコンテナ内のコマンドとその引数とし、シェルを介さず argv のまま実行する。`--` より後ろにある `-` で始まる引数や `--` は、decune のオプションとして解釈しない。
+- `WORKSPACE` は 3.1 節のとおり解決する。
+- 次の形は、Docker を操作する前に使い方のエラー(exit `2`)とする。
+  - `--` の後ろにコマンドがない形(`decune exec`、`decune exec --`、`decune exec <WORKSPACE> --`)。
+  - `--` がなく位置引数だけの形(`decune exec ls`、`decune exec npm test` など)。メッセージでコマンドを `--` の後ろに置くよう案内する。
+  - `--` より前に未知のオプションがある形(`decune exec ls -la` など)。
+  - `--` より前に位置引数が二つ以上ある形。
+  - `--` より後ろに UTF-8 でない引数がある形。
+- ユーザー、作業ディレクトリ、環境変数を上書きするオプションと、TTY を指定するオプションは持たない。コマンドを省略してシェルを開く形もない。
+
+実行の文脈の記録:
+
+- attached と detached の `up` / `rebuild` は、ワークスペースを利用可能にした時点(`last_used_at` を更新する時点。attached ではシェル接続の前)で、`exec` が使う実行の文脈を状態に記録する(10.4 節)。記録の後にシェルの選択に失敗しても、シェルが 0 以外で終わっても、記録は残す。
+- 記録するのは、その `up` がシェル接続と lifecycle command の対象にした primary container の完全なコンテナ ID、実効リモートユーザー(UID/GID 同期の後の実行時の表現)と、passwd から解決したそのホームディレクトリとログインシェル、`workspaceFolder`、userEnvProbe、`[remote_env]` をマージした後の `remoteEnv` の展開前のテンプレート、secret-sensitive な `containerEnv` のキー名である。展開後の `remoteEnv` の値、secret-sensitive な `containerEnv` の値、userEnvProbe の結果は記録しない。
+- `up` / `rebuild` がコンテナを作り直すか再利用すると、記録はその `up` の値に置き換わる。同じコンテナを再利用する `up` / `rebuild` が lifecycle command で失敗した場合と、別の `up` の途中では、前の記録が使われる。コンテナを作り直した `up` / `rebuild` が成功しなかった場合は、記録が無いか、記録したコンテナが存在しないので、`exec` はエラーになる。
+
+対象のコンテナ:
+
+- 対象は、記録したコンテナ ID のコンテナだけである。image / Dockerfile モードでは decune が管理するコンテナ、Compose モードでは primary service のコンテナであり、sidecar service では実行しない。`devcontainer.json`、Compose のサービス、`docker compose ps` から対象を探し直さない。
+- `exec` は `devcontainer.json` と decune config を読まない。`up` の後で `devcontainer.json` を書き換えても消しても、次の `up` / `rebuild` までは記録した文脈で実行する。
+- 状態が無い、または状態に記録が無い場合(`up` の前、`remove` の後、状態が整理された後、記録を持たない版の `up` で作った環境)は、コマンドを実行せず、`Run decune up` を促すエラー(exit `1`)にする。
+- 記録したコンテナが存在しない、停止している、一時停止している、またはこのワークスペースの decune が管理するコンテナでない(`decune.managed=true` と、このワークスペースの `decune.workspace_id` のラベルを持たない)場合も、コマンドを実行せず、`Run decune up` を促すエラー(exit `1`)にする。コンテナは起動しない。decune の外で primary container が作り直された場合はコンテナ ID が変わるので、このエラーになる。
+
+環境:
+
+- 環境変数は、userEnvProbe の結果に `remoteEnv` を重ねたもの(同じキーは `remoteEnv` を優先)とする。これは `up` のシェル接続と同じである。
+- `remoteEnv` は実行のたびに、記録したテンプレートから展開する(6 章)。`${localEnv:...}` は `exec` を実行したプロセスの環境、`${containerEnv:...}` は対象のコンテナの環境を参照する。`${remoteUser}`、`${remoteUserHome}`、`${containerWorkspaceFolder}` などその他の変数は、記録の値と workspace root から、`up` のシェル接続と同じ値に展開する。参照先が無く既定値も無い場合は、コマンドを実行せずエラー(exit `1`)にする。
+- ホームディレクトリとログインシェルは記録の値を使い、passwd を読み直さない。
+- userEnvProbe は実行のたびに、記録したユーザーとログインシェルで実行する(`none` なら実行しない)。失敗した場合は、`up` と同じ形の警告を stderr に出し、プローブの結果なしでコマンドを実行する。警告には、プローブの exit code と stderr の末尾を入れ、プローブの stdout(`env` の出力)は入れない。exit code を得る前に失敗した場合は、その失敗の内容を入れる。stderr の末尾と失敗の内容では、6 章の範囲で secret-sensitive value を伏せる。
+
+入出力と exit code:
+
+- stdin と stdout の両方が TTY のときだけ、コマンドに TTY を割り当てる。どちらかがパイプかファイルなら TTY を割り当てない。`decune exec -- <COMMAND> | <別のコマンド>` は、stdin が TTY の端末から実行してもエラーにならない。
+- stdin は、TTY の有無にかかわらず常にコマンドへつなぐ。TTY を割り当てない場合は、コマンドの stdout と stderr を decune の stdout と stderr に分けて届ける。
+- decune 自身の出力(警告、エラー)は stderr にだけ書き、stdout にはコマンドの出力だけを流す。ただし、`docker exec` がコマンドを起動できない場合(126 / 127)は、Docker 自身のエラーが stdout に出ることがある。
+- コマンドの exit code を decune の exit code として返す。`docker exec` がコマンドを起動できずに返す 126 / 127 もそのまま返す。0〜255 の範囲外の値は 1 にする。
+- decune 自身のエラー(記録が無い、コンテナが動いていない、展開のエラー、Docker に接続できないなど)は exit `1`、使い方のエラーは exit `2` とする。
+
+副作用:
+
+- lifecycle command(`initializeCommand`、`onCreateCommand`、`updateContentCommand`、`postCreateCommand`、`postStartCommand`、`postAttachCommand`)と decune hook を実行しない。コマンドの終了後に `shutdownAction` を適用しない。
+- 状態(`last_used_at` を含む)、ランタイムディレクトリ、Docker リソース(コンテナ、イメージ、ボリューム、ネットワーク)、`.decune/features.lock.toml` を作成、変更、削除しない。
+- decune host daemon、port forwarding、credential forwarding を起動しない。OCI レジストリからの取得とイメージのビルドを行わない。Docker の操作は、対象のコンテナの inspect と、userEnvProbe とコマンドの `docker exec` だけであり、passwd の読み取りと Compose の CLI の呼び出しを行わない。
+
+制約:
+
+- attached `decune up` session が無い間は、decune host daemon が動いていないので Git HTTPS の `host-helper` が応答せず、GitHub CLI のトークンファイルも中身が消されているので `gh` の認証を使えない。SSH agent は、ホストのソケットの bind mount なので使える(12.3 節)。
+- `docker exec` はシグナルをコンテナ内のプロセスへ転送しない。TTY を割り当てない場合に Ctrl-C で decune を止めると、コンテナ内のプロセスが残ることがある。
+- `exec` の実行中に attached session が終わり、`shutdownAction` の `stopContainer` / `stopCompose` でコンテナが止まると、実行中のコマンドも終わる。exit code は `docker exec` が返す値になる。
 
 ## 4. devcontainer.json
 
@@ -885,7 +946,7 @@ PATH = "${containerEnv:PATH}:/workspace/bin"
 - 環境変数名は `containerEnv` / `remoteEnv` と同じ扱いとし、追加の検証を行わない。
 - `[containerEnv]` / `[remoteEnv]`、`[env.container]` / `[env.remote]` は未知のキーとしてエラーにする。
 - `[container_env]` はコンテナ作成時の環境変数として扱う。image-based / Dockerfile-based configuration ではコンテナへ渡し、Docker Compose-based configuration では primary service の `environment` を上書きする。
-- `[remote_env]` はコンテナ内の lifecycle command、コンテナ側の decune hook、リモートシェルへ適用する。コンテナ作成時の環境変数とホスト側の decune hook には追加しない。
+- `[remote_env]` はコンテナ内の lifecycle command、コンテナ側の decune hook、リモートシェル、`exec` のコマンドへ適用する。コンテナ作成時の環境変数とホスト側の decune hook には追加しない。
 - マップは 5.2 節のレイヤー順でキーごとにマージし、同一キーは後のレイヤーが上書きする。環境変数の CLI オプションはないため、project decune config が最上位になる。Feature メタデータの `containerEnv` はこのマージへ含めず、7.1 節のとおり Feature レイヤーのイメージの `ENV` として適用する。
 - `--no-global-config` または `use_global_config = false` では、global decune config 由来の `[container_env]` / `[remote_env]` も適用しない。
 
@@ -908,11 +969,11 @@ PATH = "${containerEnv:PATH}:/workspace/bin"
 
 `${remoteUserHome}` は `/home/<user>` と推測せず、コンテナ / イメージ内の passwd データベースから解決する。`workspaceFolder`、`containerEnv`、`remoteEnv`、`container_env`、`remote_env`、`mounts`、dotfiles、`runArgs` など実行時のユーザー解決後に評価できるフィールドでは、実効リモートユーザーの決定後に `${remoteUser}` / `${remoteUserHome}` を展開する。
 
-`container_env` をマージした後の `containerEnv` はコンテナ作成計画時に展開する。このマップ自体の中で `${containerEnv:...}` を使う構成は、循環する環境依存としてエラーにする。`remote_env` をマージした後の `remoteEnv` は lifecycle / attach の実行時に展開し、`${localEnv:...}` はその実行を行う decune プロセスの環境、`${containerEnv:...}` は実際に作成・起動したコンテナの環境を参照する。展開のタイミングにかかわらず、`${localEnv:VAR}` / `${containerEnv:VAR}` の参照先が存在せず既定値もない場合はエラーにする。
+`container_env` をマージした後の `containerEnv` はコンテナ作成計画時に展開する。このマップ自体の中で `${containerEnv:...}` を使う構成は、循環する環境依存としてエラーにする。`remote_env` をマージした後の `remoteEnv` は lifecycle / attach の実行時と `exec` の実行時に展開し、`${localEnv:...}` はその実行を行う decune プロセスの環境、`${containerEnv:...}` は実際に作成・起動したコンテナの環境を参照する。展開のタイミングにかかわらず、`${localEnv:VAR}` / `${containerEnv:VAR}` の参照先が存在せず既定値もない場合はエラーにする。
 
-`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `container_env` / `remote_env` / `build.args` の値は secret-sensitive value として追跡する。`remoteEnv` / `remote_env` が `${containerEnv:...}` を介して secret-sensitive value を参照した場合も、その追跡情報を展開後の値へ引き継ぐ。decune はその実値を状態、reuse hash、decune-generated Compose override、Docker/Compose のラベル、argv、通常のエラーログに平文保存してはならない。reuse hash ではキーを保持し、`containerEnv` / `container_env` と `build.args` は変更検出のため実値ではなく非可逆な digest を含め、`remoteEnv` / `remote_env` は未展開のテンプレートだけを含めて展開後の実値を入力にしない。Compose モードの decune-generated Compose override では primary service の `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式のプレースホルダーを書き、実値は `docker compose` の子プロセスの環境変数として渡す。プレースホルダーの変数名の `<SAFE_KEY>` は、マージ済みの `containerEnv` のキーから ASCII 英数字 / アンダースコアのみへ正規化した値とする。正規化では ASCII 英字を大文字にし、英数字以外の文字をアンダースコアへ置き換え、先頭が数字の場合と空になる場合はアンダースコアを前置し、正規化後に他のキーと衝突する場合は連番の接尾辞で区別する。Docker のビルド引数はプロセスの環境変数と `--build-arg KEY` で Docker CLI に渡し、argv に値を直接載せない。
+`${localEnv:...}` から展開された `containerEnv` / `remoteEnv` / `container_env` / `remote_env` / `build.args` の値は secret-sensitive value として追跡する。`remoteEnv` / `remote_env` が `${containerEnv:...}` を介して secret-sensitive value を参照した場合も、その追跡情報を展開後の値へ引き継ぐ。`exec` は、状態に記録した secret-sensitive な `containerEnv` のキー名から、対象のコンテナのその値の全体を secret-sensitive value として追跡し直す。そのため `exec` では、`${localEnv:...}` と他の文字列を組み合わせた値(`"Bearer ${localEnv:TOKEN}"` など)の全体は伏せるが、`${localEnv:...}` 由来の部分文字列だけが単独で出た場合は伏せない。decune は secret-sensitive value の実値を状態、reuse hash、decune-generated Compose override、Docker/Compose のラベル、argv、通常のエラーログに平文保存してはならない。reuse hash ではキーを保持し、`containerEnv` / `container_env` と `build.args` は変更検出のため実値ではなく非可逆な digest を含め、`remoteEnv` / `remote_env` は未展開のテンプレートだけを含めて展開後の実値を入力にしない。Compose モードの decune-generated Compose override では primary service の `environment` に `${DECUNE_CONTAINER_ENV_<SAFE_KEY>}` 形式のプレースホルダーを書き、実値は `docker compose` の子プロセスの環境変数として渡す。プレースホルダーの変数名の `<SAFE_KEY>` は、マージ済みの `containerEnv` のキーから ASCII 英数字 / アンダースコアのみへ正規化した値とする。正規化では ASCII 英字を大文字にし、英数字以外の文字をアンダースコアへ置き換え、先頭が数字の場合と空になる場合はアンダースコアを前置し、正規化後に他のキーと衝突する場合は連番の接尾辞で区別する。Docker のビルド引数はプロセスの環境変数と `--build-arg KEY` で Docker CLI に渡し、argv に値を直接載せない。
 
-`containerEnv` / `container_env` はコンテナ作成時の環境変数であり、コンテナ内プロセスや Docker inspect から見える。`build.args` は Docker のビルドに渡り、イメージレイヤーやビルド出力に残る可能性がある。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser`、`build.target`、`build.cacheFrom` はコマンド、状態、ラベル、コンテナの identity に出る可能性がある。decune はこれらを秘密情報の保存先として保証しない。設定ファイルへ直接書かれた秘密の文字列や、decune が `${localEnv:...}` 由来と追跡できない値は、自動では secret-sensitive value と判定しない。ビルド時の秘密情報には Docker BuildKit の secret を使う。
+`containerEnv` / `container_env` はコンテナ作成時の環境変数であり、コンテナ内プロセスや Docker inspect から見える。`build.args` は Docker のビルドに渡り、イメージレイヤーやビルド出力に残る可能性がある。`runArgs`、`workspaceFolder`、`remoteUser`、`containerUser`、`build.target`、`build.cacheFrom` はコマンド、状態、ラベル、コンテナの identity に出る可能性がある。`remoteEnv` / `remote_env` の展開前のテンプレートは `exec` のために状態に記録するので、テンプレートに直接書いた文字列は状態に平文で残る。decune はこれらを秘密情報の保存先として保証しない。設定ファイルへ直接書かれた秘密の文字列や、decune が `${localEnv:...}` 由来と追跡できない値は、自動では secret-sensitive value と判定しない。ビルド時の秘密情報には Docker BuildKit の secret を使う。
 
 通常の `up` / `rebuild` におけるホスト側 bind の `source` の処理順:
 
@@ -1013,7 +1074,7 @@ decune hook は各 lifecycle stage の前後に実行する。Feature メタデ�
 
 lifecycle command が失敗した場合、対応する after 側のフックと後続処理は実行しない。作成時 lifecycle の成功済み stage は状態に記録し、次回の再利用時に二重実行しない。
 
-detach でない `up` / `rebuild` は lifecycle 後にリモートユーザーのシェルを TTY で接続し、シェルの exit code を CLI の exit code として返す。シェル接続は `docker exec` 相当の CLI アダプターで primary container に対して実行する。Compose モードでも `docker compose exec` ではなく、コンテナ ID を解決して `docker exec` 相当を使ってよい。
+detach でない `up` / `rebuild` は lifecycle 後にリモートユーザーのシェルを接続し(stdin が TTY のときは TTY を割り当てる)、シェルの exit code を CLI の exit code として返す。シェル接続は `docker exec` 相当の CLI アダプターで primary container に対して実行する。Compose モードでも `docker compose exec` ではなく、コンテナ ID を解決して `docker exec` 相当を使ってよい。
 
 `--detach` では接続時の lifecycle、転送のリスナー、`postAttachCommand`、シェル接続を実行しない。
 
@@ -1048,7 +1109,7 @@ decune は以下の Dev Container プロパティを decune-generated Compose ov
 
 Docker published port 設定は Compose ファイルに委譲する。Compose モードで外部公開が必要なポートは Compose サービスの `ports` を使い、decune の port forwarding は `forwardPorts`、decune `[[ports]]`、CLI `-p` を使う。
 
-Compose モードでも decune は、対応している cross-orchestrator プロパティと実行時機能を primary service または primary service のコンテナに適用する。対象は `containerEnv`、`remoteEnv`、`containerUser`、`remoteUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles のマウント、認証情報 / 実行時のマウント、lifecycle command、リモートシェル、automatic forwarding である。`remoteEnv` は primary service のコンテナで実行する lifecycle command、decune hook、リモートシェルに適用する。
+Compose モードでも decune は、対応している cross-orchestrator プロパティと実行時機能を primary service または primary service のコンテナに適用する。対象は `containerEnv`、`remoteEnv`、`containerUser`、`remoteUser`、`init`、`privileged`、`capAdd`、`securityOpt`、`mounts`、dotfiles のマウント、認証情報 / 実行時のマウント、lifecycle command、リモートシェル、automatic forwarding である。`remoteEnv` は primary service のコンテナで実行する lifecycle command、decune hook、リモートシェル、`exec` のコマンドに適用する。
 
 ### 8.2 Compose ファイルの解決
 
@@ -1408,7 +1469,8 @@ clone isolation の relocation の結果値:
 - 状態には起動時のモードを `image` / `dockerfile` / `compose` のスナップショットとして記録する。新規のコンテナと再利用したコンテナのどちらでも、その起動で解決したモードへ同期する。モードのフィールドがない既存の version 1 の状態は `unknown` として読み、状態の version は `1` を維持する。解決済みの設定全体や設定内容をモードのスナップショットのために保存しない。
 - Compose published port relocation では、requested endpoint、planned endpoint、`relocated`、起動時に Docker inspect で観測した actual binding を表示補助のメタデータとして状態に記録する。このメタデータは現在有効な Docker のバインディングの正本ではない。
 - Compose clone isolation の network relocation では、Compose のネットワークキーごとの要求されたサブネット、planned のサブネット、planned のゲートウェイ、`relocated` を表示補助のメタデータとして状態に記録する。現在有効なサブネットの正本は Docker の network inspect とする。
-- `last_used_at` は `decune up` / `decune rebuild` がワークスペースを利用可能にした成功時だけ `unix:<seconds>` 形式で更新し、`created_at` / `last_started_at` から推測しない。`last_used_at` がない状態の最終利用表示は不明 / `-` とする。`status`、`ports`、`down`、`remove` / `rm`、`clean` は状態の最終利用情報を更新しない。
+- `last_used_at` は `decune up` / `decune rebuild` がワークスペースを利用可能にした成功時だけ `unix:<seconds>` 形式で更新し、`created_at` / `last_started_at` から推測しない。`last_used_at` がない状態の最終利用表示は不明 / `-` とする。`status`、`ports`、`exec`、`down`、`remove` / `rm`、`clean` は状態の最終利用情報を更新しない。
+- `decune up` / `decune rebuild` は、`last_used_at` を更新するのと同じ書き込みで、`exec` が使う実行の文脈(3.10 節)を記録する。記録はコンテナ ID に紐づく。lifecycle command の前に状態を書き直すときは、記録したコンテナ ID と reuse hash がその `up` の対象のコンテナと一致する場合だけ記録を引き継ぎ、一致しない場合は落とす。記録の無い状態は、記録が無いものとして読む。状態のファイルの権限は 0600 とする。
 
 ## 11. 配布の契約
 
@@ -1453,6 +1515,7 @@ container-side tools:
 ### 12.1 実行され得るコードと到達性
 
 - `decune up` は Dockerfile、Compose サービスのビルド、local/OCI Feature の `install.sh`、Feature / lifecycle command、decune hook、`userEnvProbe` 対象のシェル起動ファイルを実行し得る。
+- `decune exec` も、userEnvProbe を実行するたびに、remoteUser の `userEnvProbe` 対象のシェル起動ファイルを実行し得る。
 - Dev Container のメタデータと Compose ファイルは、bind mount、`privileged`、`capAdd`、`securityOpt`、published port、SSH agent forwarding、Git/GitHub credential forwarding によりホストや秘密情報への強い到達性をコンテナへ与え得る。
 - GitHub token forwarding を有効にすると、コンテナ内プロセスはトークンファイルにアクセスできる。
 - 信頼していないリポジトリでは `.devcontainer/`、Compose ファイル、local Feature を確認し、必要に応じて `[credentials.git].https = "host-helper-read-only"`、`[credentials.git].ssh_agent = "off"`、`[credentials.git].enabled = false`、`[credentials.github].enabled = false` を設定する。
@@ -1463,6 +1526,7 @@ container-side tools:
 - ログには必要最小限のコマンド名とサニタイズ済みの argv を出す。秘密情報の値を argv に入れる必要がある設計は禁止する。
 - 秘密情報の値をログ、状態、ハッシュ、ラベル、イメージレイヤーに保存してはならない。
 - Docker CLI / Compose CLI の実行失敗は、実行した高レベルの操作、対象リソース、exit status、stderr の短い抜粋を含むエラーに変換する。stderr の全文に秘密情報が混じる可能性がある場合は redaction の規則を通す。
+- redaction で伏せる値は、6 章の secret-sensitive value の追跡に従う。`exec` が伏せる範囲が `up` と異なる点は 6 章に書く。
 - JSON を読む操作は、CLI の JSON 出力を型付きのスキーマへパースする。
 
 ### 12.3 credential forwarding と到達性

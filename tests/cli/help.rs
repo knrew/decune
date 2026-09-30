@@ -16,6 +16,7 @@ fn root_help_is_displayed() {
         .stdout(predicate::str::contains("remove"))
         .stdout(predicate::str::contains("clean"))
         .stdout(predicate::str::contains("rebuild"))
+        .stdout(predicate::str::contains("exec"))
         .stderr(predicate::str::is_empty());
 }
 
@@ -133,5 +134,49 @@ fn up_and_rebuild_help_list_no_global_config() {
             .stdout(predicate::str::contains("--published-port-relocation").not())
             .stdout(predicate::str::contains("--no-published-port-relocation").not())
             .stderr(predicate::str::is_empty());
+    }
+}
+
+// `decune exec --help` shows that the command goes after `--`.
+#[test]
+fn exec_help_shows_the_command_after_the_separator() {
+    decune()
+        .args(["exec", "--help"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            "decune exec [WORKSPACE] -- <COMMAND>...",
+        ))
+        .stdout(predicate::str::contains("Workspace directory"))
+        .stderr(predicate::str::is_empty());
+}
+
+// Malformed `decune exec` arguments are usage errors that exit with 2, and forms without `--`
+// point the user to it.
+#[test]
+fn exec_with_malformed_arguments_is_a_usage_error() {
+    for args in [
+        vec!["exec"],
+        vec!["exec", "ls"],
+        vec!["exec", "npm", "test"],
+    ] {
+        decune()
+            .args(&args)
+            .assert()
+            .code(2)
+            .stdout(predicate::str::is_empty())
+            .stderr(predicate::str::contains("after `--`"));
+    }
+    for args in [
+        vec!["exec", "--"],
+        vec!["exec", ".", "--"],
+        vec!["exec", "ls", "-la"],
+        vec!["exec", "workspace", "extra", "--", "ls"],
+    ] {
+        decune()
+            .args(&args)
+            .assert()
+            .code(2)
+            .stdout(predicate::str::is_empty());
     }
 }

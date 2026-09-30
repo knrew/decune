@@ -156,7 +156,7 @@ Docker Compose-based configuration では Compose サービスの実行時設定
 decune <COMMAND> [OPTIONS] [WORKSPACE]
 ```
 
-`WORKSPACE` の既定値はカレントディレクトリです。Git リポジトリ内ではリポジトリルートを workspace root として扱います。各コマンドの正確な契約と全オプションは [specification.md 3 章](specification.md#3-cli) を参照してください。
+`WORKSPACE` の既定値はカレントディレクトリです。Git リポジトリ内ではリポジトリルートを workspace root として扱います。`decune exec` だけは、コンテナ内で実行するコマンドを `--` の後ろに置きます(`decune exec [WORKSPACE] -- <COMMAND>...`)。各コマンドの正確な契約と全オプションは [specification.md 3 章](specification.md#3-cli) を参照してください。
 
 ### `decune up`
 
@@ -168,7 +168,7 @@ decune up
 
 よく使う操作:
 
-- シェルに接続せず起動だけ行う: `decune up --detach`。port forwarding と credential forwarding は維持されません(ポートへの影響は [ports.md](ports.md#--detach-とポート))。
+- シェルに接続せず起動だけ行う: `decune up --detach`。port forwarding と、Git HTTPS の `host-helper`、`gh` の認証は維持されません。SSH agent はコンテナの中から使えます(ポートへの影響は [ports.md](ports.md#--detach-とポート))。
 - `devcontainer.json` を明示する: `decune up --config .devcontainer/other/devcontainer.json`
 - global decune config を適用しない: `decune up --no-global-config`
 - port forwarding を追加する: `decune up -p 8080:3000`(使い方は [ports.md](ports.md#manual-port-forwarding))
@@ -185,6 +185,24 @@ decune rebuild --no-cache          # ビルドキャッシュを使わずにビ�
 decune rebuild --pull              # ベースイメージ / Compose サービスのイメージを pull し直す
 decune rebuild --update-features   # Feature lock よりレジストリ/タグの再解決を優先する
 ```
+
+### `decune exec`
+
+最後の `decune up` / `decune rebuild` のシェルと同じユーザー、環境変数、作業ディレクトリで、動いているコンテナの中でコマンドを一つ実行します。コマンドとその引数は `--` の後ろに置きます。
+
+```sh
+decune exec -- npm test                    # 現在のワークスペースで実行する
+decune exec path/to/workspace -- ls -la    # ワークスペースを指定する
+echo input | decune exec -- cat            # stdin はコマンドにつながる
+decune exec -- make lint | tee lint.log    # decune の警告とエラーは stderr に出る
+```
+
+- `up --detach` の後や、別の端末で attached `decune up` session を開いている間に使えます。コマンドの exit code がそのまま `decune exec` の exit code になります。
+- `exec` は `devcontainer.json` と decune config を読み直しません。設定を変えた後は、`decune up` か `decune rebuild` で反映してから実行してください。コンテナが停止している、または `up` をまだ実行していない場合は、`decune up` を促すエラーになります。コンテナを起動することはありません。
+- stdin と stdout の両方が端末のときだけ TTY を割り当てます。パイプやファイルにつないだときは TTY を割り当てず、コマンドの stdout と stderr を分けて届けます。
+- lifecycle command と decune hook は実行せず、終了後に `shutdownAction` も適用しません。port forwarding と decune host daemon も起動しません。
+- attached `decune up` session が無い間は、Git HTTPS の `host-helper` と `gh` の認証を使えません。SSH agent は使えます。
+- 実行の文脈と挙動の契約は [specification.md 3.10 節](specification.md#310-exec) を参照してください。
 
 ### `decune down`
 
@@ -228,7 +246,7 @@ decune ports --json
 ```
 
 - コンテナ内の `status` は、起動時に記録した状態とクエリ時点の decune-managed Docker リソースの比較を表示します。ホスト側のように現在の設定ファイルを読み直す確認は行わず、`Live workspace: not checked` と表示されます。ホストで行う操作が必要な場合は `Action (run on host)` に表示されます。
-- コンテナ内ではワークスペースを指定できません。`up` / `rebuild` / `down` / `remove` / `clean` などのホスト専用コマンドも実行できません。
+- コンテナ内ではワークスペースを指定できません。`up` / `rebuild` / `exec` / `down` / `remove` / `clean` などのホスト専用コマンドも実行できません。
 - `up --detach` の完了後や attached `decune up` session の終了後は、artifact が残っていてもクエリは利用できません。
 - `/usr/local/bin/decune` を準備できなかったという警告がホスト側に出た場合は、コンテナ内で `/run/decune/decune status` のようにパスを直接指定して実行してください。
 
@@ -281,7 +299,7 @@ target = ".config/nvim"
 
 ## 安全な使い方
 
-`decune up` は Dockerfile の命令、Compose サービスのビルド、local/OCI Feature の `install.sh`、lifecycle command、decune hook、`userEnvProbe` 対象のシェル起動ファイルを実行し得ます。信頼していないリポジトリでは、起動前に `.devcontainer/`、Compose ファイル、local Feature、マウント、認証情報、`privileged`、`capAdd`、`securityOpt`、`appPort`、Compose `ports` を確認してください。
+`decune up` は Dockerfile の命令、Compose サービスのビルド、local/OCI Feature の `install.sh`、lifecycle command、decune hook、`userEnvProbe` 対象のシェル起動ファイルを実行し得ます。`decune exec` も、実行のたびに `userEnvProbe` 対象のシェル起動ファイルを実行し得ます。信頼していないリポジトリでは、起動前に `.devcontainer/`、Compose ファイル、local Feature、マウント、認証情報、`privileged`、`capAdd`、`securityOpt`、`appPort`、Compose `ports` を確認してください。
 
 信頼していないリポジトリでは、credential forwarding を無効化するか、Git HTTPS の認証情報照会を read-only に制限します。
 

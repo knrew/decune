@@ -385,6 +385,63 @@ mod tests {
     use super::*;
 
     const WORKSPACE_ID: &str = "123456abcdef";
+
+    // The host status summary and detail leave out the recorded exec context: the remoteEnv
+    // template, the home directory, the shell, and the secret-sensitive key names.
+    #[test]
+    fn status_output_omits_recorded_exec_context() {
+        use crate::{
+            ports::PortInventory,
+            state::{ExecContextState, UserEnvProbeSnapshot},
+            status::render::{render_status_summary, render_workspace_detail},
+        };
+
+        let forbidden = [
+            "exec-remote-env-template-marker",
+            "/home/exec-home-marker",
+            "/bin/exec-shell-marker",
+            "EXEC_SENSITIVE_KEY_MARKER",
+        ];
+        let state = WorkspaceState {
+            exec_context: Some(ExecContextState {
+                container_id: "container-id".to_owned(),
+                remote_user: "vscode".to_owned(),
+                remote_user_home: Some(forbidden[1].to_owned()),
+                remote_user_shell: Some(forbidden[2].to_owned()),
+                workspace_folder: "/workspaces/project".to_owned(),
+                user_env_probe: UserEnvProbeSnapshot::LoginInteractiveShell,
+                sensitive_container_env_keys: vec![forbidden[3].to_owned()],
+                remote_env: std::collections::BTreeMap::from([(
+                    "EXEC_REMOTE_ENV".to_owned(),
+                    forbidden[0].to_owned(),
+                )]),
+            }),
+            ..state("container-id", "hash")
+        };
+        let inventory = build_status_inventory(
+            vec![state_evidence(WORKSPACE_ID, state)],
+            Ok(DockerEvidence {
+                containers: vec![container(
+                    WORKSPACE_ID,
+                    "container-id",
+                    None,
+                    Some("hash"),
+                    ContainerRunState::Running,
+                    HealthStatus::None,
+                )],
+                volumes: Vec::new(),
+            }),
+        );
+
+        let summary = render_status_summary(&inventory, &PortInventory::default());
+        let detail = render_workspace_detail(single_workspace(&inventory), &[]);
+
+        for value in forbidden {
+            assert!(!summary.contains(value), "{summary}");
+            assert!(!detail.contains(value), "{detail}");
+        }
+    }
+
     #[test]
     fn state_only_workspace_is_reported_without_duplicates() {
         let inventory = build_status_inventory(
@@ -775,6 +832,7 @@ mod tests {
             last_started_at: "unix:2".to_owned(),
             last_used_at: None,
             lifecycle: LifecycleState::default(),
+            exec_context: None,
         }
     }
     fn current_config(config_hash: &str) -> CurrentWorkspaceConfig {
