@@ -17,6 +17,8 @@ mod container_cli_compose_integration;
 #[cfg(test)]
 mod dotfiles;
 #[cfg(test)]
+mod exec;
+#[cfg(test)]
 mod features;
 #[cfg(test)]
 mod git_credentials;

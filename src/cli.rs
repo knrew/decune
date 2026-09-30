@@ -1,7 +1,11 @@
-use std::{ffi::OsStr, path::PathBuf, str::FromStr};
+use std::{
+    ffi::{OsStr, OsString},
+    path::PathBuf,
+    str::FromStr,
+};
 
 use anyhow::{Result, bail};
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, CommandFactory, Parser, Subcommand, error::ErrorKind};
 
 use crate::clean::{CleanOptions, CleanOutputOptions, CleanSafetyOptions, CleanScopeOptions};
 use crate::config::{
@@ -10,6 +14,7 @@ use crate::config::{
     types::{DEFAULT_PORT_HOST_IP, PortProtocol},
 };
 use crate::down::{DownOptions, RemoveOptions, RemoveTarget};
+use crate::exec::ExecOptions;
 use crate::ports::PortsOptions;
 use crate::status::StatusOptions;
 use crate::up::{
@@ -33,6 +38,8 @@ enum Commands {
     Up(UpArgs),
     /// Recreate a dev container.
     Rebuild(RebuildArgs),
+    /// Run a command in the dev container with the shell environment of the last up.
+    Exec(ExecArgs),
     /// Stop a managed dev container.
     Down(DownArgs),
     /// Show managed dev environment status.
@@ -140,6 +147,16 @@ struct RebuildArgs {
 }
 
 #[derive(Debug, Args)]
+struct ExecArgs {
+    /// Workspace directory.
+    #[arg(default_value = ".", value_name = "WORKSPACE")]
+    workspace: PathBuf,
+    /// Command and its arguments to run in the container, placed after `--`.
+    #[arg(last = true, required = true, value_name = "COMMAND")]
+    command: Vec<String>,
+}
+
+#[derive(Debug, Args)]
 struct DownArgs {
     /// Graceful stop timeout in seconds.
     #[arg(long, default_value_t = 10, value_name = "SECONDS")]
@@ -242,14 +259,47 @@ pub(crate) async fn run() -> Result<i32> {
         return Ok(0);
     }
 
-    let cli = Cli::parse_from(args);
+    let cli = parse_cli(args).unwrap_or_else(|error| error.exit());
     run_cli(cli).await
+}
+
+fn parse_cli(args: Vec<OsString>) -> std::result::Result<Cli, clap::Error> {
+    Cli::try_parse_from(&args).map_err(|error| suggest_exec_separator(&args, error))
+}
+
+/// Replaces the usage error of `decune exec` without `--` with one that shows where the
+/// command goes.
+///
+/// Without `--`, clap reads the first word of the command as the workspace and reports either
+/// a missing command or an unexpected argument, neither of which says that the command has to
+/// follow `--`.
+fn suggest_exec_separator(args: &[OsString], error: clap::Error) -> clap::Error {
+    let is_exec = args.get(1).is_some_and(|command| command == "exec");
+    let has_separator = args.iter().skip(2).any(|argument| argument == "--");
+    let is_missing_or_unexpected = matches!(
+        error.kind(),
+        ErrorKind::MissingRequiredArgument | ErrorKind::UnknownArgument
+    );
+    if !is_exec || has_separator || !is_missing_or_unexpected {
+        return error;
+    }
+
+    let mut command = Cli::command();
+    command.build();
+    let Some(exec) = command.find_subcommand_mut("exec") else {
+        return error;
+    };
+    exec.error(
+        ErrorKind::MissingRequiredArgument,
+        "put the command after `--`, for example `decune exec -- npm test`",
+    )
 }
 
 async fn run_cli(cli: Cli) -> Result<i32> {
     match cli.command {
         Commands::Up(args) => run_up(args).await,
         Commands::Rebuild(args) => run_rebuild(args).await,
+        Commands::Exec(args) => run_exec(args).await,
         Commands::Down(args) => run_down(args).await,
         Commands::Status(args) => run_status(args).await,
         Commands::Ports(args) => run_ports(args).await,
@@ -333,6 +383,12 @@ fn rebuild_up_options_from_args(args: RebuildArgs) -> Result<UpOptions> {
         },
         reuse: UpReuseOptions { rebuild: true },
     })
+}
+
+async fn run_exec(args: ExecArgs) -> Result<i32> {
+    let ExecArgs { workspace, command } = args;
+
+    crate::exec::run_exec(ExecOptions { workspace, command }).await
 }
 
 async fn run_down(args: DownArgs) -> Result<i32> {
@@ -577,7 +633,7 @@ mod tests {
 
     use super::Cli;
     use super::{
-        Commands, PortProtocol, cli_config_layer, is_standalone_version_request,
+        Commands, PortProtocol, cli_config_layer, is_standalone_version_request, parse_cli,
         rebuild_up_options_from_args, reject_detached_cli_ports,
     };
 
@@ -601,6 +657,90 @@ mod tests {
             "--version",
             "up"
         ]));
+    }
+
+    fn exec_args(args: &[&str]) -> Result<super::ExecArgs, clap::Error> {
+        let args = std::iter::once("decune")
+            .chain(args.iter().copied())
+            .map(std::ffi::OsString::from)
+            .collect();
+        match parse_cli(args)?.command {
+            Commands::Exec(args) => Ok(args),
+            command => panic!("expected exec command, got {command:?}"),
+        }
+    }
+
+    // Everything after `--` is the container command, including arguments that look like
+    // options and a second `--`.
+    #[test]
+    fn exec_takes_the_command_after_the_separator_verbatim() {
+        let args = exec_args(&["exec", "--", "ls", "-la", "--", "--help"]).unwrap();
+
+        assert_eq!(args.workspace, PathBuf::from("."));
+        assert_eq!(args.command, ["ls", "-la", "--", "--help"]);
+    }
+
+    // The workspace is the one positional argument before `--`.
+    #[test]
+    fn exec_takes_the_workspace_before_the_separator() {
+        let args = exec_args(&["exec", "workspace", "--", "npm", "test"]).unwrap();
+
+        assert_eq!(args.workspace, PathBuf::from("workspace"));
+        assert_eq!(args.command, ["npm", "test"]);
+    }
+
+    // Forms without a command, with unknown options, with extra positional arguments, or with a
+    // non-UTF-8 command are usage errors, which exit with 2.
+    #[test]
+    fn exec_rejects_malformed_arguments_as_usage_errors() {
+        for input in [
+            vec!["exec"],
+            vec!["exec", "--"],
+            vec!["exec", "workspace", "--"],
+            vec!["exec", "ls"],
+            vec!["exec", "npm", "test"],
+            vec!["exec", "ls", "-la"],
+            vec!["exec", "workspace", "extra", "--", "ls"],
+        ] {
+            let error = exec_args(&input).unwrap_err();
+
+            assert_eq!(error.exit_code(), 2, "input: {input:?}");
+        }
+    }
+
+    // A non-UTF-8 argument after `--` is a usage error.
+    #[test]
+    fn exec_rejects_non_utf8_command_as_usage_error() {
+        use std::os::unix::ffi::OsStringExt;
+
+        let args = vec![
+            "decune".into(),
+            "exec".into(),
+            "--".into(),
+            std::ffi::OsString::from_vec(vec![b'l', b's', 0xff]),
+        ];
+
+        let error = parse_cli(args).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::InvalidUtf8);
+        assert_eq!(error.exit_code(), 2);
+    }
+
+    // Without `--`, the usage error tells the user to put the command after `--`.
+    #[test]
+    fn exec_without_separator_suggests_the_separator() {
+        for input in [
+            vec!["exec"],
+            vec!["exec", "ls"],
+            vec!["exec", "npm", "test"],
+        ] {
+            let error = exec_args(&input).unwrap_err();
+
+            assert!(
+                error.to_string().contains("after `--`"),
+                "input: {input:?}: {error}"
+            );
+        }
     }
 
     #[test]

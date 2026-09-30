@@ -31,14 +31,15 @@ use lifecycle::{
 };
 use start::ensure_container_started;
 
-pub(crate) use mounts::mount_hash_inputs;
 pub(in crate::up) use mounts::{
     WorkspaceLocationValidation, resolve_workspace_location, static_mount_variable_context,
     workspace_mount_plan_from_resolved,
 };
+pub(crate) use mounts::{mount_hash_inputs, mount_variable_context};
 pub(crate) use plan::{
     build_read_only_up_plan_with_forwarding_resolution, build_up_plan_with_forwarding_resolution,
 };
+pub(crate) use shell::clamp_exit_code;
 pub(crate) use types::{
     ExistingContainerDecision, ForwardingResolution, MountResolution, UpBuildOptions,
     UpConfigOptions, UpContainerSummary, UpMountSummary, UpOptions, UpOutcome, UpPlan,

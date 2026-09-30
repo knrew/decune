@@ -5,6 +5,7 @@ mod devcontainer;
 mod docker;
 mod down;
 mod error;
+mod exec;
 mod hex;
 mod host;
 mod ports;
