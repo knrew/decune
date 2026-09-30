@@ -43,6 +43,8 @@ pub(in crate::up) async fn attach_shell(
         expand_remote_env_tracked(&plan.config.devcontainer.remote_env, &remote_env_variables)
             .with_context(|| format!("Failed to expand remoteEnv for container: {}", target.id))?;
     let remote_env_redactions = remote_env.sensitive.redaction_values();
+    let mut probe_redactions = plan.sensitive_container_env.redaction_values();
+    probe_redactions.extend(remote_env_redactions.iter().cloned());
     let remote_env = remote_env.values;
     let env = resolve_exec_env(
         client,
@@ -51,6 +53,7 @@ pub(in crate::up) async fn attach_shell(
         remote_user.shell.as_deref(),
         &remote_env,
         plan.config.devcontainer.user_env_probe,
+        &probe_redactions,
     )
     .await?;
     let command = if let Some(shell) = plan

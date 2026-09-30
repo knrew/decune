@@ -1533,6 +1533,102 @@ fn up_detach_warns_and_continues_when_user_env_probe_fails() {
     }
 }
 
+// The shared fixture's remote user has a login shell that prints the `env` listing (which
+// holds `DECUNE_PROBE_MARKER`) to stdout, then writes a fixed line, the whole
+// `DECUNE_PROBE_SECRET` value, its `${localEnv:...}` part alone, and the value of
+// `DECUNE_PROBE_UNREFERENCED_SECRET`, which remoteEnv does not reference, to stderr and
+// exits 23.
+const USER_ENV_PROBE_FAILURE_FIXTURE: &str =
+    "cli/workspaces/lifecycle/user-env-probe-failure-output";
+const PROBE_LOCAL_SECRET: &str = "probe-local-secret-value";
+const PROBE_UNREFERENCED_SECRET: &str = "probe-unreferenced-secret-value";
+
+fn assert_user_env_probe_warning_omits_stdout_and_secrets(stderr: &str) {
+    assert!(
+        stderr.contains("Warning: User environment probe failed"),
+        "missing probe warning: {stderr}"
+    );
+    assert!(
+        stderr.contains("exit code 23"),
+        "missing exit code: {stderr}"
+    );
+    assert!(
+        stderr.contains("decune-probe-startup-failed"),
+        "missing stderr tail: {stderr}"
+    );
+    assert!(
+        !stderr.contains("probe-stdout-marker"),
+        "probe stdout leaked: {stderr}"
+    );
+    assert!(
+        !stderr.contains(PROBE_LOCAL_SECRET),
+        "secret leaked: {stderr}"
+    );
+}
+
+// The `up --detach` warning for a failed userEnvProbe leaves out the probe stdout and hides
+// secret-sensitive values in the stderr tail.
+#[test]
+fn up_detach_user_env_probe_failure_warning_omits_stdout_and_redacts_secrets() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .copy_fixture_dir(USER_ENV_PROBE_FAILURE_FIXTURE)
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    with_clean_workspace_containers_and_images(&workspace_root, || {
+        let assert = decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("DECUNE_TEST_PROBE_SECRET", PROBE_LOCAL_SECRET)
+            .env(
+                "DECUNE_TEST_PROBE_UNREFERENCED_SECRET",
+                PROBE_UNREFERENCED_SECRET,
+            )
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty());
+
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+        assert_user_env_probe_warning_omits_stdout_and_secrets(&stderr);
+    });
+}
+
+// The attached `up` warning for the shell probe also hides secret-sensitive containerEnv
+// values, including one that remoteEnv does not reference.
+// The fixture's decune config selects a shell that exits 0 at once. Without it, attached
+// `up` would pick the failing login shell, whose stderr reaches the terminal without
+// passing through decune.
+#[test]
+fn up_attached_user_env_probe_failure_warning_omits_stdout_and_redacts_secrets() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    workspace
+        .copy_fixture_dir(USER_ENV_PROBE_FAILURE_FIXTURE)
+        .unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+
+    with_clean_workspace_containers_and_images(&workspace_root, || {
+        let assert = decune()
+            .arg("up")
+            .arg(&workspace_root)
+            .env("DECUNE_TEST_PROBE_SECRET", PROBE_LOCAL_SECRET)
+            .env(
+                "DECUNE_TEST_PROBE_UNREFERENCED_SECRET",
+                PROBE_UNREFERENCED_SECRET,
+            )
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty());
+
+        let stderr = String::from_utf8_lossy(&assert.get_output().stderr);
+        assert_user_env_probe_warning_omits_stdout_and_secrets(&stderr);
+        assert!(
+            !stderr.contains(PROBE_UNREFERENCED_SECRET),
+            "secret not referenced by remoteEnv leaked: {stderr}"
+        );
+    });
+}
+
 #[test]
 fn up_detach_applies_probe_env_to_remote_process_not_container_env() {
     let workspace = support::TempWorkspace::new().unwrap();

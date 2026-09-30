@@ -82,6 +82,7 @@ pub(crate) async fn resolve_exec_env(
     user_shell: Option<&str>,
     remote_env: &BTreeMap<String, String>,
     user_env_probe: Option<ResolvedUserEnvProbe>,
+    redactions: &[String],
 ) -> Result<BTreeMap<String, String>> {
     let Some(command) =
         user_env_probe_command(effective_user_env_probe(user_env_probe), user_shell)
@@ -89,7 +90,7 @@ pub(crate) async fn resolve_exec_env(
         return Ok(remote_env.clone());
     };
 
-    let output = match exec_capture(
+    let result = exec_capture_output(
         client,
         container,
         &ExecCommandSpec {
@@ -97,16 +98,16 @@ pub(crate) async fn resolve_exec_env(
             user: Some(user.to_owned()),
             working_dir: None,
             env: BTreeMap::new(),
-            redactions: Vec::new(),
+            redactions: redactions.to_vec(),
             tty: false,
         },
     )
-    .await
-    {
-        Ok(output) => output,
-        Err(error) => {
-            ui::warn(&format!(
-                "User environment probe failed in container {container}; continuing without probed environment: {error:#}"
+    .await;
+    let output = match result {
+        Ok(output) if output.exit_code == 0 => output,
+        result => {
+            ui::warn(&user_env_probe_failure_warning(
+                container, &result, redactions,
             ));
             return Ok(remote_env.clone());
         }
@@ -123,6 +124,30 @@ pub(crate) async fn resolve_exec_env(
     let probe_env = parse_env_probe_output(&stdout);
 
     Ok(merge_probe_env(probe_env, remote_env))
+}
+
+/// Builds the warning for a failed userEnvProbe.
+///
+/// The probe stdout is the `env` listing, which can hold secret values that no redaction
+/// tracks, so the warning carries only the exit code and the redacted stderr tail, or the
+/// redacted error when the probe did not produce an exit code.
+pub(crate) fn user_env_probe_failure_warning(
+    container: &str,
+    result: &Result<ExecOutput>,
+    redactions: &[String],
+) -> String {
+    let detail = match result {
+        Ok(output) => format!(
+            "probe exited with exit code {}. stderr tail: `{}`",
+            output.exit_code,
+            redact_values(&output_tail(&output.stderr), redactions),
+        ),
+        Err(error) => redact_values(&format!("{error:#}"), redactions),
+    };
+
+    format!(
+        "User environment probe failed in container {container}; continuing without probed environment: {detail}"
+    )
 }
 
 pub(crate) fn effective_user_env_probe(
@@ -245,7 +270,7 @@ mod tests {
 
     use super::{
         ExecOutput, ensure_success_output, merge_probe_env, parse_env_probe_output,
-        user_env_probe_command,
+        user_env_probe_command, user_env_probe_failure_warning,
     };
 
     #[test]
@@ -324,5 +349,36 @@ mod tests {
 
         assert!(!message.contains("secret-token"));
         assert!(message.contains("[REDACTED]"));
+    }
+
+    // A failed probe warning reports the exit code and the redacted stderr tail, and leaves
+    // out the probe stdout, which is the `env` listing.
+    #[test]
+    fn user_env_probe_failure_warning_reports_exit_code_and_redacted_stderr_without_stdout() {
+        let output = ExecOutput {
+            stdout: b"PROBE_MARKER=stdout-marker\nTOKEN=secret-token\n".to_vec(),
+            stderr: b"startup script failed: secret-token".to_vec(),
+            exit_code: 23,
+        };
+
+        let warning =
+            user_env_probe_failure_warning("container", &Ok(output), &["secret-token".to_owned()]);
+
+        assert!(warning.contains("exit code 23"));
+        assert!(warning.contains("startup script failed: [REDACTED]"));
+        assert!(!warning.contains("secret-token"));
+        assert!(!warning.contains("stdout-marker"));
+    }
+
+    // A probe that fails before it has an exit code reports the redacted error.
+    #[test]
+    fn user_env_probe_failure_warning_reports_redacted_error_before_exit_code() {
+        let error = anyhow::anyhow!("Failed to run command: docker exec secret-token");
+
+        let warning =
+            user_env_probe_failure_warning("container", &Err(error), &["secret-token".to_owned()]);
+
+        assert!(warning.contains("Failed to run command: docker exec [REDACTED]"));
+        assert!(!warning.contains("secret-token"));
     }
 }
