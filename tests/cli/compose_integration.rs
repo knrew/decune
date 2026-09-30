@@ -3165,3 +3165,27 @@ fn create_unrelated_compose_fixture(workspace: &Path) -> UnrelatedComposeFixture
         image,
     }
 }
+
+// In Compose mode, `exec` runs in the primary service container and not in a sidecar.
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_exec_runs_in_the_primary_service_only() {
+    let workspace = compose_fixture_workspace("sidecar");
+    let workspace_root = workspace.path().canonicalize().must();
+
+    run_decune_up_detach(&workspace_root, &[]);
+    decune()
+        .args(["exec"])
+        .arg(&workspace_root)
+        .args(["--", "touch", "/tmp/decune-exec-ran"])
+        .assert()
+        .success();
+
+    let containers = compose_project_containers(&workspace_root).must();
+    for container in &containers {
+        let service = compose_label(&container.labels, "com.docker.compose.service").must();
+        let ran = docker_status(["exec", &container.id, "test", "-e", "/tmp/decune-exec-ran"]);
+        assert_eq!(ran.is_ok(), service == "app", "service: {service}");
+    }
+    assert_eq!(running_services(&containers), vec!["app", "db"]);
+}

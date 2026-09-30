@@ -115,6 +115,44 @@ fn exec_reports_unreachable_docker_with_exit_code_one() {
         .stderr(predicate::str::contains(UNREACHABLE_DOCKER_MESSAGE));
 }
 
+// When `clean` removes the state of a workspace without Docker resources as stale data, the
+// exec context goes with it, and `exec` asks for `decune up`.
+#[test]
+fn exec_asks_for_up_after_clean_removes_stale_state() {
+    let temp = support::TempWorkspace::new().must();
+    let workspace = temp.create_dir("workspace").must().canonicalize().must();
+    let roots = XdgRoots::new(&temp);
+    write_state_file(&roots, &workspace, RECORDED_EXEC_CONTEXT);
+    let clean_bin = support::TempWorkspace::new().must();
+    let exec_bin = support::TempWorkspace::new().must();
+
+    let mut clean = decune();
+    roots.apply(&mut clean);
+    clean
+        .args(["clean", "--no-confirm"])
+        .env(
+            "PATH",
+            fake_docker_path(&clean_bin, "cli/fake-bin/docker-empty-clean.sh"),
+        )
+        .assert()
+        .success();
+    assert!(!roots.state_file(&workspace).exists());
+
+    let mut exec = decune();
+    roots.apply(&mut exec);
+    exec.args(["exec"])
+        .arg(&workspace)
+        .args(["--", "true"])
+        .env(
+            "PATH",
+            fake_docker_path(&exec_bin, UNREACHABLE_DOCKER_FIXTURE),
+        )
+        .assert()
+        .code(1)
+        .stderr(predicate::str::contains("Run decune up"))
+        .stderr(predicate::str::contains(UNREACHABLE_DOCKER_MESSAGE).not());
+}
+
 const RECORDED_CONTEXT_FIXTURE: &str = "cli/workspaces/exec/recorded-context";
 const EXEC_SECRET: &str = "decune-exec-secret-value";
 
@@ -648,5 +686,328 @@ fn exec_runs_only_in_the_running_recorded_container_of_the_workspace() {
         ]);
         let replacement = docker_output(&args).must().trim().to_owned();
         assert_exec_asks_for_up_without_running(workspace, &replacement);
+    });
+}
+
+// A later `up` that reuses the same container keeps the recorded context even when it fails
+// in a lifecycle command, so `exec` still runs.
+#[test]
+fn exec_keeps_working_after_an_up_of_the_same_container_fails() {
+    let workspace = ExecWorkspace::new();
+    workspace.write_file(
+        ".devcontainer/Dockerfile",
+        "FROM alpine:3.20\nRUN adduser -D decune\n",
+    );
+    workspace.write_file(
+        ".devcontainer/devcontainer.json",
+        r#"
+        {
+          "build": { "dockerfile": "Dockerfile" },
+          "remoteUser": "decune",
+          "postAttachCommand": "test ! -e /tmp/decune-fail-post-attach"
+        }
+        "#,
+    );
+    workspace.run(|workspace| {
+        workspace.up_detach();
+        let container = workspace.container_id();
+        docker_status(["exec", &container, "touch", "/tmp/decune-fail-post-attach"]).must();
+
+        workspace
+            .decune()
+            .arg("up")
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("postAttachCommand"));
+
+        assert_eq!(workspace.container_id(), container);
+        workspace
+            .exec(&["id", "-un"])
+            .assert()
+            .success()
+            .stdout("decune\n");
+    });
+}
+
+// A `rebuild` that recreates the container and then fails leaves no usable context, so
+// `exec` asks for `decune up` and does not run the command in the new container.
+#[test]
+fn exec_asks_for_up_after_a_failed_rebuild() {
+    let workspace = ExecWorkspace::new();
+    workspace.write_file(
+        ".devcontainer/devcontainer.json",
+        r#"
+        {
+          "image": "alpine:3.20",
+          "postCreateCommand": "test ! -e .decune-fail-post-create"
+        }
+        "#,
+    );
+    workspace.run(|workspace| {
+        workspace.up_detach();
+        workspace.write_file(".decune-fail-post-create", "");
+
+        workspace
+            .decune()
+            .args(["rebuild", "--detach"])
+            .assert()
+            .failure()
+            .stderr(predicate::str::contains("postCreateCommand"));
+
+        assert_exec_asks_for_up_without_running(workspace, &workspace.container_id());
+    });
+}
+
+// After `remove`, the recorded context is gone and `exec` asks for `decune up`.
+#[test]
+fn exec_asks_for_up_after_remove() {
+    let workspace = ExecWorkspace::new();
+    workspace.write_file(
+        ".devcontainer/devcontainer.json",
+        r#"{ "image": "alpine:3.20" }"#,
+    );
+    workspace.run(|workspace| {
+        workspace.up_detach();
+
+        workspace
+            .decune()
+            .args(["remove", "--no-confirm"])
+            .assert()
+            .success();
+
+        workspace
+            .exec(&["true"])
+            .assert()
+            .code(1)
+            .stderr(predicate::str::contains("Run decune up"));
+    });
+}
+
+/// Runs `decune exec -- true` with a `docker` wrapper first on `PATH` and returns the
+/// arguments of each docker call that went through the wrapper.
+fn logged_docker_calls(workspace: &ExecWorkspace) -> Vec<String> {
+    let real_docker = std::process::Command::new("sh")
+        .args(["-c", "command -v docker"])
+        .output()
+        .must()
+        .stdout;
+    let real_docker = String::from_utf8(real_docker).must().trim().to_owned();
+    let bin = support::TempWorkspace::new().must();
+    let fake_path = fake_docker_path(&bin, "cli/exec/docker-argv-log.sh");
+    let argv_log = bin.path().join("docker-argv.log");
+
+    workspace
+        .exec(&["true"])
+        .env("PATH", &fake_path)
+        .env("DECUNE_TEST_DOCKER_ARGV_LOG", &argv_log)
+        .env("DECUNE_TEST_REAL_DOCKER", &real_docker)
+        .env("DECUNE_TEST_EXEC_LOCAL", "local-at-exec")
+        .assert()
+        .success();
+
+    fs::read_to_string(&argv_log)
+        .must()
+        .lines()
+        .map(ToOwned::to_owned)
+        .collect()
+}
+
+// Without userEnvProbe, the docker calls of `exec` are the inspect of the recorded container
+// and the `docker exec` of the command, and nothing else.
+#[test]
+fn exec_only_inspects_the_target_and_runs_the_command() {
+    let workspace = ExecWorkspace::new();
+    workspace.write_file(
+        ".devcontainer/devcontainer.json",
+        r#"{ "image": "alpine:3.20", "userEnvProbe": "none" }"#,
+    );
+    workspace.run(|workspace| {
+        workspace.up_detach();
+        let container = workspace.container_id();
+
+        let calls = logged_docker_calls(workspace);
+
+        assert_eq!(calls.len(), 2, "{calls:#?}");
+        assert_eq!(calls[0], format!("container inspect -- {container}"));
+        assert!(calls[1].starts_with("exec --interactive "), "{calls:#?}");
+        assert!(
+            calls[1].ends_with(&format!(" {container} true")),
+            "{calls:#?}"
+        );
+    });
+}
+
+// With userEnvProbe, `exec` runs the probe with the recorded login shell after the inspect.
+// It calls no Compose command and does not read passwd.
+//
+// The command itself runs with the probed `PATH`, which can resolve `docker` without the
+// wrapper, so only the calls up to the probe are checked in order.
+#[test]
+fn exec_runs_user_env_probe_without_compose_or_passwd_calls() {
+    let workspace = ExecWorkspace::from_fixture(RECORDED_CONTEXT_FIXTURE);
+    workspace.run(|workspace| {
+        workspace.up_detach();
+        let container = workspace.container_id();
+
+        let calls = logged_docker_calls(workspace);
+
+        assert!(calls.len() >= 2, "{calls:#?}");
+        assert_eq!(calls[0], format!("container inspect -- {container}"));
+        assert_eq!(
+            calls[1],
+            format!(
+                "exec --user decune {container} /usr/local/bin/decune-recorded-login-shell -lc env"
+            )
+        );
+        for call in &calls {
+            assert!(
+                call.starts_with("container inspect ") || call.starts_with("exec "),
+                "{calls:#?}"
+            );
+            assert!(!call.contains("compose"), "{calls:#?}");
+            assert!(!call.contains("passwd"), "{calls:#?}");
+        }
+    });
+}
+
+// `exec` uses the home directory and the login shell that `up` resolved, even after the
+// passwd entry of the remote user changes in the container. `$HOME` is not checked, because
+// `docker exec --user` sets it from the current passwd.
+#[test]
+fn exec_uses_the_recorded_home_and_shell_after_passwd_changes() {
+    let workspace = ExecWorkspace::from_fixture(RECORDED_CONTEXT_FIXTURE);
+    workspace.run(|workspace| {
+        workspace.up_detach();
+        let container = workspace.container_id();
+        docker_status([
+            "exec",
+            &container,
+            "sed",
+            "-i",
+            "s#^decune:\\(.*\\):/home/decune:.*#decune:\\1:/tmp/decune-new-home:/bin/sh#",
+            "/etc/passwd",
+        ])
+        .must();
+        let passwd = docker_output(["exec", &container, "grep", "^decune:", "/etc/passwd"]).must();
+        assert!(passwd.contains("/tmp/decune-new-home:/bin/sh"), "{passwd}");
+
+        workspace
+            .exec(&[
+                "sh",
+                "-c",
+                r#"printf '%s\n' "home_bin=$DECUNE_HOME_BIN" "probed=$DECUNE_PROBED""#,
+            ])
+            .env("DECUNE_TEST_EXEC_LOCAL", "local-at-exec")
+            .assert()
+            .success()
+            .stdout("home_bin=/home/decune/bin\nprobed=from-login-shell\n");
+    });
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SideEffectSnapshot {
+    files: Vec<(PathBuf, Option<Vec<u8>>)>,
+    containers: Vec<(Option<String>, Option<String>)>,
+    images: Vec<String>,
+    volumes: Vec<String>,
+    networks: String,
+}
+
+/// Captures what `exec` must leave unchanged: the files of the workspace and of the decune
+/// state, runtime, and cache directories, and the Docker resources of the workspace.
+fn side_effect_snapshot(workspace: &ExecWorkspace) -> SideEffectSnapshot {
+    let roots = [
+        &workspace.root,
+        &workspace.roots.state,
+        &workspace.roots.runtime,
+        &workspace.roots.cache,
+    ];
+    let files = roots
+        .into_iter()
+        .flat_map(|root| walk(root))
+        .map(|path| {
+            let contents = fs::symlink_metadata(&path)
+                .must()
+                .is_file()
+                .then(|| fs::read(&path).must());
+            (path, contents)
+        })
+        .collect();
+    let containers = workspace_containers(&workspace.root)
+        .must()
+        .into_iter()
+        .map(|container| (container.id, container.state))
+        .collect();
+    let networks = docker_output([
+        "network",
+        "ls",
+        "--filter",
+        &format!(
+            "label=decune.workspace_id={}",
+            workspace_id(&workspace.root)
+        ),
+        "--format",
+        "{{.ID}}",
+    ])
+    .must();
+
+    SideEffectSnapshot {
+        files,
+        containers,
+        images: workspace_images(&workspace.root).must(),
+        volumes: workspace_volumes(&workspace.root).must(),
+        networks,
+    }
+}
+
+// `exec` runs no lifecycle command or decune hook, and changes no state, runtime file, cache,
+// lock file, or Docker resource. It starts no decune host daemon, and the container keeps
+// running afterwards, because `shutdownAction` does not apply.
+#[test]
+fn exec_has_no_side_effects_beyond_the_command() {
+    let workspace = ExecWorkspace::new();
+    workspace.write_file(
+        ".devcontainer/devcontainer.json",
+        r#"
+        {
+          "image": "alpine:3.20",
+          "initializeCommand": "printf i >>.decune-lifecycle-markers",
+          "onCreateCommand": "printf o >>.decune-lifecycle-markers",
+          "updateContentCommand": "printf u >>.decune-lifecycle-markers",
+          "postCreateCommand": "printf c >>.decune-lifecycle-markers",
+          "postStartCommand": "printf s >>.decune-lifecycle-markers",
+          "postAttachCommand": "printf a >>.decune-lifecycle-markers"
+        }
+        "#,
+    );
+    workspace.write_file(
+        ".decune/config.toml",
+        r#"
+version = 1
+
+[[hooks.after_post_start]]
+command = "printf h >>.decune-hook-markers"
+where = "host"
+
+[[hooks.before_post_attach]]
+command = "printf H >>.decune-hook-markers"
+where = "container"
+"#,
+    );
+    workspace.run(|workspace| {
+        workspace.up_detach();
+        assert!(workspace.root.join(".decune-lifecycle-markers").exists());
+        assert!(workspace.root.join(".decune-hook-markers").exists());
+        let before = side_effect_snapshot(workspace);
+
+        workspace.exec(&["true"]).assert().success();
+
+        assert_eq!(side_effect_snapshot(workspace), before);
+        assert!(
+            walk(&workspace.roots.runtime).iter().all(|path| path
+                .file_name()
+                .is_none_or(|name| name != "host-daemon.sock")),
+            "exec left a host daemon socket"
+        );
     });
 }
