@@ -849,6 +849,38 @@ last_started_at = "unix:1"
     assert!(!commands.contains("user-owned"), "{commands}");
 }
 
+// 状態もコンテナも残っておらず、decune-managed ボリュームだけが残るワークスペースも、
+// `--all-workspaces` の対象として見つけ、その volume を削除する
+#[test]
+fn remove_all_workspaces_removes_workspace_with_only_managed_volume() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let state_home = temp.path().join("state");
+    let runtime_home = temp.path().join("runtime");
+    let command_log = temp.path().join("docker.log");
+    fs::create_dir_all(&state_home).unwrap();
+    fs::create_dir_all(&runtime_home).unwrap();
+    let fake_path = fake_docker_path(&temp, "cli/remove/volume-only-workspace.sh");
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_RUNTIME_DIR", &runtime_home)
+        .args(["remove", "--all-workspaces", "--no-confirm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Removed dev container resources for workspace id: aaaaaaaaaaaa",
+        ));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(
+        commands.contains("volume rm --force orphan-volume"),
+        "{commands}"
+    );
+}
+
 #[test]
 fn remove_all_workspaces_no_confirm_removes_owned_resources_and_images() {
     let temp = support::TempWorkspace::new().unwrap();
