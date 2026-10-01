@@ -771,8 +771,9 @@ fn remove_keeps_volume_created_by_another_workspace() {
     });
 }
 
-// ワークスペースの decune-managed ボリュームを、ワークスペースの外のコンテナ(停止中でもよい)が
-// 参照していると、`remove` はその volume を残して使用中として警告し、ほかの削除を終えて成功する
+// ワークスペースの decune-managed ボリュームを、
+// ワークスペースの外のコンテナ(停止中でもよい)が参照していると、
+// `remove` はその volume を残して使用中として警告し、ほかの削除を終えて成功する
 #[test]
 fn remove_keeps_managed_volume_in_use_by_other_container() {
     let workspace = support::TempWorkspace::new().unwrap();

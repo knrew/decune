@@ -701,9 +701,9 @@ fn decune_labels(volume: &str) -> HashMap<String, String> {
         .collect()
 }
 
-// `decune up` がコンテナの作成で新しく作らせた named volume は、そのワークスペースの
-// decune-managed ボリュームのラベルを持つ。`mounts`、`workspaceMount`、Feature の `mounts`、
-// `[[mounts]]` のどこに書いた volume でも同じである
+// `decune up` がコンテナの作成で新しく作らせた named volume は、
+// そのワークスペースの decune-managed ボリュームのラベルを持つ。
+// `mounts`、`workspaceMount`、Feature の `mounts`、`[[mounts]]` のどれに書いた volume も同じである
 #[test]
 fn up_labels_named_volumes_it_creates_for_every_mount_source() {
     let workspace = support::TempWorkspace::new().unwrap();
@@ -796,8 +796,9 @@ type = "volume"
 }
 
 // decune の `up` より前からある volume には、mount しても decune のラベルが付かない。
-// `source` の無い mount から Docker が作る匿名 volume にも付かず、どちらも `status` の
-// `Volumes` に数えない。数えるのは、`up` が新しく作らせた named volume だけである
+// `source` の無い mount から Docker が作る匿名 volume にも付かず、
+// どちらも `status` の `Volumes` に数えない。
+// 数えるのは、`up` が新しく作らせた named volume だけである
 #[test]
 fn up_does_not_label_existing_or_anonymous_volumes() {
     let workspace = support::TempWorkspace::new().unwrap();

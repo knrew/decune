@@ -140,8 +140,7 @@ where
     with_clean_workspace_resources(workspace_root, true, body);
 }
 
-/// コンテナとイメージに加えて、`decune up` がワークスペースのラベルを付けて作った volume も、
-/// 前後で片付ける。
+/// コンテナとイメージに加えて、ワークスペースの decune のラベルを持つ volume も、前後で片付ける。
 pub(crate) fn with_clean_workspace_containers_images_and_volumes<F>(workspace_root: &Path, body: F)
 where
     F: FnOnce() + std::panic::UnwindSafe,

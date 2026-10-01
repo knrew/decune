@@ -58,6 +58,8 @@ impl DockerResources {
     }
 
     /// decune がコンテナを作るときに Docker が新しく作る named volume に付けるラベル。
+    /// どのワークスペースの decune-managed ボリュームかを示すものに限り、
+    /// 設定のハッシュや版のように、volume を作った後に変わりうる値は含めない。
     pub(crate) fn volume_labels(&self) -> BTreeMap<String, String> {
         [MANAGED_LABEL, WORKSPACE_LABEL, WORKSPACE_ID_LABEL]
             .into_iter()
@@ -252,9 +254,9 @@ mod tests {
         );
     }
 
-    // decune がコンテナの作成で作らせる volume のラベルは、その volume がどのワークスペースの
-    // decune-managed ボリュームかを示すものに限る。設定のハッシュや版のように、作った後に
-    // 変わりうる値は volume に残さない
+    // decune がコンテナの作成で作らせる volume のラベルは、
+    // その volume がどのワークスペースの decune-managed ボリュームかを示すものに限る。
+    // 設定のハッシュや版のように、作った後に変わりうる値は volume に残さない
     #[test]
     fn volume_labels_identify_the_owning_workspace() {
         let (_temp, root) = fixture_root("project");

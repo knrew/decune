@@ -1482,8 +1482,9 @@ mod tests {
         assert_eq!(volume_options.subpath.as_deref(), Some("deps"));
     }
 
-    // `devcontainer.json` の mount の `volume-label` は、キーが `decune.` で始まるかどうかによらず
-    // 拒否する。`workspaceMount`、Feature の `mounts`、Compose モードの `mounts` も同じ解釈を通る。
+    // `devcontainer.json` の mount の `volume-label` は、
+    // キーが `decune.` で始まるかどうかによらず拒否する。
+    // `workspaceMount`、Feature の `mounts`、Compose モードの `mounts` も同じ解釈を通る。
     // decune のラベルを volume に付けられるのは decune だけで、利用者の設定から付ける経路を作らない
     #[test]
     fn rejects_devcontainer_volume_label_option_for_any_key() {

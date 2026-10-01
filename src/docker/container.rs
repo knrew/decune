@@ -40,9 +40,10 @@ pub(crate) struct ContainerCreateSpec {
     pub(crate) working_dir: Option<String>,
     pub(crate) user: Option<String>,
     pub(crate) mounts: Vec<DockerMountSpec>,
-    /// `mounts` の named volume を Docker がコンテナの作成で新しく作るときに、その volume に付ける
-    /// ラベル。Docker は既にある volume にはラベルを付けないので、decune の作成より前からあった
-    /// volume は、このラベルを持たないまま残る。
+    /// `mounts` の named volume を Docker がコンテナの作成で新しく作るときに、
+    /// その volume に付けるラベル。
+    /// Docker は既にある volume にはラベルを付けないので、
+    /// コンテナの作成より前からあった volume は、このラベルを持たないまま残る。
     pub(crate) volume_labels: BTreeMap<String, String>,
     pub(crate) publish_ports: Vec<DockerPublishPort>,
     pub(crate) host_config: ContainerHostConfig,
