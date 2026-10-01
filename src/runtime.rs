@@ -3,3 +3,5 @@ pub(crate) mod compose_cli;
 pub(crate) mod compose_isolation;
 pub(crate) mod compose_ports;
 pub(crate) mod docker_cli;
+#[cfg(test)]
+pub(crate) mod fake_docker;

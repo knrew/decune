@@ -229,14 +229,14 @@ impl DockerCli {
             .await
     }
 
-    pub(crate) async fn list_standalone_workspace_containers(
+    pub(crate) async fn list_standalone_workspace_container_inspects(
         &self,
         workspace_id: &str,
-    ) -> Result<Vec<UpContainerSummary>> {
+    ) -> Result<Vec<ContainerInspect>> {
         let containers = self
             .list_workspace_container_inspects_with_filters(workspace_id, &[])
             .await?;
-        containers
+        Ok(containers
             .into_iter()
             .filter(|container| {
                 container
@@ -245,8 +245,7 @@ impl DockerCli {
                     .and_then(|config| config.labels.as_ref())
                     .is_none_or(|labels| !labels.contains_key(COMPOSE_PROJECT_LABEL))
             })
-            .map(up_container_summary_from_inspect)
-            .collect()
+            .collect())
     }
 
     pub(crate) async fn list_compose_service_containers(
@@ -596,14 +595,21 @@ impl DockerCli {
         .await
     }
 
-    pub(crate) async fn remove_volume(&self, volume: &str, force: bool) -> Result<()> {
+    pub(crate) async fn remove_volume(&self, volume: &str, force: bool) -> Result<VolumeRemoval> {
         let mut command = docker_cmd(["volume", "rm"]);
         if force {
             command = command.arg("--force");
         }
         command = command.arg(volume);
-        self.run_ok_or_not_found("remove Docker volume", volume, command)
-            .await
+        let output = self.runner.run_capture(command.clone()).await?;
+        if output.exit_code == 0 || is_not_found(&output) {
+            return Ok(VolumeRemoval::Removed);
+        }
+        if is_volume_in_use(&output) {
+            return Ok(VolumeRemoval::InUse);
+        }
+        ensure_success("remove Docker volume", volume, &command, &output)?;
+        Ok(VolumeRemoval::Removed)
     }
 
     async fn run_ok(&self, action: &str, target: &str, command: RuntimeCommand) -> Result<()> {
@@ -944,6 +950,15 @@ fn is_no_such_docker_resource_only(
     saw_resource_not_found
 }
 
+/// Docker は、実行中か停止中かを問わずコンテナが参照している volume の削除を、`--force` を付けても
+/// `volume is in use` で拒否する。
+fn is_volume_in_use(output: &RuntimeOutput) -> bool {
+    output
+        .stderr_string_lossy()
+        .to_ascii_lowercase()
+        .contains("volume is in use")
+}
+
 fn is_swarm_resource_unavailable(output: &RuntimeOutput) -> bool {
     let stderr = output.stderr_string_lossy().to_ascii_lowercase();
     stderr.contains("not a swarm manager")
@@ -994,6 +1009,14 @@ fn parse_json_sequence_output<T: for<'de> Deserialize<'de>>(
             })
         })
         .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum VolumeRemoval {
+    /// 削除した。削除の前から無かった場合も含む。
+    Removed,
+    /// コンテナが参照しているため、Docker が削除を拒否した。
+    InUse,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default)]
@@ -1265,7 +1288,7 @@ mod tests {
             command::{FakeRuntimeCommand, RuntimeOutput},
             docker_cli::{
                 DockerBuildCliInput, DockerCli, DockerExecMode, DockerMountCliExt,
-                DockerPublishCliExt, docker_build_command, docker_create_command,
+                DockerPublishCliExt, VolumeRemoval, docker_build_command, docker_create_command,
                 docker_exec_command,
             },
         },
@@ -1647,6 +1670,94 @@ mod tests {
             .unwrap_err();
 
         assert!(error.to_string().contains("volume driver not found"));
+    }
+
+    // Docker が使用中を理由に volume の削除を拒否したことは、失敗ではなく結果として返る
+    #[test]
+    fn remove_volume_reports_volume_in_use_as_outcome() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            b"",
+            b"Error response from daemon: remove shared-data: volume is in use - [0123456789ab]\n",
+            1,
+        ))]);
+        let client = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let removal = runtime
+            .block_on(client.remove_volume("shared-data", true))
+            .unwrap();
+
+        assert_eq!(removal, VolumeRemoval::InUse);
+    }
+
+    // 既に無い volume の削除は、削除できたものとして扱う
+    #[test]
+    fn remove_volume_treats_missing_volume_as_removed() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            b"",
+            b"Error response from daemon: get gone-data: no such volume\n",
+            1,
+        ))]);
+        let client = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let removal = runtime
+            .block_on(client.remove_volume("gone-data", true))
+            .unwrap();
+
+        assert_eq!(removal, VolumeRemoval::Removed);
+    }
+
+    // 使用中でも不在でもない削除の失敗はエラーになる。
+    // ほかの失敗を使用中と取り違えると、消すべき volume を黙って残すため
+    #[test]
+    fn remove_volume_rejects_failures_other_than_in_use() {
+        let runner = FakeRuntimeCommand::new(vec![Ok(runtime_output(
+            b"",
+            b"Error response from daemon: permission denied\n",
+            1,
+        ))]);
+        let client = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let error = runtime
+            .block_on(client.remove_volume("data", true))
+            .unwrap_err();
+
+        assert!(error.to_string().contains("permission denied"));
+    }
+
+    // container inspect の mount から、volume の名前を読む
+    #[test]
+    fn container_inspect_mounts_carry_volume_names() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(
+                br#"[{"Id":"c1","Mounts":[{"Type":"volume","Name":"data","Source":"/var/lib/docker/volumes/data/_data","Destination":"/data","RW":true},{"Type":"bind","Source":"/host","Destination":"/host","RW":true}]}]"#,
+            )),
+            Ok(output(b"c1\n")),
+        ]);
+        let client = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let containers = runtime
+            .block_on(client.list_all_managed_container_inspects())
+            .unwrap();
+
+        let mounts = containers[0].mounts.as_ref().unwrap();
+        assert_eq!(mounts[0].name.as_deref(), Some("data"));
+        assert_eq!(mounts[1].name, None);
     }
 
     #[test]

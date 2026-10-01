@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 
-use crate::docker::client::DockerClient;
+use crate::{docker::client::DockerClient, runtime::docker_cli::VolumeRemoval};
 
 pub(crate) async fn workspace_volumes(
     client: &DockerClient,
@@ -13,7 +13,11 @@ pub(crate) async fn workspace_volumes(
         .with_context(|| format!("Failed to list Docker volumes for workspace: {workspace_id}"))
 }
 
-pub(crate) async fn remove_volume(client: &DockerClient, volume: &str, force: bool) -> Result<()> {
+pub(crate) async fn remove_volume(
+    client: &DockerClient,
+    volume: &str,
+    force: bool,
+) -> Result<VolumeRemoval> {
     client
         .cli()
         .remove_volume(volume, force)
