@@ -19,6 +19,7 @@ use crate::{
         resource::{managed_workspace_id_from_container, managed_workspace_id_from_labels},
     },
     host::forward::forward_status_dir,
+    state::load_state_file,
     ui,
     workspace::{
         cache_dir_for_workspace_id, decune_cache_root, decune_runtime_root, decune_state_root,
@@ -190,14 +191,16 @@ pub(crate) async fn run_clean(options: CleanOptions) -> Result<()> {
 }
 
 async fn build_clean_report(dry_run: bool, include_feature_cache: bool) -> Result<CleanReport> {
-    let (docker_workspace_ids, docker_unavailable) = match discover_managed_workspace_ids().await {
-        Ok(workspace_ids) => (workspace_ids, false),
-        Err(_error) if dry_run => (BTreeSet::new(), true),
-        Err(error) => {
-            return Err(error)
-                .context("Failed to determine reusable decune-managed Docker resources");
-        }
-    };
+    let client = DockerClient::connect_from_env();
+    let (docker_workspace_ids, docker_unavailable) =
+        match discover_managed_workspace_ids(&client).await {
+            Ok(workspace_ids) => (workspace_ids, false),
+            Err(_error) if dry_run => (BTreeSet::new(), true),
+            Err(error) => {
+                return Err(error)
+                    .context("Failed to determine reusable decune-managed Docker resources");
+            }
+        };
 
     let mut targets = discover_workspace_clean_targets(docker_unavailable, &docker_workspace_ids)?;
     if include_feature_cache {
@@ -215,8 +218,7 @@ async fn build_clean_report(dry_run: bool, include_feature_cache: bool) -> Resul
     })
 }
 
-async fn discover_managed_workspace_ids() -> Result<BTreeSet<String>> {
-    let client = DockerClient::connect_from_env();
+async fn discover_managed_workspace_ids(client: &DockerClient) -> Result<BTreeSet<String>> {
     let containers = client
         .cli()
         .list_all_managed_container_inspects()
@@ -239,6 +241,39 @@ async fn discover_managed_workspace_ids() -> Result<BTreeSet<String>> {
             continue;
         };
         if let Some(workspace_id) = managed_workspace_id_from_labels(labels) {
+            workspace_ids.insert(workspace_id);
+        }
+    }
+
+    // Compose プロジェクトの volume には decune のラベルが無く、どのワークスペースのものかは
+    // 状態に記録したプロジェクト名からしか辿れない。プロジェクト名の前方一致では辿らない。
+    // symlink を含む状態ディレクトリは辿らない。そのワークスペースは `unsafe_path` になる。
+    let state_root = decune_state_root()?;
+    let mut state_workspace_ids = BTreeSet::new();
+    collect_workspace_ids_from_root(&mut state_workspace_ids, &state_root, None)?;
+    for workspace_id in state_workspace_ids {
+        let state_dir = state_dir_for_workspace_id(&workspace_id)?;
+        if workspace_ids.contains(&workspace_id)
+            || path_is_unsafe_generated_dir(&state_root, &state_dir)?
+        {
+            continue;
+        }
+        let Some(project_name) = load_state_file(&state_dir)
+            .ok()
+            .flatten()
+            .and_then(|state| state.compose_project_name)
+            .filter(|project_name| !project_name.trim().is_empty())
+        else {
+            continue;
+        };
+        let project_volumes = client
+            .cli()
+            .list_compose_project_volumes(&project_name)
+            .await
+            .with_context(|| {
+                format!("Failed to list Docker Compose volumes for project: {project_name}")
+            })?;
+        if !project_volumes.is_empty() {
             workspace_ids.insert(workspace_id);
         }
     }
@@ -717,7 +752,7 @@ async fn apply_clean_report(report: &mut CleanReport) -> Result<()> {
 }
 
 async fn revalidate_workspace_clean_target(workspace_id: &str) -> Result<WorkspaceCleanTarget> {
-    let managed_workspace_ids = discover_managed_workspace_ids()
+    let managed_workspace_ids = discover_managed_workspace_ids(&DockerClient::connect_from_env())
         .await
         .context("Failed to determine reusable decune-managed Docker resources before removal")?;
     workspace_clean_target(workspace_id, false, &managed_workspace_ids)
@@ -816,10 +851,11 @@ mod tests {
             unix::{ffi::OsStringExt, fs as unix_fs, net::UnixListener},
         },
         path::{Path, PathBuf},
-        sync::{Mutex, MutexGuard, OnceLock},
+        sync::{Arc, Mutex, MutexGuard, OnceLock},
     };
 
     use super::*;
+    use crate::runtime::{docker_cli::DockerCli, fake_docker::FakeDocker};
 
     #[test]
     fn workspace_target_removes_stale_workspace_paths_as_a_unit() {
@@ -1125,6 +1161,81 @@ mod tests {
             })
             .is_ok()
         );
+    }
+
+    const COMPOSE_PROJECT: &str = "decune-app-123456abcdef";
+
+    /// Compose モードの状態だけを持つワークスペース。
+    fn write_compose_state(roots: &TestRoots, workspace_id: &str) -> PathBuf {
+        let state = roots.state.path().join("decune").join(workspace_id);
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            state.join("state.toml"),
+            format!(
+                r#"version = 1
+workspace = "/work/app"
+container_id = "removed-container"
+image = "decune-app-123456abcdef-app"
+config_hash = "hash"
+compose_project_name = "{COMPOSE_PROJECT}"
+created_at = "unix:1"
+last_started_at = "unix:1"
+"#
+            ),
+        )
+        .unwrap();
+        state
+    }
+
+    fn discover_managed_workspace_ids_with(docker: &FakeDocker) -> BTreeSet<String> {
+        let client = DockerClient::from_cli(DockerCli::new(Arc::new(docker.clone())));
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(discover_managed_workspace_ids(&client))
+            .unwrap()
+    }
+
+    // コンテナが無く、状態に記録した Compose プロジェクトの volume だけが残るワークスペースは、
+    // 再利用可能なリソースが残っているとみなしてスキップし、状態を消さない。
+    // remove が使用中の volume を残すときに残した状態を、clean が消すと volume を辿れなくなるため
+    #[test]
+    fn workspace_with_only_compose_project_volume_is_managed_resource() {
+        let roots = TestRoots::new();
+        let workspace_id = "123456abcdef";
+        write_compose_state(&roots, workspace_id);
+        let _env = roots.apply();
+        let docker = FakeDocker::new();
+        docker.add_volume(
+            "decune-app-123456abcdef_db",
+            &[("com.docker.compose.project", COMPOSE_PROJECT)],
+        );
+
+        let managed = discover_managed_workspace_ids_with(&docker);
+        let target = workspace_clean_target(workspace_id, false, &managed).unwrap();
+
+        assert_eq!(target.action, CleanAction::Skip);
+        assert_eq!(target.reason, CleanReason::ManagedResource);
+    }
+
+    // 状態に Compose プロジェクト名があっても、そのプロジェクトの volume が無ければ stale である
+    #[test]
+    fn workspace_with_compose_project_name_but_no_project_volume_is_stale() {
+        let roots = TestRoots::new();
+        let workspace_id = "123456abcdef";
+        write_compose_state(&roots, workspace_id);
+        let _env = roots.apply();
+        let docker = FakeDocker::new();
+        docker.add_volume(
+            "other-project_db",
+            &[("com.docker.compose.project", "other-project")],
+        );
+
+        let managed = discover_managed_workspace_ids_with(&docker);
+        let target = workspace_clean_target(workspace_id, false, &managed).unwrap();
+
+        assert_eq!(target.reason, CleanReason::StaleWorkspaceData);
     }
 
     struct TestRoots {
