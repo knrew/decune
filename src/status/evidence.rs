@@ -56,6 +56,9 @@ pub(super) struct ContainerEvidence {
 pub(super) struct VolumeEvidence {
     pub(super) workspace_id: String,
     pub(super) name: Option<String>,
+    /// volume の `decune.workspace` ラベルのパス。状態もコンテナも残っていないワークスペースの
+    /// パスを示すのに使う。
+    pub(super) workspace_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +167,7 @@ pub(super) async fn collect_workspace_docker_evidence(
         .map(|name| VolumeEvidence {
             workspace_id: workspace_id.to_owned(),
             name: Some(name),
+            workspace_path: None,
         })
         .collect();
 
@@ -380,6 +384,7 @@ fn volume_evidence(volume: DockerVolumeInspect) -> Option<VolumeEvidence> {
     let workspace_id = managed_workspace_id_from_labels(labels)?;
     Some(VolumeEvidence {
         workspace_id,
+        workspace_path: workspace_path_from_labels(labels),
         name: volume.name,
     })
 }
@@ -581,6 +586,27 @@ mod tests {
         assert_eq!(evidence.workspace_path.as_deref(), Some("/workspace"));
         assert_eq!(evidence.run_state, ContainerRunState::Running);
         assert_eq!(evidence.health_status, HealthStatus::Healthy);
+    }
+
+    // decune-managed ボリュームの evidence は、そのラベルのワークスペースのパスを持つ
+    #[test]
+    fn volume_inspect_is_reduced_to_evidence_with_workspace_path() {
+        let volumes: Vec<DockerVolumeInspect> = serde_json::from_slice(
+            br#"[{
+                "Name": "project-data",
+                "Labels": {
+                    "decune.managed": "true",
+                    "decune.workspace_id": "123456abcdef",
+                    "decune.workspace": "/workspace"
+                }
+            }]"#,
+        )
+        .unwrap();
+        let evidence = volume_evidence(volumes.into_iter().next().unwrap()).unwrap();
+
+        assert_eq!(evidence.workspace_id, WORKSPACE_ID);
+        assert_eq!(evidence.name.as_deref(), Some("project-data"));
+        assert_eq!(evidence.workspace_path.as_deref(), Some("/workspace"));
     }
 
     fn compose_sidecar_runtime() -> FakeRuntimeCommand {

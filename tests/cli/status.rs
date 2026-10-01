@@ -319,6 +319,46 @@ struct StatusRoots {
     runtime: PathBuf,
 }
 
+// 状態もコンテナも残っておらず、`up` が作らせた decune-managed ボリュームだけが残る
+// ワークスペースも、`WORKSPACE` なしの `status` に、volume のラベルのパスとともに出る
+#[test]
+fn status_summary_reports_workspace_with_only_volume_created_by_up() {
+    let workspace = support::TempWorkspace::new().must();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let workspace_root = workspace.path().canonicalize().must();
+    let workspace_id = workspace_id(&workspace_root);
+    let volume = format!("decune-status-volume-only-{workspace_id}");
+    let state_home = tempfile::tempdir().must();
+    write_named_volume_devcontainer(&workspace, &volume);
+
+    with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", state_home.path())
+            .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+            .assert()
+            .success();
+        cleanup_workspace_containers(&workspace_root).must();
+        fs::remove_dir_all(state_home.path().join("decune").join(&workspace_id)).must();
+
+        let output = decune()
+            .arg("status")
+            .env("XDG_STATE_HOME", state_home.path())
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+
+        let stdout = String::from_utf8(output.stdout).must();
+        let row = status_row(&stdout, &workspace_id);
+        assert!(
+            row.contains(&workspace_root.display().to_string()),
+            "{stdout}"
+        );
+    });
+}
+
 fn status_roots(temp: &support::TempWorkspace) -> StatusRoots {
     StatusRoots {
         state: temp.create_dir("state").must(),
