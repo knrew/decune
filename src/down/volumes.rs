@@ -27,7 +27,7 @@ pub(super) struct KeptVolume {
     pub(super) reason: KeptVolumeReason,
 }
 
-/// 一回の `remove` で、削除したコンテナが mount していた named volume と、使用中で削除を
+/// 一回の `remove` で、削除したコンテナが mount していた volume と、使用中で削除を
 /// 拒否された decune-managed ボリュームを集める。残した volume は、すべての削除が終わった後に
 /// `kept_volumes` で確かめる。`--all-workspaces` で、あるワークスペースの削除の後に残っても、
 /// 後のワークスペースの削除で消えた volume を残したものとして示さないためである。

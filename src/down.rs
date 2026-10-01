@@ -411,7 +411,7 @@ async fn discover_all_workspace_removal_plans(
 ///
 /// すべての計画のコンテナを消してから volume を消す。ワークスペース X の decune-managed
 /// ボリュームを、同じ実行で消すワークスペース Y のコンテナだけが mount しているとき、
-/// ワークスペースの順によらず、その volume を使用中にせずに消すためである。
+/// ワークスペースの順によらず、その volume を使用中として残さずに消すためである。
 async fn remove_workspace_plans(
     client: &DockerClient,
     plans: &[WorkspaceRemovalPlan],
@@ -1611,7 +1611,8 @@ mod removal_tests {
         assert!(docker.volume_exists("anon-shared"));
     }
 
-    /// ワークスペース X の decune-managed ボリューム `x-data` を、Y のコンテナだけが mount している。
+    /// ワークスペース X の decune-managed ボリューム `x-data` を、
+    /// Y のコンテナだけが mount している。
     fn shared_volume_plans(docker: &FakeDocker, root: &Path) -> [WorkspaceRemovalPlan; 2] {
         docker.add_volume("x-data", &managed_labels(WORKSPACE_X));
         docker.add_container("y-dev", &managed_labels(WORKSPACE_Y), &["x-data"]);
@@ -1728,7 +1729,7 @@ mod removal_tests {
     // シナリオ:
     //   1. プロジェクトの volume を、プロジェクトの外のコンテナにも mount させる
     //   2. remove する → volume は使用中として残り、状態は残り、ランタイムディレクトリは消える
-    //   3. 外のコンテナを消してから、残った状態から作った計画で remove する → volume と状態が消える
+    //   3. 外のコンテナを消し、同じ内容の計画を作り直して remove する → volume と状態が消える
     #[test]
     fn remove_keeps_state_while_compose_project_volume_is_in_use() {
         let temp = tempfile::tempdir().unwrap();
