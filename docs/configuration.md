@@ -106,7 +106,7 @@ type = "bind"
 
 - `type` は `bind` と `volume` に対応します(`tmpfs` はエラー)。ホストのファイルを共有するなら `bind`、ホスト側パスに依存しないデータ領域が欲しいなら名前付きの `volume` を使います。
 - `source` は `bind` ではホスト側パス、`volume` ではボリューム名です。
-- image-based / Dockerfile-based configuration で、`decune up` がコンテナを作るときに新しくできた名前付きの `volume` は、そのワークスペースの decune-managed ボリュームになり、`decune remove` で削除されます。`decune up` より前からあった `volume` は削除されません。
+- image-based / Dockerfile-based configuration で、`decune up` や `decune rebuild` がコンテナを作るときに新しくできた名前付きの `volume` は、そのワークスペースの decune-managed ボリュームになり、`decune remove` で削除されます。`docker volume create` で先に作っておいたものなど、decune のコンテナの作成で新しくできたのでない `volume` は削除されません。
 - `create = "directory"` にすると、存在しない bind の source ディレクトリを作成してからマウントします。ファイルの自動作成はありません。
 - `resolve_symlink`(既定 true)は bind の source の symlink を正規化します。
 - `target` に `/opt/decune` と `/run/decune` の配下、およびワークスペースのマウント先と同一のパスは使えません。decune の内部パスとして予約されています。

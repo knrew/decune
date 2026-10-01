@@ -481,8 +481,8 @@ read_olny = true
         assert!(message.contains("read_olny"));
     }
 
-    // `[[mounts]]` に volume のラベルを書く項目は無い。decune のラベルを volume に付けられるのは
-    // decune だけで、利用者の設定から付ける経路を作らない
+    // `[[mounts]]` に volume のラベルを書く項目は無い。
+    // decune のラベルを volume に付けられるのは decune だけで、利用者の設定から付ける経路を作らない
     #[test]
     fn mount_volume_label_key_is_rejected() {
         let (_temp, path) = config_path("mount-volume-label");

@@ -319,8 +319,9 @@ struct StatusRoots {
     runtime: PathBuf,
 }
 
-// 状態もコンテナも残っておらず、`up` が作らせた decune-managed ボリュームだけが残る
-// ワークスペースも、`WORKSPACE` なしの `status` に、volume のラベルのパスとともに出る
+// 状態もコンテナも残っておらず、
+// `up` が作らせた decune-managed ボリュームだけが残るワークスペースも、
+// `WORKSPACE` なしの `status` に、volume のラベルのパスとともに出る
 #[test]
 fn status_summary_reports_workspace_with_only_volume_created_by_up() {
     let workspace = support::TempWorkspace::new().must();

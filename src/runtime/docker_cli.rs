@@ -815,9 +815,10 @@ pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeComman
     command
 }
 
-/// named volume の mount に `labels` を足す。Docker は `volume-label` を、その mount のために
-/// volume を新しく作るときにだけ付け、既にある volume には付けない。匿名 volume は `source` を
-/// 持たず、コンテナと一緒に消えるので、ラベルを付けない。
+/// named volume の mount に `labels` を足す。
+/// Docker は `volume-label` を、その mount のために volume を新しく作るときにだけ付け、
+/// 既にある volume には付けない。
+/// 匿名 volume は `source` を持たず、コンテナと一緒に消えるので、ラベルを付けない。
 fn with_created_volume_labels(
     mount: &DockerMountSpec,
     labels: &BTreeMap<String, String>,
@@ -2347,8 +2348,9 @@ mod tests {
         );
     }
 
-    // コンテナの作成で Docker が新しく作る named volume にだけ decune のラベルを付ける。
-    // 匿名 volume、bind mount、tmpfs には付けず、named volume の他のオプションは保つ
+    // コンテナの作成の `--mount` で、decune のラベルを named volume にだけ渡す。
+    // 匿名 volume、bind mount、tmpfs には渡さず、named volume の他のオプションは保つ。
+    // `,` を含むラベルの値は、`volume-label=` の field 全体を引用符で囲み、一つの field に収める
     #[test]
     fn docker_create_command_labels_only_named_volumes() {
         let mount = |mount_type, source: Option<&str>, target: &str| DockerMountSpec {

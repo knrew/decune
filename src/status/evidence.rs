@@ -56,8 +56,9 @@ pub(super) struct ContainerEvidence {
 pub(super) struct VolumeEvidence {
     pub(super) workspace_id: String,
     pub(super) name: Option<String>,
-    /// volume の `decune.workspace` ラベルのパス。状態もコンテナも残っていないワークスペースの
-    /// パスを示すのに使う。
+    /// volume の `decune.workspace` ラベルのパス。
+    /// 状態もコンテナも残っていないワークスペースのパスを、summary に示すのに使う。
+    /// ワークスペースを指定した収集(`collect_workspace_docker_evidence`)では持たない。
     pub(super) workspace_path: Option<String>,
 }
 
