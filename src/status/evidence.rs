@@ -382,10 +382,11 @@ fn dedupe_container_evidence(containers: Vec<ContainerEvidence>) -> Vec<Containe
 fn volume_evidence(volume: DockerVolumeInspect) -> Option<VolumeEvidence> {
     let labels = volume.labels.as_ref()?;
     let workspace_id = managed_workspace_id_from_labels(labels)?;
+    let workspace_path = workspace_path_from_labels(labels);
     Some(VolumeEvidence {
         workspace_id,
-        workspace_path: workspace_path_from_labels(labels),
         name: volume.name,
+        workspace_path,
     })
 }
 
