@@ -1482,6 +1482,50 @@ mod tests {
         assert_eq!(volume_options.subpath.as_deref(), Some("deps"));
     }
 
+    // `devcontainer.json` の mount の `volume-label` は、キーが `decune.` で始まるかどうかによらず
+    // 拒否する。`workspaceMount`、Feature の `mounts`、Compose モードの `mounts` も同じ解釈を通る。
+    // decune のラベルを volume に付けられるのは decune だけで、利用者の設定から付ける経路を作らない
+    #[test]
+    fn rejects_devcontainer_volume_label_option_for_any_key() {
+        let workspace = tempfile::tempdir().unwrap();
+        let mounts = ["decune.managed=true", "team=platform"]
+            .into_iter()
+            .flat_map(|label| {
+                [
+                    LayerDevcontainerMount::String(format!(
+                        "source=project-cache,target=/cache,type=volume,volume-label={label}"
+                    )),
+                    LayerDevcontainerMount::Object(
+                        [
+                            ("type".to_owned(), json!("volume")),
+                            ("source".to_owned(), json!("project-cache")),
+                            ("target".to_owned(), json!("/cache")),
+                            ("volume-label".to_owned(), json!(label)),
+                        ]
+                        .into(),
+                    ),
+                ]
+            });
+
+        for mount in mounts {
+            let config = ResolvedConfig {
+                devcontainer: crate::config::resolved::ResolvedDevcontainer {
+                    mounts: vec![mount.clone()],
+                    ..Default::default()
+                },
+                ..ResolvedConfig::default()
+            };
+
+            let error = config_mount_specs(&config, workspace.path(), &variables(workspace.path()))
+                .unwrap_err();
+
+            assert!(
+                format!("{error:#}").contains("Unsupported mount option: volume-label"),
+                "{mount:?}: {error:#}"
+            );
+        }
+    }
+
     #[test]
     fn rejects_devcontainer_tmpfs_mount_until_supported() {
         let workspace = tempfile::tempdir().unwrap();
