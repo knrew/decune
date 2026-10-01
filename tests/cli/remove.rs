@@ -677,24 +677,6 @@ fn remove_reports_kept_unlabeled_volume_and_omits_anonymous_volumes() {
     docker_status(["volume", "rm", &user_volume]).unwrap();
 }
 
-/// `image` が alpine で、`mounts` に named volume `volume` を一つ持つワークスペース。
-fn write_named_volume_devcontainer(workspace: &support::TempWorkspace, volume: &str) {
-    workspace.create_dir(".devcontainer").unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/devcontainer.json",
-            format!(
-                r#"
-                {{
-                  "image": "alpine:3.20",
-                  "mounts": ["source={volume},target=/data,type=volume"]
-                }}
-                "#
-            ),
-        )
-        .unwrap();
-}
-
 fn kept_volume_lines(stderr: &str) -> Vec<&str> {
     stderr
         .lines()
@@ -747,6 +729,7 @@ fn remove_keeps_volume_created_by_another_workspace() {
     let owner_root = owner.path().canonicalize().unwrap();
     let sharer_root = sharer.path().canonicalize().unwrap();
     let volume = format!("decune-remove-shared-{}", workspace_id(&owner_root));
+    let state_home = tempfile::tempdir().unwrap();
     write_named_volume_devcontainer(&owner, &volume);
     write_named_volume_devcontainer(&sharer, &volume);
 
@@ -759,6 +742,7 @@ fn remove_keeps_volume_created_by_another_workspace() {
                 decune()
                     .args(["up", "--detach"])
                     .arg(root)
+                    .env("XDG_STATE_HOME", state_home.path())
                     .env("DECUNE_CONTAINER_TOOLS_DIR", tools_dir)
                     .assert()
                     .success();
@@ -767,6 +751,7 @@ fn remove_keeps_volume_created_by_another_workspace() {
             let output = decune()
                 .args(["remove", "--no-confirm"])
                 .arg(&sharer_root)
+                .env("XDG_STATE_HOME", state_home.path())
                 .assert()
                 .success()
                 .get_output()
