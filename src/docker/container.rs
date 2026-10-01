@@ -40,6 +40,10 @@ pub(crate) struct ContainerCreateSpec {
     pub(crate) working_dir: Option<String>,
     pub(crate) user: Option<String>,
     pub(crate) mounts: Vec<DockerMountSpec>,
+    /// `mounts` の named volume を Docker がコンテナの作成で新しく作るときに、その volume に付ける
+    /// ラベル。Docker は既にある volume にはラベルを付けないので、decune の作成より前からあった
+    /// volume は、このラベルを持たないまま残る。
+    pub(crate) volume_labels: BTreeMap<String, String>,
     pub(crate) publish_ports: Vec<DockerPublishPort>,
     pub(crate) host_config: ContainerHostConfig,
 }
@@ -67,6 +71,7 @@ impl ContainerCreateSpec {
             working_dir: input.working_dir,
             user: input.config.devcontainer.container_user.clone(),
             mounts: input.mounts,
+            volume_labels: input.resources.volume_labels(),
             publish_ports: input
                 .config
                 .devcontainer
@@ -473,6 +478,7 @@ mod tests {
                     working_dir: None,
                     user: None,
                     mounts: Vec::new(),
+                    volume_labels: BTreeMap::new(),
                     publish_ports: Vec::new(),
                     host_config: ContainerHostConfig::default(),
                 };
@@ -528,6 +534,7 @@ mod tests {
                     working_dir: None,
                     user: None,
                     mounts: Vec::new(),
+                    volume_labels: BTreeMap::new(),
                     publish_ports: Vec::new(),
                     host_config: ContainerHostConfig::default(),
                 };
@@ -674,6 +681,7 @@ mod tests {
                         bind_options: None,
                         volume_options: None,
                     }],
+                    volume_labels: BTreeMap::new(),
                     publish_ports: vec![DockerPublishPort {
                         container: 8080,
                         host: None,
@@ -754,6 +762,7 @@ mod tests {
             working_dir: None,
             user: None,
             mounts: Vec::new(),
+            volume_labels: BTreeMap::new(),
             publish_ports: Vec::new(),
             host_config: ContainerHostConfig::default(),
         }

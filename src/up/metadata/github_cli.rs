@@ -289,6 +289,7 @@ async fn image_has_command(
         working_dir: None,
         user: None,
         mounts: Vec::new(),
+        volume_labels: BTreeMap::new(),
         publish_ports: Vec::new(),
         host_config: ContainerHostConfig::default(),
     };

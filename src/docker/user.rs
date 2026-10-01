@@ -564,6 +564,7 @@ async fn create_remote_user_lookup_container(client: &DockerClient, image: &str)
         working_dir: None,
         user: Some(ROOT_USER.to_owned()),
         mounts: Vec::new(),
+        volume_labels: BTreeMap::new(),
         publish_ports: Vec::new(),
         host_config: ContainerHostConfig::default(),
     };
@@ -2116,6 +2117,7 @@ mod tests {
             working_dir: None,
             user: None,
             mounts: Vec::new(),
+            volume_labels: BTreeMap::new(),
             publish_ports: Vec::new(),
             host_config: ContainerHostConfig::default(),
         };
