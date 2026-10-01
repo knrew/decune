@@ -510,7 +510,7 @@ fn remove_reports_kept_unlabeled_volume_and_omits_anonymous_volumes() {
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
-            &format!(
+            format!(
                 r#"
                 {{
                   "build": {{ "dockerfile": "Dockerfile" }},
