@@ -1984,6 +1984,26 @@ fn compose_integration_label_fallback_remove_keeps_in_use_project_volume() {
     assert!(docker_status(["volume", "inspect", &project_volume]).is_ok());
 }
 
+// `rebuild` と `down` は、Compose プロジェクトの volume を削除しない
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_rebuild_and_down_keep_project_volume() {
+    let fixture = compose_project_volume_workspace();
+    let workspace = fixture.workspace.path();
+    let project_volume = format!("{}_data", compose_project_name(workspace));
+    run_decune_up_detach(workspace, &[]);
+
+    decune()
+        .args(["rebuild", "--detach"])
+        .arg(workspace)
+        .assert()
+        .success();
+    assert!(docker_status(["volume", "inspect", &project_volume]).is_ok());
+
+    decune().arg("down").arg(workspace).assert().success();
+    assert!(docker_status(["volume", "inspect", &project_volume]).is_ok());
+}
+
 #[test]
 #[ignore = "requires Docker daemon, Docker Compose v2 plugin, and local registry image"]
 fn compose_integration_up_pull_recreates_image_only_service_for_updated_tag() {

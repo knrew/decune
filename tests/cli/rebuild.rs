@@ -1,30 +1,33 @@
 use crate::harness::*;
 
+// `rebuild` と `down` は、`up` が作らせた decune-managed ボリュームを削除しない
 #[test]
 fn rebuild_recreates_container_and_preserves_managed_volume() {
     let workspace = support::TempWorkspace::new().unwrap();
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let volume_name = format!("decune-rebuild-test-{}", workspace_id(&workspace_root));
     workspace.create_dir(".devcontainer").unwrap();
     workspace
         .write_file(
             ".devcontainer/devcontainer.json",
-            r#"
-            {
-              "image": "alpine:3.20"
-            }
-            "#,
+            format!(
+                r#"
+                {{
+                  "image": "alpine:3.20",
+                  "mounts": ["source={volume_name},target=/data,type=volume"]
+                }}
+                "#
+            ),
         )
         .unwrap();
-    let workspace_root = workspace.path().canonicalize().unwrap();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
-    let volume_name = format!("decune-rebuild-test-{}", workspace_id(&workspace_root));
 
     runtime.block_on(async {
         cleanup_workspace_containers(&workspace_root).unwrap();
         cleanup_workspace_volumes(&workspace_root).unwrap();
-        create_managed_volume(&workspace_root, &volume_name).unwrap();
     });
 
     let result = std::panic::catch_unwind(|| {
@@ -35,6 +38,10 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             .success()
             .stdout(predicate::str::is_empty())
             .stderr(predicate::str::contains("Started dev container"));
+        assert_eq!(
+            workspace_volumes(&workspace_root).unwrap(),
+            vec![volume_name.clone()]
+        );
 
         let first_id = runtime.block_on(async {
             let containers = workspace_containers(&workspace_root).unwrap();
@@ -92,6 +99,12 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             let volumes = workspace_volumes(&workspace_root).unwrap();
             assert_eq!(volumes, vec![volume_name.clone()]);
         });
+
+        decune().arg("down").arg(&workspace_root).assert().success();
+        assert_eq!(
+            workspace_volumes(&workspace_root).unwrap(),
+            vec![volume_name.clone()]
+        );
     });
 
     runtime.block_on(async {
