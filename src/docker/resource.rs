@@ -57,6 +57,18 @@ impl DockerResources {
         }
     }
 
+    /// decune がコンテナを作るときに Docker が新しく作る named volume に付けるラベル。
+    pub(crate) fn volume_labels(&self) -> BTreeMap<String, String> {
+        [MANAGED_LABEL, WORKSPACE_LABEL, WORKSPACE_ID_LABEL]
+            .into_iter()
+            .filter_map(|key| {
+                self.labels
+                    .get(key)
+                    .map(|value| (key.to_owned(), value.clone()))
+            })
+            .collect()
+    }
+
     pub(crate) fn image_repository_for_workspace(workspace: &Workspace) -> String {
         docker_image_repository(workspace.safe_slug(), workspace.id())
     }
@@ -237,6 +249,34 @@ mod tests {
         assert_eq!(
             resources.labels["devcontainer.config_file"],
             config_file.display().to_string()
+        );
+    }
+
+    // decune がコンテナの作成で作らせる volume のラベルは、その volume がどのワークスペースの
+    // decune-managed ボリュームかを示すものに限る。設定のハッシュや版のように、作った後に
+    // 変わりうる値は volume に残さない
+    #[test]
+    fn volume_labels_identify_the_owning_workspace() {
+        let (_temp, root) = fixture_root("project");
+        let workspace = Workspace::resolve(&root).unwrap();
+        let resources = DockerResources::from_workspace(
+            &workspace,
+            "abc123def456",
+            root.join(".devcontainer/devcontainer.json")
+                .display()
+                .to_string(),
+        );
+
+        assert_eq!(
+            resources.volume_labels(),
+            BTreeMap::from([
+                ("decune.managed".to_owned(), "true".to_owned()),
+                (
+                    "decune.workspace".to_owned(),
+                    workspace.root().display().to_string()
+                ),
+                ("decune.workspace_id".to_owned(), workspace.id().to_owned()),
+            ])
         );
     }
 
