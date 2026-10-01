@@ -491,6 +491,87 @@ fn remove_images_removes_workspace_images_only_when_requested() {
     }
 }
 
+// 削除したコンテナが mount していた、decune のラベルの無い named volume は消さず、
+// 残した理由とともに出力の最後に示す。匿名 volume(`mounts` の `source` の無い volume と、
+// イメージの `VOLUME` 命令の volume)は、残したものとして示さない
+#[test]
+fn remove_reports_kept_unlabeled_volume_and_omits_anonymous_volumes() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let user_volume = format!("decune-remove-kept-{}", workspace_id(&workspace_root));
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/Dockerfile",
+            "FROM alpine:3.20\nVOLUME /image-volume\n",
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            &format!(
+                r#"
+                {{
+                  "build": {{ "dockerfile": "Dockerfile" }},
+                  "mounts": [
+                    "source={user_volume},target=/data,type=volume",
+                    "target=/anonymous,type=volume"
+                  ]
+                }}
+                "#
+            ),
+        )
+        .unwrap();
+    docker_status(["volume", "create", &user_volume]).unwrap();
+
+    with_clean_workspace_containers_and_images(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+            .assert()
+            .success();
+        let container = inspect_single_workspace_container(&workspace_root).unwrap();
+        let anonymous_volumes = container
+            .mounts
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|mount| mount.typ.as_deref() == Some("volume"))
+            .filter_map(|mount| mount.name)
+            .filter(|name| name != &user_volume)
+            .collect::<Vec<_>>();
+        assert_eq!(anonymous_volumes.len(), 2, "{anonymous_volumes:?}");
+
+        let output = decune()
+            .args(["remove", "--no-confirm"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .stdout(predicate::str::is_empty())
+            .get_output()
+            .clone();
+
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        let last_line = stderr
+            .lines()
+            .rfind(|line| !line.trim().is_empty())
+            .unwrap();
+        assert!(last_line.contains(&user_volume), "{stderr}");
+        assert!(
+            last_line.contains("not a decune-managed volume of this workspace"),
+            "{stderr}"
+        );
+        assert_eq!(stderr.matches("Kept Docker volume").count(), 1, "{stderr}");
+        for anonymous_volume in &anonymous_volumes {
+            assert!(!stderr.contains(anonymous_volume.as_str()), "{stderr}");
+        }
+        docker_status(["volume", "inspect", &user_volume]).unwrap();
+    });
+
+    docker_status(["volume", "rm", &user_volume]).unwrap();
+}
+
 #[test]
 fn remove_all_workspaces_no_targets_succeeds_without_confirmation() {
     let temp = support::TempWorkspace::new().unwrap();
