@@ -61,12 +61,13 @@ pub(super) struct ContainerEvidence {
 pub(super) struct VolumeEvidence {
     pub(super) workspace_id: String,
     pub(super) name: Option<String>,
-    /// volume が属するワークスペースのパス。decune のラベルを持つ volume ではその
-    /// `decune.workspace` ラベルのパス、Compose プロジェクトの volume ではプロジェクトを辿った
-    /// 状態かコンテナのパスである。
+    /// volume が属するワークスペースのパス。
+    /// decune のラベルを持つ volume では、その `decune.workspace` ラベルのパス、
+    /// Compose プロジェクトの volume では、プロジェクトを辿った状態かコンテナのラベルのパスである。
     /// 状態もコンテナも残っていないワークスペースのパスを、summary に示すのに使う。
-    /// ワークスペースを指定した収集(`collect_workspace_docker_evidence`)では、decune のラベルを
-    /// 持つ volume には持たせない。表示するパスは、指定したワークスペースのものを使うからである。
+    /// ワークスペースを指定した収集(`collect_workspace_docker_evidence`)では、
+    /// decune のラベルを持つ volume には持たせない。
+    /// 表示するパスは、指定したワークスペースのものを使うからである。
     pub(super) workspace_path: Option<String>,
     pub(super) origin: VolumeOrigin,
 }
@@ -398,9 +399,11 @@ fn dedupe_container_evidence(containers: Vec<ContainerEvidence>) -> Vec<Containe
     deduped
 }
 
-/// Compose プロジェクトのラベルを持つ volume を、そのプロジェクトのワークスペースの
-/// decune-managed ボリュームとして返す。Compose はサービスの匿名 volume と、自分で作っていない
-/// `external` の volume にプロジェクトのラベルを付けないので、これらは含まれない。
+/// Compose プロジェクトのラベルを持つ volume を、
+/// そのプロジェクトのワークスペースの decune-managed ボリュームとして返す。
+/// Compose はサービスの匿名 volume と、
+/// 自分で作っていない `external` の volume にプロジェクトのラベルを付けないので、
+/// これらは含まれない。
 async fn compose_project_volume_evidence(
     cli: &DockerCli,
     project_name: &str,
@@ -419,8 +422,11 @@ async fn compose_project_volume_evidence(
         .collect())
 }
 
-/// 同じ名前の volume を一つにする。decune のラベルと Compose プロジェクトのラベルの両方を
-/// 持つ volume は、先に見つけた方の出どころで示す。
+/// 同じ名前の volume を一つにする。
+/// decune のラベルと Compose プロジェクトのラベルの両方を持つ volume は、
+/// 先に見つけた方の出どころで示す。
+/// 呼び出し側は decune のラベルを持つ volume を先に渡すので、その volume は `mounts` になり、
+/// コンテナの中の `status`(`SystemContainerQuerySource::collect_volumes`)と揃う。
 fn dedupe_volume_evidence(volumes: Vec<VolumeEvidence>) -> Vec<VolumeEvidence> {
     let mut seen = BTreeSet::new();
     volumes
@@ -693,9 +699,10 @@ mod tests {
         volumes
     }
 
-    /// Compose プロジェクト `project` のワークスペースが見る volume。プロジェクトの volume と
-    /// decune のラベルを持つ volume のほかに、ラベルの無い volume、Compose が作っていない
-    /// `external` の volume、サービスの匿名 volume を持つ。
+    /// Compose プロジェクト `project` のワークスペースが見る volume。
+    /// プロジェクトの volume と decune のラベルを持つ volume のほかに、
+    /// ラベルの無い volume、Compose が作っていない `external` の volume、
+    /// サービスの匿名 volume を持つ。
     fn docker_with_workspace_volumes() -> FakeDocker {
         let docker = FakeDocker::new();
         docker.add_volume("project_data", &[("com.docker.compose.project", "project")]);
@@ -728,9 +735,9 @@ mod tests {
     }
 
     // ワークスペースの decune-managed ボリュームは、Compose プロジェクトの volume を `compose`、
-    // decune のラベルを持つ volume を `mounts` として含み、ラベルの無い volume、`external` の
-    // volume、匿名 volume を含まない。Compose プロジェクトは、ワークスペースのコンテナのラベルから
-    // 辿る
+    // decune のラベルを持つ volume を `mounts` として含み、
+    // ラベルの無い volume、`external` の volume、匿名 volume を含まない。
+    // Compose プロジェクトは、ワークスペースのコンテナのラベルから辿る
     #[test]
     fn workspace_volumes_are_project_and_labeled_volumes_with_origin() {
         let docker = docker_with_workspace_volumes();

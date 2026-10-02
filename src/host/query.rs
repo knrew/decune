@@ -267,9 +267,9 @@ impl SystemContainerQuerySource {
             .into_iter()
             .map(|name| (name, VolumeOrigin::Mounts))
             .collect::<BTreeMap<_, _>>();
-        // Compose プロジェクト名の候補は、固定の状態に記録された値と、このワークスペースの
-        // decune-managed コンテナのラベルに限る。ほかの経路で得た名前を使うと、別の
-        // ワークスペースの volume を示しうる。
+        // Compose プロジェクト名の候補は、固定の状態に記録された値と、
+        // このワークスペースの decune-managed コンテナのラベルに限る。
+        // ほかの経路で得た名前を使うと、別のワークスペースの volume を示しうる。
         let mut compose_projects = BTreeSet::new();
         if let Some(project_name) = hint
             .compose_project_name
@@ -1804,9 +1804,9 @@ mod tests {
     }
 
     // コンテナの中の `status` の decune-managed ボリュームは、ホストの `status` と同じく、
-    // decune のラベルを持つ volume を `mounts`、状態に記録した Compose プロジェクトとワークスペースの
-    // コンテナのラベルの Compose プロジェクトの volume を `compose` として含む。ラベルの無い volume と、
-    // ワークスペースから辿れない Compose プロジェクトの volume は含まない
+    // 状態とワークスペースのコンテナのラベルから辿った Compose プロジェクトの volume を `compose`、
+    // decune のラベルを持つ volume を `mounts` として含む。
+    // ラベルの無い volume と、ワークスペースから辿れない Compose プロジェクトの volume は含まない
     #[test]
     fn volume_collector_returns_labeled_and_workspace_project_volumes_with_origin() {
         run_async(async {

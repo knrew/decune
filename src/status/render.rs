@@ -213,8 +213,8 @@ fn write_workspace_resources(output: &mut String, status: &WorkspaceStatus) {
     output.push('\n');
 }
 
-/// `Resources` 節の decune-managed ボリュームの数と一覧。ホストの `status` とコンテナの中の
-/// `status` が同じ対象を同じ形で示すように、両方がこれを使う。
+/// `Resources` 節の decune-managed ボリュームの数と一覧。
+/// ホストの `status` とコンテナの中の `status` が同じ対象を同じ形で示すように、両方がこれを使う。
 pub(super) fn write_volume_resources(output: &mut String, volumes: &[VolumeStatusSummary]) {
     _ = writeln!(
         output,
