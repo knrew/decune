@@ -360,6 +360,39 @@ fn status_summary_reports_workspace_with_only_volume_created_by_up() {
     });
 }
 
+// `up` が作らせた named volume は、`status <WORKSPACE>` の `Resources` 節に
+// 出どころ `mounts` として並ぶ
+#[test]
+fn status_detail_lists_volume_created_by_up_as_mounts() {
+    let workspace = support::TempWorkspace::new().must();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let workspace_root = workspace.path().canonicalize().must();
+    let volume = format!("decune-status-detail-{}", workspace_id(&workspace_root));
+    let state_home = tempfile::tempdir().must();
+    write_named_volume_devcontainer(&workspace, &volume);
+
+    with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", state_home.path())
+            .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+            .assert()
+            .success();
+
+        decune()
+            .arg("status")
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", state_home.path())
+            .assert()
+            .success()
+            .stdout(predicate::str::contains(format!(
+                "Resources\n  Containers: 1\n  Volumes: 1 (removed by decune remove)\n    \
+                 {volume}  mounts\n"
+            )));
+    });
+}
+
 fn status_roots(temp: &support::TempWorkspace) -> StatusRoots {
     StatusRoots {
         state: temp.create_dir("state").must(),
