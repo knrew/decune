@@ -1984,6 +1984,51 @@ fn compose_integration_label_fallback_remove_keeps_in_use_project_volume() {
     assert!(docker_status(["volume", "inspect", &project_volume]).is_ok());
 }
 
+// `status <WORKSPACE>` は、Compose プロジェクトの volume を decune-managed ボリュームとして
+// `Summary` と `Resources` で数え、`Resources` に名前の順に出どころ `compose` で並べる。
+// プロジェクトのラベルを持たない external の volume と、サービスの匿名 volume は数えない
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_status_lists_project_volumes() {
+    let fixture = compose_project_volumes_workspace(&["uploads", "data", "cache", "logs"]);
+    let workspace = fixture.workspace.path();
+    let project = compose_project_name(workspace);
+    run_decune_up_detach(workspace, &[]);
+    let anonymous_volume = compose_primary_anonymous_volume(workspace);
+
+    let output = decune()
+        .arg("status")
+        .arg(workspace)
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+
+    let stdout = String::from_utf8(output.stdout).must();
+    let summary = stdout.split("\n\n").find(|section| section.starts_with("Summary\n"));
+    assert!(
+        summary.must().lines().any(|line| line == "  Volumes: 4"),
+        "{stdout}"
+    );
+    assert!(
+        stdout.contains(&format!(
+            "Resources\n  Containers: 1\n  Volumes: 4 (removed by decune remove)\n    \
+             {project}_cache    compose\n    \
+             {project}_data     compose\n    \
+             {project}_logs     compose\n    \
+             {project}_uploads  compose\n\n"
+        )),
+        "{stdout}"
+    );
+    for excluded in [
+        &fixture.external_volume,
+        &fixture.unused_external_volume,
+        &anonymous_volume,
+    ] {
+        assert!(!stdout.contains(excluded.as_str()), "{stdout}");
+    }
+}
+
 // `rebuild` と `down` は、Compose プロジェクトの volume を削除しない
 // 同名の空の volume への作り直しも検出するため、rebuild 前に保存した内容を確かめる
 #[test]
@@ -3184,6 +3229,7 @@ fn cleanup_compose_workspace(workspace: &Path) {
 
 /// プロジェクトの named volume、サービスが mount する external の volume、どのサービスも
 /// mount しない external の volume、サービスの匿名 volume を持つ Compose のワークスペース。
+/// プロジェクトの named volume は、サービスが `/<キー>` に mount する。
 struct ComposeProjectVolumeWorkspace {
     workspace: ComposeFixtureWorkspace,
     external_volume: String,
@@ -3198,7 +3244,14 @@ impl Drop for ComposeProjectVolumeWorkspace {
     }
 }
 
+/// プロジェクトの named volume を `data` の一つだけ持つ [`ComposeProjectVolumeWorkspace`]。
 fn compose_project_volume_workspace() -> ComposeProjectVolumeWorkspace {
+    compose_project_volumes_workspace(&["data"])
+}
+
+/// `project_volumes` をキーとするプロジェクトの named volume を持つ
+/// [`ComposeProjectVolumeWorkspace`]。
+fn compose_project_volumes_workspace(project_volumes: &[&str]) -> ComposeProjectVolumeWorkspace {
     let workspace = compose_fixture_workspace("minimal");
     let id = workspace_id(workspace.path());
     let external_volume = format!("decune-test-external-{id}");
@@ -3206,12 +3259,22 @@ fn compose_project_volume_workspace() -> ComposeProjectVolumeWorkspace {
     for volume in [&external_volume, &unused_external_volume] {
         docker_status(["volume", "create", volume.as_str()]).must();
     }
+    let service_mounts = project_volumes
+        .iter()
+        .map(|volume| format!("      - {volume}:/{volume}\n"))
+        .collect::<String>();
+    let declarations = project_volumes
+        .iter()
+        .map(|volume| format!("  {volume}: {{}}\n"))
+        .collect::<String>();
     workspace
         .workspace
         .write_fixture_template(
             ".devcontainer/compose.yaml",
             "compose/project-volumes/compose.yaml",
             &[
+                ("      # __PROJECT_VOLUME_MOUNTS__\n", service_mounts.as_str()),
+                ("  # __PROJECT_VOLUME_DECLARATIONS__\n", declarations.as_str()),
                 ("__EXTERNAL_VOLUME__", &external_volume),
                 ("__UNUSED_EXTERNAL_VOLUME__", &unused_external_volume),
             ],

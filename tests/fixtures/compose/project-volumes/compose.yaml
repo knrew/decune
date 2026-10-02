@@ -4,11 +4,11 @@ services:
     command: sleep infinity
     volumes:
       - ..:/workspace
-      - data:/data
+      # __PROJECT_VOLUME_MOUNTS__
       - shared-external:/shared
       - /anonymous
 volumes:
-  data: {}
+  # __PROJECT_VOLUME_DECLARATIONS__
   shared-external:
     external: true
     name: __EXTERNAL_VOLUME__
