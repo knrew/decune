@@ -334,7 +334,7 @@ decune clean --include-feature-cache [--dry-run] [--no-confirm] [--json]
 - 設定された XDG のルートと、仕様で定義したフォールバック配下の、decune が管理しているパスだけを探索する。
 - symlink は辿らない。削除対象自体または配下のエントリに symlink がある対象は `unsafe_path` としてスキップする。
 - decune が管理しているルート外のパスは削除しない。
-- Docker のラベルから `decune.managed=true` と有効な `decune.workspace_id` を持つコンテナ / ボリュームが見つかるワークスペースは、decune が管理している再利用可能なリソースとみなしてスキップする。
+- Docker のラベルから `decune.managed=true` と有効な `decune.workspace_id` を持つコンテナ / ボリューム(decune が管理するコンテナと decune-managed ボリューム)が見つかるワークスペースは、再利用可能なリソースが残っているとみなしてスキップする。
 - 状態の `compose_project_name` に記録した Compose プロジェクトのラベル (`com.docker.compose.project`) を持つ volume が残るワークスペースも、コンテナが無くても同じくスキップし、状態を削除しない。この判定は Compose ファイルを読まずにラベルだけで行う。
 - ランタイムディレクトリまたは port status ディレクトリ配下に接続可能な Unix ソケット、または取得できないロックファイルがあるワークスペースは active とみなしてスキップする。
 - Docker リソースの探索に失敗した場合、削除の実行は安全性を判定できないためエラーにする。`--dry-run` ではファイルシステム上の候補を `docker_unavailable` としてスキップ表示できる。
