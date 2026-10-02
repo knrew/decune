@@ -61,7 +61,7 @@ pub(crate) struct VolumeStatusSummary {
 pub(crate) enum VolumeOrigin {
     /// decune が所有する Compose プロジェクトのラベル(`com.docker.compose.project`)を持つ。
     Compose,
-    /// `up` がコンテナを作るときに付けた decune のラベルを持つ。
+    /// decune がコンテナを作るときに付けた decune のラベルを持つ。
     Mounts,
 }
 

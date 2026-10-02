@@ -360,8 +360,8 @@ fn status_summary_reports_workspace_with_only_volume_created_by_up() {
     });
 }
 
-// `up` が作らせた named volume は、`status <WORKSPACE>` の `Resources` 節に
-// 出どころ `mounts` として並ぶ
+// `up` が作らせた named volume は、
+// `status <WORKSPACE>` の `Resources` 節に出どころ `mounts` として並ぶ
 #[test]
 fn status_detail_lists_volume_created_by_up_as_mounts() {
     let workspace = support::TempWorkspace::new().must();
