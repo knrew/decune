@@ -293,7 +293,8 @@ pub(crate) fn volume_exists(volume: &str) -> bool {
 
 /// decune のラベルを持たない volume を作り、drop で消す。
 /// ワークスペースのラベルで片付ける `cleanup_workspace_volumes` では消えないので、
-/// テストが panic しても残さないために使う。volume を mount するコンテナは、drop より先に消す。
+/// テストが panic しても残さないために使う。使用中の volume は `--force` でも消えないので、
+/// volume を mount するコンテナは、drop より先に消す。
 pub(crate) struct UnlabeledVolume {
     name: String,
 }
