@@ -933,7 +933,7 @@ mod tests {
         fs::write(state_file_path(&state_dir), legacy).unwrap();
 
         let legacy_state = load_state_file(&state_dir).unwrap().unwrap();
-        assert!(legacy_state.published_ports.is_empty());
+        assert_eq!(legacy_state.published_ports, Vec::new());
     }
 
     #[test]

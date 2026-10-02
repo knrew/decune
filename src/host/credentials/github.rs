@@ -741,7 +741,7 @@ mod tests {
             prepare_github_cli_runtime_with_token(&config, &runtime_dir, Some("test-secret\n"))
                 .unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.token_file().is_none());
         assert!(!token_file.exists());
         assert_eq!(fs::read_to_string(marker_file).unwrap(), "keep\n");
@@ -759,7 +759,7 @@ mod tests {
             prepare_github_cli_runtime_with_token(&config, &runtime_dir, Some("test-secret\n"))
                 .unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.token_file().is_none());
         assert!(!token_file.exists());
         assert_eq!(fs::read_to_string(marker_file).unwrap(), "keep\n");
@@ -775,7 +775,7 @@ mod tests {
             prepare_github_cli_runtime_with_token(&ResolvedConfig::default(), &runtime_dir, None)
                 .unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.token_file().is_none());
         assert!(!token_file.exists());
         assert_eq!(fs::read_to_string(marker_file).unwrap(), "keep\n");
@@ -794,7 +794,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.token_file().is_none());
         assert!(!token_file.exists());
         assert_eq!(fs::read_to_string(marker_file).unwrap(), "keep\n");
@@ -811,7 +811,7 @@ mod tests {
             prepare_github_cli_runtime_with_token(&config, &runtime_dir, Some("test-secret\n"))
                 .unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.token_file().is_none());
     }
 
@@ -826,7 +826,7 @@ mod tests {
             prepare_github_cli_runtime_with_token(&config, &runtime_dir, Some("test-secret\n"))
                 .unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.token_file().is_none());
     }
 

@@ -125,7 +125,7 @@ mod tests {
         assert_eq!(containers.len(), 1);
         assert_eq!(containers[0].id, "app-id");
         assert_eq!(containers[0].service, "app");
-        assert!(containers[0].published_ports.is_empty());
+        assert_eq!(containers[0].published_ports, Vec::new());
     }
 
     #[test]
@@ -203,7 +203,7 @@ mod tests {
             resolve_compose_container("decune-project-abc123", "app", containers).unwrap();
 
         assert_eq!(container.id, "abc123");
-        assert!(container.published_ports.is_empty());
+        assert_eq!(container.published_ports, Vec::new());
     }
 
     #[test]

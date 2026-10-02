@@ -363,7 +363,7 @@ mod tests {
             endpoint_plan.services["app"]["HOST_AGENT_ENDPOINT"],
             "grpc://10.200.42.7:50051/10.200.42.0/24"
         );
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::new());
     }
 
     #[test]
@@ -522,7 +522,7 @@ mod tests {
             &mut relocated,
         )
         .unwrap();
-        assert!(covered_findings.is_empty());
+        assert_eq!(covered_findings, Vec::new());
 
         let mut unchanged = subnet_plan(false, Some("10.99.0.1"));
         let (_, unchanged_findings) = plan_compose_isolation_endpoints(
@@ -533,7 +533,7 @@ mod tests {
             &mut unchanged,
         )
         .unwrap();
-        assert!(unchanged_findings.is_empty());
+        assert_eq!(unchanged_findings, Vec::new());
     }
 
     #[test]
@@ -636,7 +636,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::new());
     }
 
     #[test]

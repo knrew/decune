@@ -247,7 +247,7 @@ mod tests {
             dotfile_setup_script(&config, "/home/vscode", &variables(Path::new("/workspace")))
                 .unwrap();
 
-        assert!(script.is_empty());
+        assert_eq!(script, "");
     }
 
     #[test]

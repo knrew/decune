@@ -275,7 +275,7 @@ mod tests {
 
         assert_eq!(scan.networks.len(), 1);
         assert_eq!(scan.networks[0].network, "default");
-        assert!(scan.fixed_names.is_empty());
+        assert_eq!(scan.fixed_names, Vec::new());
     }
 
     #[test]

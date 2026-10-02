@@ -176,7 +176,7 @@ mod tests {
         let exit = execute(&[], Path::new("/unused"), &mut stdout, &mut stderr);
 
         assert_eq!(exit, EXIT_USAGE);
-        assert!(stdout.is_empty());
+        assert_eq!(String::from_utf8_lossy(&stdout), "");
         let stderr = String::from_utf8(stderr).unwrap();
         assert!(stderr.starts_with(
             "Error: decune command is required inside a container\n\nRun decune queries"
@@ -239,7 +239,7 @@ mod tests {
         );
 
         assert_eq!(exit, EXIT_USAGE);
-        assert!(stdout.is_empty());
+        assert_eq!(String::from_utf8_lossy(&stdout), "");
         assert_eq!(
             stderr,
             b"Error: decune ports --json cannot be used more than once inside a container\n"
@@ -321,7 +321,7 @@ mod tests {
         );
 
         assert_eq!(exit, EXIT_FAILURE);
-        assert!(stdout.is_empty());
+        assert_eq!(String::from_utf8_lossy(&stdout), "");
         assert_eq!(stderr, b"Error: daemon failed\n");
     }
 
@@ -339,7 +339,7 @@ mod tests {
         );
 
         assert_eq!(exit, EXIT_FAILURE);
-        assert!(stdout.is_empty());
+        assert_eq!(String::from_utf8_lossy(&stdout), "");
         assert_eq!(
             String::from_utf8(stderr).unwrap(),
             "Error: decune host daemon is unavailable; keep an active attached \"decune up\" session running on the host (detached mode is not supported)\n"
@@ -360,7 +360,7 @@ mod tests {
         );
 
         assert_eq!(exit, EXIT_FAILURE);
-        assert!(stdout.is_empty());
+        assert_eq!(String::from_utf8_lossy(&stdout), "");
         assert_eq!(
             stderr,
             b"Error: decune received an invalid response from the decune host daemon\n"
@@ -381,7 +381,7 @@ mod tests {
         );
 
         assert_eq!(exit, EXIT_FAILURE);
-        assert!(stdout.is_empty());
+        assert_eq!(String::from_utf8_lossy(&stdout), "");
         assert_eq!(
             stderr,
             b"Error: decune could not communicate with the decune host daemon\n"

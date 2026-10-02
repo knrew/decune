@@ -1131,7 +1131,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(plan.services.is_empty());
+        assert_eq!(plan.services, Vec::<String>::new());
         assert_eq!(plan.project.project_directory, config_dir);
         assert!(plan.project.files.iter().any(|file| {
             file.file_name()

@@ -775,7 +775,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(resolved.is_empty());
+        assert_eq!(resolved, Vec::new());
     }
 
     #[test]

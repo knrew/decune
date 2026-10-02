@@ -267,7 +267,7 @@ mod tests {
 
         let ports = listen_ports_from_proc_contents("", tcp6, true, 4321, 4322, &[]).unwrap();
 
-        assert!(ports.is_empty());
+        assert_eq!(ports, Vec::<u16>::new());
     }
 
     #[test]
@@ -304,6 +304,6 @@ mod tests {
 
         let ports = listen_ports_from_proc_contents("", tcp6, false, 4321, 4322, &[]).unwrap();
 
-        assert!(ports.is_empty());
+        assert_eq!(ports, Vec::<u16>::new());
     }
 }

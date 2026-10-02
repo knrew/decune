@@ -476,7 +476,7 @@ fn remove_images_removes_workspace_images_only_when_requested() {
 
         runtime.block_on(async {
             let images = workspace_images(&workspace_root).unwrap();
-            assert!(images.is_empty());
+            assert_eq!(images, Vec::<String>::new());
         });
     });
 

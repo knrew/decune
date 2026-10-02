@@ -28,7 +28,7 @@ edition      = "2024"
 license      = "MIT"
 publish      = false
 repository   = "https://github.com/knrew/decune"
-rust-version = "1.98"
+rust-version = "1.99"
 version      = "0.4.0"
 
 # Blank lines are intentional: taplo sorts keys within each block, and the

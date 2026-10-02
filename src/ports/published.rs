@@ -723,6 +723,6 @@ mod tests {
 
         let ports = published_ports_from_containers(containers, None, true);
 
-        assert!(ports.is_empty());
+        assert_eq!(ports, Vec::new());
     }
 }

@@ -627,8 +627,8 @@ mod tests {
                 .await
                 .unwrap();
 
-            assert!(list.ports.is_empty());
-            assert!(list.warnings.is_empty());
+            assert_eq!(list.ports, Vec::new());
+            assert_eq!(list.warnings, Vec::<String>::new());
         });
     }
 
@@ -658,8 +658,8 @@ mod tests {
 
             let list = list_active_forward_status_ports(temp.path()).await.unwrap();
 
-            assert!(list.ports.is_empty());
-            assert!(list.warnings.is_empty());
+            assert_eq!(list.ports, Vec::new());
+            assert_eq!(list.warnings, Vec::<String>::new());
             assert!(metadata_path.exists());
             assert!(socket_path.exists());
         });

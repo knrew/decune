@@ -553,7 +553,7 @@ mod tests {
             }),
         );
 
-        assert!(inventory.workspaces.is_empty());
+        assert_eq!(inventory.workspaces, Vec::new());
     }
     #[test]
     fn container_and_volume_inspect_are_reduced_to_valid_evidence() {
