@@ -24,11 +24,12 @@ use super::aggregate::{
     aggregate_environment_status, aggregate_health_status, aggregate_lifecycle_status,
     should_report_unhealthy,
 };
+use super::render::write_volume_resources;
 use super::types::{
     ContainerStatusSummary, EnvironmentStatus, LifecycleStatus, StatusIssueSeverity,
     VolumeStatusSummary, WorkspaceMode,
 };
-pub(crate) use super::types::{HealthStatus, RuntimeRunState};
+pub(crate) use super::types::{HealthStatus, RuntimeRunState, VolumeOrigin};
 
 const SNAPSHOT_IDENTITY_DOMAIN: &[u8] = b"decune-container-query-config-identity-v1";
 
@@ -125,6 +126,7 @@ pub(crate) struct ContainerQueryContainersEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct ContainerQueryVolumeEvidence {
     pub(crate) name: Option<String>,
+    pub(crate) origin: VolumeOrigin,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize)]
@@ -333,6 +335,7 @@ pub(crate) fn build_container_workspace_status(
                 .iter()
                 .map(|volume| VolumeStatusSummary {
                     name: volume.name.clone(),
+                    origin: volume.origin,
                 })
                 .collect()
         }),
@@ -611,16 +614,7 @@ fn write_container_ports(output: &mut String, status: &ContainerWorkspaceStatus)
 fn write_container_resources(output: &mut String, status: &ContainerWorkspaceStatus) {
     output.push_str("Resources\n");
     _ = writeln!(output, "  Containers: {}", status.containers.len());
-    _ = writeln!(output, "  Volumes: {}", status.volumes.len());
-    let mut volume_names = status
-        .volumes
-        .iter()
-        .filter_map(|volume| volume.name.as_deref())
-        .collect::<Vec<_>>();
-    volume_names.sort_unstable();
-    for volume in volume_names {
-        _ = writeln!(output, "  Volume: {volume}");
-    }
+    write_volume_resources(output, &status.volumes);
     output.push('\n');
 }
 
@@ -734,6 +728,35 @@ mod tests {
         assert!(!output.contains("needs-rebuild"));
         assert!(output.ends_with('\n'));
         assert!(!output.ends_with("\n\n"));
+    }
+
+    // コンテナの中の `status` の `Resources` 節は、ホストの `status` と同じ形で、
+    // decune-managed ボリュームの名前と出どころを名前の辞書順に示す
+    #[test]
+    fn resources_list_volumes_with_origin_in_host_status_form() {
+        let mut snapshot = query_snapshot("hash", Some("hash"));
+        runtime_mut(&mut snapshot).volumes = vec![
+            ContainerQueryVolumeEvidence {
+                name: Some("project_data".to_owned()),
+                origin: VolumeOrigin::Compose,
+            },
+            ContainerQueryVolumeEvidence {
+                name: Some("cache".to_owned()),
+                origin: VolumeOrigin::Mounts,
+            },
+        ];
+
+        let output =
+            render_container_workspace_status(&build_container_workspace_status(&snapshot));
+
+        assert!(
+            output.contains(
+                "Resources\n  Containers: 1\n  Volumes: 2 (removed by decune remove)\n    \
+                 cache         mounts\n    \
+                 project_data  compose\n"
+            ),
+            "{output}"
+        );
     }
 
     #[test]
@@ -1032,6 +1055,7 @@ mod tests {
             )],
             volumes: vec![ContainerQueryVolumeEvidence {
                 name: Some("managed-volume".to_owned()),
+                origin: VolumeOrigin::Mounts,
             }],
         }
     }

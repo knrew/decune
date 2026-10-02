@@ -388,6 +388,7 @@ mod tests {
             ContainerEvidence, ContainerRunState, CurrentWorkspaceConfig, DockerEvidence,
             StateEvidence, VolumeEvidence, WorkspaceEvidence, load_status_states,
         },
+        status::types::VolumeOrigin,
     };
 
     use super::*;
@@ -907,6 +908,7 @@ mod tests {
             workspace_id: workspace_id.to_owned(),
             name: None,
             workspace_path: None,
+            origin: VolumeOrigin::Mounts,
         }
     }
 

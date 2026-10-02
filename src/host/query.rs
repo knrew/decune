@@ -35,7 +35,7 @@ use crate::{
     status::container::{
         ContainerQueryContainersEvidence, ContainerQueryDockerEvidence,
         ContainerQueryRuntimeSnapshot, ContainerQuerySnapshot, ContainerQueryStateEvidence,
-        ContainerQueryStateSnapshot, ContainerQueryVolumeEvidence,
+        ContainerQueryStateSnapshot, ContainerQueryVolumeEvidence, VolumeOrigin,
         build_container_workspace_status, container_query_evidence_from_inspect,
         container_query_inspect_matches_scope, render_container_workspace_status,
     },
@@ -249,7 +249,10 @@ impl SystemContainerQuerySource {
             .list_volumes(workspace_id)
             .await?
             .into_iter()
-            .map(|name| ContainerQueryVolumeEvidence { name: Some(name) })
+            .map(|name| ContainerQueryVolumeEvidence {
+                name: Some(name),
+                origin: VolumeOrigin::Mounts,
+            })
             .collect())
     }
 }
@@ -1233,6 +1236,7 @@ mod tests {
                 self.volume_loads.fetch_add(1, Ordering::SeqCst);
                 Ok(vec![ContainerQueryVolumeEvidence {
                     name: Some("workspace-volume".to_owned()),
+                    origin: VolumeOrigin::Mounts,
                 }])
             })
         }
