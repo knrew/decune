@@ -291,6 +291,28 @@ pub(crate) fn volume_exists(volume: &str) -> bool {
     docker_status(["volume", "inspect", volume]).is_ok()
 }
 
+/// decune のラベルを持たない volume を作り、drop で消す。
+/// ワークスペースのラベルで片付ける `cleanup_workspace_volumes` では消えないので、
+/// テストが panic しても残さないために使う。volume を mount するコンテナは、drop より先に消す。
+pub(crate) struct UnlabeledVolume {
+    name: String,
+}
+
+impl UnlabeledVolume {
+    pub(crate) fn create(name: &str) -> anyhow::Result<Self> {
+        docker_status(["volume", "create", name])?;
+        Ok(Self {
+            name: name.to_owned(),
+        })
+    }
+}
+
+impl Drop for UnlabeledVolume {
+    fn drop(&mut self) {
+        _ = docker_status(["volume", "rm", "--force", &self.name]);
+    }
+}
+
 pub(crate) fn cleanup_workspace_volumes(workspace_root: &Path) -> anyhow::Result<()> {
     for volume in workspace_volumes(workspace_root)? {
         _ = docker_status(["volume", "rm", "--force", &volume]);

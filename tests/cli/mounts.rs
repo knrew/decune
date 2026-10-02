@@ -825,7 +825,7 @@ fn up_does_not_label_existing_or_anonymous_volumes() {
             ),
         )
         .unwrap();
-    docker_status(["volume", "create", &existing_volume]).unwrap();
+    let _existing = UnlabeledVolume::create(&existing_volume).unwrap();
 
     with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
         decune()
@@ -872,6 +872,4 @@ fn up_does_not_label_existing_or_anonymous_volumes() {
         assert!(!stdout.contains(&existing_volume), "{stdout}");
         assert!(!stdout.contains(&anonymous_volume), "{stdout}");
     });
-
-    docker_status(["volume", "rm", &existing_volume]).unwrap();
 }
