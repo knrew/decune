@@ -177,7 +177,7 @@ decune up
 
 ### `decune rebuild`
 
-開発コンテナまたは Compose プロジェクトを再作成します。設定変更を反映するときや、イメージを作り直したいときに使います。decune が管理するボリュームは保持されます。
+開発コンテナまたは Compose プロジェクトを再作成します。設定変更を反映するときや、イメージを作り直したいときに使います。decune-managed ボリュームは保持されます。
 
 ```sh
 decune rebuild
@@ -221,7 +221,19 @@ decune status                    # 全ワークスペースの summary
 decune status path/to/workspace  # 指定ワークスペースの detail
 ```
 
-summary 表示ではワークスペースごとの実行状態、設定状態、ヘルス、ポート数、問題の数を確認できます。detail 表示では問題の内訳と、必要な操作(`decune rebuild` の要否など)が `Action` として表示されます。表示内容の契約は [specification.md 3.5 節](specification.md#35-status) を参照してください。
+summary 表示ではワークスペースごとの実行状態、設定状態、ヘルス、ポート数、問題の数を確認できます。detail 表示では問題の内訳と、必要な操作(`decune rebuild` の要否など)が `Action` として表示されます。
+
+detail 表示の `Resources` には、`decune remove` で削除される decune-managed ボリュームが、名前と出どころとともに名前の順で表示されます。出どころは、Compose プロジェクトの volume なら `compose`、`decune up` がコンテナを作るときに作った `mounts` の named volume なら `mounts` です。
+
+```text
+Resources
+  Containers: 1
+  Volumes: 2 (removed by decune remove)
+    decune-app-123456abcdef_postgres-data  compose
+    decune-app-123456abcdef_redis          compose
+```
+
+表示内容の契約は [specification.md 3.5 節](specification.md#35-status) を参照してください。
 
 ### `decune ports`
 
@@ -264,7 +276,7 @@ decune remove --all-workspaces --no-confirm  # すべてのワークスペース
 
 `--no-confirm` は確認プロンプトだけを省略し、decune が管理するリソースに限定する安全境界は迂回しません。
 
-確認するときは、削除する volume の名前を `[y/N]` の確認の前に表示します。他のコンテナが使っているために削除できなかった volume と、削除したコンテナが使っていた volume のうち削除するワークスペースのものでないために削除しなかった volume は、理由とともに出力の最後に表示します。他のコンテナが使っている volume があっても、`remove` は残りの削除を続けて成功します。Compose モードで、他のコンテナが使っているプロジェクトの volume を残したときは、状態も残ります。その volume を使うコンテナを削除してから、もう一度 `decune remove` を実行すると、volume と状態が削除されます。
+確認するときは、削除する decune-managed ボリュームの名前を `[y/N]` の確認の前に表示します。他のコンテナが使っているために削除できなかった volume と、削除したコンテナが使っていた volume のうち削除するワークスペースのものでないために削除しなかった volume は、理由とともに出力の最後に表示します。他のコンテナが使っている volume があっても、`remove` は残りの削除を続けて成功します。Compose モードで、他のコンテナが使っているプロジェクトの volume を残したときは、状態も残ります。その volume を使うコンテナを削除してから、もう一度 `decune remove` を実行すると、volume と状態が削除されます。
 
 削除範囲の契約は [specification.md 3.7 節](specification.md#37-remove--rm) を参照してください。
 
