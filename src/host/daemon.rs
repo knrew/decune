@@ -1288,7 +1288,7 @@ mod tests {
                 temp.path().join("state"),
                 runtime_dir.clone(),
             );
-            let query_runner = empty_docker_query_runner(2);
+            let query_runner = empty_docker_query_runner(3);
             let daemon = HostDaemon::start_with_cli_query_runner(
                 &runtime_dir,
                 policy,
@@ -1606,7 +1606,7 @@ mod tests {
                 temp.path().join("state"),
                 runtime_dir.clone(),
             );
-            let query_runner = empty_docker_query_runner(4);
+            let query_runner = empty_docker_query_runner(6);
             // The forwarding registries belong to independent session servers and are not
             // injected into the daemon. The daemon discovers every session through status_dir.
             let daemon = HostDaemon::start_with_cli_query_runner(
@@ -1827,7 +1827,7 @@ mod tests {
 
     fn assert_empty_docker_query_commands(runner: &FakeRuntimeCommand) {
         let commands = runner.commands();
-        assert_eq!(commands.len(), 2);
+        assert_eq!(commands.len(), 3);
         assert!(commands.iter().all(|command| command.program() == "docker"));
         assert!(
             commands
