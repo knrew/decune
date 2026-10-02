@@ -1,6 +1,6 @@
 use std::{
-    collections::BTreeMap, fs, net::TcpListener, path::Path, process::Command, thread,
-    time::Duration,
+    collections::BTreeMap, fmt::Write as _, fs, net::TcpListener, path::Path, process::Command,
+    thread, time::Duration,
 };
 
 use serde::Deserialize;
@@ -3261,14 +3261,12 @@ fn compose_project_volumes_workspace(project_volumes: &[&str]) -> ComposeProject
     for volume in [&external_volume, &unused_external_volume] {
         docker_status(["volume", "create", volume.as_str()]).must();
     }
-    let service_mounts = project_volumes
-        .iter()
-        .map(|volume| format!("      - {volume}:/{volume}\n"))
-        .collect::<String>();
-    let declarations = project_volumes
-        .iter()
-        .map(|volume| format!("  {volume}: {{}}\n"))
-        .collect::<String>();
+    let mut service_mounts = String::new();
+    let mut declarations = String::new();
+    for volume in project_volumes {
+        _ = writeln!(service_mounts, "      - {volume}:/{volume}");
+        _ = writeln!(declarations, "  {volume}: {{}}");
+    }
     workspace
         .workspace
         .write_fixture_template(
