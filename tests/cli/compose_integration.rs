@@ -2005,7 +2005,9 @@ fn compose_integration_status_lists_project_volumes() {
         .clone();
 
     let stdout = String::from_utf8(output.stdout).must();
-    let summary = stdout.split("\n\n").find(|section| section.starts_with("Summary\n"));
+    let summary = stdout
+        .split("\n\n")
+        .find(|section| section.starts_with("Summary\n"));
     assert!(
         summary.must().lines().any(|line| line == "  Volumes: 4"),
         "{stdout}"
