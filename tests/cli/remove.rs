@@ -785,6 +785,8 @@ fn remove_keeps_managed_volume_in_use_by_other_container() {
     let path_roots = tempfile::tempdir().unwrap();
     let state_home = path_roots.path().join("state");
     let state_dir = state_home.join("decune").join(&workspace_id);
+    let runtime_home = path_roots.path().join("runtime");
+    let runtime_dir = runtime_home.join("decune").join(&workspace_id);
     write_named_volume_devcontainer(&workspace, &volume);
 
     with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
@@ -793,10 +795,12 @@ fn remove_keeps_managed_volume_in_use_by_other_container() {
                 .args(["up", "--detach"])
                 .arg(&workspace_root)
                 .env("XDG_STATE_HOME", &state_home)
+                .env("XDG_RUNTIME_DIR", &runtime_home)
                 .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
                 .assert()
                 .success();
             assert!(state_dir.exists());
+            assert!(runtime_dir.exists());
             docker_status([
                 "create",
                 "--name",
@@ -811,6 +815,7 @@ fn remove_keeps_managed_volume_in_use_by_other_container() {
                 .args(["remove", "--no-confirm"])
                 .arg(&workspace_root)
                 .env("XDG_STATE_HOME", &state_home)
+                .env("XDG_RUNTIME_DIR", &runtime_home)
                 .assert()
                 .success()
                 .get_output()
@@ -825,6 +830,7 @@ fn remove_keeps_managed_volume_in_use_by_other_container() {
             assert!(volume_exists(&volume));
             assert!(workspace_containers(&workspace_root).unwrap().is_empty());
             assert!(!state_dir.exists());
+            assert!(!runtime_dir.exists());
         });
         _ = docker_status(["rm", "--force", &other_container]);
         if let Err(payload) = result {
