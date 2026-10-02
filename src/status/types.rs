@@ -52,6 +52,17 @@ pub(crate) struct ContainerStatusSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub(crate) struct VolumeStatusSummary {
     pub(crate) name: Option<String>,
+    pub(crate) origin: VolumeOrigin,
+}
+
+/// decune-managed ボリュームを、どのラベルからそのワークスペースのものと確かめたか。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum VolumeOrigin {
+    /// decune が所有する Compose プロジェクトのラベル(`com.docker.compose.project`)を持つ。
+    Compose,
+    /// `up` がコンテナを作るときに付けた decune のラベルを持つ。
+    Mounts,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
@@ -80,6 +91,15 @@ impl From<crate::state::WorkspaceModeSnapshot> for WorkspaceMode {
             crate::state::WorkspaceModeSnapshot::Dockerfile => Self::Dockerfile,
             crate::state::WorkspaceModeSnapshot::Compose => Self::Compose,
             crate::state::WorkspaceModeSnapshot::Unknown => Self::Unknown,
+        }
+    }
+}
+
+impl VolumeOrigin {
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Compose => "compose",
+            Self::Mounts => "mounts",
         }
     }
 }

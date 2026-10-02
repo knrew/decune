@@ -20,7 +20,8 @@ use crate::{
 };
 
 use super::types::{
-    ContainerStatusSummary, HealthStatus, RuntimeRunState, VolumeStatusSummary, WorkspaceMode,
+    ContainerStatusSummary, HealthStatus, RuntimeRunState, VolumeOrigin, VolumeStatusSummary,
+    WorkspaceMode,
 };
 
 pub(super) struct StateEvidence {
@@ -60,6 +61,7 @@ pub(super) struct VolumeEvidence {
     /// 状態もコンテナも残っていないワークスペースのパスを、summary に示すのに使う。
     /// ワークスペースを指定した収集(`collect_workspace_docker_evidence`)では持たない。
     pub(super) workspace_path: Option<String>,
+    pub(super) origin: VolumeOrigin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +171,7 @@ pub(super) async fn collect_workspace_docker_evidence(
             workspace_id: workspace_id.to_owned(),
             name: Some(name),
             workspace_path: None,
+            origin: VolumeOrigin::Mounts,
         })
         .collect();
 
@@ -388,6 +391,7 @@ fn volume_evidence(volume: DockerVolumeInspect) -> Option<VolumeEvidence> {
         workspace_id,
         name: volume.name,
         workspace_path,
+        origin: VolumeOrigin::Mounts,
     })
 }
 
@@ -417,6 +421,7 @@ impl From<&VolumeEvidence> for VolumeStatusSummary {
     fn from(value: &VolumeEvidence) -> Self {
         Self {
             name: value.name.clone(),
+            origin: value.origin,
         }
     }
 }
