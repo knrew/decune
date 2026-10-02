@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeMap, BTreeSet, HashMap},
     future::Future,
     pin::Pin,
     sync::{Arc, Mutex},
@@ -122,16 +122,30 @@ impl DockerContainerLoadHint {
     }
 }
 
+/// decune-managed ボリュームの読み込みに使う、固定の状態から得た値。
+#[derive(Clone)]
+struct DockerVolumeLoadHint {
+    compose_project_name: Option<String>,
+}
+
+impl DockerVolumeLoadHint {
+    fn from_state(state: Option<&WorkspaceState>) -> Self {
+        Self {
+            compose_project_name: state.and_then(|state| state.compose_project_name.clone()),
+        }
+    }
+}
+
 enum QueryEvidenceLoad {
     Containers(DockerContainerLoadHint),
-    Volumes,
+    Volumes(DockerVolumeLoadHint),
 }
 
 impl QueryEvidenceLoad {
     const fn kind(&self) -> QueryEvidenceKind {
         match self {
             Self::Containers(_) => QueryEvidenceKind::Containers,
-            Self::Volumes => QueryEvidenceKind::Volumes,
+            Self::Volumes(_) => QueryEvidenceKind::Volumes,
         }
     }
 }
@@ -159,6 +173,7 @@ trait ContainerQuerySource: Send + Sync {
     fn load_volumes<'a>(
         &'a self,
         workspace_id: &'a str,
+        hint: DockerVolumeLoadHint,
     ) -> QueryFuture<'a, std::result::Result<Vec<ContainerQueryVolumeEvidence>, QueryEvidenceFailure>>;
 }
 
@@ -243,15 +258,46 @@ impl SystemContainerQuerySource {
     async fn collect_volumes(
         &self,
         workspace_id: &str,
+        hint: DockerVolumeLoadHint,
     ) -> Result<Vec<ContainerQueryVolumeEvidence>> {
-        Ok(self
+        let mut volumes = self
             .docker
             .list_volumes(workspace_id)
             .await?
             .into_iter()
-            .map(|name| ContainerQueryVolumeEvidence {
+            .map(|name| (name, VolumeOrigin::Mounts))
+            .collect::<BTreeMap<_, _>>();
+        // Compose プロジェクト名の候補は、固定の状態に記録された値と、このワークスペースの
+        // decune-managed コンテナのラベルに限る。ほかの経路で得た名前を使うと、別の
+        // ワークスペースの volume を示しうる。
+        let mut compose_projects = BTreeSet::new();
+        if let Some(project_name) = hint
+            .compose_project_name
+            .as_deref()
+            .map(str::trim)
+            .filter(|project_name| !project_name.is_empty())
+        {
+            compose_projects.insert(project_name.to_owned());
+        }
+        compose_projects.extend(
+            self.docker
+                .list_workspace_compose_project_names(workspace_id)
+                .await?,
+        );
+        for project_name in &compose_projects {
+            for name in self
+                .docker
+                .list_compose_project_volumes(project_name)
+                .await?
+            {
+                volumes.entry(name).or_insert(VolumeOrigin::Compose);
+            }
+        }
+        Ok(volumes
+            .into_iter()
+            .map(|(name, origin)| ContainerQueryVolumeEvidence {
                 name: Some(name),
-                origin: VolumeOrigin::Mounts,
+                origin,
             })
             .collect())
     }
@@ -294,10 +340,11 @@ impl ContainerQuerySource for SystemContainerQuerySource {
     fn load_volumes<'a>(
         &'a self,
         workspace_id: &'a str,
+        hint: DockerVolumeLoadHint,
     ) -> QueryFuture<'a, std::result::Result<Vec<ContainerQueryVolumeEvidence>, QueryEvidenceFailure>>
     {
         Box::pin(async move {
-            self.collect_volumes(workspace_id)
+            self.collect_volumes(workspace_id, hint)
                 .await
                 .map_err(|_error| QueryEvidenceFailure::Unavailable)
         })
@@ -492,9 +539,9 @@ async fn load_query_evidence(
             .load_containers(&key.workspace_id, hint)
             .await
             .map(QueryEvidence::Containers),
-        QueryEvidenceLoad::Volumes => inner
+        QueryEvidenceLoad::Volumes(hint) => inner
             .source
-            .load_volumes(&key.workspace_id)
+            .load_volumes(&key.workspace_id, hint)
             .await
             .map(QueryEvidence::Volumes),
     };
@@ -588,13 +635,15 @@ impl ContainerQueryCoordinator {
         );
         let state_ref = state.as_ref().ok().and_then(Option::as_ref);
         let hint = DockerContainerLoadHint::from_state(state_ref);
+        let volume_hint = DockerVolumeLoadHint::from_state(state_ref);
         let container_key =
             QueryEvidenceKey::from_context(&self.context, QueryEvidenceKind::Containers);
         let volume_key = QueryEvidenceKey::from_context(&self.context, QueryEvidenceKind::Volumes);
         let (containers, volumes) = futures_util::join!(
             self.cache
                 .get(container_key, QueryEvidenceLoad::Containers(hint)),
-            self.cache.get(volume_key, QueryEvidenceLoad::Volumes),
+            self.cache
+                .get(volume_key, QueryEvidenceLoad::Volumes(volume_hint)),
         );
 
         build_query_collection(
@@ -898,12 +947,16 @@ mod tests {
             forward::{ActiveForwardPort, ForwardStatusSource},
             query_context::HostDaemonCliQueryPolicy,
         },
-        runtime::command::{FakeRuntimeCommand, RuntimeOutput},
+        runtime::{
+            command::{FakeRuntimeCommand, RuntimeOutput},
+            fake_docker::FakeDocker,
+        },
         state::{CloneIsolationRuntimeState, LifecycleState, WorkspaceModeSnapshot},
         status::container::{ContainerQueryContainerEvidence, HealthStatus, RuntimeRunState},
     };
 
     const WORKSPACE_ID: &str = "123456abcdef";
+    const COMPOSE_PROJECT: &str = "com.docker.compose.project";
     const OTHER_WORKSPACE_ID: &str = "abcdef123456";
     const HOST_PATH: &str = "/host/private/workspace";
     const RAW_CONFIG_HASH: &str = "raw-config-hash-secret-marker";
@@ -1008,6 +1061,7 @@ mod tests {
         fn load_volumes<'a>(
             &'a self,
             _workspace_id: &'a str,
+            _hint: DockerVolumeLoadHint,
         ) -> QueryFuture<
             'a,
             std::result::Result<Vec<ContainerQueryVolumeEvidence>, QueryEvidenceFailure>,
@@ -1083,6 +1137,7 @@ mod tests {
         fn load_volumes<'a>(
             &'a self,
             _workspace_id: &'a str,
+            _hint: DockerVolumeLoadHint,
         ) -> QueryFuture<
             'a,
             std::result::Result<Vec<ContainerQueryVolumeEvidence>, QueryEvidenceFailure>,
@@ -1151,6 +1206,7 @@ mod tests {
         fn load_volumes<'a>(
             &'a self,
             _workspace_id: &'a str,
+            _hint: DockerVolumeLoadHint,
         ) -> QueryFuture<
             'a,
             std::result::Result<Vec<ContainerQueryVolumeEvidence>, QueryEvidenceFailure>,
@@ -1228,6 +1284,7 @@ mod tests {
         fn load_volumes<'a>(
             &'a self,
             _workspace_id: &'a str,
+            _hint: DockerVolumeLoadHint,
         ) -> QueryFuture<
             'a,
             std::result::Result<Vec<ContainerQueryVolumeEvidence>, QueryEvidenceFailure>,
@@ -1746,6 +1803,75 @@ mod tests {
         });
     }
 
+    // コンテナの中の `status` の decune-managed ボリュームは、ホストの `status` と同じく、
+    // decune のラベルを持つ volume を `mounts`、状態に記録した Compose プロジェクトとワークスペースの
+    // コンテナのラベルの Compose プロジェクトの volume を `compose` として含む。ラベルの無い volume と、
+    // ワークスペースから辿れない Compose プロジェクトの volume は含まない
+    #[test]
+    fn volume_collector_returns_labeled_and_workspace_project_volumes_with_origin() {
+        run_async(async {
+            let docker = FakeDocker::new();
+            docker.add_volume(
+                "cache",
+                &[
+                    ("decune.managed", "true"),
+                    ("decune.workspace_id", WORKSPACE_ID),
+                ],
+            );
+            docker.add_volume("state-project_data", &[(COMPOSE_PROJECT, "state-project")]);
+            docker.add_volume("label-project_data", &[(COMPOSE_PROJECT, "label-project")]);
+            docker.add_volume(
+                "foreign-project_data",
+                &[(COMPOSE_PROJECT, "foreign-project")],
+            );
+            docker.add_volume("unlabeled", &[]);
+            docker.add_container(
+                "primary-id",
+                &[
+                    ("decune.managed", "true"),
+                    ("decune.workspace_id", WORKSPACE_ID),
+                    (COMPOSE_PROJECT, "label-project"),
+                ],
+                &["cache", "label-project_data", "unlabeled"],
+            );
+            docker.add_container(
+                "foreign-id",
+                &[(COMPOSE_PROJECT, "foreign-project")],
+                &["foreign-project_data"],
+            );
+            let source = SystemContainerQuerySource {
+                docker: DockerCli::new(Arc::new(docker)),
+            };
+
+            let mut volumes = source
+                .collect_volumes(
+                    WORKSPACE_ID,
+                    DockerVolumeLoadHint {
+                        compose_project_name: Some("state-project".to_owned()),
+                    },
+                )
+                .await
+                .unwrap();
+            volumes.sort_by(|left, right| left.name.cmp(&right.name));
+
+            assert_eq!(
+                volumes,
+                vec![
+                    volume("cache", VolumeOrigin::Mounts),
+                    volume("label-project_data", VolumeOrigin::Compose),
+                    volume("state-project_data", VolumeOrigin::Compose),
+                ]
+            );
+        });
+    }
+
+    fn volume(name: &str, origin: VolumeOrigin) -> ContainerQueryVolumeEvidence {
+        ContainerQueryVolumeEvidence {
+            name: Some(name.to_owned()),
+            origin,
+        }
+    }
+
     #[test]
     fn collector_projects_raw_inspect_before_cache_and_uses_only_server_targets() {
         run_async(async {
@@ -1877,7 +2003,9 @@ mod tests {
     fn load_for_kind(kind: QueryEvidenceKind) -> QueryEvidenceLoad {
         match kind {
             QueryEvidenceKind::Containers => container_load(),
-            QueryEvidenceKind::Volumes => QueryEvidenceLoad::Volumes,
+            QueryEvidenceKind::Volumes => QueryEvidenceLoad::Volumes(DockerVolumeLoadHint {
+                compose_project_name: None,
+            }),
         }
     }
 
