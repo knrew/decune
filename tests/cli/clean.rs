@@ -4,6 +4,80 @@ use crate::harness::*;
 
 const WORKSPACE_ID: &str = "123456abcdef";
 
+// Compose の状態が多数あっても、各プロジェクトの volume を調べるのは初回と削除直前だけ。
+// Docker CLI の呼び出しが候補数の二乗で増えると、リモート Docker で通信待ちが累積する
+#[test]
+fn clean_revalidates_only_the_target_compose_project() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
+    for index in 0..10 {
+        let workspace_id = format!("{index:012x}");
+        let project = format!("project-{index}");
+        temp.write_fixture_template(
+            format!("state-home/decune/{workspace_id}/state.toml"),
+            "cli/harness/compose-state.toml",
+            &[("__PROJECT__", project.as_str())],
+        )
+        .unwrap();
+    }
+    let log = temp.path().join("project-queries");
+    let fake_path = fake_docker_path(&temp, "cli/clean/compose-project-revalidation.sh");
+
+    let output = decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &log)
+        .env("XDG_CACHE_HOME", &paths.cache_home)
+        .env("XDG_STATE_HOME", &paths.state_home)
+        .env("XDG_RUNTIME_DIR", &paths.runtime_home)
+        .args(["clean", "--no-confirm", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["summary"]["removed"], 10);
+    let queries = fs::read_to_string(log).unwrap();
+    assert!(queries.lines().count() <= 20, "{queries}");
+}
+
+// 初回の探索後に Compose volume が現れたワークスペースは、削除直前の再確認で保護する
+#[test]
+fn clean_keeps_compose_volume_discovered_before_removal() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let paths = CleanTestPaths::new(&temp, WORKSPACE_ID);
+    temp.write_fixture_template(
+        format!("state-home/decune/{WORKSPACE_ID}/state.toml"),
+        "cli/harness/compose-state.toml",
+        &[("__PROJECT__", "project")],
+    )
+    .unwrap();
+    let fake_path = fake_docker_path(&temp, "cli/clean/compose-project-revalidation.sh");
+
+    let output = decune()
+        .env("PATH", &fake_path)
+        .env(
+            "DECUNE_FAKE_COMMAND_LOG",
+            temp.path().join("project-queries"),
+        )
+        .env("DECUNE_FAKE_NEW_VOLUME_PROJECT", "project")
+        .env("XDG_CACHE_HOME", &paths.cache_home)
+        .env("XDG_STATE_HOME", &paths.state_home)
+        .env("XDG_RUNTIME_DIR", &paths.runtime_home)
+        .args(["clean", "--no-confirm", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+
+    let json: Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(json["summary"]["removed"], 0);
+    assert_eq!(json["targets"][0]["reason"], "managed_resource");
+    assert!(paths.state_dir.join("state.toml").exists());
+}
+
 #[test]
 fn clean_dry_run_json_reports_stale_workspace_without_removing_it() {
     let temp = support::TempWorkspace::new().unwrap();

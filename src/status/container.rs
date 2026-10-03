@@ -1070,6 +1070,7 @@ mod tests {
             config_hash: config_hash.to_owned(),
             config_file: None,
             compose_project_name: None,
+            retained_compose_projects: Vec::new(),
             published_ports: Vec::new(),
             clone_isolation: CloneIsolationRuntimeState::default(),
             created_at: "unix:1".to_owned(),

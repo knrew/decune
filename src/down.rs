@@ -32,7 +32,10 @@ use crate::{
         },
         docker_cli::VolumeRemoval,
     },
-    state::{WorkspaceState, load_state_file, remove_runtime_dir, remove_state_runtime_dirs},
+    state::{
+        WorkspaceState, load_state_file, remove_runtime_dir, remove_state_runtime_dirs,
+        retain_compose_projects,
+    },
     ui,
     up::{
         ForwardingResolution, UpPlan, build_read_only_up_plan_with_forwarding_resolution,
@@ -202,6 +205,7 @@ async fn remove_workspace(
     cleanup_workspace_runtime_secrets(workspace.paths().runtime_dir()).await;
     let mut report = VolumeRemovalReport::default();
     let mut plan = WorkspaceRemovalPlan {
+        workspace_path: Some(workspace.root().display().to_string()),
         state_dir: workspace.paths().state_dir().to_path_buf(),
         runtime_dir: workspace.paths().runtime_dir().to_path_buf(),
         ..empty_removal_plan(workspace.id())
@@ -219,6 +223,11 @@ async fn remove_workspace(
         Ok(Some(lifecycle)) => {
             let project_name = lifecycle.project.project_name.clone();
             push_unique(&mut compose_project_names, project_name.clone());
+            retain_compose_projects(
+                &plan.state_dir,
+                plan.workspace_path.as_deref(),
+                &compose_project_names,
+            )?;
             // `docker compose down` はプロジェクトのコンテナを消すので、mount はその前に読む。
             record_compose_project_mounts(client, &project_name, &mut report).await?;
             let compose_remove_result = DockerComposeCli::default()
@@ -324,14 +333,8 @@ async fn discover_all_workspace_removal_plans(
             .or_insert_with(|| empty_removal_plan(&state_entry.workspace_id));
         plan.workspace_path
             .get_or_insert_with(|| state_entry.state.workspace.clone());
-        if let Some(project_name) = state_entry
-            .state
-            .compose_project_name
-            .as_ref()
-            .filter(|project_name| !project_name.trim().is_empty())
-            .cloned()
-        {
-            push_unique(&mut plan.compose_projects, project_name);
+        for project_name in state_entry.state.compose_project_names() {
+            push_unique(&mut plan.compose_projects, project_name.to_owned());
         }
         plan.has_state = true;
         if include_images {
@@ -418,6 +421,15 @@ async fn remove_workspace_plans(
     report: &mut VolumeRemovalReport,
 ) -> Result<Vec<String>> {
     for plan in plans {
+        if !plan.compose_projects.is_empty() {
+            retain_compose_projects(
+                &plan.state_dir,
+                plan.workspace_path.as_deref(),
+                &plan.compose_projects,
+            )?;
+        }
+    }
+    for plan in plans {
         remove_workspace_containers(client, plan, report).await?;
     }
     let mut removed = Vec::new();
@@ -454,11 +466,12 @@ async fn remove_workspace_volumes_and_data(
     // `docker compose down --volumes` が成功した後も、プロジェクトのラベルを持つ volume が
     // 残っていれば消す。今の Compose ファイルが宣言していない volume も含め、消える volume を
     // Compose で消す経路とラベルから消す経路とで揃えるためである。
-    let mut compose_volume_in_use = false;
+    let mut retained_projects = Vec::new();
     for project_name in &plan.compose_projects {
         for volume in list_compose_project_volumes(client, project_name).await? {
-            compose_volume_in_use |=
-                report.remove_managed_volume(client, &volume).await? == VolumeRemoval::InUse;
+            if report.remove_managed_volume(client, &volume).await? == VolumeRemoval::InUse {
+                push_unique(&mut retained_projects, project_name.clone());
+            }
         }
     }
     for project_name in plan.label_cleanup_compose_projects() {
@@ -475,16 +488,21 @@ async fn remove_workspace_volumes_and_data(
     }
 
     let status_dir = forward_status_dir(&plan.runtime_dir);
-    if compose_volume_in_use {
+    if retained_projects.is_empty() {
+        remove_state_runtime_dirs(&plan.state_dir, &plan.runtime_dir)?;
+    } else {
         // Compose プロジェクトの volume を辿る手掛かりは、状態とコンテナのラベルにしかない。
         // コンテナを消した後に状態も消すと、残した volume を decune から辿れなくなる。
+        retain_compose_projects(
+            &plan.state_dir,
+            plan.workspace_path.as_deref(),
+            &retained_projects,
+        )?;
         remove_runtime_dir(&plan.runtime_dir)?;
         ui::warn(&format!(
             "Kept decune state for workspace id {} because its Docker Compose volumes are in use; run decune remove again after they are released",
             plan.workspace_id
         ));
-    } else {
-        remove_state_runtime_dirs(&plan.state_dir, &plan.runtime_dir)?;
     }
     remove_forward_status_dir(status_dir)?;
     Ok(())
@@ -821,13 +839,11 @@ async fn compose_fallback_project_names(
     client: &DockerClient,
 ) -> Result<Vec<String>> {
     let mut project_names = BTreeSet::new();
-    if let Some(project_name) = load_state_file(workspace.paths().state_dir())
+    if let Some(state) = load_state_file(workspace.paths().state_dir())
         .ok()
         .flatten()
-        .and_then(|state| state.compose_project_name)
-        .filter(|project_name| !project_name.trim().is_empty())
     {
-        project_names.insert(project_name);
+        project_names.extend(state.compose_project_names().into_iter().map(str::to_owned));
     }
 
     for project_name in client
@@ -1770,6 +1786,34 @@ mod removal_tests {
         assert_eq!(kept_volumes, []);
         assert!(!docker.volume_exists("project_db"));
         assert!(!state_dir.exists());
+    }
+
+    // 所有情報を保存できないときは、手掛かりである Compose コンテナを消す前に失敗する
+    #[test]
+    fn remove_keeps_compose_containers_when_ownership_cannot_be_saved() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("project_db", &[COMPOSE_PROJECT]);
+        docker.add_container("project-db-1", &[COMPOSE_PROJECT], &["project_db"]);
+        docker.add_container("outside", &[], &["project_db"]);
+        let state_dir = temp.path().join("not-a-directory");
+        fs::write(&state_dir, "").unwrap();
+        let plan = WorkspaceRemovalPlan {
+            state_dir,
+            runtime_dir: temp.path().join("runtime"),
+            compose_projects: vec![COMPOSE_PROJECT.1.to_owned()],
+            ..empty_removal_plan(WORKSPACE_X)
+        };
+
+        let result = block_on(remove_workspace_plans(
+            &client(&docker),
+            &[plan],
+            &mut VolumeRemovalReport::default(),
+        ));
+
+        assert!(result.is_err());
+        assert!(docker.container_exists("project-db-1"));
+        assert!(docker.volume_exists("project_db"));
     }
 
     // --all-workspaces で、あるワークスペースの削除の後に残っても、後のワークスペースの削除で

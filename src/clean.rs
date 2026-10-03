@@ -252,33 +252,37 @@ async fn discover_managed_workspace_ids(client: &DockerClient) -> Result<BTreeSe
     let mut state_workspace_ids = BTreeSet::new();
     collect_workspace_ids_from_root(&mut state_workspace_ids, &state_root, None)?;
     for workspace_id in state_workspace_ids {
-        let state_dir = state_dir_for_workspace_id(&workspace_id)?;
-        if workspace_ids.contains(&workspace_id)
-            || path_is_unsafe_generated_dir(&state_root, &state_dir)?
+        if !workspace_ids.contains(&workspace_id)
+            && workspace_has_compose_volumes(client, &workspace_id).await?
         {
-            continue;
-        }
-        let Some(project_name) = load_state_file(&state_dir)
-            .ok()
-            .flatten()
-            .and_then(|state| state.compose_project_name)
-            .filter(|project_name| !project_name.trim().is_empty())
-        else {
-            continue;
-        };
-        let project_volumes = client
-            .cli()
-            .list_compose_project_volumes(&project_name)
-            .await
-            .with_context(|| {
-                format!("Failed to list Docker Compose volumes for project: {project_name}")
-            })?;
-        if !project_volumes.is_empty() {
             workspace_ids.insert(workspace_id);
         }
     }
 
     Ok(workspace_ids)
+}
+
+async fn workspace_has_compose_volumes(client: &DockerClient, workspace_id: &str) -> Result<bool> {
+    let state_dir = state_dir_for_workspace_id(workspace_id)?;
+    if path_is_unsafe_generated_dir(&decune_state_root()?, &state_dir)? {
+        return Ok(false);
+    }
+    let Some(state) = load_state_file(&state_dir).ok().flatten() else {
+        return Ok(false);
+    };
+    for project_name in state.compose_project_names() {
+        let project_volumes = client
+            .cli()
+            .list_compose_project_volumes(project_name)
+            .await
+            .with_context(|| {
+                format!("Failed to list Docker Compose volumes for project: {project_name}")
+            })?;
+        if !project_volumes.is_empty() {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 fn discover_workspace_clean_targets(
@@ -752,9 +756,25 @@ async fn apply_clean_report(report: &mut CleanReport) -> Result<()> {
 }
 
 async fn revalidate_workspace_clean_target(workspace_id: &str) -> Result<WorkspaceCleanTarget> {
-    let managed_workspace_ids = discover_managed_workspace_ids(&DockerClient::connect_from_env())
-        .await
-        .context("Failed to determine reusable decune-managed Docker resources before removal")?;
+    let client = DockerClient::connect_from_env();
+    let has_resources = async {
+        Ok::<_, anyhow::Error>(
+            !client
+                .cli()
+                .list_workspace_container_inspects(workspace_id)
+                .await?
+                .is_empty()
+                || !client.cli().list_volumes(workspace_id).await?.is_empty()
+                || workspace_has_compose_volumes(&client, workspace_id).await?,
+        )
+    }
+    .await
+    .context("Failed to determine reusable decune-managed Docker resources before removal")?;
+    let managed_workspace_ids = if has_resources {
+        BTreeSet::from([workspace_id.to_owned()])
+    } else {
+        BTreeSet::new()
+    };
     workspace_clean_target(workspace_id, false, &managed_workspace_ids)
 }
 

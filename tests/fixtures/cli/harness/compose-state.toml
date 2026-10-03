@@ -1,0 +1,9 @@
+compose_project_name = "__PROJECT__"
+config_hash          = "hash"
+container_id         = "removed-container"
+created_at           = "unix:1"
+image                = "alpine:3.20"
+last_started_at      = "unix:1"
+last_used_at         = "unix:2"
+version              = 1
+workspace            = "/work/app"

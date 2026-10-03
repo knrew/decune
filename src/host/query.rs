@@ -1908,6 +1908,7 @@ mod tests {
             config_hash: RAW_CONFIG_HASH.to_owned(),
             config_file: Some(format!("{HOST_PATH}/.devcontainer/devcontainer.json")),
             compose_project_name: Some(RAW_PROJECT_LABEL.to_owned()),
+            retained_compose_projects: Vec::new(),
             published_ports: Vec::new(),
             clone_isolation: CloneIsolationRuntimeState::default(),
             created_at: "2026-07-19T00:00:00Z".to_owned(),

@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     fs::File,
     io::{self, Write},
@@ -32,6 +32,8 @@ pub(crate) struct WorkspaceState {
     #[serde(default)]
     pub(crate) compose_project_name: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) retained_compose_projects: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub(crate) published_ports: Vec<PublishedPortRuntimeState>,
     #[serde(default, skip_serializing_if = "CloneIsolationRuntimeState::is_empty")]
     pub(crate) clone_isolation: CloneIsolationRuntimeState,
@@ -43,6 +45,49 @@ pub(crate) struct WorkspaceState {
     pub(crate) lifecycle: LifecycleState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(crate) exec_context: Option<ExecContextState>,
+}
+
+impl WorkspaceState {
+    pub(crate) fn compose_project_names(&self) -> BTreeSet<&str> {
+        self.compose_project_name
+            .iter()
+            .chain(&self.retained_compose_projects)
+            .map(String::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .collect()
+    }
+}
+
+/// コンテナを消しても、使用中で残る Compose volume の所有情報を辿れるようにする。
+/// 起動時の状態が無い場合、起動と利用のメタデータは不明なままにする。
+pub fn retain_compose_projects(
+    state_dir: &Path,
+    workspace_path: Option<&str>,
+    projects: &[String],
+) -> Result<()> {
+    let mut state = load_state_file(state_dir)
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| WorkspaceState {
+            version: STATE_VERSION,
+            workspace: workspace_path.unwrap_or_default().to_owned(),
+            mode: WorkspaceModeSnapshot::Compose,
+            container_id: String::new(),
+            image: String::new(),
+            config_hash: String::new(),
+            config_file: None,
+            compose_project_name: None,
+            retained_compose_projects: Vec::new(),
+            published_ports: Vec::new(),
+            clone_isolation: CloneIsolationRuntimeState::default(),
+            created_at: String::new(),
+            last_started_at: String::new(),
+            last_used_at: None,
+            lifecycle: LifecycleState::default(),
+            exec_context: None,
+        });
+    state.retained_compose_projects = projects.to_vec();
+    write_state_file(state_dir, &state)
 }
 
 /// The execution context of the shell of the last `up`, which `decune exec` reuses without
@@ -492,6 +537,7 @@ fn write_state_for_container_with_metadata(
         config_hash: container.config_hash,
         config_file: container.config_file,
         compose_project_name,
+        retained_compose_projects: Vec::new(),
         published_ports: compose_runtime.published_ports,
         clone_isolation: compose_runtime.clone_isolation,
         created_at: metadata.created_at,

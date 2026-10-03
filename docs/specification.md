@@ -289,7 +289,7 @@ decune rm     [--no-confirm] [--images] --all-workspaces
 - `--all-workspaces` で Compose プロジェクトを削除する場合は、decune が管理するコンテナの `com.docker.compose.project` ラベルまたは decune の状態の `compose_project_name` から所有を確認できるプロジェクトだけを対象にする。プロジェクト名の前方一致だけでは、利用者が管理する Compose プロジェクトを対象にしない。
 - `--all-workspaces` は対象ワークスペースの状態 / ランタイムデータを削除する。ワークスペースのキャッシュと共有 Feature archive cache は削除しない。
 - `--all-workspaces` は、対象のすべてのワークスペースのコンテナと Compose プロジェクトのコンテナを削除してから、volume を削除する。あるワークスペースの volume を、同じ実行で削除する別のワークスペースのコンテナだけが mount していても、ワークスペースの処理の順によらずその volume を削除する。
-- 他のコンテナ(実行中か停止中かを問わない)が参照しているために Docker が削除を拒否した volume は、失敗にせずに残して削除を続け、終了コードは 0 とする。ほかの理由で volume を削除できない場合はエラーにする。Compose プロジェクトの volume を使用中のために残したワークスペースは、コンテナとランタイムデータを削除し、状態を削除せずに残す。Compose プロジェクトの volume を辿る手掛かりは状態とコンテナのラベルにしかないためである。残した状態から、使用中が解けた後の `remove`(`--all-workspaces` を含む)で、その volume と状態を削除する。
+- 他のコンテナ(実行中か停止中かを問わない)が参照しているために Docker が削除を拒否した volume は、失敗にせずに残して削除を続け、終了コードは 0 とする。ほかの理由で volume を削除できない場合はエラーにする。Compose プロジェクトの volume を使用中のために残したワークスペースは、コンテナとランタイムデータを削除し、状態を削除せずに残す。Compose プロジェクトの volume を辿る手掛かりは状態とコンテナのラベルにしかないためである。状態が無い場合も、削除の前に発見したプロジェクトの所有情報を状態に保存する。残した状態から、使用中が解けた後の `remove`(`--all-workspaces` を含む)で、その volume と状態を削除する。
 - 出力の最後に、残した named volume を、残した理由とともに一度ずつ示す。対象は、削除したコンテナ(Compose モードではプロジェクトのコンテナ)が mount していた named volume のうち削除の後も存在するものと、使用中で Docker に削除を拒否された volume である。理由は、削除したワークスペースの volume でないこと(ラベルの無い volume、別のワークスペースのラベルを持つ volume、別の Compose プロジェクトの volume、プロジェクトのラベルを持たない external の volume)と、使用中であることの二つで、使用中の volume は警告として示す。匿名 volume と、どのサービスも mount していない external の volume は示さない。`--all-workspaces` では、すべての削除の後に一度だけ示す。
 
 `rm` は `remove` の別名とする。`--no-confirm` は確認プロンプトだけを省略し、decune が管理するリソースだけを対象にする安全境界や使用中のリソースの保護は迂回しない。

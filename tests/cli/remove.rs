@@ -1,5 +1,110 @@
 use crate::harness::*;
 
+// 状態の無い Compose 環境で使用中の volume を残しても、所有情報を保存し、再削除できる。
+// clean が途中でその情報を消すと、コンテナの消えた volume を辿れなくなる
+//
+// シナリオ:
+//   1. 状態無しで、プロジェクト外から参照される volume とコンテナを用意する
+//   2. remove と clean を実行する → コンテナだけ消え、volume と状態は残る
+//   3. 外からの参照を解いて remove --all-workspaces を実行する → volume と状態が消える
+#[test]
+fn remove_all_recovers_compose_volume_ownership_without_state() {
+    check_compose_volume_recovery(&["project-a"], false);
+}
+
+// 同じワークスペースの複数プロジェクトに使用中の volume があっても、すべて再削除できる
+#[test]
+fn remove_all_recovers_multiple_compose_projects_without_state() {
+    check_compose_volume_recovery(&["project-a", "project-b"], false);
+}
+
+// 起動時の状態を保ったまま、ラベルから見つかった別プロジェクトの volume も再削除できる
+#[test]
+fn remove_all_preserves_existing_state_and_newly_discovered_compose_projects() {
+    check_compose_volume_recovery(&["project-a", "project-b"], true);
+}
+
+fn check_compose_volume_recovery(projects: &[&str], existing_state: bool) {
+    let temp = support::TempWorkspace::new().unwrap();
+    let state_home = temp.path().join("state");
+    let runtime_home = temp.path().join("runtime");
+    let state_dir = state_home.join("decune/123456abcdef");
+    let runtime_dir = runtime_home.join("decune/123456abcdef");
+    let original_state = existing_state.then(|| {
+        temp.write_fixture_template(
+            "state/decune/123456abcdef/state.toml",
+            "cli/harness/compose-state.toml",
+            &[("__PROJECT__", "project-old")],
+        )
+        .unwrap();
+        toml::from_str::<toml::Table>(&fs::read_to_string(state_dir.join("state.toml")).unwrap())
+            .unwrap()
+    });
+    fs::create_dir_all(&runtime_dir).unwrap();
+    let fake_data = temp.create_dir("docker-data").unwrap();
+    for project in projects {
+        fs::write(fake_data.join(format!("{project}-container")), "").unwrap();
+        fs::write(fake_data.join(format!("{project}_db")), "").unwrap();
+    }
+    fs::write(fake_data.join("outside"), "").unwrap();
+    let fake_path = fake_docker_path(&temp, "cli/remove/retained-compose-volumes.sh");
+    let command = || {
+        let mut command = decune();
+        command
+            .env("PATH", &fake_path)
+            .env("DECUNE_FAKE_PROJECTS", projects.join(" "))
+            .env("DECUNE_FAKE_DATA", &fake_data)
+            .env("XDG_STATE_HOME", &state_home)
+            .env("XDG_CACHE_HOME", temp.path().join("cache"))
+            .env("XDG_RUNTIME_DIR", &runtime_home);
+        command
+    };
+
+    command()
+        .args(["remove", "--all-workspaces", "--no-confirm"])
+        .assert()
+        .success();
+
+    for project in projects {
+        assert!(!fake_data.join(format!("{project}-container")).exists());
+        assert!(fake_data.join(format!("{project}_db")).exists());
+    }
+    assert!(!runtime_dir.exists());
+    assert!(state_dir.join("state.toml").exists());
+    if let Some(original) = original_state {
+        let retained: toml::Table =
+            toml::from_str(&fs::read_to_string(state_dir.join("state.toml")).unwrap()).unwrap();
+        for (key, value) in original {
+            assert_eq!(retained.get(&key), Some(&value), "{key}");
+        }
+    }
+    command()
+        .arg("status")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("/work/app"));
+    let output = command()
+        .args(["clean", "--no-confirm", "--json"])
+        .assert()
+        .success()
+        .get_output()
+        .stdout
+        .clone();
+    let report: serde_json::Value = serde_json::from_slice(&output).unwrap();
+    assert_eq!(report["targets"][0]["reason"], "managed_resource");
+
+    fs::remove_file(fake_data.join("outside")).unwrap();
+    command()
+        .args(["remove", "--all-workspaces", "--no-confirm"])
+        .assert()
+        .success();
+
+    for project in projects {
+        assert!(!fake_data.join(format!("{project}_db")).exists());
+    }
+    assert!(!state_dir.exists());
+}
+
 #[test]
 fn down_and_remove_manage_image_container() {
     let workspace = support::TempWorkspace::new().unwrap();
