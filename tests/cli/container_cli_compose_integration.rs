@@ -467,7 +467,7 @@ fn compose_integration_container_cli_attached_detached_disabled_and_overlap_life
 
     let overlap = workspace.run_host(&["up", "--detach", "--no-auto-forward"]);
     assert!(!overlap.status.success());
-    assert!(overlap.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&overlap.stdout), "");
     assert!(String::from_utf8_lossy(&overlap.stderr).contains(
         "An active decune up session uses a different decune container CLI policy or daemon query context"
     ));
@@ -492,7 +492,7 @@ fn compose_integration_container_cli_attached_detached_disabled_and_overlap_life
         &["status"],
     );
     assert_eq!(stale.code, 1);
-    assert!(stale.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&stale.stdout), "");
     assert_eq!(
         stale.stderr_text(),
         "Error: decune container CLI queries are disabled\n"
@@ -559,7 +559,7 @@ fn compose_integration_container_cli_symlink_collision_and_read_only_fallbacks()
         let direct =
             exec_container_cli(&container, Some("0"), CONTAINER_CLI_DIRECT, &["--version"]);
         assert_eq!(direct.code, 0, "fixture: {fixture}; output: {direct:?}");
-        assert!(direct.stderr.is_empty());
+        assert_eq!(String::from_utf8_lossy(&direct.stderr), "");
         assert_single_trailing_newline(&direct.stdout);
     }
 }
@@ -599,7 +599,7 @@ fn compose_integration_container_cli_security_boundary_ignores_live_and_recorded
     session.wait_for_started();
     let baseline = exec_container_cli(&container, Some("0"), CONTAINER_CLI, &["status"]);
     assert_eq!(baseline.code, 0, "baseline status: {baseline:?}");
-    assert!(baseline.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&baseline.stderr), "");
 
     let original_state = workspace.state();
     let mut mismatch_state = original_state.clone();
@@ -828,7 +828,7 @@ fn assert_compose_topology_and_uid_policy(
 fn forwarded_ports(container: &str, user: &str) -> Vec<JsonValue> {
     let output = exec_container_cli(container, Some(user), CONTAINER_CLI, &["ports", "--json"]);
     assert_eq!(output.code, 0, "ports output: {output:?}");
-    assert!(output.stderr.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stderr), "");
     serde_json::from_slice::<Vec<JsonValue>>(&output.stdout)
         .must()
         .into_iter()
@@ -853,7 +853,7 @@ fn wait_for_forwarded_port_count(container: &str, user: &str, expected: usize) -
 
 fn assert_canonical_unavailable(output: &ContainerCommandOutput) {
     assert_eq!(output.code, 1, "output: {output:?}");
-    assert!(output.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert_eq!(
         output.stderr_text(),
         "Error: decune host daemon is unavailable; keep an active attached \"decune up\" session running on the host (detached mode is not supported)\n"

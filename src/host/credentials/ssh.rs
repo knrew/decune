@@ -204,7 +204,7 @@ mod tests {
         let runtime =
             prepare_ssh_agent_runtime_with_socket(&ResolvedConfig::default(), None).unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.container_env().is_empty());
     }
 
@@ -218,7 +218,7 @@ mod tests {
             prepare_ssh_agent_runtime_with_socket(&ResolvedConfig::default(), Some(&socket_path))
                 .unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.container_env().is_empty());
     }
 
@@ -230,7 +230,7 @@ mod tests {
             prepare_ssh_agent_runtime_with_socket(&ResolvedConfig::default(), Some(&socket_path))
                 .unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.container_env().is_empty());
     }
 
@@ -257,7 +257,7 @@ mod tests {
 
         let runtime = prepare_ssh_agent_runtime_with_socket(&config, Some(&socket_path)).unwrap();
 
-        assert!(runtime.mounts().is_empty());
+        assert_eq!(runtime.mounts(), []);
         assert!(runtime.container_env().is_empty());
     }
 

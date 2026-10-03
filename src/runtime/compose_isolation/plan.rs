@@ -1854,9 +1854,9 @@ mod tests {
             rewrite_resource_names: true,
         });
 
-        assert!(plan.services.is_empty());
-        assert!(plan.service_references.is_empty());
-        assert!(plan.resources.is_empty());
+        assert_eq!(plan.services, Vec::new());
+        assert_eq!(plan.service_references, Vec::new());
+        assert_eq!(plan.resources, Vec::new());
         assert_eq!(apply_compose_isolation_name_rewrites(&scan, &plan), scan);
     }
 
@@ -1882,7 +1882,7 @@ mod tests {
         };
 
         let resources_only = input(false, true);
-        assert!(resources_only.services.is_empty());
+        assert_eq!(resources_only.services, Vec::new());
         assert_eq!(resources_only.resources.len(), 1);
         assert_eq!(resources_only.resources[0].original_name, "fixed-cache");
         assert_eq!(
@@ -1892,7 +1892,7 @@ mod tests {
 
         let containers_only = input(true, false);
         assert_eq!(containers_only.services.len(), 1);
-        assert!(containers_only.resources.is_empty());
+        assert_eq!(containers_only.resources, Vec::new());
     }
 
     #[test]
@@ -1967,7 +1967,7 @@ mod tests {
             daemon: &daemon,
         });
 
-        assert!(findings.is_empty());
+        assert_eq!(findings, Vec::new());
     }
 
     #[test]

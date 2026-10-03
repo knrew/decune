@@ -347,7 +347,7 @@ mod tests {
         let command =
             compose_up_command(&plan.project, ComposeUpOptions::default(), &plan.services);
 
-        assert!(plan.services.is_empty());
+        assert_eq!(plan.services, Vec::<String>::new());
         assert_eq!(
             command.args_vec(),
             &[
@@ -491,7 +491,7 @@ mod tests {
         let plan = ComposeLifecyclePlan::down(lifecycle_command_plan());
         let command = plan.project.command(["stop"]).args(&plan.services);
 
-        assert!(plan.services.is_empty());
+        assert_eq!(plan.services, Vec::<String>::new());
         assert_eq!(
             command.args_vec(),
             &[
@@ -563,6 +563,6 @@ mod tests {
         let plan = ComposeLifecyclePlan::remove(lifecycle_command_plan(), true);
 
         assert!(plan.cleanup.workspace.remove_generated_images);
-        assert!(plan.services.is_empty());
+        assert_eq!(plan.services, Vec::<String>::new());
     }
 }

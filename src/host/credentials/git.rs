@@ -999,7 +999,7 @@ mod tests {
 
         let script = git_credential_helper_setup_script(&config.credentials.git).unwrap();
 
-        assert!(script.is_empty());
+        assert_eq!(script, "");
         assert!(!script.contains("credential.helper"));
         assert!(!script.contains("Missing Git credential helper container tool"));
     }

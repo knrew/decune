@@ -327,7 +327,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(mounts.is_empty());
+        assert_eq!(mounts, Vec::new());
     }
 
     #[test]

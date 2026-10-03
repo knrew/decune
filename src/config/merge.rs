@@ -719,14 +719,14 @@ mod tests {
         let config = resolve_config(ConfigMergeInput::default());
 
         assert_eq!(config.shell, None);
-        assert!(config.features.is_empty());
-        assert!(config.dotfiles.is_empty());
-        assert!(config.mounts.is_empty());
-        assert!(config.ports.entries.is_empty());
+        assert_eq!(config.features, Vec::new());
+        assert_eq!(config.dotfiles, Vec::new());
+        assert_eq!(config.mounts, Vec::new());
+        assert_eq!(config.ports.entries, Vec::new());
         assert!(config.ports.auto.enabled);
         assert_eq!(config.ports.auto.min, 1024);
         assert_eq!(config.ports.auto.max, 32768);
-        assert!(config.ports.auto.ignore.is_empty());
+        assert_eq!(config.ports.auto.ignore, Vec::<u16>::new());
         assert_eq!(config.ports.auto.on_auto_forward, OnAutoForward::Notify);
         assert!(!config.compose.published_ports.automatic_relocation);
         assert!(!config.compose.published_ports.warn_on_relocation);
@@ -900,7 +900,7 @@ REMOTE_PROJECT = ""
         assert_eq!(clone_isolation.networks.subnet_prefix, None);
         assert!(clone_isolation.names.rewrite_container_names);
         assert!(clone_isolation.names.rewrite_resource_names);
-        assert!(clone_isolation.endpoints.is_empty());
+        assert_eq!(clone_isolation.endpoints, Vec::new());
     }
 
     #[test]
@@ -1280,7 +1280,7 @@ enabled = false
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.features.is_empty());
+        assert_eq!(config.features, Vec::new());
     }
 
     #[test]
@@ -1359,7 +1359,7 @@ enabled = false
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.features.is_empty());
+        assert_eq!(config.features, Vec::new());
     }
 
     #[test]
@@ -1499,7 +1499,7 @@ enabled = false
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.features.is_empty());
+        assert_eq!(config.features, Vec::new());
     }
 
     #[test]
@@ -1622,7 +1622,7 @@ enabled = false
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.mounts.is_empty());
+        assert_eq!(config.mounts, Vec::new());
     }
 
     #[test]
@@ -1649,7 +1649,7 @@ enabled = false
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.dotfiles.is_empty());
+        assert_eq!(config.dotfiles, Vec::new());
     }
 
     #[test]
@@ -1677,7 +1677,7 @@ enabled = false
             ..ConfigMergeInput::default()
         });
 
-        assert!(config.ports.entries.is_empty());
+        assert_eq!(config.ports.entries, Vec::new());
     }
 
     #[test]

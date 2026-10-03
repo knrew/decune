@@ -425,8 +425,8 @@ mod tests {
         assert!(spec.env.is_empty());
         assert!(spec.user.is_none());
         assert!(spec.working_dir.is_none());
-        assert!(spec.mounts.is_empty());
-        assert!(spec.publish_ports.is_empty());
+        assert_eq!(spec.mounts, Vec::new());
+        assert_eq!(spec.publish_ports, Vec::new());
         assert_eq!(spec.host_config, ContainerHostConfig::default());
     }
 
@@ -477,7 +477,7 @@ mod tests {
                 };
 
                 let id = create_container(&client, &spec).await?;
-                assert!(!id.is_empty());
+                assert_ne!(id, "");
 
                 start_container(&client, &name).await?;
                 start_container(&client, &name).await?;

@@ -592,7 +592,7 @@ mod tests {
 
         assert_eq!(targets.len(), 2);
         assert_eq!(targets[0].service.as_deref(), None);
-        assert!(targets[0].forward_ports.is_empty());
+        assert_eq!(targets[0].forward_ports, Vec::new());
         assert!(targets[0].auto_forward.is_some());
         assert_eq!(targets[1].service.as_deref(), Some("db"));
         assert_eq!(targets[1].forward_ports[0].container, 5432);
@@ -815,7 +815,7 @@ mod tests {
         );
 
         assert_eq!(targets.len(), 1);
-        assert!(targets[0].forward_ports.is_empty());
+        assert_eq!(targets[0].forward_ports, Vec::new());
         assert_eq!(
             targets[0]
                 .auto_forward

@@ -1492,7 +1492,7 @@ mod tests {
             let mut response = Vec::new();
             stream.read_to_end(&mut response).await.unwrap();
 
-            assert!(response.is_empty());
+            assert_eq!(String::from_utf8_lossy(&response), "");
             daemon.stop().await.unwrap();
         });
     }
@@ -1524,7 +1524,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-            assert!(response.is_empty());
+            assert_eq!(String::from_utf8_lossy(&response), "");
         });
     }
 
@@ -1555,7 +1555,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-            assert!(response.is_empty());
+            assert_eq!(String::from_utf8_lossy(&response), "");
         });
     }
 

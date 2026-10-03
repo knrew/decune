@@ -514,7 +514,7 @@ mod tests {
     fn rejects_json5_style_unquoted_property_names() {
         let error = parse_str("{ image: \"ubuntu:24.04\" }").unwrap_err();
 
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 
     #[test]
@@ -645,14 +645,14 @@ mod tests {
     fn hash_comments_are_rejected() {
         let error = parse_str("{\n  # not jsonc\n  \"image\": \"ubuntu\"\n}").unwrap_err();
 
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 
     #[test]
     fn double_commas_are_rejected() {
         let error = parse_str(r#"{"ports": [3000,,]}"#).unwrap_err();
 
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 
     #[test]
@@ -660,7 +660,7 @@ mod tests {
         for contents in [r"[,]", r"{,}", r"[/* comment */,]"] {
             let error = parse_str(contents).unwrap_err();
 
-            assert!(!error.to_string().is_empty());
+            assert_ne!(error.to_string(), "");
         }
     }
 
@@ -669,7 +669,7 @@ mod tests {
         for contents in [r"{,}", r"[,]", r#"{"a":,}"#, r#"{"a": true,,}"#] {
             let error = parse_str(contents).unwrap_err();
 
-            assert!(!error.to_string().is_empty());
+            assert_ne!(error.to_string(), "");
         }
     }
 
@@ -677,7 +677,7 @@ mod tests {
     fn unterminated_string_is_rejected() {
         let error = parse_str(r#"{"image": "ubuntu}"#).unwrap_err();
 
-        assert!(!error.to_string().is_empty());
+        assert_ne!(error.to_string(), "");
     }
 
     #[test]

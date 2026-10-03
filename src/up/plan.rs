@@ -720,7 +720,7 @@ GLOBAL_REMOTE = "global"
                 label: None,
             }]
         );
-        assert!(forwarding.config.devcontainer.publish_ports.is_empty());
+        assert_eq!(forwarding.config.devcontainer.publish_ports, Vec::new());
         assert_eq!(
             published.config.devcontainer.publish_ports,
             vec![ResolvedPublishPort {
@@ -776,7 +776,7 @@ GLOBAL_REMOTE = "global"
                 label: None,
             }]
         );
-        assert!(detached.forward_ports.is_empty());
+        assert_eq!(detached.forward_ports, Vec::new());
         assert!(detached.ignored_detached_forwarding);
         assert_eq!(
             attached.resources.config_hash,
@@ -822,7 +822,7 @@ require_local = true
         )
         .unwrap();
 
-        assert!(plan.forward_ports.is_empty());
+        assert_eq!(plan.forward_ports, Vec::new());
         assert_eq!(plan.config.ports.entries.len(), 1);
         assert!(plan.ignored_detached_forwarding);
     }
@@ -849,8 +849,8 @@ require_local = true
         )
         .unwrap();
 
-        assert!(plan.forward_ports.is_empty());
-        assert!(plan.config.ports.entries.is_empty());
+        assert_eq!(plan.forward_ports, Vec::new());
+        assert_eq!(plan.config.ports.entries, Vec::new());
         assert!(plan.ignored_detached_forwarding);
     }
     #[test]

@@ -345,6 +345,6 @@ mod tests {
         );
 
         validate_compose_published_port_diagnostics(&input).unwrap();
-        assert!(plan_with_availability(&input, &[]).entries.is_empty());
+        assert_eq!(plan_with_availability(&input, &[]).entries, Vec::new());
     }
 }

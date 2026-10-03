@@ -226,7 +226,7 @@ mod tests {
         config.credentials.github.enabled = false;
         let notices = security_notices(&config);
 
-        assert!(notices.is_empty());
+        assert_eq!(notices, Vec::<String>::new());
     }
     #[test]
     fn security_notices_report_risky_container_settings() {

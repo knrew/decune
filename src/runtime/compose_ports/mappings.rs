@@ -183,7 +183,7 @@ mod tests {
         let resolved =
             resolve_compose_published_port_mappings(&full_model, &input, &[mapping]).unwrap();
 
-        assert!(resolved.is_empty());
+        assert_eq!(resolved, Vec::new());
     }
 
     #[test]

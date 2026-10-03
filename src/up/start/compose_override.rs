@@ -900,7 +900,10 @@ mod tests {
             }],
         };
 
-        assert!(compose_published_port_relocation_warning_messages(&plan, &port_plan).is_empty());
+        assert_eq!(
+            compose_published_port_relocation_warning_messages(&plan, &port_plan),
+            Vec::<String>::new()
+        );
 
         plan.config.compose.published_ports.warn_on_relocation = true;
         let messages = compose_published_port_relocation_warning_messages(&plan, &port_plan);

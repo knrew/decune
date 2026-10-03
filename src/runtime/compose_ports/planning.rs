@@ -897,7 +897,7 @@ mod tests {
         })
         .unwrap();
 
-        assert!(plan.entries.is_empty());
+        assert_eq!(plan.entries, Vec::new());
     }
 
     #[test]

@@ -2566,7 +2566,7 @@ fn finish_clone_isolation_fixture_up(
         "clone isolation startup failed after the documented bind-race retry: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stdout.is_empty());
+    assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     assert!(
         String::from_utf8_lossy(&output.stderr).contains("Started dev container"),
         "clone isolation startup did not report success: {}",
@@ -2612,8 +2612,8 @@ fn assert_clone_isolation_container_references(first: &Path, second: &Path) {
         compose_service_container_output(first, "link-ref", ["getent", "hosts", "app-link"]);
     let second_link =
         compose_service_container_output(second, "link-ref", ["getent", "hosts", "app-link"]);
-    assert!(!first_link.trim().is_empty());
-    assert!(!second_link.trim().is_empty());
+    assert_ne!(first_link.trim(), "");
+    assert_ne!(second_link.trim(), "");
 }
 
 fn remove_clone_isolation_endpoint_declaration(workspace: &Path) {

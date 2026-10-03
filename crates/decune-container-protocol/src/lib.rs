@@ -185,7 +185,7 @@ mod tests {
         let response: HostDaemonResponse =
             serde_json::from_str(r#"{"version":1,"ok":true,"output":"credential"}"#).unwrap();
 
-        assert!(response.warnings.is_empty());
+        assert_eq!(response.warnings, Vec::<String>::new());
         assert!(response.into_result().is_ok());
     }
 

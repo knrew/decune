@@ -1533,7 +1533,7 @@ mod tests {
 
             assert!(status.ok);
             assert!(status.error.is_none());
-            assert!(status.warnings.is_empty());
+            assert_eq!(status.warnings, Vec::<String>::new());
             let status_output = status.output.unwrap();
             assert!(status_output.contains("Workspace ID: 123456abcdef"));
             assert!(status_output.contains("Live workspace: not checked"));
@@ -1541,14 +1541,14 @@ mod tests {
             assert!(!status_output.ends_with("\n\n"));
 
             assert!(ports_text.ok);
-            assert!(ports_text.warnings.is_empty());
+            assert_eq!(ports_text.warnings, Vec::<String>::new());
             let ports_text_output = ports_text.output.unwrap();
             assert!(ports_text_output.starts_with("LOCAL"));
             assert!(ports_text_output.contains("127.0.0.1:3000"));
             assert!(ports_text_output.ends_with('\n'));
 
             assert!(ports_json.ok);
-            assert!(ports_json.warnings.is_empty());
+            assert_eq!(ports_json.warnings, Vec::<String>::new());
             let ports_json_output = ports_json.output.unwrap();
             let ports: Vec<serde_json::Value> = serde_json::from_str(&ports_json_output).unwrap();
             assert_eq!(ports.len(), 1);
@@ -1659,7 +1659,7 @@ mod tests {
             assert!(!busy.ok);
             assert_eq!(busy.error.unwrap().code, ERROR_CODE_CLI_QUERY_BUSY);
             assert!(busy.output.is_none());
-            assert!(busy.warnings.is_empty());
+            assert_eq!(busy.warnings, Vec::<String>::new());
             assert!(!busy_executed.load(Ordering::SeqCst));
 
             release.add_permits(ACTIVE_CONTAINER_CLI_QUERIES);
@@ -1692,7 +1692,7 @@ mod tests {
             assert!(!timed_out.ok);
             assert_eq!(timed_out.error.unwrap().code, ERROR_CODE_CLI_QUERY_TIMEOUT);
             assert!(timed_out.output.is_none());
-            assert!(timed_out.warnings.is_empty());
+            assert_eq!(timed_out.warnings, Vec::<String>::new());
 
             let fatal = decode_response(
                 bounded_cli_query_response(
@@ -1707,7 +1707,7 @@ mod tests {
             assert!(!fatal.ok);
             assert_eq!(fatal.error.unwrap().code, ERROR_CODE_CLI_QUERY_FAILED);
             assert!(fatal.output.is_none());
-            assert!(fatal.warnings.is_empty());
+            assert_eq!(fatal.warnings, Vec::<String>::new());
             assert!(!serialized.contains(SECRET));
             assert!(!serialized.contains(HOST_PATH));
         });

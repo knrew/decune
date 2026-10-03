@@ -366,10 +366,9 @@ mod tests {
         );
         container.name = Some("/udp-app".to_owned());
 
-        assert!(
-            external_running_container_published_ports(container)
-                .unwrap()
-                .is_empty()
+        assert_eq!(
+            external_running_container_published_ports(container).unwrap(),
+            Vec::new()
         );
     }
 
