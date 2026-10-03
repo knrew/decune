@@ -3176,30 +3176,17 @@ fn compose_project_volume_workspace() -> ComposeProjectVolumeWorkspace {
     for volume in [&external_volume, &unused_external_volume] {
         docker_status(["volume", "create", volume.as_str()]).must();
     }
-    fs::write(
-        workspace.path().join(".devcontainer/compose.yaml"),
-        format!(
-            r"services:
-  app:
-    image: alpine:3.20
-    command: sleep infinity
-    volumes:
-      - ..:/workspace
-      - data:/data
-      - shared-external:/shared
-      - /anonymous
-volumes:
-  data: {{}}
-  shared-external:
-    external: true
-    name: {external_volume}
-  unused-external:
-    external: true
-    name: {unused_external_volume}
-"
-        ),
-    )
-    .must();
+    workspace
+        .workspace
+        .write_fixture_template(
+            ".devcontainer/compose.yaml",
+            "compose/project-volumes/compose.yaml",
+            &[
+                ("__EXTERNAL_VOLUME__", &external_volume),
+                ("__UNUSED_EXTERNAL_VOLUME__", &unused_external_volume),
+            ],
+        )
+        .must();
     ComposeProjectVolumeWorkspace {
         workspace,
         external_volume,
