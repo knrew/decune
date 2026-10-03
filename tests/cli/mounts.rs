@@ -795,10 +795,8 @@ type = "volume"
     });
 }
 
-// decune の `up` より前からある volume には、mount しても decune のラベルが付かない。
-// `source` の無い mount から Docker が作る匿名 volume にも付かず、
-// どちらも `status` の `Volumes` に数えない。
-// 数えるのは、`up` が新しく作らせた named volume だけである
+// ラベルの無い既存 volume と匿名 volume には、`up` で decune のラベルを付けない。
+// `status` は、同時に新しく作った named volume だけを数える
 #[test]
 fn up_does_not_label_existing_or_anonymous_volumes() {
     let workspace = support::TempWorkspace::new().unwrap();
