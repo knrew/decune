@@ -42,8 +42,7 @@ pub(crate) struct ContainerCreateSpec {
     pub(crate) mounts: Vec<DockerMountSpec>,
     /// `mounts` の named volume を Docker がコンテナの作成で新しく作るときに、
     /// その volume に付けるラベル。
-    /// Docker は既にある volume にはラベルを付けないので、
-    /// コンテナの作成より前からあった volume は、このラベルを持たないまま残る。
+    /// Docker は既にある volume には適用せず、既存のラベルを変更しない。
     pub(crate) volume_labels: BTreeMap<String, String>,
     pub(crate) publish_ports: Vec<DockerPublishPort>,
     pub(crate) host_config: ContainerHostConfig,
