@@ -646,6 +646,10 @@ pub(crate) fn remove_state_runtime_dirs(
     Ok(())
 }
 
+pub(crate) fn remove_runtime_dir(runtime_dir: impl AsRef<Path>) -> Result<()> {
+    remove_dir_if_exists(runtime_dir.as_ref())
+}
+
 fn remove_dir_if_exists(path: &Path) -> Result<()> {
     match fs::remove_dir_all(path) {
         Ok(()) => Ok(()),

@@ -78,6 +78,9 @@ pub(crate) struct MountSpec {
 #[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "PascalCase")]
 pub(crate) struct MountPoint {
+    #[serde(rename = "Type")]
+    pub(crate) typ: Option<String>,
+    pub(crate) name: Option<String>,
     pub(crate) destination: Option<String>,
 }
 

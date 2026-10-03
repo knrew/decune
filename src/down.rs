@@ -7,36 +7,47 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 
+mod volumes;
+
 use crate::{
     config::ConfigLayer,
     docker::{
         client::DockerClient,
-        container::{remove_container, stop_container},
+        container::{ContainerInspect, remove_container, stop_container},
         image::{remove_image, workspace_image_tags},
         resource::{
             DockerResources, compose_project_name_from_labels, managed_workspace_id_from_container,
             managed_workspace_id_from_labels, workspace_path_from_labels,
         },
-        volume::{remove_volume, workspace_volumes},
+        volume::workspace_volumes,
     },
     host::{
         credentials::cleanup_github_cli_token_file,
         daemon::cleanup_host_daemon_socket,
         forward::{forward_status_dir, remove_forward_status_dir},
     },
-    runtime::compose_cli::{
-        ComposeDownOptions, ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli,
+    runtime::{
+        compose_cli::{
+            ComposeDownOptions, ComposeLifecyclePlan, ComposeStopOptions, DockerComposeCli,
+        },
+        docker_cli::VolumeRemoval,
     },
-    state::{WorkspaceState, load_state_file, remove_state_runtime_dirs},
+    state::{WorkspaceState, load_state_file, remove_runtime_dir, remove_state_runtime_dirs},
     ui,
-    up::{ForwardingResolution, build_up_plan_with_forwarding_resolution},
+    up::{
+        ForwardingResolution, UpPlan, build_read_only_up_plan_with_forwarding_resolution,
+        build_up_plan_with_forwarding_resolution,
+    },
     workspace::{
         Workspace, decune_state_root, is_valid_workspace_id, runtime_dir_for_workspace_id,
         safe_workspace_slug_for_name, state_dir_for_workspace_id,
     },
 };
 
+use self::volumes::{KeptVolume, VolumeRemovalReport, mounted_volume_names, print_kept_volumes};
+
 const DEFAULT_STOP_TIMEOUT_SECONDS: i32 = 10;
+const NON_INTERACTIVE_REMOVE_ERROR: &str = "Cannot confirm remove in a non-interactive terminal; rerun with --no-confirm to remove resources";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct DownOptions {
@@ -61,6 +72,7 @@ pub(crate) enum RemoveTarget {
 struct ManagedContainer {
     id: String,
     name: String,
+    mounted_volumes: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
@@ -71,7 +83,13 @@ struct WorkspaceRemovalPlan {
     runtime_dir: PathBuf,
     containers: Vec<ManagedContainer>,
     compose_projects: Vec<String>,
+    /// `docker compose down` が消したプロジェクト。コンテナと network は、ラベルから消し直さない。
+    /// volume は、`docker compose down` の後に残ったものもラベルから消す。
+    compose_projects_removed_by_compose: Vec<String>,
+    /// decune のラベルを持つ volume。
     volumes: Vec<String>,
+    /// 確認の前に示す、Compose プロジェクトの volume。削除するときは、ラベルで探し直す。
+    compose_volumes: Vec<String>,
     images: Vec<String>,
     has_state: bool,
     has_runtime: bool,
@@ -86,7 +104,14 @@ pub(crate) async fn run_down(options: DownOptions) -> Result<()> {
     let client = DockerClient::connect_from_env();
     let mut compose_project_names = compose_fallback_project_names(&workspace, &client).await?;
     let mut stopped_compose_project = false;
-    match compose_lifecycle_plan(&workspace, ComposeLifecycleCommand::Down, &client).await {
+    match compose_lifecycle_plan(
+        &workspace,
+        ComposeLifecycleCommand::Down,
+        &client,
+        build_up_plan_with_forwarding_resolution,
+    )
+    .await
+    {
         Ok(Some(plan)) => {
             push_unique(
                 &mut compose_project_names,
@@ -146,53 +171,69 @@ pub(crate) async fn run_remove(options: RemoveOptions) -> Result<()> {
 
 async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool) -> Result<()> {
     let stdin_is_terminal = io::stdin().is_terminal();
-    ensure_remove_confirmed(
-        RemoveConfirmation {
-            no_confirm,
-            stdin_is_terminal,
-            has_targets: true,
-        },
-        confirm_remove,
-    )?;
+    if remove_rejects_non_interactive(no_confirm, stdin_is_terminal) {
+        bail!(NON_INTERACTIVE_REMOVE_ERROR);
+    }
 
     let workspace = Workspace::resolve(&workspace)?;
-    cleanup_github_cli_token_file(workspace.paths().runtime_dir());
-    cleanup_host_daemon_socket(workspace.paths().runtime_dir()).await;
     let client = DockerClient::connect_from_env();
-    let mut compose_project_names = compose_fallback_project_names(&workspace, &client).await?;
+    let confirm = remove_requires_confirmation(no_confirm, stdin_is_terminal)
+        .then_some(confirm_remove as fn(&str) -> Result<bool>);
+    let kept = remove_workspace(&client, &workspace, images, confirm).await?;
+    print_kept_volumes(&kept, "this workspace");
+    Ok(())
+}
+
+/// 一つのワークスペースを削除する。`confirm` があれば、削除する decune-managed ボリュームの
+/// 一覧を含む確認の文を渡して、Docker と状態に手を加える前に確かめる。
+async fn remove_workspace(
+    client: &DockerClient,
+    workspace: &Workspace,
+    images: bool,
+    confirm: Option<impl FnOnce(&str) -> Result<bool>>,
+) -> Result<Vec<KeptVolume>> {
+    if let Some(confirm) = confirm {
+        let volumes = workspace_volume_candidates(client, workspace).await?;
+        if !confirm(&workspace_remove_prompt(&volumes))? {
+            bail!("Remove cancelled");
+        }
+    }
+
+    cleanup_workspace_runtime_secrets(workspace.paths().runtime_dir()).await;
+    let mut report = VolumeRemovalReport::default();
+    let mut plan = WorkspaceRemovalPlan {
+        state_dir: workspace.paths().state_dir().to_path_buf(),
+        runtime_dir: workspace.paths().runtime_dir().to_path_buf(),
+        ..empty_removal_plan(workspace.id())
+    };
+    let mut compose_project_names = compose_fallback_project_names(workspace, client).await?;
     let mut remove_generated_images = images;
-    let mut compose_projects_removed_by_compose = Vec::new();
     match compose_lifecycle_plan(
-        &workspace,
+        workspace,
         ComposeLifecycleCommand::Remove { images },
-        &client,
+        client,
+        build_up_plan_with_forwarding_resolution,
     )
     .await
     {
-        Ok(Some(plan)) => {
-            push_unique(
-                &mut compose_project_names,
-                plan.project.project_name.clone(),
-            );
+        Ok(Some(lifecycle)) => {
+            let project_name = lifecycle.project.project_name.clone();
+            push_unique(&mut compose_project_names, project_name.clone());
+            // `docker compose down` はプロジェクトのコンテナを消すので、mount はその前に読む。
+            record_compose_project_mounts(client, &project_name, &mut report).await?;
             let compose_remove_result = DockerComposeCli::default()
                 .down(
-                    &plan.project,
+                    &lifecycle.project,
                     ComposeDownOptions {
-                        volumes: plan.cleanup.compose.remove_volumes,
+                        volumes: lifecycle.cleanup.compose.remove_volumes,
                         remove_orphans: true,
                     },
                 )
                 .await;
             match compose_remove_result {
                 Ok(()) => {
-                    ui::done(&format!(
-                        "Removed Docker Compose project: {}",
-                        plan.project.project_name
-                    ));
-                    push_unique(
-                        &mut compose_projects_removed_by_compose,
-                        plan.project.project_name.clone(),
-                    );
+                    ui::done(&format!("Removed Docker Compose project: {project_name}"));
+                    push_unique(&mut plan.compose_projects_removed_by_compose, project_name);
                 }
                 Err(error) => {
                     ui::warn(&format!(
@@ -201,7 +242,7 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
                 }
             }
 
-            remove_generated_images |= plan.cleanup.workspace.remove_generated_images;
+            remove_generated_images |= lifecycle.cleanup.workspace.remove_generated_images;
         }
         Ok(None) => {}
         Err(error) => {
@@ -211,41 +252,17 @@ async fn run_remove_workspace(workspace: PathBuf, images: bool, no_confirm: bool
         }
     }
 
-    retain_compose_label_cleanup_projects(
-        &mut compose_project_names,
-        &compose_projects_removed_by_compose,
-    );
-    remove_compose_project_resources(&client, &compose_project_names).await?;
-
-    let containers = list_managed_containers(&client, workspace.id()).await?;
-
-    for container in containers {
-        stop_container(&client, &container.id, DEFAULT_STOP_TIMEOUT_SECONDS).await?;
-        remove_container(&client, &container.id, true, true).await?;
-        ui::done(&format!("Removed dev container: {}", container.name));
-    }
-
-    for volume in workspace_volumes(&client, workspace.id()).await? {
-        remove_volume(&client, &volume, true).await?;
-        ui::done(&format!("Removed Docker volume: {volume}"));
-    }
-
+    plan.compose_projects = compose_project_names;
+    plan.containers = list_managed_containers(client, workspace.id()).await?;
+    plan.volumes = workspace_volumes(client, workspace.id()).await?;
     if remove_generated_images {
-        let image_repository = DockerResources::image_repository_for_workspace(&workspace);
-        for image in workspace_image_tags(&client, &image_repository).await? {
-            remove_image(&client, &image, true).await?;
-            ui::done(&format!("Removed Docker image: {image}"));
-        }
+        let image_repository = DockerResources::image_repository_for_workspace(workspace);
+        plan.images = workspace_image_tags(client, &image_repository).await?;
     }
 
-    let status_dir = forward_status_dir(workspace.paths().runtime_dir());
-    remove_state_runtime_dirs(
-        workspace.paths().state_dir(),
-        workspace.paths().runtime_dir(),
-    )?;
-    remove_forward_status_dir(status_dir)?;
+    remove_workspace_plans(client, std::slice::from_ref(&plan), &mut report).await?;
     ui::done("Removed dev container resources");
-    Ok(())
+    report.kept_volumes(client).await
 }
 
 async fn run_remove_all_workspaces(images: bool, no_confirm: bool) -> Result<()> {
@@ -267,10 +284,20 @@ async fn run_remove_all_workspaces(images: bool, no_confirm: bool) -> Result<()>
         confirm_remove_all,
     )?;
 
-    for plan in plans {
-        remove_workspace_plan(&client, plan).await?;
+    for plan in &plans {
+        cleanup_workspace_runtime_secrets(&plan.runtime_dir).await;
+    }
+    let mut report = VolumeRemovalReport::default();
+    for removed in remove_workspace_plans(&client, &plans, &mut report).await? {
+        ui::done(&format!(
+            "Removed dev container resources for workspace id: {removed}"
+        ));
     }
     ui::done("Removed all decune-managed workspace environments");
+    print_kept_volumes(
+        &report.kept_volumes(&client).await?,
+        "the removed workspaces",
+    );
     Ok(())
 }
 
@@ -325,7 +352,11 @@ async fn discover_all_workspace_removal_plans(
         if let Some(project_name) = compose_project_name_from_labels(labels) {
             push_unique(&mut plan.compose_projects, project_name);
         } else if let (Some(id), Some(name)) = (container.id.clone(), container_name(&container)) {
-            plan.containers.push(ManagedContainer { id, name });
+            plan.containers.push(ManagedContainer {
+                id,
+                name,
+                mounted_volumes: mounted_volume_names(&container),
+            });
         }
     }
 
@@ -354,10 +385,16 @@ async fn discover_all_workspace_removal_plans(
         if include_images {
             append_workspace_images(client, plan).await?;
         }
+        for project_name in &plan.compose_projects {
+            plan.compose_volumes
+                .extend(list_compose_project_volumes(client, project_name).await?);
+        }
         plan.containers.sort_by(|a, b| a.name.cmp(&b.name));
         plan.containers.dedup_by(|a, b| a.id == b.id);
         plan.volumes.sort();
         plan.volumes.dedup();
+        plan.compose_volumes.sort();
+        plan.compose_volumes.dedup();
         plan.compose_projects.sort();
         plan.compose_projects.dedup();
         plan.images.sort();
@@ -370,35 +407,133 @@ async fn discover_all_workspace_removal_plans(
         .collect())
 }
 
-async fn remove_workspace_plan(client: &DockerClient, plan: WorkspaceRemovalPlan) -> Result<()> {
-    cleanup_github_cli_token_file(&plan.runtime_dir);
-    cleanup_host_daemon_socket(&plan.runtime_dir).await;
-    remove_compose_project_resources(client, &plan.compose_projects).await?;
+/// 削除の計画を実行し、削除したワークスペースの workspace id を返す。
+///
+/// すべての計画のコンテナを消してから volume を消す。ワークスペース X の decune-managed
+/// ボリュームを、同じ実行で消すワークスペース Y のコンテナだけが mount しているとき、
+/// ワークスペースの順によらず、その volume を使用中として残さずに消すためである。
+async fn remove_workspace_plans(
+    client: &DockerClient,
+    plans: &[WorkspaceRemovalPlan],
+    report: &mut VolumeRemovalReport,
+) -> Result<Vec<String>> {
+    for plan in plans {
+        remove_workspace_containers(client, plan, report).await?;
+    }
+    let mut removed = Vec::new();
+    for plan in plans {
+        remove_workspace_volumes_and_data(client, plan, report).await?;
+        removed.push(plan.workspace_id.clone());
+    }
+    Ok(removed)
+}
 
-    for container in plan.containers {
+async fn remove_workspace_containers(
+    client: &DockerClient,
+    plan: &WorkspaceRemovalPlan,
+    report: &mut VolumeRemovalReport,
+) -> Result<()> {
+    for project_name in plan.label_cleanup_compose_projects() {
+        remove_compose_project_containers(client, project_name, report).await?;
+    }
+
+    for container in &plan.containers {
+        report.record_mounted_volumes(&container.mounted_volumes);
         stop_container(client, &container.id, DEFAULT_STOP_TIMEOUT_SECONDS).await?;
         remove_container(client, &container.id, true, true).await?;
         ui::done(&format!("Removed dev container: {}", container.name));
     }
+    Ok(())
+}
 
-    for volume in plan.volumes {
-        remove_volume(client, &volume, true).await?;
-        ui::done(&format!("Removed Docker volume: {volume}"));
+async fn remove_workspace_volumes_and_data(
+    client: &DockerClient,
+    plan: &WorkspaceRemovalPlan,
+    report: &mut VolumeRemovalReport,
+) -> Result<()> {
+    // `docker compose down --volumes` が成功した後も、プロジェクトのラベルを持つ volume が
+    // 残っていれば消す。今の Compose ファイルが宣言していない volume も含め、消える volume を
+    // Compose で消す経路とラベルから消す経路とで揃えるためである。
+    let mut compose_volume_in_use = false;
+    for project_name in &plan.compose_projects {
+        for volume in list_compose_project_volumes(client, project_name).await? {
+            compose_volume_in_use |=
+                report.remove_managed_volume(client, &volume).await? == VolumeRemoval::InUse;
+        }
+    }
+    for project_name in plan.label_cleanup_compose_projects() {
+        remove_compose_project_networks(client, project_name).await?;
     }
 
-    for image in plan.images {
-        remove_image(client, &image, true).await?;
+    for volume in &plan.volumes {
+        report.remove_managed_volume(client, volume).await?;
+    }
+
+    for image in &plan.images {
+        remove_image(client, image, true).await?;
         ui::done(&format!("Removed Docker image: {image}"));
     }
 
     let status_dir = forward_status_dir(&plan.runtime_dir);
-    remove_state_runtime_dirs(&plan.state_dir, &plan.runtime_dir)?;
+    if compose_volume_in_use {
+        // Compose プロジェクトの volume を辿る手掛かりは、状態とコンテナのラベルにしかない。
+        // コンテナを消した後に状態も消すと、残した volume を decune から辿れなくなる。
+        remove_runtime_dir(&plan.runtime_dir)?;
+        ui::warn(&format!(
+            "Kept decune state for workspace id {} because its Docker Compose volumes are in use; run decune remove again after they are released",
+            plan.workspace_id
+        ));
+    } else {
+        remove_state_runtime_dirs(&plan.state_dir, &plan.runtime_dir)?;
+    }
     remove_forward_status_dir(status_dir)?;
-    ui::done(&format!(
-        "Removed dev container resources for workspace id: {}",
-        plan.workspace_id
-    ));
     Ok(())
+}
+
+async fn cleanup_workspace_runtime_secrets(runtime_dir: &Path) {
+    cleanup_github_cli_token_file(runtime_dir);
+    cleanup_host_daemon_socket(runtime_dir).await;
+}
+
+/// 確認の前に示す、削除する decune-managed ボリューム。Docker と状態を読むだけで、
+/// 変えない。Compose プロジェクト名は、削除と同じく、状態、コンテナのラベル、
+/// 今の設定から得る。今の設定は、ホストのパスを作らない読み取り専用の解決で読む。
+async fn workspace_volume_candidates(
+    client: &DockerClient,
+    workspace: &Workspace,
+) -> Result<Vec<String>> {
+    let mut project_names = compose_fallback_project_names(workspace, client).await?;
+    if let Ok(Some(lifecycle)) = compose_lifecycle_plan(
+        workspace,
+        ComposeLifecycleCommand::Remove { images: false },
+        client,
+        build_read_only_up_plan_with_forwarding_resolution,
+    )
+    .await
+    {
+        push_unique(&mut project_names, lifecycle.project.project_name);
+    }
+
+    let mut volumes = BTreeSet::new();
+    volumes.extend(workspace_volumes(client, workspace.id()).await?);
+    for project_name in &project_names {
+        volumes.extend(list_compose_project_volumes(client, project_name).await?);
+    }
+    Ok(volumes.into_iter().collect())
+}
+
+fn workspace_remove_prompt(volumes: &[String]) -> String {
+    let mut prompt = String::new();
+    if !volumes.is_empty() {
+        prompt.push_str("Docker volumes to remove:\n");
+        for volume in volumes {
+            prompt.push_str("  ");
+            prompt.push_str(volume);
+            prompt.push('\n');
+        }
+    }
+    prompt.push_str("Remove decune-managed resources for this workspace? [y/N] ");
+    prompt
 }
 
 pub(crate) const fn remove_requires_confirmation(
@@ -430,9 +565,7 @@ fn ensure_remove_confirmed(
         return Ok(());
     }
     if remove_rejects_non_interactive(confirmation.no_confirm, confirmation.stdin_is_terminal) {
-        bail!(
-            "Cannot confirm remove in a non-interactive terminal; rerun with --no-confirm to remove resources"
-        );
+        bail!(NON_INTERACTIVE_REMOVE_ERROR);
     }
     if remove_requires_confirmation(confirmation.no_confirm, confirmation.stdin_is_terminal)
         && !confirm()?
@@ -443,10 +576,10 @@ fn ensure_remove_confirmed(
     Ok(())
 }
 
-fn confirm_remove() -> Result<bool> {
+fn confirm_remove(prompt: &str) -> Result<bool> {
     let mut stderr = io::stderr();
     stderr
-        .write_all(b"Remove decune-managed resources for this workspace? [y/N] ")
+        .write_all(prompt.as_bytes())
         .context("Failed to write remove confirmation prompt")?;
     stderr
         .flush()
@@ -496,6 +629,16 @@ impl WorkspaceRemovalPlan {
             || !self.compose_projects.is_empty()
             || !self.volumes.is_empty()
             || !self.images.is_empty()
+    }
+}
+
+impl WorkspaceRemovalPlan {
+    fn label_cleanup_compose_projects(&self) -> impl Iterator<Item = &String> {
+        self.compose_projects.iter().filter(|project_name| {
+            !self
+                .compose_projects_removed_by_compose
+                .contains(project_name)
+        })
     }
 }
 
@@ -611,22 +754,38 @@ fn print_remove_all_summary(plans: &[WorkspaceRemovalPlan], include_images: bool
         "Removing {} decune-managed workspace environment(s)",
         plans.len()
     ));
+    for line in remove_all_summary_lines(plans, include_images) {
+        ui::info(&line);
+    }
+}
+
+fn remove_all_summary_lines(plans: &[WorkspaceRemovalPlan], include_images: bool) -> Vec<String> {
+    let mut lines = Vec::new();
     for plan in plans {
         let workspace = plan.workspace_path.as_deref().unwrap_or("<unknown>");
-        ui::info(&format!(
+        let volumes = plan
+            .volumes
+            .iter()
+            .chain(&plan.compose_volumes)
+            .collect::<BTreeSet<_>>();
+        lines.push(format!(
             "Workspace {} ({}) containers={} compose_projects={} volumes={}{}",
             plan.workspace_id,
             workspace,
             plan.containers.len(),
             plan.compose_projects.len(),
-            plan.volumes.len(),
+            volumes.len(),
             if include_images {
                 format!(" images={}", plan.images.len())
             } else {
                 String::new()
             }
         ));
+        for volume in volumes {
+            lines.push(format!("Volume {volume} will be removed"));
+        }
     }
+    lines
 }
 
 fn stop_timeout_seconds(timeout_seconds: u64) -> Result<i32> {
@@ -639,17 +798,20 @@ async fn list_managed_containers(
 ) -> Result<Vec<ManagedContainer>> {
     let containers = client
         .cli()
-        .list_standalone_workspace_containers(workspace_id)
+        .list_standalone_workspace_container_inspects(workspace_id)
         .await
         .with_context(|| {
             format!("Failed to list Docker containers for workspace: {workspace_id}")
         })?;
 
     Ok(containers
-        .into_iter()
-        .map(|container| ManagedContainer {
-            id: container.id,
-            name: container.name,
+        .iter()
+        .filter_map(|container| {
+            Some(ManagedContainer {
+                id: container.id.clone()?,
+                name: container_name(container)?,
+                mounted_volumes: mounted_volume_names(container),
+            })
         })
         .collect())
 }
@@ -711,58 +873,83 @@ async fn stop_compose_project_containers(
     Ok(found)
 }
 
-async fn remove_compose_project_resources(
+async fn record_compose_project_mounts(
     client: &DockerClient,
-    project_names: &[String],
+    project_name: &str,
+    report: &mut VolumeRemovalReport,
 ) -> Result<()> {
-    for project_name in project_names {
-        let containers = client
-            .cli()
-            .list_containers_for_compose_project(project_name)
-            .await
-            .with_context(|| {
-                format!("Failed to list Docker Compose containers for project: {project_name}")
-            })?;
-        for container in containers {
-            if container.running {
-                stop_container(client, &container.id, DEFAULT_STOP_TIMEOUT_SECONDS).await?;
-            }
-            remove_container(client, &container.id, true, true).await?;
-            ui::done(&format!(
-                "Removed Docker Compose container: {}",
-                container.name
-            ));
-        }
-
-        for volume in client
-            .cli()
-            .list_compose_project_volumes(project_name)
-            .await
-            .with_context(|| {
-                format!("Failed to list Docker Compose volumes for project: {project_name}")
-            })?
-        {
-            remove_volume(client, &volume, true).await?;
-            ui::done(&format!("Removed Docker volume: {volume}"));
-        }
-
-        for network in client
-            .cli()
-            .list_compose_project_networks(project_name)
-            .await
-            .with_context(|| {
-                format!("Failed to list Docker Compose networks for project: {project_name}")
-            })?
-        {
-            client
-                .cli()
-                .remove_network(&network)
-                .await
-                .with_context(|| format!("Failed to remove Docker network: {network}"))?;
-            ui::done(&format!("Removed Docker network: {network}"));
-        }
+    for container in list_compose_project_container_inspects(client, project_name).await? {
+        report.record_mounted_volumes(&mounted_volume_names(&container));
     }
+    Ok(())
+}
 
+async fn remove_compose_project_containers(
+    client: &DockerClient,
+    project_name: &str,
+    report: &mut VolumeRemovalReport,
+) -> Result<()> {
+    for container in list_compose_project_container_inspects(client, project_name).await? {
+        report.record_mounted_volumes(&mounted_volume_names(&container));
+        let (Some(id), Some(name)) = (container.id.as_deref(), container_name(&container)) else {
+            continue;
+        };
+        let running = container
+            .state
+            .as_ref()
+            .and_then(|state| state.running)
+            .unwrap_or(false);
+        if running {
+            stop_container(client, id, DEFAULT_STOP_TIMEOUT_SECONDS).await?;
+        }
+        remove_container(client, id, true, true).await?;
+        ui::done(&format!("Removed Docker Compose container: {name}"));
+    }
+    Ok(())
+}
+
+async fn list_compose_project_container_inspects(
+    client: &DockerClient,
+    project_name: &str,
+) -> Result<Vec<ContainerInspect>> {
+    client
+        .cli()
+        .list_compose_project_container_inspects_by_project(project_name)
+        .await
+        .with_context(|| {
+            format!("Failed to list Docker Compose containers for project: {project_name}")
+        })
+}
+
+async fn list_compose_project_volumes(
+    client: &DockerClient,
+    project_name: &str,
+) -> Result<Vec<String>> {
+    client
+        .cli()
+        .list_compose_project_volumes(project_name)
+        .await
+        .with_context(|| {
+            format!("Failed to list Docker Compose volumes for project: {project_name}")
+        })
+}
+
+async fn remove_compose_project_networks(client: &DockerClient, project_name: &str) -> Result<()> {
+    for network in client
+        .cli()
+        .list_compose_project_networks(project_name)
+        .await
+        .with_context(|| {
+            format!("Failed to list Docker Compose networks for project: {project_name}")
+        })?
+    {
+        client
+            .cli()
+            .remove_network(&network)
+            .await
+            .with_context(|| format!("Failed to remove Docker network: {network}"))?;
+        ui::done(&format!("Removed Docker network: {network}"));
+    }
     Ok(())
 }
 
@@ -773,34 +960,27 @@ fn push_unique(values: &mut Vec<String>, value: String) {
     }
 }
 
-fn retain_compose_label_cleanup_projects(
-    project_names: &mut Vec<String>,
-    removed_by_compose: &[String],
-) {
-    project_names.retain(|project_name| {
-        !removed_by_compose
-            .iter()
-            .any(|removed| removed == project_name)
-    });
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ComposeLifecycleCommand {
     Down,
     Remove { images: bool },
 }
 
+type UpPlanBuilder =
+    fn(&Workspace, Option<&Path>, ConfigLayer, ForwardingResolution, bool, bool) -> Result<UpPlan>;
+
 async fn compose_lifecycle_plan(
     workspace: &Workspace,
     command: ComposeLifecycleCommand,
     client: &DockerClient,
+    build_up_plan: UpPlanBuilder,
 ) -> Result<Option<ComposeLifecyclePlan>> {
     let explicit_config_path = compose_lifecycle_config_path(workspace, client).await?;
     if !has_devcontainer_metadata_hint(workspace) && explicit_config_path.is_none() {
         return Ok(None);
     }
 
-    let plan = build_up_plan_with_forwarding_resolution(
+    let plan = build_up_plan(
         workspace,
         explicit_config_path.as_deref(),
         ConfigLayer::default(),
@@ -1064,21 +1244,6 @@ mod tests {
     }
 
     #[test]
-    fn compose_label_cleanup_excludes_projects_removed_by_compose_down() {
-        let mut project_names = vec![
-            "decune-current".to_owned(),
-            "decune-stale".to_owned(),
-            "decune-other".to_owned(),
-        ];
-        super::retain_compose_label_cleanup_projects(
-            &mut project_names,
-            &["decune-current".to_owned(), "decune-other".to_owned()],
-        );
-
-        assert_eq!(project_names, vec!["decune-stale".to_owned()]);
-    }
-
-    #[test]
     fn compose_lifecycle_uses_state_config_path_without_standard_hint() {
         let temp = tempfile::tempdir().unwrap();
         let workspace_root = temp.path().join("workspace");
@@ -1125,6 +1290,7 @@ mod tests {
                     &workspace,
                     super::ComposeLifecycleCommand::Down,
                     &client,
+                    crate::up::build_up_plan_with_forwarding_resolution,
                 )
                 .await
             })
@@ -1182,6 +1348,7 @@ mod tests {
                     &workspace,
                     super::ComposeLifecycleCommand::Remove { images: false },
                     &DockerClient::connect_from_env(),
+                    crate::up::build_up_plan_with_forwarding_resolution,
                 )
                 .await
             })
@@ -1255,6 +1422,7 @@ mod tests {
                     &workspace,
                     super::ComposeLifecycleCommand::Down,
                     &client,
+                    crate::up::build_up_plan_with_forwarding_resolution,
                 )
                 .await
             })
@@ -1268,5 +1436,426 @@ mod tests {
                     .file_name()
                     .is_some_and(|name| name == Path::new("compose.yaml"))
         }));
+    }
+}
+
+#[cfg(test)]
+mod removal_tests {
+    use std::{fs, path::Path, sync::Arc};
+
+    use super::{
+        ManagedContainer, WorkspaceRemovalPlan, empty_removal_plan, remove_all_summary_lines,
+        remove_workspace, remove_workspace_plans, volumes::KeptVolume, volumes::KeptVolumeReason,
+        volumes::VolumeRemovalReport, workspace_remove_prompt,
+    };
+    use crate::{
+        docker::client::DockerClient,
+        runtime::{docker_cli::DockerCli, fake_docker::FakeDocker},
+        workspace::Workspace,
+    };
+
+    const WORKSPACE_X: &str = "aaaaaaaaaaaa";
+    const WORKSPACE_Y: &str = "bbbbbbbbbbbb";
+    const COMPOSE_PROJECT: (&str, &str) = ("com.docker.compose.project", "decune-app-aaaaaaaaaaaa");
+    const ANONYMOUS: (&str, &str) = ("com.docker.volume.anonymous", "");
+
+    fn client(docker: &FakeDocker) -> DockerClient {
+        DockerClient::from_cli(DockerCli::new(Arc::new(docker.clone())))
+    }
+
+    fn managed_labels(workspace_id: &str) -> [(&'static str, &str); 2] {
+        [
+            ("decune.managed", "true"),
+            ("decune.workspace_id", workspace_id),
+        ]
+    }
+
+    /// 状態とランタイムディレクトリを `root` の下に持つ計画。
+    fn plan(root: &Path, workspace_id: &str) -> WorkspaceRemovalPlan {
+        let state_dir = root.join("state").join(workspace_id);
+        let runtime_dir = root.join("runtime").join(workspace_id);
+        fs::create_dir_all(&state_dir).unwrap();
+        fs::create_dir_all(&runtime_dir).unwrap();
+        fs::write(state_dir.join("state.toml"), "version = 1\n").unwrap();
+        WorkspaceRemovalPlan {
+            state_dir,
+            runtime_dir,
+            has_state: true,
+            ..empty_removal_plan(workspace_id)
+        }
+    }
+
+    fn standalone(id: &str, mounted_volumes: &[&str]) -> ManagedContainer {
+        ManagedContainer {
+            id: id.to_owned(),
+            name: id.to_owned(),
+            mounted_volumes: mounted_volumes.iter().map(|v| (*v).to_owned()).collect(),
+        }
+    }
+
+    fn run_plans(docker: &FakeDocker, plans: &[WorkspaceRemovalPlan]) -> Vec<KeptVolume> {
+        let client = client(docker);
+        block_on(async {
+            let mut report = VolumeRemovalReport::default();
+            remove_workspace_plans(&client, plans, &mut report).await?;
+            report.kept_volumes(&client).await
+        })
+        .unwrap()
+    }
+
+    fn block_on<T>(future: impl Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
+    fn kept(name: &str, reason: KeptVolumeReason) -> KeptVolume {
+        KeptVolume {
+            name: name.to_owned(),
+            reason,
+        }
+    }
+
+    // 削除したコンテナが mount していた、decune のラベルの無い volume は消さず、
+    // decune-managed ボリュームでないという理由で残したものとして示す
+    #[test]
+    fn remove_keeps_unlabeled_mounted_volume_as_not_managed() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("user-data", &[]);
+        docker.add_volume("x-data", &managed_labels(WORKSPACE_X));
+        docker.add_container(
+            "x-dev",
+            &managed_labels(WORKSPACE_X),
+            &["user-data", "x-data"],
+        );
+        let plan = WorkspaceRemovalPlan {
+            containers: vec![standalone("x-dev", &["user-data", "x-data"])],
+            volumes: vec!["x-data".to_owned()],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+
+        let kept_volumes = run_plans(&docker, &[plan]);
+
+        assert_eq!(
+            kept_volumes,
+            [kept("user-data", KeptVolumeReason::NotManaged)]
+        );
+        assert!(docker.volume_exists("user-data"));
+        assert!(!docker.volume_exists("x-data"));
+    }
+
+    // 使用中で Docker に削除を拒否された decune-managed ボリュームは、削除したコンテナが
+    // mount していなくても、使用中という理由で残したものとして示し、remove は失敗しない
+    #[test]
+    fn remove_reports_in_use_managed_volume_not_mounted_by_removed_containers() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("x-data", &managed_labels(WORKSPACE_X));
+        docker.add_container("outside", &[], &["x-data"]);
+        let plan = WorkspaceRemovalPlan {
+            volumes: vec!["x-data".to_owned()],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+
+        let kept_volumes = run_plans(&docker, &[plan]);
+
+        assert_eq!(kept_volumes, [kept("x-data", KeptVolumeReason::InUse)]);
+        assert!(docker.volume_exists("x-data"));
+    }
+
+    // decune のラベルを持つ volume が使用中で残っても、状態は消す。
+    // ラベルが残るので、その volume は状態が無くても後の remove --all-workspaces から辿れる
+    #[test]
+    fn remove_removes_state_when_only_labeled_volume_is_in_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("x-data", &managed_labels(WORKSPACE_X));
+        docker.add_container("outside", &[], &["x-data"]);
+        let plan = WorkspaceRemovalPlan {
+            volumes: vec!["x-data".to_owned()],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+        let state_dir = plan.state_dir.clone();
+
+        run_plans(&docker, &[plan]);
+
+        assert!(!state_dir.exists());
+    }
+
+    // 匿名 volume は、コンテナと一緒に消えても、他のコンテナが使っていて残っても、
+    // 残したものとして示さない
+    #[test]
+    fn remove_does_not_report_anonymous_volumes() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("anon-own", &[ANONYMOUS]);
+        docker.add_volume("anon-shared", &[ANONYMOUS]);
+        docker.add_container(
+            "x-dev",
+            &managed_labels(WORKSPACE_X),
+            &["anon-own", "anon-shared"],
+        );
+        docker.add_container("outside", &[], &["anon-shared"]);
+        let plan = WorkspaceRemovalPlan {
+            containers: vec![standalone("x-dev", &["anon-own", "anon-shared"])],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+
+        let kept_volumes = run_plans(&docker, &[plan]);
+
+        assert_eq!(kept_volumes, []);
+        assert!(!docker.volume_exists("anon-own"));
+        assert!(docker.volume_exists("anon-shared"));
+    }
+
+    /// ワークスペース X の decune-managed ボリューム `x-data` を、
+    /// Y のコンテナだけが mount している。
+    fn shared_volume_plans(docker: &FakeDocker, root: &Path) -> [WorkspaceRemovalPlan; 2] {
+        docker.add_volume("x-data", &managed_labels(WORKSPACE_X));
+        docker.add_container("y-dev", &managed_labels(WORKSPACE_Y), &["x-data"]);
+        [
+            WorkspaceRemovalPlan {
+                volumes: vec!["x-data".to_owned()],
+                ..plan(root, WORKSPACE_X)
+            },
+            WorkspaceRemovalPlan {
+                containers: vec![standalone("y-dev", &["x-data"])],
+                ..plan(root, WORKSPACE_Y)
+            },
+        ]
+    }
+
+    // --all-workspaces で、X の volume を同じ実行で消す Y のコンテナだけが mount していても、
+    // X を先に処理したときに volume は消える。すべてのコンテナを消してから volume を消すため
+    #[test]
+    fn remove_all_removes_volume_shared_with_removed_workspace_when_owner_comes_first() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        let [x, y] = shared_volume_plans(&docker, temp.path());
+
+        let kept_volumes = run_plans(&docker, &[x, y]);
+
+        assert_eq!(kept_volumes, []);
+        assert!(!docker.volume_exists("x-data"));
+    }
+
+    // 上と同じ構成で、Y を先に処理しても、volume は消える
+    #[test]
+    fn remove_all_removes_volume_shared_with_removed_workspace_when_owner_comes_last() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        let [x, y] = shared_volume_plans(&docker, temp.path());
+
+        let kept_volumes = run_plans(&docker, &[y, x]);
+
+        assert_eq!(kept_volumes, []);
+        assert!(!docker.volume_exists("x-data"));
+    }
+
+    // docker compose down の後に、プロジェクトのラベルを持つ volume(今の Compose ファイルが
+    // 宣言していないものなど)が残っていれば、ラベルから探して消す
+    #[test]
+    fn remove_compose_project_removes_leftover_project_volumes_after_compose_down() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("project_old-data", &[COMPOSE_PROJECT]);
+        let plan = WorkspaceRemovalPlan {
+            compose_projects: vec![COMPOSE_PROJECT.1.to_owned()],
+            compose_projects_removed_by_compose: vec![COMPOSE_PROJECT.1.to_owned()],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+
+        let kept_volumes = run_plans(&docker, &[plan]);
+
+        assert_eq!(kept_volumes, []);
+        assert!(!docker.volume_exists("project_old-data"));
+    }
+
+    // docker compose down が消したプロジェクトの network は、ラベルから消し直さない。
+    // down が使用中で残した network を消そうとして、remove を失敗させないため
+    #[test]
+    fn remove_compose_project_leaves_networks_of_project_removed_by_compose() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_network("project_default", &[COMPOSE_PROJECT]);
+        let plan = WorkspaceRemovalPlan {
+            compose_projects: vec![COMPOSE_PROJECT.1.to_owned()],
+            compose_projects_removed_by_compose: vec![COMPOSE_PROJECT.1.to_owned()],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+
+        run_plans(&docker, &[plan]);
+
+        assert!(docker.network_exists("project_default"));
+    }
+
+    // Compose プロジェクトをラベルから消すとき、プロジェクトの volume は消し、サービスが
+    // mount していた external の volume は消さずに残したものとして示す。どのサービスも
+    // mount していない external の volume は示さない
+    #[test]
+    fn remove_compose_project_keeps_external_volume_mounted_by_service() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("project_db", &[COMPOSE_PROJECT]);
+        docker.add_volume("shared-external", &[]);
+        docker.add_volume("unused-external", &[]);
+        docker.add_container(
+            "project-db-1",
+            &[COMPOSE_PROJECT],
+            &["project_db", "shared-external"],
+        );
+        let plan = WorkspaceRemovalPlan {
+            compose_projects: vec![COMPOSE_PROJECT.1.to_owned()],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+
+        let kept_volumes = run_plans(&docker, &[plan]);
+
+        assert_eq!(
+            kept_volumes,
+            [kept("shared-external", KeptVolumeReason::NotManaged)]
+        );
+        assert!(!docker.container_exists("project-db-1"));
+        assert!(!docker.volume_exists("project_db"));
+        assert!(docker.volume_exists("unused-external"));
+    }
+
+    // Compose プロジェクトの volume をプロジェクトの外のコンテナが参照しているとき、remove は
+    // volume と状態を残して成功し、使用中が解けた後の remove で両方を消す
+    //
+    // シナリオ:
+    //   1. プロジェクトの volume を、プロジェクトの外のコンテナにも mount させる
+    //   2. remove する → volume は使用中として残り、状態は残り、ランタイムディレクトリは消える
+    //   3. 外のコンテナを消し、同じ内容の計画を作り直して remove する → volume と状態が消える
+    #[test]
+    fn remove_keeps_state_while_compose_project_volume_is_in_use() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("project_db", &[COMPOSE_PROJECT]);
+        docker.add_container("project-db-1", &[COMPOSE_PROJECT], &["project_db"]);
+        docker.add_container("outside", &[], &["project_db"]);
+        let first = WorkspaceRemovalPlan {
+            compose_projects: vec![COMPOSE_PROJECT.1.to_owned()],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+        let state_dir = first.state_dir.clone();
+        let runtime_dir = first.runtime_dir.clone();
+
+        let kept_volumes = run_plans(&docker, &[first]);
+
+        assert_eq!(kept_volumes, [kept("project_db", KeptVolumeReason::InUse)]);
+        assert!(!docker.container_exists("project-db-1"));
+        assert!(docker.volume_exists("project_db"));
+        assert!(state_dir.join("state.toml").exists());
+        assert!(!runtime_dir.exists());
+
+        assert!(
+            block_on(
+                client(&docker)
+                    .cli()
+                    .remove_container("outside", true, true)
+            )
+            .is_ok()
+        );
+        let second = WorkspaceRemovalPlan {
+            compose_projects: vec![COMPOSE_PROJECT.1.to_owned()],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+
+        let kept_volumes = run_plans(&docker, &[second]);
+
+        assert_eq!(kept_volumes, []);
+        assert!(!docker.volume_exists("project_db"));
+        assert!(!state_dir.exists());
+    }
+
+    // --all-workspaces で、あるワークスペースの削除の後に残っても、後のワークスペースの削除で
+    // 消えた volume は、残したものとして示さない
+    #[test]
+    fn remove_all_does_not_report_volume_removed_by_later_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("y-data", &managed_labels(WORKSPACE_Y));
+        docker.add_container("x-dev", &managed_labels(WORKSPACE_X), &["y-data"]);
+        let x = WorkspaceRemovalPlan {
+            containers: vec![standalone("x-dev", &["y-data"])],
+            ..plan(temp.path(), WORKSPACE_X)
+        };
+        let y = WorkspaceRemovalPlan {
+            volumes: vec!["y-data".to_owned()],
+            ..plan(temp.path(), WORKSPACE_Y)
+        };
+
+        let kept_volumes = run_plans(&docker, &[x, y]);
+
+        assert_eq!(kept_volumes, []);
+        assert!(!docker.volume_exists("y-data"));
+    }
+
+    // 確認の文は、削除する volume の名前を [y/N] の問いより前に並べる
+    #[test]
+    fn remove_prompt_lists_volumes_before_question() {
+        let prompt = workspace_remove_prompt(&["app_db".to_owned(), "cache".to_owned()]);
+
+        let question = prompt.find("[y/N]").unwrap();
+        assert!(prompt.find("app_db").unwrap() < question);
+        assert!(prompt.find("cache").unwrap() < question);
+    }
+
+    // TTY で確認するとき、削除する decune-managed ボリュームを確認の文に含め、確認より前に
+    // Docker の状態を変えない。確認で断れば、何も消さずに取り消す
+    #[test]
+    fn remove_workspace_shows_volumes_before_confirmation_without_docker_changes() {
+        let temp = tempfile::tempdir().unwrap();
+        let workspace = Workspace::resolve(temp.path()).unwrap();
+        let docker = FakeDocker::new();
+        docker.add_volume("workspace-data", &managed_labels(workspace.id()));
+        docker.add_volume("user-data", &[]);
+        let mut prompted = None;
+
+        let result = block_on(remove_workspace(
+            &client(&docker),
+            &workspace,
+            false,
+            Some(|prompt: &str| {
+                prompted = Some((prompt.to_owned(), docker.mutating_commands()));
+                Ok(false)
+            }),
+        ));
+
+        assert!(result.unwrap_err().to_string().contains("Remove cancelled"));
+        let (prompt, mutating_before_prompt) = prompted.unwrap();
+        assert!(prompt.contains("workspace-data"), "{prompt}");
+        assert!(!prompt.contains("user-data"), "{prompt}");
+        assert_eq!(mutating_before_prompt, Vec::<Vec<String>>::new());
+        assert_eq!(docker.mutating_commands(), Vec::<Vec<String>>::new());
+        assert!(docker.volume_exists("workspace-data"));
+    }
+
+    // --all-workspaces の確認の前の一覧は、ワークスペースごとに、削除する decune のラベルの
+    // volume と Compose プロジェクトの volume の名前を並べる
+    #[test]
+    fn remove_all_summary_lists_volume_names_per_workspace() {
+        let x = WorkspaceRemovalPlan {
+            volumes: vec!["x-data".to_owned()],
+            compose_volumes: vec!["project_db".to_owned()],
+            ..empty_removal_plan(WORKSPACE_X)
+        };
+        let y = WorkspaceRemovalPlan {
+            volumes: vec!["y-data".to_owned()],
+            ..empty_removal_plan(WORKSPACE_Y)
+        };
+
+        let lines = remove_all_summary_lines(&[x, y], false);
+
+        let position = |text: &str| lines.iter().position(|line| line.contains(text)).unwrap();
+        assert!(position(WORKSPACE_X) < position("x-data"));
+        assert!(position(WORKSPACE_X) < position("project_db"));
+        assert!(position("x-data") < position(WORKSPACE_Y));
+        assert!(position("project_db") < position(WORKSPACE_Y));
+        assert!(position(WORKSPACE_Y) < position("y-data"));
     }
 }

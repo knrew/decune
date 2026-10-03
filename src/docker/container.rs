@@ -235,6 +235,7 @@ pub(crate) struct ContainerHealth {
 pub(crate) struct ContainerMount {
     #[serde(rename = "Type")]
     pub(crate) typ: Option<String>,
+    pub(crate) name: Option<String>,
     pub(crate) source: Option<String>,
     pub(crate) destination: Option<String>,
     #[serde(rename = "RW")]
