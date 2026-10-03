@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fs, io, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs, io,
+    path::Path,
+};
 
 use anyhow::{Context, Result};
 
@@ -20,7 +24,8 @@ use crate::{
 };
 
 use super::types::{
-    ContainerStatusSummary, HealthStatus, RuntimeRunState, VolumeStatusSummary, WorkspaceMode,
+    ContainerStatusSummary, HealthStatus, RuntimeRunState, VolumeOrigin, VolumeStatusSummary,
+    WorkspaceMode,
 };
 
 pub(super) struct StateEvidence {
@@ -56,10 +61,15 @@ pub(super) struct ContainerEvidence {
 pub(super) struct VolumeEvidence {
     pub(super) workspace_id: String,
     pub(super) name: Option<String>,
-    /// volume の `decune.workspace` ラベルのパス。
+    /// volume が属するワークスペースのパス。
+    /// decune のラベルを持つ volume では、その `decune.workspace` ラベルのパス、
+    /// Compose プロジェクトの volume では、プロジェクトを辿った状態かコンテナのラベルのパスである。
     /// 状態もコンテナも残っていないワークスペースのパスを、summary に示すのに使う。
-    /// ワークスペースを指定した収集(`collect_workspace_docker_evidence`)では持たない。
+    /// ワークスペースを指定した収集(`collect_workspace_docker_evidence`)では、
+    /// decune のラベルを持つ volume には持たせない。
+    /// 表示するパスは、指定したワークスペースのものを使うからである。
     pub(super) workspace_path: Option<String>,
+    pub(super) origin: VolumeOrigin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -149,19 +159,19 @@ pub(super) async fn collect_workspace_docker_evidence(
         }
     }
 
-    for (project_name, project_context) in compose_projects {
+    for (project_name, project_context) in &compose_projects {
         let project_containers = cli
-            .list_compose_project_container_inspects_by_project(&project_name)
+            .list_compose_project_container_inspects_by_project(project_name)
             .await?;
         containers.extend(
             project_containers.into_iter().filter_map(|container| {
-                container_evidence_with_context(&container, &project_context)
+                container_evidence_with_context(&container, project_context)
             }),
         );
     }
     containers = dedupe_container_evidence(containers);
 
-    let volumes = cli
+    let mut volumes = cli
         .list_volumes(workspace_id)
         .await?
         .into_iter()
@@ -169,8 +179,13 @@ pub(super) async fn collect_workspace_docker_evidence(
             workspace_id: workspace_id.to_owned(),
             name: Some(name),
             workspace_path: None,
+            origin: VolumeOrigin::Mounts,
         })
-        .collect();
+        .collect::<Vec<_>>();
+    for (project_name, project_context) in &compose_projects {
+        volumes.extend(compose_project_volume_evidence(cli, project_name, project_context).await?);
+    }
+    let volumes = dedupe_volume_evidence(volumes);
 
     Ok(DockerEvidence {
         containers,
@@ -256,23 +271,27 @@ pub(super) async fn collect_docker_evidence(
         }
     }
 
-    for (project_name, project_context) in compose_projects {
+    for (project_name, project_context) in &compose_projects {
         let project_containers = cli
-            .list_compose_project_container_inspects_by_project(&project_name)
+            .list_compose_project_container_inspects_by_project(project_name)
             .await?;
         containers.extend(
             project_containers.into_iter().filter_map(|container| {
-                container_evidence_with_context(&container, &project_context)
+                container_evidence_with_context(&container, project_context)
             }),
         );
     }
     let containers = dedupe_container_evidence(containers);
-    let volumes = cli
+    let mut volumes = cli
         .list_all_managed_volume_inspects()
         .await?
         .into_iter()
         .filter_map(volume_evidence)
-        .collect();
+        .collect::<Vec<_>>();
+    for (project_name, project_context) in &compose_projects {
+        volumes.extend(compose_project_volume_evidence(cli, project_name, project_context).await?);
+    }
+    let volumes = dedupe_volume_evidence(volumes);
 
     Ok(DockerEvidence {
         containers,
@@ -380,6 +399,47 @@ fn dedupe_container_evidence(containers: Vec<ContainerEvidence>) -> Vec<Containe
     deduped
 }
 
+/// Compose プロジェクトのラベルを持つ volume を、
+/// そのプロジェクトのワークスペースの decune-managed ボリュームとして返す。
+/// Compose はサービスの匿名 volume と、
+/// 自分で作っていない `external` の volume にプロジェクトのラベルを付けないので、
+/// これらは含まれない。
+async fn compose_project_volume_evidence(
+    cli: &DockerCli,
+    project_name: &str,
+    context: &ComposeProjectContext,
+) -> Result<Vec<VolumeEvidence>> {
+    Ok(cli
+        .list_compose_project_volumes(project_name)
+        .await?
+        .into_iter()
+        .map(|name| VolumeEvidence {
+            workspace_id: context.workspace_id.clone(),
+            name: Some(name),
+            workspace_path: context.workspace_path.clone(),
+            origin: VolumeOrigin::Compose,
+        })
+        .collect())
+}
+
+/// 同じ名前の volume を一つにする。
+/// decune のラベルと Compose プロジェクトのラベルの両方を持つ volume は、
+/// 先に見つけた方の出どころで示す。
+/// 呼び出し側は decune のラベルを持つ volume を先に渡すので、その volume は `mounts` になり、
+/// コンテナの中の `status`(`SystemContainerQuerySource::collect_volumes`)と揃う。
+fn dedupe_volume_evidence(volumes: Vec<VolumeEvidence>) -> Vec<VolumeEvidence> {
+    let mut seen = BTreeSet::new();
+    volumes
+        .into_iter()
+        .filter(|volume| {
+            volume
+                .name
+                .as_ref()
+                .is_none_or(|name| seen.insert(name.clone()))
+        })
+        .collect()
+}
+
 fn volume_evidence(volume: DockerVolumeInspect) -> Option<VolumeEvidence> {
     let labels = volume.labels.as_ref()?;
     let workspace_id = managed_workspace_id_from_labels(labels)?;
@@ -388,6 +448,7 @@ fn volume_evidence(volume: DockerVolumeInspect) -> Option<VolumeEvidence> {
         workspace_id,
         name: volume.name,
         workspace_path,
+        origin: VolumeOrigin::Mounts,
     })
 }
 
@@ -417,6 +478,7 @@ impl From<&VolumeEvidence> for VolumeStatusSummary {
     fn from(value: &VolumeEvidence) -> Self {
         Self {
             name: value.name.clone(),
+            origin: value.origin,
         }
     }
 }
@@ -496,6 +558,7 @@ mod tests {
         runtime::{
             command::{FakeRuntimeCommand, RuntimeOutput},
             docker_cli::DockerCli,
+            fake_docker::{ANONYMOUS_VOLUME_LABEL, FakeDocker},
         },
         state::{LifecycleState, WorkspaceModeSnapshot, WorkspaceState},
         status::{
@@ -625,8 +688,145 @@ mod tests {
         assert_eq!(volume.workspace_path.as_deref(), Some("/workspace"));
     }
 
+    /// decune-managed ボリュームの `(名前, 出どころ)` を名前の順に並べる。
+    fn volume_origins(evidence: &DockerEvidence) -> Vec<(String, VolumeOrigin)> {
+        let mut volumes = evidence
+            .volumes
+            .iter()
+            .map(|volume| (volume.name.clone().unwrap(), volume.origin))
+            .collect::<Vec<_>>();
+        volumes.sort_by(|left, right| left.0.cmp(&right.0));
+        volumes
+    }
+
+    /// Compose プロジェクト `project` のワークスペースが見る volume。
+    /// プロジェクトの volume と decune のラベルを持つ volume のほかに、
+    /// ラベルの無い volume、Compose が作っていない `external` の volume、
+    /// サービスの匿名 volume を持つ。
+    fn docker_with_workspace_volumes() -> FakeDocker {
+        let docker = FakeDocker::new();
+        docker.add_volume("project_data", &[("com.docker.compose.project", "project")]);
+        docker.add_volume(
+            "cache",
+            &[
+                ("decune.managed", "true"),
+                ("decune.workspace_id", WORKSPACE_ID),
+            ],
+        );
+        docker.add_volume("unlabeled", &[]);
+        docker.add_volume("external", &[("com.docker.compose.volume", "external")]);
+        docker.add_volume("anonymous", &[(ANONYMOUS_VOLUME_LABEL, "")]);
+        docker.add_container(
+            "primary-id",
+            &[
+                ("decune.managed", "true"),
+                ("decune.workspace_id", WORKSPACE_ID),
+                ("com.docker.compose.project", "project"),
+            ],
+            &[
+                "project_data",
+                "cache",
+                "unlabeled",
+                "external",
+                "anonymous",
+            ],
+        );
+        docker
+    }
+
+    // ワークスペースの decune-managed ボリュームは、Compose プロジェクトの volume を `compose`、
+    // decune のラベルを持つ volume を `mounts` として含み、
+    // ラベルの無い volume、プロジェクトのラベルを持たない `external` の volume、
+    // 匿名 volume を含まない。
+    // Compose プロジェクトは、ワークスペースのコンテナのラベルから辿る
+    #[test]
+    fn workspace_volumes_are_project_and_labeled_volumes_with_origin() {
+        let docker = docker_with_workspace_volumes();
+        let cli = DockerCli::new(Arc::new(docker));
+
+        let evidence =
+            block_on(collect_workspace_docker_evidence(&cli, WORKSPACE_ID, None)).unwrap();
+
+        assert_eq!(
+            volume_origins(&evidence),
+            vec![
+                ("cache".to_owned(), VolumeOrigin::Mounts),
+                ("project_data".to_owned(), VolumeOrigin::Compose),
+            ]
+        );
+    }
+
+    // コンテナが残っていなくても、状態に記録した Compose プロジェクトの volume を数える
+    #[test]
+    fn workspace_volumes_include_project_volumes_found_from_state_only() {
+        let docker = FakeDocker::new();
+        docker.add_volume("project_data", &[("com.docker.compose.project", "project")]);
+        let cli = DockerCli::new(Arc::new(docker));
+        let state = WorkspaceState {
+            compose_project_name: Some("project".to_owned()),
+            ..state("primary-id", "hash")
+        };
+
+        let evidence = block_on(collect_workspace_docker_evidence(
+            &cli,
+            WORKSPACE_ID,
+            Some(&state),
+        ))
+        .unwrap();
+
+        assert_eq!(
+            volume_origins(&evidence),
+            vec![("project_data".to_owned(), VolumeOrigin::Compose)]
+        );
+    }
+
+    // `WORKSPACE` なしの `status` も、状態に記録した Compose プロジェクトの volume を
+    // そのワークスペースの decune-managed ボリュームとして数え、Docker のリソースが無いとはしない
+    #[test]
+    fn all_docker_evidence_counts_project_volumes_of_state_project() {
+        let docker = FakeDocker::new();
+        docker.add_volume("project_data", &[("com.docker.compose.project", "project")]);
+        let cli = DockerCli::new(Arc::new(docker));
+        let state = WorkspaceState {
+            compose_project_name: Some("project".to_owned()),
+            ..state("primary-id", "hash")
+        };
+        let states = vec![state_evidence(WORKSPACE_ID, state)];
+
+        let evidence = block_on(collect_docker_evidence(&cli, &states)).unwrap();
+        let inventory = build_status_inventory(states, Ok(evidence));
+
+        let [workspace] = inventory.workspaces.as_slice() else {
+            panic!("{:?}", inventory.workspaces);
+        };
+        assert_eq!(
+            workspace.volumes,
+            vec![VolumeStatusSummary {
+                name: Some("project_data".to_owned()),
+                origin: VolumeOrigin::Compose,
+            }]
+        );
+        assert!(
+            workspace
+                .issues
+                .iter()
+                .all(|issue| issue.code != "state-only"),
+            "{:?}",
+            workspace.issues
+        );
+    }
+
+    fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+            .block_on(future)
+    }
+
     fn compose_sidecar_runtime() -> FakeRuntimeCommand {
         FakeRuntimeCommand::new(vec![
+            Ok(output(b"")),
             Ok(output(b"")),
             Ok(output(
                 br#"[{
@@ -769,6 +969,7 @@ mod tests {
     #[test]
     fn all_docker_evidence_includes_compose_sidecar_from_state_project() {
         let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(b"")),
             Ok(output(b"")),
             Ok(output(
                 br#"[{

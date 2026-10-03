@@ -684,6 +684,16 @@ fn assert_supported_status(
     assert!(status_text.contains(&format!("Mode: {}", fixture.mode())));
     assert!(status_text.contains("Config snapshot: consistent"));
     assert!(status_text.contains("Live workspace: not checked"));
+    if matches!(fixture, SupportedFixture::Compose) {
+        // fixture の Compose ファイルは、プロジェクトの named volume `data` を一つ宣言する
+        assert!(
+            status_text.contains(&format!(
+                "  Volumes: 1 (removed by decune remove)\n    {}_data  compose\n",
+                workspace.compose_project_name()
+            )),
+            "{status_text}"
+        );
+    }
 
     let direct = exec_container_cli(
         container,
