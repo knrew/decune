@@ -736,7 +736,8 @@ mod tests {
 
     // ワークスペースの decune-managed ボリュームは、Compose プロジェクトの volume を `compose`、
     // decune のラベルを持つ volume を `mounts` として含み、
-    // ラベルの無い volume、`external` の volume、匿名 volume を含まない。
+    // ラベルの無い volume、プロジェクトのラベルを持たない `external` の volume、
+    // 匿名 volume を含まない。
     // Compose プロジェクトは、ワークスペースのコンテナのラベルから辿る
     #[test]
     fn workspace_volumes_are_project_and_labeled_volumes_with_origin() {
