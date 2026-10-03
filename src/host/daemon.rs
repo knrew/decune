@@ -1413,7 +1413,7 @@ mod tests {
         });
     }
 
-    // 受付を終了した daemon は新規接続を拒み、受け付け済みの接続には応答してから終了する
+    // 接続の受付に失敗した daemon は、新規接続を拒み、処理中の接続に応答してから終了する
     #[test]
     fn daemon_accept_loop_exit_drains_in_flight_connections() {
         let runtime = tokio::runtime::Builder::new_current_thread()
