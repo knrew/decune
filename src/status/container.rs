@@ -25,11 +25,12 @@ use super::aggregate::{
     should_report_unhealthy,
 };
 use super::render::write_volume_resources;
+pub use super::types::VolumeOrigin;
 use super::types::{
     ContainerStatusSummary, EnvironmentStatus, LifecycleStatus, StatusIssueSeverity,
     VolumeStatusSummary, WorkspaceMode,
 };
-pub(crate) use super::types::{HealthStatus, RuntimeRunState, VolumeOrigin};
+pub(crate) use super::types::{HealthStatus, RuntimeRunState};
 
 const SNAPSHOT_IDENTITY_DOMAIN: &[u8] = b"decune-container-query-config-identity-v1";
 

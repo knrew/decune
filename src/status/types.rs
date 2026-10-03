@@ -58,7 +58,7 @@ pub(crate) struct VolumeStatusSummary {
 /// decune-managed ボリュームを、どのラベルからそのワークスペースのものと確かめたか。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "kebab-case")]
-pub(crate) enum VolumeOrigin {
+pub enum VolumeOrigin {
     /// decune が所有する Compose プロジェクトのラベル(`com.docker.compose.project`)を持つ。
     Compose,
     /// decune がコンテナを作るときに付けた decune のラベルを持つ。
