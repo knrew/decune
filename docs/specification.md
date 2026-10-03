@@ -237,7 +237,7 @@ detail:
         <volume の名前>  <compose|mounts>
     ```
 
-    出どころは、Compose プロジェクトのラベル (`com.docker.compose.project`) を持つ volume なら `compose`、decune のラベル (10.2 節) を持つ volume なら `mounts` とする。一覧は名前の辞書順とし、出どころの列を揃える。Compose プロジェクトの名前は、状態の `compose_project_name` と、そのワークスペースの decune-managed コンテナの `com.docker.compose.project` ラベルから得る。Compose ファイルは読まない。ラベルの無い volume、プロジェクトのラベルを持たない external の volume、匿名 volume は数えず、一覧にも出さない。
+    出どころは、Compose プロジェクトのラベル (`com.docker.compose.project`) を持つ volume なら `compose`、decune のラベル (10.2 節) を持つ volume なら `mounts` とする。一覧は名前の辞書順とし、出どころの列を揃える。Compose プロジェクトの名前は、状態に記録したプロジェクト名(削除時に残したものを含む)と、そのワークスペースの decune-managed コンテナの `com.docker.compose.project` ラベルから得る。Compose ファイルは読まない。ラベルの無い volume、プロジェクトのラベルを持たない external の volume、匿名 volume は数えず、一覧にも出さない。
 - 現在の reuse hash は、ワークスペースパスと設定が読める場合に read-only で計算し、状態または Docker ラベル由来の reuse hash と比較して `current` / `needs-rebuild` を判定する。`[[mounts]].create = "directory"` および Dev Container bind mount の `bind-create-src` は、存在しないホスト側パスを作成せず、既存の祖先ディレクトリを正規化して存在しない末尾を合成したパスでハッシュを計算する。計算できない場合は `unreadable` または `unknown` の問題として表示し、状態、ホスト側パス、Docker リソースは変更しない。
 - 出力には秘密情報の値、生のラベル、生の Compose モデル、コンテナの環境変数、ビルド引数、マウント元の過剰な列挙、reuse hash の値を出してはならない。`Resources` 節の decune-managed ボリュームの名前と出どころの一覧は、`remove` が削除するものを示すためのもので、ここでいうマウント元の過剰な列挙に当たらない。ホスト側のパスや、decune-managed ボリュームでない volume は一覧に出さない。
 - JSON 出力、`--ports`、`--resources` などの status のオプションは提供しない。

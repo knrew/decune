@@ -125,13 +125,17 @@ impl DockerContainerLoadHint {
 /// decune-managed ボリュームの読み込みに使う、固定の状態から得た値。
 #[derive(Clone)]
 struct DockerVolumeLoadHint {
-    compose_project_name: Option<String>,
+    compose_project_names: BTreeSet<String>,
 }
 
 impl DockerVolumeLoadHint {
     fn from_state(state: Option<&WorkspaceState>) -> Self {
         Self {
-            compose_project_name: state.and_then(|state| state.compose_project_name.clone()),
+            compose_project_names: state
+                .into_iter()
+                .flat_map(WorkspaceState::compose_project_names)
+                .map(str::to_owned)
+                .collect(),
         }
     }
 }
@@ -270,15 +274,12 @@ impl SystemContainerQuerySource {
         // Compose プロジェクト名の候補は、固定の状態に記録された値と、
         // このワークスペースの decune-managed コンテナのラベルに限る。
         // ほかの経路で得た名前を使うと、別のワークスペースの volume を示しうる。
-        let mut compose_projects = BTreeSet::new();
-        if let Some(project_name) = hint
-            .compose_project_name
-            .as_deref()
-            .map(str::trim)
-            .filter(|project_name| !project_name.is_empty())
-        {
-            compose_projects.insert(project_name.to_owned());
-        }
+        let mut compose_projects = hint
+            .compose_project_names
+            .iter()
+            .map(|name| name.trim().to_owned())
+            .filter(|name| !name.is_empty())
+            .collect::<BTreeSet<_>>();
         compose_projects.extend(
             self.docker
                 .list_workspace_compose_project_names(workspace_id)
@@ -1819,6 +1820,10 @@ mod tests {
                 ],
             );
             docker.add_volume("state-project_data", &[(COMPOSE_PROJECT, "state-project")]);
+            docker.add_volume(
+                "retained-project_data",
+                &[(COMPOSE_PROJECT, "retained-project")],
+            );
             docker.add_volume("label-project_data", &[(COMPOSE_PROJECT, "label-project")]);
             docker.add_volume(
                 "foreign-project_data",
@@ -1843,13 +1848,13 @@ mod tests {
                 docker: DockerCli::new(Arc::new(docker)),
             };
 
+            let state = WorkspaceState {
+                compose_project_name: Some("state-project".to_owned()),
+                retained_compose_projects: vec!["retained-project".to_owned()],
+                ..workspace_state()
+            };
             let mut volumes = source
-                .collect_volumes(
-                    WORKSPACE_ID,
-                    DockerVolumeLoadHint {
-                        compose_project_name: Some("state-project".to_owned()),
-                    },
-                )
+                .collect_volumes(WORKSPACE_ID, DockerVolumeLoadHint::from_state(Some(&state)))
                 .await
                 .unwrap();
             volumes.sort_by(|left, right| left.name.cmp(&right.name));
@@ -1859,6 +1864,7 @@ mod tests {
                 vec![
                     volume("cache", VolumeOrigin::Mounts),
                     volume("label-project_data", VolumeOrigin::Compose),
+                    volume("retained-project_data", VolumeOrigin::Compose),
                     volume("state-project_data", VolumeOrigin::Compose),
                 ]
             );
@@ -2004,7 +2010,7 @@ mod tests {
         match kind {
             QueryEvidenceKind::Containers => container_load(),
             QueryEvidenceKind::Volumes => QueryEvidenceLoad::Volumes(DockerVolumeLoadHint {
-                compose_project_name: None,
+                compose_project_names: BTreeSet::new(),
             }),
         }
     }

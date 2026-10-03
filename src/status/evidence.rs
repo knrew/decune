@@ -141,11 +141,11 @@ pub(super) async fn collect_workspace_docker_evidence(
         workspace_path: state.map(|state| state.workspace.clone()),
     };
     let mut compose_projects = BTreeMap::<String, ComposeProjectContext>::new();
-    add_compose_project_context(
-        &mut compose_projects,
-        state.and_then(|state| state.compose_project_name.as_deref()),
-        &context,
-    );
+    if let Some(state) = state {
+        for project_name in state.compose_project_names() {
+            add_compose_project_context(&mut compose_projects, Some(project_name), &context);
+        }
+    }
 
     let mut containers = Vec::new();
     for container in cli.list_workspace_container_inspects(workspace_id).await? {
@@ -250,11 +250,9 @@ pub(super) async fn collect_docker_evidence(
                 workspace_id: state.workspace_id.clone(),
                 workspace_path: Some(state_value.workspace.clone()),
             };
-            add_compose_project_context(
-                &mut compose_projects,
-                state_value.compose_project_name.as_deref(),
-                &context,
-            );
+            for project_name in state_value.compose_project_names() {
+                add_compose_project_context(&mut compose_projects, Some(project_name), &context);
+            }
         }
     }
 
@@ -756,14 +754,19 @@ mod tests {
         );
     }
 
-    // コンテナが残っていなくても、状態に記録した Compose プロジェクトの volume を数える
+    // コンテナが残っていなくても、現在と削除時に残した Compose プロジェクトの volume を数える
     #[test]
     fn workspace_volumes_include_project_volumes_found_from_state_only() {
         let docker = FakeDocker::new();
         docker.add_volume("project_data", &[("com.docker.compose.project", "project")]);
+        docker.add_volume(
+            "retained_data",
+            &[("com.docker.compose.project", "retained")],
+        );
         let cli = DockerCli::new(Arc::new(docker));
         let state = WorkspaceState {
             compose_project_name: Some("project".to_owned()),
+            retained_compose_projects: vec!["retained".to_owned()],
             ..state("primary-id", "hash")
         };
 
@@ -776,7 +779,10 @@ mod tests {
 
         assert_eq!(
             volume_origins(&evidence),
-            vec![("project_data".to_owned(), VolumeOrigin::Compose)]
+            vec![
+                ("project_data".to_owned(), VolumeOrigin::Compose),
+                ("retained_data".to_owned(), VolumeOrigin::Compose),
+            ]
         );
     }
 
@@ -787,33 +793,41 @@ mod tests {
         let docker = FakeDocker::new();
         docker.add_volume("project_data", &[("com.docker.compose.project", "project")]);
         let cli = DockerCli::new(Arc::new(docker));
-        let state = WorkspaceState {
-            compose_project_name: Some("project".to_owned()),
-            ..state("primary-id", "hash")
-        };
-        let states = vec![state_evidence(WORKSPACE_ID, state)];
+        for state in [
+            WorkspaceState {
+                compose_project_name: Some("project".to_owned()),
+                ..state("primary-id", "hash")
+            },
+            WorkspaceState {
+                compose_project_name: None,
+                retained_compose_projects: vec!["project".to_owned()],
+                ..state("primary-id", "hash")
+            },
+        ] {
+            let states = vec![state_evidence(WORKSPACE_ID, state)];
 
-        let evidence = block_on(collect_docker_evidence(&cli, &states)).unwrap();
-        let inventory = build_status_inventory(states, Ok(evidence));
+            let evidence = block_on(collect_docker_evidence(&cli, &states)).unwrap();
+            let inventory = build_status_inventory(states, Ok(evidence));
 
-        let [workspace] = inventory.workspaces.as_slice() else {
-            panic!("{:?}", inventory.workspaces);
-        };
-        assert_eq!(
-            workspace.volumes,
-            vec![VolumeStatusSummary {
-                name: Some("project_data".to_owned()),
-                origin: VolumeOrigin::Compose,
-            }]
-        );
-        assert!(
-            workspace
-                .issues
-                .iter()
-                .all(|issue| issue.code != "state-only"),
-            "{:?}",
-            workspace.issues
-        );
+            let [workspace] = inventory.workspaces.as_slice() else {
+                panic!("{:?}", inventory.workspaces);
+            };
+            assert_eq!(
+                workspace.volumes,
+                vec![VolumeStatusSummary {
+                    name: Some("project_data".to_owned()),
+                    origin: VolumeOrigin::Compose,
+                }]
+            );
+            assert!(
+                workspace
+                    .issues
+                    .iter()
+                    .all(|issue| issue.code != "state-only"),
+                "{:?}",
+                workspace.issues
+            );
+        }
     }
 
     fn block_on<T>(future: impl std::future::Future<Output = T>) -> T {
