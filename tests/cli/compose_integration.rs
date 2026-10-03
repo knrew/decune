@@ -3273,8 +3273,14 @@ fn compose_project_volumes_workspace(project_volumes: &[&str]) -> ComposeProject
             ".devcontainer/compose.yaml",
             "compose/project-volumes/compose.yaml",
             &[
-                ("      # __PROJECT_VOLUME_MOUNTS__\n", service_mounts.as_str()),
-                ("  # __PROJECT_VOLUME_DECLARATIONS__\n", declarations.as_str()),
+                (
+                    "      # __PROJECT_VOLUME_MOUNTS__\n",
+                    service_mounts.as_str(),
+                ),
+                (
+                    "  # __PROJECT_VOLUME_DECLARATIONS__\n",
+                    declarations.as_str(),
+                ),
                 ("__EXTERNAL_VOLUME__", &external_volume),
                 ("__UNUSED_EXTERNAL_VOLUME__", &unused_external_volume),
             ],
