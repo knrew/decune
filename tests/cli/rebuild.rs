@@ -1,36 +1,14 @@
 use crate::harness::*;
 
 // `rebuild` と `down` は、`up` が作らせた decune-managed ボリュームを削除しない
+// 同名の空の volume への作り直しも検出するため、rebuild 前に保存した内容を確かめる
 #[test]
 fn rebuild_recreates_container_and_preserves_managed_volume() {
     let workspace = support::TempWorkspace::new().unwrap();
     let workspace_root = workspace.path().canonicalize().unwrap();
     let volume_name = format!("decune-rebuild-test-{}", workspace_id(&workspace_root));
-    workspace.create_dir(".devcontainer").unwrap();
-    workspace
-        .write_file(
-            ".devcontainer/devcontainer.json",
-            format!(
-                r#"
-                {{
-                  "image": "alpine:3.20",
-                  "mounts": ["source={volume_name},target=/data,type=volume"]
-                }}
-                "#
-            ),
-        )
-        .unwrap();
-    let runtime = tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .unwrap();
-
-    runtime.block_on(async {
-        cleanup_workspace_containers(&workspace_root).unwrap();
-        cleanup_workspace_volumes(&workspace_root).unwrap();
-    });
-
-    let result = std::panic::catch_unwind(|| {
+    write_named_volume_devcontainer(&workspace, &volume_name);
+    with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
         decune()
             .args(["up", "--detach"])
             .arg(&workspace_root)
@@ -43,11 +21,16 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             vec![volume_name.clone()]
         );
 
-        let first_id = runtime.block_on(async {
+        let first_id = {
             let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             containers[0].id.clone().unwrap()
-        });
+        };
+        exec_single_workspace_container(
+            &workspace_root,
+            ["sh", "-c", "printf retained > /data/rebuild-marker"],
+        )
+        .unwrap();
 
         decune()
             .args(["rebuild", "--detach"])
@@ -60,7 +43,7 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             ))
             .stderr(predicate::str::contains("Started dev container"));
 
-        runtime.block_on(async {
+        {
             let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             assert_ne!(containers[0].id.as_deref(), Some(first_id.as_str()));
@@ -73,12 +56,17 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
 
             let volumes = workspace_volumes(&workspace_root).unwrap();
             assert_eq!(volumes, vec![volume_name.clone()]);
-        });
+            assert_eq!(
+                exec_single_workspace_container(&workspace_root, ["cat", "/data/rebuild-marker"])
+                    .unwrap(),
+                "retained"
+            );
+        }
 
-        let second_id = runtime.block_on(async {
+        let second_id = {
             let containers = workspace_containers(&workspace_root).unwrap();
             containers[0].id.clone().unwrap()
-        });
+        };
 
         decune()
             .args(["up", "--detach", "--rebuild"])
@@ -91,14 +79,19 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             ))
             .stderr(predicate::str::contains("Started dev container"));
 
-        runtime.block_on(async {
+        {
             let containers = workspace_containers(&workspace_root).unwrap();
             assert_eq!(containers.len(), 1);
             assert_ne!(containers[0].id.as_deref(), Some(second_id.as_str()));
 
             let volumes = workspace_volumes(&workspace_root).unwrap();
             assert_eq!(volumes, vec![volume_name.clone()]);
-        });
+            assert_eq!(
+                exec_single_workspace_container(&workspace_root, ["cat", "/data/rebuild-marker"])
+                    .unwrap(),
+                "retained"
+            );
+        }
 
         decune().arg("down").arg(&workspace_root).assert().success();
         assert_eq!(
@@ -106,16 +99,6 @@ fn rebuild_recreates_container_and_preserves_managed_volume() {
             vec![volume_name.clone()]
         );
     });
-
-    runtime.block_on(async {
-        let container_cleanup = cleanup_workspace_containers(&workspace_root);
-        let volume_cleanup = cleanup_workspace_volumes(&workspace_root);
-        container_cleanup.and(volume_cleanup).unwrap();
-    });
-
-    if let Err(payload) = result {
-        std::panic::resume_unwind(payload);
-    }
 }
 
 #[test]

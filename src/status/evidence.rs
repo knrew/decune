@@ -590,25 +590,39 @@ mod tests {
         assert_eq!(evidence.health_status, HealthStatus::Healthy);
     }
 
-    // decune-managed ボリュームの evidence は、そのラベルのワークスペースのパスを持つ
+    // 状態もコンテナも無いときも、volume のラベルからワークスペースのパスを収集する
     #[test]
-    fn volume_inspect_is_reduced_to_evidence_with_workspace_path() {
-        let volumes: Vec<DockerVolumeInspect> = serde_json::from_slice(
-            br#"[{
-                "Name": "project-data",
-                "Labels": {
-                    "decune.managed": "true",
-                    "decune.workspace_id": "123456abcdef",
-                    "decune.workspace": "/workspace"
-                }
-            }]"#,
-        )
-        .unwrap();
-        let evidence = volume_evidence(volumes.into_iter().next().unwrap()).unwrap();
+    fn docker_evidence_collection_retains_volume_workspace_path_without_state_or_containers() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(
+                br#"[{
+                    "Name": "project-data",
+                    "Labels": {
+                        "decune.managed": "true",
+                        "decune.workspace_id": "123456abcdef",
+                        "decune.workspace": "/workspace"
+                    }
+                }]"#,
+            )),
+            Ok(output(b"project-data\n")),
+            Ok(output(b"")),
+        ]);
+        let cli = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
 
-        assert_eq!(evidence.workspace_id, WORKSPACE_ID);
-        assert_eq!(evidence.name.as_deref(), Some("project-data"));
-        assert_eq!(evidence.workspace_path.as_deref(), Some("/workspace"));
+        let evidence = runtime
+            .block_on(collect_docker_evidence(&cli, &[]))
+            .unwrap();
+
+        assert!(evidence.containers.is_empty());
+        assert_eq!(evidence.volumes.len(), 1);
+        let volume = &evidence.volumes[0];
+        assert_eq!(volume.workspace_id, WORKSPACE_ID);
+        assert_eq!(volume.name.as_deref(), Some("project-data"));
+        assert_eq!(volume.workspace_path.as_deref(), Some("/workspace"));
     }
 
     fn compose_sidecar_runtime() -> FakeRuntimeCommand {
