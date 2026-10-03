@@ -256,7 +256,7 @@ pub(crate) fn fake_path_with_commands(
 }
 
 /// `image` が alpine で、`mounts` に named volume `volume` を一つ持つワークスペース。
-pub fn write_named_volume_devcontainer(workspace: &support::TempWorkspace, volume: &str) {
+pub(crate) fn write_named_volume_devcontainer(workspace: &support::TempWorkspace, volume: &str) {
     workspace.create_dir(".devcontainer").must();
     workspace
         .write_file(

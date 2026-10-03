@@ -141,7 +141,7 @@ where
 }
 
 /// コンテナとイメージに加えて、ワークスペースの decune のラベルを持つ volume も、前後で片付ける。
-pub fn with_clean_workspace_containers_images_and_volumes<F>(workspace_root: &Path, body: F)
+pub(crate) fn with_clean_workspace_containers_images_and_volumes<F>(workspace_root: &Path, body: F)
 where
     F: FnOnce() + std::panic::UnwindSafe,
 {
@@ -272,7 +272,7 @@ pub(crate) fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<Vec<Str
 }
 
 /// volume のラベル。volume が無ければエラーにする。
-pub fn volume_labels(volume: &str) -> anyhow::Result<HashMap<String, String>> {
+pub(crate) fn volume_labels(volume: &str) -> anyhow::Result<HashMap<String, String>> {
     #[derive(Deserialize)]
     #[serde(rename_all = "PascalCase")]
     struct VolumeInspect {
@@ -287,7 +287,7 @@ pub fn volume_labels(volume: &str) -> anyhow::Result<HashMap<String, String>> {
     Ok(volume.labels.unwrap_or_default())
 }
 
-pub fn volume_exists(volume: &str) -> bool {
+pub(crate) fn volume_exists(volume: &str) -> bool {
     docker_status(["volume", "inspect", volume]).is_ok()
 }
 
@@ -295,7 +295,7 @@ pub fn volume_exists(volume: &str) -> bool {
 /// ワークスペースのラベルで片付ける `cleanup_workspace_volumes` では消えないので、
 /// テストが panic しても残さないために使う。使用中の volume は `--force` でも消えないので、
 /// volume を mount するコンテナは、drop より先に消す。
-pub struct UnlabeledVolume {
+pub(crate) struct UnlabeledVolume {
     name: String,
 }
 
