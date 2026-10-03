@@ -1413,6 +1413,7 @@ mod tests {
         });
     }
 
+    // 受付を終了した daemon は新規接続を拒み、受け付け済みの接続には応答してから終了する
     #[test]
     fn daemon_accept_loop_exit_drains_in_flight_connections() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1436,23 +1437,21 @@ mod tests {
 
             let mut in_flight = UnixStream::connect(&socket_path).await.unwrap();
             in_flight.write_all(b"{").await.unwrap();
-            tokio::task::yield_now().await;
-            tokio::task::yield_now().await;
+            assert_eq!(
+                send_raw_request(&socket_path, b"{}").await["error"]["code"],
+                "invalid_request"
+            );
 
             // Closing the semaphore fails the next admission, which exits the accept
             // loop through the same path as an accept failure. The connection accepted
             // with the already-held permit triggers that next admission.
             active_connections.close();
-            let last_accepted = UnixStream::connect(&socket_path).await.unwrap();
-            let mut accept_loop_exited = false;
-            for _ in 0..10 {
-                tokio::task::yield_now().await;
-                if UnixStream::connect(&socket_path).await.is_err() {
-                    accept_loop_exited = true;
-                    break;
-                }
-            }
-            assert!(accept_loop_exited);
+            // current_thread では、最後に受け付けた接続への応答は listener を閉じた後に返る。
+            assert_eq!(
+                send_raw_request(&socket_path, b"{}").await["error"]["code"],
+                "invalid_request"
+            );
+            assert!(UnixStream::connect(&socket_path).await.is_err());
 
             in_flight
                 .write_all(br#""version":1,"type":"credential"}"#)
@@ -1465,7 +1464,6 @@ mod tests {
             assert_eq!(response["ok"], false);
             assert_eq!(response["error"]["code"], "invalid_request");
 
-            drop(last_accepted);
             daemon_task.await.unwrap();
         });
     }
