@@ -1430,7 +1430,7 @@ Compose モードでは上記のラベルを primary service に追加する。�
 
 既存のコンテナ / プロジェクトの再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他のツールのコンテナは拾わない。
 
-image/Dockerfile モードでは、decune がコンテナを作るとき(`docker create`)に Docker が `--mount` の named volume を新しく作る場合、その volume に `decune.managed=true`、`decune.workspace=<canonical_workspace_path>`、`decune.workspace_id=<workspace_id>` を付ける。対象は、`devcontainer.json` の `mounts`、`type=volume` の `workspaceMount`、Feature の `mounts`、`type = "volume"` の `[[mounts]]` の named volume であり、出どころで扱いを変えない。ラベルは `--mount` の `volume-label` で渡し、Docker は既にある volume にはこれを付けない。そのため、decune がコンテナを作るより前からある volume は、mount してもラベルを持たない。`source` の無い mount から Docker が作る匿名 volume、bind mount、tmpfs にはラベルを付けない。利用者が `mounts` に `volume-label` を書くと、キーによらずエラーにするので、利用者の設定から decune のラベルを volume に付ける経路は無い。
+image/Dockerfile モードでは、decune がコンテナを作るとき(`docker create`)に Docker が `--mount` の named volume を新しく作る場合、その volume に `decune.managed=true`、`decune.workspace=<canonical_workspace_path>`、`decune.workspace_id=<workspace_id>` を付ける。対象は、`devcontainer.json` の `mounts`、`type=volume` の `workspaceMount`、Feature の `mounts`、`type = "volume"` の `[[mounts]]` の named volume であり、出どころで扱いを変えない。ラベルは `--mount` の `volume-label` で渡す。Docker は既にある volume にはこれを適用せず、既存のラベルを変更しない。`source` の無い mount から Docker が作る匿名 volume、bind mount、tmpfs にはラベルを付けない。利用者が `mounts` に `volume-label` を書くと、キーによらずエラーにするので、利用者の設定から decune のラベルを volume に付ける経路は無い。
 
 ### 10.3 reuse hash
 
