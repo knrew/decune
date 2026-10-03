@@ -223,7 +223,7 @@ decune status path/to/workspace  # 指定ワークスペースの detail
 
 summary 表示ではワークスペースごとの実行状態、設定状態、ヘルス、ポート数、問題の数を確認できます。detail 表示では問題の内訳と、必要な操作(`decune rebuild` の要否など)が `Action` として表示されます。
 
-detail 表示の `Resources` には、`decune remove` で削除される decune-managed ボリュームが、名前と出どころとともに名前の順で表示されます。出どころは、Compose プロジェクトの volume なら `compose`、`decune up` や `decune rebuild` がコンテナを作るときに新しくできた `mounts` の named volume なら `mounts` です。
+detail 表示の `Resources` には、`decune remove` で削除される decune-managed ボリュームが、名前と出どころとともに名前の順で表示されます。出どころは、Compose プロジェクトの volume なら `compose`、image/Dockerfile モードでコンテナの作成時に decune のラベルが付いた named volume なら `mounts` です。
 
 ```text
 Resources
