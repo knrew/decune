@@ -572,6 +572,168 @@ fn remove_reports_kept_unlabeled_volume_and_omits_anonymous_volumes() {
     docker_status(["volume", "rm", &user_volume]).unwrap();
 }
 
+fn kept_volume_lines(stderr: &str) -> Vec<&str> {
+    stderr
+        .lines()
+        .filter(|line| line.contains("Kept Docker volume"))
+        .collect()
+}
+
+// `decune up` が作らせた named volume は、そのワークスペースの decune-managed ボリュームで、
+// `remove` で削除する
+#[test]
+fn remove_removes_named_volume_created_by_up() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let volume = format!("decune-remove-created-{}", workspace_id(&workspace_root));
+    write_named_volume_devcontainer(&workspace, &volume);
+
+    with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+            .assert()
+            .success();
+        assert!(volume_exists(&volume));
+
+        let output = decune()
+            .args(["remove", "--no-confirm"])
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+
+        let stderr = String::from_utf8(output.stderr).unwrap();
+        assert!(!volume_exists(&volume), "{stderr}");
+        assert!(kept_volume_lines(&stderr).is_empty(), "{stderr}");
+    });
+}
+
+// ワークスペース X の `up` が作らせた volume を、ワークスペース Y も mount しているとき、
+// Y の `remove` はその volume を消さず、Y の decune-managed ボリュームでないものとして示す。
+// Y の `up` のときには volume が既にあるので、Docker は Y のラベルを付けない
+#[test]
+fn remove_keeps_volume_created_by_another_workspace() {
+    let owner = support::TempWorkspace::new().unwrap();
+    let sharer = support::TempWorkspace::new().unwrap();
+    let owner_tools_dir = fake_container_tools_bundle(&owner);
+    let sharer_tools_dir = fake_container_tools_bundle(&sharer);
+    let owner_root = owner.path().canonicalize().unwrap();
+    let sharer_root = sharer.path().canonicalize().unwrap();
+    let volume = format!("decune-remove-shared-{}", workspace_id(&owner_root));
+    let state_home = tempfile::tempdir().unwrap();
+    write_named_volume_devcontainer(&owner, &volume);
+    write_named_volume_devcontainer(&sharer, &volume);
+
+    with_clean_workspace_containers_images_and_volumes(&owner_root, || {
+        with_clean_workspace_containers_images_and_volumes(&sharer_root, || {
+            for (root, tools_dir) in [
+                (&owner_root, &owner_tools_dir),
+                (&sharer_root, &sharer_tools_dir),
+            ] {
+                decune()
+                    .args(["up", "--detach"])
+                    .arg(root)
+                    .env("XDG_STATE_HOME", state_home.path())
+                    .env("DECUNE_CONTAINER_TOOLS_DIR", tools_dir)
+                    .assert()
+                    .success();
+            }
+
+            let output = decune()
+                .args(["remove", "--no-confirm"])
+                .arg(&sharer_root)
+                .env("XDG_STATE_HOME", state_home.path())
+                .assert()
+                .success()
+                .get_output()
+                .clone();
+
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            let kept = kept_volume_lines(&stderr);
+            assert_eq!(kept.len(), 1, "{stderr}");
+            assert!(kept[0].contains(&volume), "{stderr}");
+            assert!(
+                kept[0].contains("not a decune-managed volume of this workspace"),
+                "{stderr}"
+            );
+            assert!(volume_exists(&volume));
+            assert!(workspace_containers(&sharer_root).unwrap().is_empty());
+        });
+    });
+}
+
+// ワークスペースの decune-managed ボリュームを、
+// ワークスペースの外のコンテナ(停止中でもよい)が参照していると、
+// `remove` はその volume を残して使用中として警告し、ほかの削除を終えて成功する
+#[test]
+fn remove_keeps_managed_volume_in_use_by_other_container() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let volume = format!("decune-remove-in-use-{workspace_id}");
+    let other_container = format!("decune-remove-in-use-other-{workspace_id}");
+    let path_roots = tempfile::tempdir().unwrap();
+    let state_home = path_roots.path().join("state");
+    let state_dir = state_home.join("decune").join(&workspace_id);
+    let runtime_home = path_roots.path().join("runtime");
+    let runtime_dir = runtime_home.join("decune").join(&workspace_id);
+    write_named_volume_devcontainer(&workspace, &volume);
+
+    with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
+        let result = std::panic::catch_unwind(|| {
+            decune()
+                .args(["up", "--detach"])
+                .arg(&workspace_root)
+                .env("XDG_STATE_HOME", &state_home)
+                .env("XDG_RUNTIME_DIR", &runtime_home)
+                .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+                .assert()
+                .success();
+            assert!(state_dir.exists());
+            assert!(runtime_dir.exists());
+            docker_status([
+                "create",
+                "--name",
+                &other_container,
+                "--mount",
+                &format!("type=volume,source={volume},target=/data"),
+                "alpine:3.20",
+            ])
+            .unwrap();
+
+            let output = decune()
+                .args(["remove", "--no-confirm"])
+                .arg(&workspace_root)
+                .env("XDG_STATE_HOME", &state_home)
+                .env("XDG_RUNTIME_DIR", &runtime_home)
+                .assert()
+                .success()
+                .get_output()
+                .clone();
+
+            let stderr = String::from_utf8(output.stderr).unwrap();
+            let kept = kept_volume_lines(&stderr);
+            assert_eq!(kept.len(), 1, "{stderr}");
+            assert!(kept[0].starts_with("Warning:"), "{stderr}");
+            assert!(kept[0].contains(&volume), "{stderr}");
+            assert!(kept[0].contains("in use by another container"), "{stderr}");
+            assert!(volume_exists(&volume));
+            assert!(workspace_containers(&workspace_root).unwrap().is_empty());
+            assert!(!state_dir.exists());
+            assert!(!runtime_dir.exists());
+        });
+        _ = docker_status(["rm", "--force", &other_container]);
+        if let Err(payload) = result {
+            std::panic::resume_unwind(payload);
+        }
+    });
+}
+
 #[test]
 fn remove_all_workspaces_no_targets_succeeds_without_confirmation() {
     let temp = support::TempWorkspace::new().unwrap();
@@ -692,6 +854,38 @@ last_started_at = "unix:1"
     );
     let commands = fs::read_to_string(command_log).unwrap();
     assert!(!commands.contains("user-owned"), "{commands}");
+}
+
+// 状態もコンテナも残っておらず、decune-managed ボリュームだけが残るワークスペースも、
+// `--all-workspaces` の対象として見つけ、その volume を削除する
+#[test]
+fn remove_all_workspaces_removes_workspace_with_only_managed_volume() {
+    let temp = support::TempWorkspace::new().unwrap();
+    let state_home = temp.path().join("state");
+    let runtime_home = temp.path().join("runtime");
+    let command_log = temp.path().join("docker.log");
+    fs::create_dir_all(&state_home).unwrap();
+    fs::create_dir_all(&runtime_home).unwrap();
+    let fake_path = fake_docker_path(&temp, "cli/remove/volume-only-workspace.sh");
+
+    decune()
+        .env("PATH", &fake_path)
+        .env("DECUNE_FAKE_COMMAND_LOG", &command_log)
+        .env("XDG_STATE_HOME", &state_home)
+        .env("XDG_RUNTIME_DIR", &runtime_home)
+        .args(["remove", "--all-workspaces", "--no-confirm"])
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains(
+            "Removed dev container resources for workspace id: aaaaaaaaaaaa",
+        ));
+
+    let commands = fs::read_to_string(command_log).unwrap();
+    assert!(
+        commands.contains("volume rm --force orphan-volume"),
+        "{commands}"
+    );
 }
 
 #[test]

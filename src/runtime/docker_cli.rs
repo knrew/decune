@@ -801,6 +801,7 @@ pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeComman
     }
     command = add_host_config_args(command, spec);
     for mount in &spec.mounts {
+        let mount = with_created_volume_labels(mount, &spec.volume_labels);
         command = command.arg("--mount").arg(mount.to_cli_mount());
     }
     for publish in &spec.publish_ports {
@@ -812,6 +813,26 @@ pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeComman
         command = command.args(command_args);
     }
     command
+}
+
+/// named volume の mount に `labels` を足す。
+/// Docker は `volume-label` を、その mount のために volume を新しく作るときにだけ付け、
+/// 既にある volume には付けない。
+/// 匿名 volume は `source` を持たず、コンテナと一緒に消えるので、ラベルを付けない。
+fn with_created_volume_labels(
+    mount: &DockerMountSpec,
+    labels: &BTreeMap<String, String>,
+) -> DockerMountSpec {
+    let mut mount = mount.clone();
+    if mount.mount_type != MountType::Volume || mount.source.is_none() || labels.is_empty() {
+        return mount;
+    }
+    let volume_options = mount.volume_options.get_or_insert_with(Default::default);
+    volume_options
+        .labels
+        .get_or_insert_with(BTreeMap::new)
+        .extend(labels.clone());
+    mount
 }
 
 fn add_host_config_args(mut command: RuntimeCommand, spec: &ContainerCreateSpec) -> RuntimeCommand {
@@ -2045,6 +2066,7 @@ mod tests {
                 bind_options: None,
                 volume_options: None,
             }],
+            volume_labels: BTreeMap::new(),
             publish_ports: vec![DockerPublishPort {
                 container: 8080,
                 host: Some(18080),
@@ -2100,6 +2122,7 @@ mod tests {
             working_dir: None,
             user: None,
             mounts: Vec::new(),
+            volume_labels: BTreeMap::new(),
             publish_ports: Vec::new(),
             host_config: ContainerHostConfig::default(),
         };
@@ -2137,6 +2160,7 @@ mod tests {
             working_dir: None,
             user: None,
             mounts: Vec::new(),
+            volume_labels: BTreeMap::new(),
             publish_ports: Vec::new(),
             host_config: ContainerHostConfig::default(),
         };
@@ -2324,6 +2348,79 @@ mod tests {
         );
     }
 
+    // コンテナの作成の `--mount` で、decune のラベルを named volume にだけ渡す。
+    // 匿名 volume、bind mount、tmpfs には渡さず、named volume の他のオプションは保つ。
+    // `,` を含むラベルの値は、`volume-label=` の field 全体を引用符で囲み、一つの field に収める
+    #[test]
+    fn docker_create_command_labels_only_named_volumes() {
+        let mount = |mount_type, source: Option<&str>, target: &str| DockerMountSpec {
+            source: source.map(str::to_owned),
+            target: target.to_owned(),
+            mount_type,
+            read_only: false,
+            consistency: None,
+            bind_options: None,
+            volume_options: None,
+        };
+        let spec = ContainerCreateSpec {
+            image: "alpine:3.20".to_owned(),
+            name: "decune-test".to_owned(),
+            entrypoint: None,
+            command: None,
+            labels: BTreeMap::new(),
+            env: BTreeMap::new(),
+            working_dir: None,
+            user: None,
+            mounts: vec![
+                DockerMountSpec {
+                    volume_options: Some(MountVolumeOptions {
+                        no_copy: Some(true),
+                        subpath: Some("deps".to_owned()),
+                        ..MountVolumeOptions::default()
+                    }),
+                    ..mount(MountType::Volume, Some("project-data"), "/data")
+                },
+                mount(MountType::Volume, None, "/anonymous"),
+                mount(
+                    MountType::Bind,
+                    Some("/host/project"),
+                    "/workspaces/project",
+                ),
+                mount(MountType::Tmpfs, None, "/tmp/cache"),
+            ],
+            volume_labels: BTreeMap::from([
+                ("decune.managed".to_owned(), "true".to_owned()),
+                ("decune.workspace".to_owned(), "/work/a,b".to_owned()),
+                ("decune.workspace_id".to_owned(), "aaaaaaaaaaaa".to_owned()),
+            ]),
+            publish_ports: Vec::new(),
+            host_config: ContainerHostConfig::default(),
+        };
+
+        let command = docker_create_command(&spec);
+
+        let mounts = command
+            .args_vec()
+            .windows(2)
+            .filter(|args| args[0] == "--mount")
+            .map(|args| args[1].clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            mounts,
+            vec![
+                concat!(
+                    "type=volume,target=/data,source=project-data,volume-nocopy,",
+                    "volume-subpath=deps,volume-label=decune.managed=true,",
+                    r#""volume-label=decune.workspace=/work/a,b","#,
+                    "volume-label=decune.workspace_id=aaaaaaaaaaaa"
+                ),
+                "type=volume,target=/anonymous",
+                "type=bind,target=/workspaces/project,source=/host/project",
+                "type=tmpfs,target=/tmp/cache",
+            ]
+        );
+    }
+
     #[test]
     fn docker_create_command_does_not_emit_unsupported_bind_create_field() {
         let spec = ContainerCreateSpec {
@@ -2347,6 +2444,7 @@ mod tests {
                 }),
                 volume_options: None,
             }],
+            volume_labels: BTreeMap::new(),
             publish_ports: Vec::new(),
             host_config: ContainerHostConfig::default(),
         };

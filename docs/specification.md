@@ -216,6 +216,7 @@ summary:
 - ランタイムディレクトリや port status ディレクトリだけが残っているワークスペースは summary の対象に含めない。
 - 対象が 0 件の場合も成功とし、`No decune-managed workspace environments found` を表示する。
 - 1 件以上の場合は集計行と表を表示する。表の列は `ID WORKSPACE RUNTIME CONFIG HEALTH FWD/PUB ISSUES LAST_USED` とする。
+- 表示用ワークスペースパスは、状態の `workspace`、コンテナの `decune.workspace` ラベル、ボリュームの `decune.workspace` ラベルの順に取る。状態もコンテナも残っておらず、ボリュームだけが残るワークスペースも、ボリュームのラベルのパスを表示する。
 - 並び順は表示用ワークスペースパスの辞書順とし、同順位は workspace id で決める。ワークスペースパスが不明なエントリは末尾に置く。
 - `LAST_USED` は状態の `last_used_at` だけから表示する。`created_at` や `last_started_at` へフォールバックしない。値がない、不正、未来の時刻の場合は `-` とする。
 - `FWD/PUB` は現在有効な転送ポート数と Docker published port の数を `<forwarded>/<published>` 形式で表示する。
@@ -1428,6 +1429,8 @@ Compose モード:
 Compose モードでは上記のラベルを primary service に追加する。明示的な sidecar service forwarding の対象サービスには、forwarding 用の実行時マウントの再作成判定に必要な `decune.managed=true` と `decune.workspace_id=<workspace_id>` を追加する。Compose が付与する `com.docker.compose.project` と `com.docker.compose.service` もコンテナの identity に使う。`com.docker.compose.*` のプレフィックスを decune-generated Compose override で上書きしてはならない。
 
 既存のコンテナ / プロジェクトの再利用は `decune.managed=true` と `decune.workspace_id` が一致するものに限る。他のツールのコンテナは拾わない。
+
+image/Dockerfile モードでは、decune がコンテナを作るとき(`docker create`)に Docker が `--mount` の named volume を新しく作る場合、その volume に `decune.managed=true`、`decune.workspace=<canonical_workspace_path>`、`decune.workspace_id=<workspace_id>` を付ける。対象は、`devcontainer.json` の `mounts`、`type=volume` の `workspaceMount`、Feature の `mounts`、`type = "volume"` の `[[mounts]]` の named volume であり、出どころで扱いを変えない。ラベルは `--mount` の `volume-label` で渡す。Docker は既にある volume にはこれを適用せず、既存のラベルを変更しない。`source` の無い mount から Docker が作る匿名 volume、bind mount、tmpfs にはラベルを付けない。利用者が `mounts` に `volume-label` を書くと、キーによらずエラーにするので、利用者の設定から decune のラベルを volume に付ける経路は無い。
 
 ### 10.3 reuse hash
 

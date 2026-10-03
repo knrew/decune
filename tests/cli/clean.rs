@@ -200,6 +200,51 @@ fn clean_dry_run_human_output_keeps_workspace_data() {
     assert!(paths.runtime_dir.exists());
 }
 
+// コンテナが無くても、`up` が作らせた decune-managed ボリュームが残るワークスペースは、
+// `clean` が再利用可能なリソースが残っているものとしてスキップする
+#[test]
+fn clean_skips_workspace_with_only_volume_created_by_up() {
+    let workspace = support::TempWorkspace::new().must();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let workspace_root = workspace.path().canonicalize().must();
+    let workspace_id = workspace_id(&workspace_root);
+    let volume = format!("decune-clean-volume-only-{workspace_id}");
+    let paths = CleanTestPaths::new(&workspace, &workspace_id);
+    write_named_volume_devcontainer(&workspace, &volume);
+
+    with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("XDG_STATE_HOME", &paths.state_home)
+            .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+            .assert()
+            .success();
+        cleanup_workspace_containers(&workspace_root).must();
+        assert!(paths.state_dir.exists());
+
+        let output = decune()
+            .env("XDG_CACHE_HOME", &paths.cache_home)
+            .env("XDG_STATE_HOME", &paths.state_home)
+            .env("XDG_RUNTIME_DIR", &paths.runtime_home)
+            .args(["clean", "--dry-run", "--json"])
+            .assert()
+            .success()
+            .get_output()
+            .stdout
+            .clone();
+
+        let json: Value = serde_json::from_slice(&output).must();
+        let target = json["targets"]
+            .as_array()
+            .must()
+            .iter()
+            .find(|target| target["workspace_id"] == workspace_id.as_str())
+            .must_msg(format_args!("missing clean target in {json}"));
+        assert_eq!(target["reason"], "managed_resource");
+    });
+}
+
 struct CleanTestPaths {
     cache_home: PathBuf,
     state_home: PathBuf,

@@ -481,6 +481,32 @@ read_olny = true
         assert!(message.contains("read_olny"));
     }
 
+    // `[[mounts]]` に volume のラベルを書く項目は無い。
+    // decune のラベルを volume に付けられるのは decune だけで、利用者の設定から付ける経路を作らない
+    #[test]
+    fn mount_volume_label_key_is_rejected() {
+        let (_temp, path) = config_path("mount-volume-label");
+        fs::write(
+            &path,
+            r#"
+version = 1
+
+[[mounts]]
+source = "project-cache"
+target = "/cache"
+type = "volume"
+volume-label = "decune.managed=true"
+"#,
+        )
+        .unwrap();
+
+        let error = load_config_file(&path).unwrap_err();
+        let message = format!("{error:#}");
+
+        assert!(message.contains("Failed to parse decune config file"));
+        assert!(message.contains("volume-label"));
+    }
+
     #[test]
     fn non_string_environment_value_is_rejected_with_key_and_path() {
         let (_temp, path) = config_path("non-string-environment");

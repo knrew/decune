@@ -140,25 +140,51 @@ where
     with_clean_workspace_resources(workspace_root, true, body);
 }
 
+/// コンテナとイメージに加えて、ワークスペースの decune のラベルを持つ volume も、前後で片付ける。
+pub(crate) fn with_clean_workspace_containers_images_and_volumes<F>(workspace_root: &Path, body: F)
+where
+    F: FnOnce() + std::panic::UnwindSafe,
+{
+    with_clean_workspace_resources_including(workspace_root, true, true, body);
+}
+
 fn with_clean_workspace_resources<F>(workspace_root: &Path, cleanup_images: bool, body: F)
 where
     F: FnOnce() + std::panic::UnwindSafe,
 {
-    cleanup_workspace_resources(workspace_root, cleanup_images).must();
+    with_clean_workspace_resources_including(workspace_root, cleanup_images, false, body);
+}
+
+fn with_clean_workspace_resources_including<F>(
+    workspace_root: &Path,
+    cleanup_images: bool,
+    cleanup_volumes: bool,
+    body: F,
+) where
+    F: FnOnce() + std::panic::UnwindSafe,
+{
+    cleanup_workspace_resources(workspace_root, cleanup_images, cleanup_volumes).must();
 
     let result = std::panic::catch_unwind(body);
 
-    cleanup_workspace_resources(workspace_root, cleanup_images).must();
+    cleanup_workspace_resources(workspace_root, cleanup_images, cleanup_volumes).must();
 
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
     }
 }
 
-fn cleanup_workspace_resources(workspace_root: &Path, cleanup_images: bool) -> anyhow::Result<()> {
+fn cleanup_workspace_resources(
+    workspace_root: &Path,
+    cleanup_images: bool,
+    cleanup_volumes: bool,
+) -> anyhow::Result<()> {
     cleanup_workspace_containers(workspace_root)?;
     if cleanup_images {
         cleanup_workspace_images(workspace_root)?;
+    }
+    if cleanup_volumes {
+        cleanup_workspace_volumes(workspace_root)?;
     }
 
     Ok(())
@@ -243,6 +269,49 @@ pub(crate) fn workspace_volumes(workspace_root: &Path) -> anyhow::Result<Vec<Str
         .filter(|line| !line.is_empty())
         .map(str::to_owned)
         .collect())
+}
+
+/// volume のラベル。volume が無ければエラーにする。
+pub(crate) fn volume_labels(volume: &str) -> anyhow::Result<HashMap<String, String>> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "PascalCase")]
+    struct VolumeInspect {
+        labels: Option<HashMap<String, String>>,
+    }
+
+    let output = docker_output(["volume", "inspect", volume])?;
+    let mut volumes = serde_json::from_str::<Vec<VolumeInspect>>(&output)?;
+    let volume = volumes
+        .pop()
+        .ok_or_else(|| anyhow::anyhow!("volume inspect returned no volumes"))?;
+    Ok(volume.labels.unwrap_or_default())
+}
+
+pub(crate) fn volume_exists(volume: &str) -> bool {
+    docker_status(["volume", "inspect", volume]).is_ok()
+}
+
+/// decune のラベルを持たない volume を作り、drop で消す。
+/// ワークスペースのラベルで片付ける `cleanup_workspace_volumes` では消えないので、
+/// テストが panic しても残さないために使う。使用中の volume は `--force` でも消えないので、
+/// volume を mount するコンテナは、drop より先に消す。
+pub(crate) struct UnlabeledVolume {
+    name: String,
+}
+
+impl UnlabeledVolume {
+    pub(crate) fn create(name: &str) -> anyhow::Result<Self> {
+        docker_status(["volume", "create", name])?;
+        Ok(Self {
+            name: name.to_owned(),
+        })
+    }
+}
+
+impl Drop for UnlabeledVolume {
+    fn drop(&mut self) {
+        _ = docker_status(["volume", "rm", "--force", &self.name]);
+    }
 }
 
 pub(crate) fn cleanup_workspace_volumes(workspace_root: &Path) -> anyhow::Result<()> {
