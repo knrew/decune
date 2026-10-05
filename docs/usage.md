@@ -262,7 +262,13 @@ decune remove --images                       # decune が生成したイメー�
 decune remove --all-workspaces --no-confirm  # すべてのワークスペースを対象に、確認なしで削除する
 ```
 
-`--no-confirm` は確認プロンプトだけを省略し、decune が管理するリソースに限定する安全境界は迂回しません。削除範囲の契約は [specification.md 3.7 節](specification.md#37-remove--rm) を参照してください。
+`--no-confirm` は確認プロンプトだけを省略し、decune が管理するリソースに限定する安全境界は迂回しません。
+
+削除する volume の名前は `[y/N]` の確認の前に表示し、残した named volume の名前と理由は削除後に表示します。他のコンテナが使っている volume は残して処理を続け、Compose プロジェクトの volume を残す場合は、次の削除に必要な状態も保存します。
+
+使用中のために残した volume を削除するには、それを使うコンテナを削除してから、もう一度 `decune remove` を実行してください。
+
+削除範囲の契約は [specification.md 3.7 節](specification.md#37-remove--rm) を参照してください。
 
 ### `decune clean`
 

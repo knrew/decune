@@ -281,17 +281,22 @@ decune rm     [--no-confirm] [--images] --all-workspaces
 ```
 
 - image/Dockerfile モード: decune が管理するコンテナ、decune が管理するボリューム、状態 / ランタイムデータを削除する。`--images` 指定時だけ生成イメージを削除する。
-- Compose モード: decune が管理する Compose プロジェクトを `docker compose down --volumes --remove-orphans` 相当で削除し、状態 / ランタイムデータを削除する。external なボリューム / ネットワークは Compose の標準挙動に従い削除しない。`--images` 指定時だけ decune が生成したイメージを削除する。利用者が Compose ファイルで指定したイメージを `--rmi all` で削除してはならない。
+- Compose モード: decune が管理する Compose プロジェクトを `docker compose down --volumes --remove-orphans` 相当で削除し、状態 / ランタイムデータを削除する。`docker compose down` が成功した後も、プロジェクトのラベル (`com.docker.compose.project`) を持つ named volume が残っていれば、ラベルから探して削除する。今の Compose ファイルが宣言していない volume と、今の Compose ファイルで `external` と宣言し直した volume も、プロジェクトのラベルを持てば削除する。この判定は Compose ファイルを読まずにラベルだけで行い、`docker compose down` で削除するときと Docker のラベルから削除するときとで、削除する volume を揃える。プロジェクトのラベルを持たない external なボリューム / ネットワークは削除しない。`--images` 指定時だけ decune が生成したイメージを削除する。利用者が Compose ファイルで指定したイメージを `--rmi all` で削除してはならない。
 - Compose モードで現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、またはサービス名の変更等で既存のリソースと一致しない場合も、状態または Docker ラベルから decune が管理する Compose プロジェクトを特定して削除する。
 - 現在の設定が Compose モードでも、同じワークスペースに過去の image/Dockerfile モード由来で decune が管理するコンテナやボリュームが残っている場合は削除する。
 - `--all-workspaces` は、すべてのワークスペースで decune が管理する Dev Container 環境を削除する。`WORKSPACE` とは排他である。
 - `--all-workspaces` の探索対象は `decune.managed=true` と有効な `decune.workspace_id` を持つ Docker のコンテナ / ボリューム、および `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` の有効な状態ファイルとする。有効な workspace id は、Docker ラベル由来・状態ディレクトリ名由来のいずれも 12 桁の小文字 16 進 (`[0-9a-f]{12}`) に完全一致する値だけである。無効なラベル値や状態ディレクトリ名は対象外として無視し、状態 / ランタイムパスの組み立てに使わない。読み込めない状態ファイルは警告を出して無視する。
-- `--all-workspaces` で Compose プロジェクトを削除する場合は、decune が管理するコンテナの `com.docker.compose.project` ラベルまたは decune の状態の `compose_project_name` から所有を確認できるプロジェクトだけを対象にする。プロジェクト名の前方一致だけでは、利用者が管理する Compose プロジェクトを対象にしない。
+- `--all-workspaces` で Compose プロジェクトを削除する場合は、decune が管理するコンテナの `com.docker.compose.project` ラベルまたは decune の状態に記録した Compose プロジェクト名から所有を確認できるプロジェクトだけを対象にする。プロジェクト名の前方一致だけでは、利用者が管理する Compose プロジェクトを対象にしない。
 - `--all-workspaces` は対象ワークスペースの状態 / ランタイムデータを削除する。ワークスペースのキャッシュと共有 Feature archive cache は削除しない。
+- `--all-workspaces` は、対象のすべてのワークスペースのコンテナと Compose プロジェクトのコンテナを削除してから、volume を削除する。あるワークスペースの volume を、同じ実行で削除する別のワークスペースのコンテナだけが mount していても、ワークスペースの処理の順によらずその volume を削除する。
+- 他のコンテナ(実行中か停止中かを問わない)が参照しているために Docker が削除を拒否した volume は、失敗にせずに残して削除を続け、終了コードは 0 とする。ほかの理由で volume を削除できない場合はエラーにする。Compose プロジェクトの volume を使用中のために残したワークスペースは、コンテナとランタイムデータを削除し、状態を削除せずに残す。Compose プロジェクトの volume を辿る手掛かりは状態とコンテナのラベルにしかないためである。状態が無い場合も、削除の前に発見したプロジェクトの所有情報を状態に保存する。残した状態から、使用中が解けた後の `remove`(`--all-workspaces` を含む)で、その volume と状態を削除する。
+- 出力の最後に、残した named volume を、残した理由とともに一度ずつ示す。対象は、削除したコンテナ(Compose モードではプロジェクトのコンテナ)が mount していた named volume のうち削除の後も存在するものと、使用中で Docker に削除を拒否された volume である。理由は、削除したワークスペースの volume でないこと(ラベルの無い volume、別のワークスペースのラベルを持つ volume、別の Compose プロジェクトの volume、プロジェクトのラベルを持たない external の volume)と、使用中であることの二つで、使用中の volume は警告として示す。匿名 volume と、どのサービスも mount していない external の volume は示さない。`--all-workspaces` では、すべての削除の後に一度だけ示す。
 
 `rm` は `remove` の別名とする。`--no-confirm` は確認プロンプトだけを省略し、decune が管理するリソースだけを対象にする安全境界や使用中のリソースの保護は迂回しない。
 
-削除対象がある状態で TTY でない環境から `remove` を `--no-confirm` なしで実行した場合は、確認不能としてエラーにする。`--all-workspaces` で削除対象が 0 件の場合は、TTY でない環境でも確認せず成功とする。
+削除対象がある状態で TTY でない環境から `remove` を `--no-confirm` なしで実行した場合は、確認不能としてエラーにする。ワークスペースを指定した `remove` では、この拒否を Docker と状態に触れる前に行う。`--all-workspaces` で削除対象が 0 件の場合は、TTY でない環境でも確認せず成功とする。
+
+TTY で `--no-confirm` なしで実行した場合は、`[y/N]` の確認より前に、削除する volume(decune のラベルを持つ volume と、Compose プロジェクトのラベルを持つ volume)の名前を表示する。`--all-workspaces` では、ワークスペースごとに表示する。この一覧のために確認より前に行う処理は Docker と状態を読むだけとし、削除と、GitHub CLI のトークンファイルの削除などの副作用は確認の後に行う。
 
 ### 3.8 `clean`
 
@@ -319,6 +324,7 @@ decune clean --include-feature-cache [--dry-run] [--no-confirm] [--json]
 - symlink は辿らない。削除対象自体または配下のエントリに symlink がある対象は `unsafe_path` としてスキップする。
 - decune が管理しているルート外のパスは削除しない。
 - Docker のラベルから `decune.managed=true` と有効な `decune.workspace_id` を持つコンテナ / ボリュームが見つかるワークスペースは、decune が管理している再利用可能なリソースとみなしてスキップする。
+- 状態に記録した Compose プロジェクト名と `com.docker.compose.project` ラベルの値が一致する volume が残るワークスペースも、コンテナが無くても同じくスキップし、状態を削除しない。この判定は Compose ファイルを読まずにラベルだけで行う。
 - ランタイムディレクトリまたは port status ディレクトリ配下に接続可能な Unix ソケット、または取得できないロックファイルがあるワークスペースは active とみなしてスキップする。
 - Docker リソースの探索に失敗した場合、削除の実行は安全性を判定できないためエラーにする。`--dry-run` ではファイルシステム上の候補を `docker_unavailable` としてスキップ表示できる。
 - ワークスペース側のファイルである `.decune/config.toml` と `.decune/features.lock.toml` は対象外である。

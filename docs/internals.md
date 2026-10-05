@@ -228,6 +228,7 @@ GitHub トークンの旧形式のランタイムパス `gh-token/token`(コン�
 | `config_hash` | reuse hash(10 節) |
 | `config_file` | `--config` で指定した `devcontainer.json` のパス(省略可) |
 | `compose_project_name` | Compose のプロジェクト名(Compose モードのみ) |
+| `retained_compose_projects` | `remove` が削除対象として記録した Compose プロジェクト名の一覧(省略可) |
 | `created_at` | 作成時刻(`unix:<seconds>` 形式) |
 | `last_started_at` | 最終起動時刻(同上) |
 | `last_used_at` | 最終利用時刻(同上。ない状態もある) |
@@ -254,7 +255,9 @@ GitHub トークンの旧形式のランタイムパス `gh-token/token`(コン�
 - `sensitive_container_env_keys`: secret-sensitive な `containerEnv` のキー名(値は持たない。無ければ省略)。
 - `[exec_context.remote_env]`: `[remote_env]` をマージした後の `remoteEnv` の展開前のテンプレート(無ければ省略)。
 
-アトミックな書き込みは、状態ディレクトリに `state.toml.tmp.<pid>.<nanos>` を排他的に作成(モード 0600)し、内容の書き込みと fsync の後に `state.toml` へ rename し、最後に親ディレクトリを fsync する実装です。コンテナが存在しないワークスペースの状態は整合処理時に削除します。
+アトミックな書き込みは、状態ディレクトリに `state.toml.tmp.<pid>.<nanos>` を排他的に作成(モード 0600)し、内容の書き込みと fsync の後に `state.toml` へ rename し、最後に親ディレクトリを fsync する実装です。コンテナが存在しないワークスペースの状態は起動時の整合処理で削除します。
+
+`remove` は Compose のコンテナを削除する前に、発見したプロジェクト名を `retained_compose_projects` に記録します。使用中で volume を残した場合は、この一覧にそのプロジェクト名だけを残し、既存の起動と利用のメタデータは保持します。起動時の状態が無い場合は、ワークスペースの表示用パスとプロジェクト名を持つ状態を作り、コンテナ ID、イメージ、reuse hash、作成時刻、最終起動時刻の値は空、最終利用時刻は未記録とします。`remove` と `clean` は、`compose_project_name` とこの一覧を合わせて volume の所有を判断します。
 
 ## 10. reuse hash 入力の実装構成
 

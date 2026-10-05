@@ -595,12 +595,14 @@ mod tests {
                     source: Some("/tmp/secrets/github-token".to_owned()),
                     destination: Some(GITHUB_CLI_TOKEN_TARGET.to_owned()),
                     rw: Some(false),
+                    ..ContainerMount::default()
                 },
                 ContainerMount {
                     typ: Some("bind".to_owned()),
                     source: Some("/tmp/agent.sock".to_owned()),
                     destination: Some(SSH_AGENT_SOCKET_TARGET.to_owned()),
                     rw: Some(true),
+                    ..ContainerMount::default()
                 },
             ]),
             ..ContainerInspect::default()

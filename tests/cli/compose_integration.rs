@@ -1829,6 +1829,161 @@ fn compose_integration_cleanup_safety_keeps_unrelated_project_and_user_image() {
     );
 }
 
+// remove はプロジェクトの volume と、docker compose down の後に残ったプロジェクトのラベルの
+// volume を消し、サービスが mount していた external の volume を残したものとして示す。
+// どのサービスも mount していない external の volume と、サービスの匿名 volume は示さない
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_remove_reports_kept_external_volume_and_removes_project_volumes() {
+    let fixture = compose_project_volume_workspace();
+    let workspace = fixture.workspace.path();
+    let project = compose_project_name(workspace);
+    run_decune_up_detach(workspace, &[]);
+    let leftover_volume = format!("{project}_undeclared");
+    docker_status([
+        "volume",
+        "create",
+        "--label",
+        &format!("com.docker.compose.project={project}"),
+        &leftover_volume,
+    ])
+    .must();
+    let anonymous_volume = compose_primary_anonymous_volume(workspace);
+
+    let output = decune()
+        .args(["remove", "--no-confirm"])
+        .arg(workspace)
+        .assert()
+        .success()
+        .stdout(predicate::str::is_empty())
+        .stderr(predicate::str::contains("Removed Docker Compose project"))
+        .get_output()
+        .clone();
+
+    let stderr = String::from_utf8(output.stderr).must();
+    let last_line = stderr.lines().rfind(|line| !line.trim().is_empty()).must();
+    assert!(last_line.contains(&fixture.external_volume), "{stderr}");
+    assert!(
+        last_line.contains("not a decune-managed volume of this workspace"),
+        "{stderr}"
+    );
+    assert_eq!(stderr.matches("Kept Docker volume").count(), 1, "{stderr}");
+    assert!(
+        !stderr.contains(&fixture.unused_external_volume),
+        "{stderr}"
+    );
+    assert!(!stderr.contains(&anonymous_volume), "{stderr}");
+    assert!(docker_status(["volume", "inspect", &format!("{project}_data")]).is_err());
+    assert!(docker_status(["volume", "inspect", &leftover_volume]).is_err());
+    assert!(docker_status(["volume", "inspect", &fixture.external_volume]).is_ok());
+    assert!(docker_status(["volume", "inspect", &fixture.unused_external_volume]).is_ok());
+}
+
+// プロジェクトの volume をプロジェクトの外のコンテナが参照しているとき、remove は volume と
+// 状態を残して成功し、status はワークスペースを示し続け、clean も状態を消さない。
+// 使用中が解けた後の remove で、両方が消える
+//
+// シナリオ:
+//   1. up した後、プロジェクトの volume を mount する停止中のコンテナを、プロジェクトの外に作る
+//   2. remove する → 使用中として示し、コンテナを消し、volume と状態を残して、終了コード 0
+//   3. status はワークスペースを示し続け、clean は状態を managed_resource としてスキップする
+//   4. 外のコンテナを消して remove する → volume と状態が消える
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_remove_keeps_state_while_project_volume_is_in_use() {
+    let fixture = compose_project_volume_workspace();
+    let workspace = fixture.workspace.path();
+    let project = compose_project_name(workspace);
+    let project_volume = format!("{project}_data");
+    let state_home = tempfile::tempdir().must();
+    let state_dir = state_home
+        .path()
+        .join("decune")
+        .join(workspace_id(workspace));
+    decune()
+        .args(["up", "--detach"])
+        .arg(workspace)
+        .env("XDG_STATE_HOME", state_home.path())
+        .assert()
+        .success();
+    let outside = OutsideVolumeUser::create(&project_volume);
+
+    decune()
+        .args(["remove", "--no-confirm"])
+        .arg(workspace)
+        .env("XDG_STATE_HOME", state_home.path())
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "Kept Docker volume: {project_volume} (in use by another container)"
+        )));
+
+    assert!(compose_project_containers(workspace).must().is_empty());
+    assert!(docker_status(["volume", "inspect", &project_volume]).is_ok());
+    assert!(state_dir.join("state.toml").is_file());
+    decune()
+        .arg("status")
+        .env("XDG_STATE_HOME", state_home.path())
+        .assert()
+        .success()
+        .stdout(predicate::str::contains(
+            workspace.canonicalize().must().display().to_string(),
+        ));
+
+    let clean = decune()
+        .args(["clean", "--no-confirm", "--json"])
+        .env("XDG_STATE_HOME", state_home.path())
+        .assert()
+        .success()
+        .get_output()
+        .clone();
+    let report: Value = serde_json::from_slice(&clean.stdout).must();
+    let target = report["targets"]
+        .as_array()
+        .must()
+        .iter()
+        .find(|target| target["workspace_id"] == workspace_id(workspace).as_str())
+        .must();
+    assert_eq!(target["reason"], "managed_resource");
+    assert!(state_dir.join("state.toml").is_file());
+
+    drop(outside);
+    decune()
+        .args(["remove", "--no-confirm"])
+        .arg(workspace)
+        .env("XDG_STATE_HOME", state_home.path())
+        .assert()
+        .success();
+
+    assert!(docker_status(["volume", "inspect", &project_volume]).is_err());
+    assert!(!state_dir.exists());
+}
+
+// Compose ファイルを読めず、Docker のラベルから消すときも、使用中のプロジェクトの volume は
+// 残したものとして示し、remove を失敗させない
+#[test]
+#[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
+fn compose_integration_label_fallback_remove_keeps_in_use_project_volume() {
+    let fixture = compose_project_volume_workspace();
+    let workspace = fixture.workspace.path();
+    let project_volume = format!("{}_data", compose_project_name(workspace));
+    run_decune_up_detach(workspace, &[]);
+    let _outside = OutsideVolumeUser::create(&project_volume);
+    fs::remove_dir_all(workspace.join(".devcontainer")).must();
+
+    decune()
+        .args(["remove", "--no-confirm"])
+        .arg(workspace)
+        .assert()
+        .success()
+        .stderr(predicate::str::contains(format!(
+            "Kept Docker volume: {project_volume} (in use by another container)"
+        )));
+
+    assert!(compose_project_containers(workspace).must().is_empty());
+    assert!(docker_status(["volume", "inspect", &project_volume]).is_ok());
+}
+
 #[test]
 #[ignore = "requires Docker daemon, Docker Compose v2 plugin, and local registry image"]
 fn compose_integration_up_pull_recreates_image_only_service_for_updated_tag() {
@@ -2995,6 +3150,90 @@ fn cleanup_compose_workspace(workspace: &Path) {
         "--filter",
         &format!("label=com.docker.compose.project={project}"),
     ]);
+}
+
+/// プロジェクトの named volume、サービスが mount する external の volume、どのサービスも
+/// mount しない external の volume、サービスの匿名 volume を持つ Compose のワークスペース。
+struct ComposeProjectVolumeWorkspace {
+    workspace: ComposeFixtureWorkspace,
+    external_volume: String,
+    unused_external_volume: String,
+}
+
+impl Drop for ComposeProjectVolumeWorkspace {
+    fn drop(&mut self) {
+        cleanup_compose_workspace(self.workspace.path());
+        _ = docker_status(["volume", "rm", "--force", &self.external_volume]);
+        _ = docker_status(["volume", "rm", "--force", &self.unused_external_volume]);
+    }
+}
+
+fn compose_project_volume_workspace() -> ComposeProjectVolumeWorkspace {
+    let workspace = compose_fixture_workspace("minimal");
+    let id = workspace_id(workspace.path());
+    let external_volume = format!("decune-test-external-{id}");
+    let unused_external_volume = format!("decune-test-unused-external-{id}");
+    for volume in [&external_volume, &unused_external_volume] {
+        docker_status(["volume", "create", volume.as_str()]).must();
+    }
+    workspace
+        .workspace
+        .write_fixture_template(
+            ".devcontainer/compose.yaml",
+            "compose/project-volumes/compose.yaml",
+            &[
+                ("__EXTERNAL_VOLUME__", &external_volume),
+                ("__UNUSED_EXTERNAL_VOLUME__", &unused_external_volume),
+            ],
+        )
+        .must();
+    ComposeProjectVolumeWorkspace {
+        workspace,
+        external_volume,
+        unused_external_volume,
+    }
+}
+
+fn compose_primary_anonymous_volume(workspace: &Path) -> String {
+    let containers = compose_project_containers(workspace).must();
+    let id = &containers.first().must().id;
+    docker_output([
+        "container",
+        "inspect",
+        "--format",
+        r#"{{range .Mounts}}{{if eq .Destination "/anonymous"}}{{.Name}}{{end}}{{end}}"#,
+        id,
+    ])
+    .must()
+    .trim()
+    .to_owned()
+}
+
+/// Compose プロジェクトの外で volume を参照する、停止中のコンテナ。
+struct OutsideVolumeUser {
+    container_id: String,
+}
+
+impl OutsideVolumeUser {
+    fn create(volume: &str) -> Self {
+        let container_id = docker_output([
+            "create",
+            "--mount",
+            &format!("type=volume,source={volume},target=/data"),
+            "alpine:3.20",
+            "true",
+        ])
+        .must()
+        .trim()
+        .to_owned();
+        Self { container_id }
+    }
+}
+
+impl Drop for OutsideVolumeUser {
+    fn drop(&mut self) {
+        _ = docker_status(["rm", "--force", &self.container_id]);
+    }
 }
 
 fn create_compose_registry_fixture(workspace: &Path) -> ComposeRegistryFixture {
