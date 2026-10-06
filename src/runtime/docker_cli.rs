@@ -818,13 +818,16 @@ pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeComman
 /// named volume の mount に `labels` を足す。
 /// Docker は `volume-label` を、その mount のために volume を新しく作るときにだけ付け、
 /// 既にある volume には付けない。
-/// 匿名 volume は `source` を持たず、コンテナと一緒に消えるので、ラベルを付けない。
+/// 匿名 volume は `source` が無いか空であり、コンテナと一緒に消えるので、ラベルを付けない。
 fn with_created_volume_labels(
     mount: &DockerMountSpec,
     labels: &BTreeMap<String, String>,
 ) -> DockerMountSpec {
     let mut mount = mount.clone();
-    if mount.mount_type != MountType::Volume || mount.source.is_none() || labels.is_empty() {
+    if mount.mount_type != MountType::Volume
+        || mount.source.as_deref().is_none_or(str::is_empty)
+        || labels.is_empty()
+    {
         return mount;
     }
     let volume_options = mount.volume_options.get_or_insert_with(Default::default);
@@ -2381,6 +2384,7 @@ mod tests {
                     ..mount(MountType::Volume, Some("project-data"), "/data")
                 },
                 mount(MountType::Volume, None, "/anonymous"),
+                mount(MountType::Volume, Some(""), "/empty-source"),
                 mount(
                     MountType::Bind,
                     Some("/host/project"),
@@ -2415,6 +2419,7 @@ mod tests {
                     "volume-label=decune.workspace_id=aaaaaaaaaaaa"
                 ),
                 "type=volume,target=/anonymous",
+                "type=volume,target=/empty-source,source=",
                 "type=bind,target=/workspaces/project,source=/host/project",
                 "type=tmpfs,target=/tmp/cache",
             ]
