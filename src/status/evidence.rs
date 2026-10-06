@@ -63,7 +63,8 @@ pub(super) struct VolumeEvidence {
     pub(super) name: Option<String>,
     /// volume が属するワークスペースのパス。
     /// decune のラベルを持つ volume では、その `decune.workspace` ラベルのパス、
-    /// Compose プロジェクトの volume では、プロジェクトを辿った状態かコンテナのラベルのパスである。
+    /// Compose プロジェクトの volume では、
+    /// プロジェクトを辿った状態かコンテナのラベルのパスである。
     /// 状態もコンテナも残っていないワークスペースのパスを、summary に示すのに使う。
     /// ワークスペースを指定した収集(`collect_workspace_docker_evidence`)では、
     /// decune のラベルを持つ volume には持たせない。
@@ -397,8 +398,6 @@ fn dedupe_container_evidence(containers: Vec<ContainerEvidence>) -> Vec<Containe
     deduped
 }
 
-/// Compose プロジェクトのラベルを持つ volume を、
-/// そのプロジェクトのワークスペースの decune-managed ボリュームとして返す。
 /// Compose はサービスの匿名 volume と、
 /// 自分で作っていない `external` の volume にプロジェクトのラベルを付けないので、
 /// これらは含まれない。
@@ -420,11 +419,10 @@ async fn compose_project_volume_evidence(
         .collect())
 }
 
-/// 同じ名前の volume を一つにする。
 /// decune のラベルと Compose プロジェクトのラベルの両方を持つ volume は、
 /// 先に見つけた方の出どころで示す。
-/// 呼び出し側は decune のラベルを持つ volume を先に渡すので、その volume は `mounts` になり、
-/// コンテナの中の `status`(`SystemContainerQuerySource::collect_volumes`)と揃う。
+/// 呼び出し側は decune のラベルを持つ volume を先に渡し、`mounts` を優先する。
+/// コンテナ内 `status` の `SystemContainerQuerySource::collect_volumes` と揃えるためである。
 fn dedupe_volume_evidence(volumes: Vec<VolumeEvidence>) -> Vec<VolumeEvidence> {
     let mut seen = BTreeSet::new();
     volumes
@@ -686,7 +684,6 @@ mod tests {
         assert_eq!(volume.workspace_path.as_deref(), Some("/workspace"));
     }
 
-    /// decune-managed ボリュームの `(名前, 出どころ)` を名前の順に並べる。
     fn volume_origins(evidence: &DockerEvidence) -> Vec<(String, VolumeOrigin)> {
         let mut volumes = evidence
             .volumes
@@ -697,10 +694,6 @@ mod tests {
         volumes
     }
 
-    /// Compose プロジェクト `project` のワークスペースが見る volume。
-    /// プロジェクトの volume と decune のラベルを持つ volume のほかに、
-    /// ラベルの無い volume、Compose が作っていない `external` の volume、
-    /// サービスの匿名 volume を持つ。
     fn docker_with_workspace_volumes() -> FakeDocker {
         let docker = FakeDocker::new();
         docker.add_volume("project_data", &[("com.docker.compose.project", "project")]);
@@ -732,11 +725,10 @@ mod tests {
         docker
     }
 
-    // ワークスペースの decune-managed ボリュームは、Compose プロジェクトの volume を `compose`、
-    // decune のラベルを持つ volume を `mounts` として含み、
-    // ラベルの無い volume、プロジェクトのラベルを持たない `external` の volume、
-    // 匿名 volume を含まない。
-    // Compose プロジェクトは、ワークスペースのコンテナのラベルから辿る
+    // ワークスペースに帰属するボリュームだけを、出どころとともに収集する。
+    // コンテナのラベルから辿った Compose volume は `compose`、
+    // decune のラベルを持つ volume は `mounts` とする。
+    // ラベルの無い volume、プロジェクトのラベルを持たない external volume、匿名 volume は除く
     #[test]
     fn workspace_volumes_are_project_and_labeled_volumes_with_origin() {
         let docker = docker_with_workspace_volumes();
@@ -754,7 +746,8 @@ mod tests {
         );
     }
 
-    // コンテナが残っていなくても、現在と削除時に残した Compose プロジェクトの volume を数える
+    // コンテナが無くても、状態から辿る Compose volume を数える。
+    // 現在のプロジェクトと、削除時に残したプロジェクトの両方を含む
     #[test]
     fn workspace_volumes_include_project_volumes_found_from_state_only() {
         let docker = FakeDocker::new();
@@ -786,8 +779,8 @@ mod tests {
         );
     }
 
-    // `WORKSPACE` なしの `status` も、状態に記録した Compose プロジェクトの volume を
-    // そのワークスペースの decune-managed ボリュームとして数え、Docker のリソースが無いとはしない
+    // `WORKSPACE` なしの `status` も、状態から辿る Compose volume を数える。
+    // volume が残っているワークスペースには `state-only` の問題を出さない
     #[test]
     fn all_docker_evidence_counts_project_volumes_of_state_project() {
         let docker = FakeDocker::new();
@@ -980,6 +973,7 @@ mod tests {
         assert_compose_sidecar_status(state, evidence);
         assert_compose_project_label_filter_used(&runner);
     }
+    // 全ワークスペースの収集は、状態から辿った Compose sidecar もコンテナに含める
     #[test]
     fn all_docker_evidence_includes_compose_sidecar_from_state_project() {
         let runner = FakeRuntimeCommand::new(vec![

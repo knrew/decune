@@ -1984,8 +1984,8 @@ fn compose_integration_label_fallback_remove_keeps_in_use_project_volume() {
     assert!(docker_status(["volume", "inspect", &project_volume]).is_ok());
 }
 
-// `status <WORKSPACE>` は、Compose プロジェクトの volume を decune-managed ボリュームとして
-// `Summary` と `Resources` で数え、`Resources` に名前の順に出どころ `compose` で並べる。
+// Compose プロジェクトの volume は `Summary` と `Resources` の両方で数える。
+// `Resources` の一覧は名前の辞書順とし、出どころを `compose` とする。
 // プロジェクトのラベルを持たない external の volume と、サービスの匿名 volume は数えない
 #[test]
 #[ignore = "requires Docker daemon and Docker Compose v2 plugin"]
@@ -3231,7 +3231,6 @@ fn cleanup_compose_workspace(workspace: &Path) {
 
 /// プロジェクトの named volume、サービスが mount する external の volume、どのサービスも
 /// mount しない external の volume、サービスの匿名 volume を持つ Compose のワークスペース。
-/// プロジェクトの named volume は、サービスが `/<キー>` に mount する。
 struct ComposeProjectVolumeWorkspace {
     workspace: ComposeFixtureWorkspace,
     external_volume: String,
@@ -3246,13 +3245,10 @@ impl Drop for ComposeProjectVolumeWorkspace {
     }
 }
 
-/// プロジェクトの named volume を `data` の一つだけ持つ [`ComposeProjectVolumeWorkspace`]。
 fn compose_project_volume_workspace() -> ComposeProjectVolumeWorkspace {
     compose_project_volumes_workspace(&["data"])
 }
 
-/// `project_volumes` をキーとするプロジェクトの named volume を持つ
-/// [`ComposeProjectVolumeWorkspace`]。
 fn compose_project_volumes_workspace(project_volumes: &[&str]) -> ComposeProjectVolumeWorkspace {
     let workspace = compose_fixture_workspace("minimal");
     let id = workspace_id(workspace.path());

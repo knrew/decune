@@ -213,7 +213,6 @@ fn write_workspace_resources(output: &mut String, status: &WorkspaceStatus) {
     output.push('\n');
 }
 
-/// `Resources` 節の decune-managed ボリュームの数と一覧。
 /// ホストとコンテナの `status` で、ボリューム数と一覧の表示形式を揃えるために共有する。
 pub(super) fn write_volume_resources(output: &mut String, volumes: &[VolumeStatusSummary]) {
     _ = writeln!(
@@ -505,8 +504,8 @@ mod tests {
         assert!(!output.contains("raw-compose"));
     }
 
-    // `Resources` 節は、decune-managed ボリュームの数と、名前の辞書順に並べた名前と出どころを示し、
-    // 出どころの列を揃える
+    // `Resources` はボリュームの数と、名前と出どころの一覧を示す。
+    // decune-managed ボリュームを名前の辞書順に並べ、出どころの列を揃える
     #[test]
     fn detail_renderer_lists_volumes_by_name_with_aligned_origin() {
         let mut status = rendered_status(WORKSPACE_ID, Some("/workspace"));

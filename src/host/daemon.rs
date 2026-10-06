@@ -1273,6 +1273,7 @@ mod tests {
         });
     }
 
+    // コンテナ内 `status` が有効なら、daemon はホスト側のパスを含まない応答を返す
     #[test]
     fn daemon_executes_status_query_when_enabled() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1413,7 +1414,7 @@ mod tests {
         });
     }
 
-    // 接続の受付に失敗した daemon は、新規接続を拒み、処理中の接続に応答してから終了する
+    // 受付に失敗した daemon は新規接続を拒み、処理中の接続に応答して終了する
     #[test]
     fn daemon_accept_loop_exit_drains_in_flight_connections() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1446,7 +1447,8 @@ mod tests {
             // loop through the same path as an accept failure. The connection accepted
             // with the already-held permit triggers that next admission.
             active_connections.close();
-            // current_thread では、最後に受け付けた接続への応答は listener を閉じた後に返る。
+            // current_thread では、最後に受け付けた接続への応答は
+            // listener を閉じた後に返る。
             assert_eq!(
                 send_raw_request(&socket_path, b"{}").await["error"]["code"],
                 "invalid_request"
@@ -1579,6 +1581,7 @@ mod tests {
         });
     }
 
+    // daemon は外部セッションの転送を集約し、停止したセッションを次のクエリから除く
     #[test]
     fn daemon_aggregates_forwarding_sessions_owned_outside_daemon() {
         let runtime = tokio::runtime::Builder::new_current_thread()

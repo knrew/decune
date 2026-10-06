@@ -122,7 +122,7 @@ impl DockerContainerLoadHint {
     }
 }
 
-/// decune-managed ボリュームの読み込みに使う、固定の状態から得た値。
+/// ボリュームの帰属を辿るため、固定の状態ディレクトリから得たプロジェクト名を使う。
 #[derive(Clone)]
 struct DockerVolumeLoadHint {
     compose_project_names: BTreeSet<String>,
@@ -1804,10 +1804,10 @@ mod tests {
         });
     }
 
-    // コンテナの中の `status` の decune-managed ボリュームは、ホストの `status` と同じく、
-    // 状態とワークスペースのコンテナのラベルから辿った Compose プロジェクトの volume を `compose`、
-    // decune のラベルを持つ volume を `mounts` として含む。
-    // ラベルの無い volume と、ワークスペースから辿れない Compose プロジェクトの volume は含まない
+    // コンテナ内 `status` は、帰属を辿れるボリュームを出どころ付きで収集する。
+    // 状態とコンテナのラベルから辿った Compose volume は `compose`、
+    // decune のラベルを持つ volume は `mounts` とする。
+    // ラベルの無い volume と、ワークスペースから辿れない Compose volume は含めない
     #[test]
     fn volume_collector_returns_labeled_and_workspace_project_volumes_with_origin() {
         run_async(async {
