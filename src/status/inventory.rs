@@ -89,12 +89,20 @@ pub(super) fn workspace_status_with_config(
         .as_ref()
         .and_then(|state| state.as_ref().ok());
     let state_unreadable = evidence.state.as_ref().is_some_and(Result::is_err);
-    let workspace_path = state.map(|state| state.workspace.clone()).or_else(|| {
-        evidence
-            .containers
-            .iter()
-            .find_map(|container| container.workspace_path.clone())
-    });
+    let workspace_path = state
+        .map(|state| state.workspace.clone())
+        .or_else(|| {
+            evidence
+                .containers
+                .iter()
+                .find_map(|container| container.workspace_path.clone())
+        })
+        .or_else(|| {
+            evidence
+                .volumes
+                .iter()
+                .find_map(|volume| volume.workspace_path.clone())
+        });
     let environment_status =
         environment_status(evidence, state, docker_unavailable, current_config);
     let config_status = config_status(
@@ -479,6 +487,38 @@ mod tests {
         assert_eq!(workspace.environment_status, EnvironmentStatus::Running);
         assert_eq!(workspace.config_status, ConfigStatus::Missing);
         assert_issue(workspace, "docker-only");
+    }
+    // 状態もコンテナも残っておらず、decune-managed ボリュームだけが残るワークスペースも示す。
+    // パスは、その volume の `decune.workspace` ラベルから取る
+    #[test]
+    fn volume_only_workspace_is_reported_with_volume_label_path() {
+        use crate::{ports::PortInventory, status::render::render_status_summary};
+
+        let inventory = build_status_inventory(
+            Vec::new(),
+            Ok(DockerEvidence {
+                containers: Vec::new(),
+                volumes: vec![VolumeEvidence {
+                    workspace_path: Some("/volume-label-path".to_owned()),
+                    ..volume(WORKSPACE_ID)
+                }],
+            }),
+        );
+
+        assert_eq!(inventory.workspaces.len(), 1);
+        let workspace = &inventory.workspaces[0];
+        assert_eq!(workspace.workspace_id, WORKSPACE_ID);
+        assert_eq!(
+            workspace.workspace_path.as_deref(),
+            Some("/volume-label-path")
+        );
+        let summary = render_status_summary(&inventory, &PortInventory::default());
+        assert!(
+            summary
+                .lines()
+                .any(|line| line.starts_with(WORKSPACE_ID) && line.contains("/volume-label-path")),
+            "{summary}"
+        );
     }
     #[test]
     fn state_and_docker_evidence_are_merged_by_workspace_id() {
@@ -867,6 +907,7 @@ mod tests {
         VolumeEvidence {
             workspace_id: workspace_id.to_owned(),
             name: None,
+            workspace_path: None,
         }
     }
 

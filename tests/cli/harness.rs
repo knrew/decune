@@ -255,6 +255,24 @@ pub(crate) fn fake_path_with_commands(
     support::path_with_prepended(bin_dir).must()
 }
 
+/// `image` が alpine で、`mounts` に named volume `volume` を一つ持つワークスペース。
+pub(crate) fn write_named_volume_devcontainer(workspace: &support::TempWorkspace, volume: &str) {
+    workspace.create_dir(".devcontainer").must();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            format!(
+                r#"
+                {{
+                  "image": "alpine:3.20",
+                  "mounts": ["source={volume},target=/data,type=volume"]
+                }}
+                "#
+            ),
+        )
+        .must();
+}
+
 pub(crate) fn fake_container_tools_bundle(workspace: &support::TempWorkspace) -> PathBuf {
     let mut tools =
         Vec::with_capacity(FAKE_CONTAINER_TOOL_NAMES.len() * FAKE_CONTAINER_TOOL_PLATFORMS.len());

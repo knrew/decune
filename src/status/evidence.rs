@@ -56,6 +56,10 @@ pub(super) struct ContainerEvidence {
 pub(super) struct VolumeEvidence {
     pub(super) workspace_id: String,
     pub(super) name: Option<String>,
+    /// volume の `decune.workspace` ラベルのパス。
+    /// 状態もコンテナも残っていないワークスペースのパスを、summary に示すのに使う。
+    /// ワークスペースを指定した収集(`collect_workspace_docker_evidence`)では持たない。
+    pub(super) workspace_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -164,6 +168,7 @@ pub(super) async fn collect_workspace_docker_evidence(
         .map(|name| VolumeEvidence {
             workspace_id: workspace_id.to_owned(),
             name: Some(name),
+            workspace_path: None,
         })
         .collect();
 
@@ -378,9 +383,11 @@ fn dedupe_container_evidence(containers: Vec<ContainerEvidence>) -> Vec<Containe
 fn volume_evidence(volume: DockerVolumeInspect) -> Option<VolumeEvidence> {
     let labels = volume.labels.as_ref()?;
     let workspace_id = managed_workspace_id_from_labels(labels)?;
+    let workspace_path = workspace_path_from_labels(labels);
     Some(VolumeEvidence {
         workspace_id,
         name: volume.name,
+        workspace_path,
     })
 }
 
@@ -581,6 +588,41 @@ mod tests {
         assert_eq!(evidence.workspace_path.as_deref(), Some("/workspace"));
         assert_eq!(evidence.run_state, ContainerRunState::Running);
         assert_eq!(evidence.health_status, HealthStatus::Healthy);
+    }
+
+    // 状態もコンテナも無いときも、volume のラベルからワークスペースのパスを収集する
+    #[test]
+    fn docker_evidence_collection_retains_volume_workspace_path_without_state_or_containers() {
+        let runner = FakeRuntimeCommand::new(vec![
+            Ok(output(
+                br#"[{
+                    "Name": "project-data",
+                    "Labels": {
+                        "decune.managed": "true",
+                        "decune.workspace_id": "123456abcdef",
+                        "decune.workspace": "/workspace"
+                    }
+                }]"#,
+            )),
+            Ok(output(b"project-data\n")),
+            Ok(output(b"")),
+        ]);
+        let cli = DockerCli::new(Arc::new(runner));
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+
+        let evidence = runtime
+            .block_on(collect_docker_evidence(&cli, &[]))
+            .unwrap();
+
+        assert!(evidence.containers.is_empty());
+        assert_eq!(evidence.volumes.len(), 1);
+        let volume = &evidence.volumes[0];
+        assert_eq!(volume.workspace_id, WORKSPACE_ID);
+        assert_eq!(volume.name.as_deref(), Some("project-data"));
+        assert_eq!(volume.workspace_path.as_deref(), Some("/workspace"));
     }
 
     fn compose_sidecar_runtime() -> FakeRuntimeCommand {

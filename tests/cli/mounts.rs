@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use crate::harness::*;
 
 #[test]
@@ -689,4 +691,183 @@ type = "bind"
     if let Err(payload) = result {
         std::panic::resume_unwind(payload);
     }
+}
+
+fn decune_labels(volume: &str) -> HashMap<String, String> {
+    volume_labels(volume)
+        .unwrap()
+        .into_iter()
+        .filter(|(key, _)| key.starts_with("decune."))
+        .collect()
+}
+
+// `decune up` がコンテナの作成で新しく作らせた named volume は、
+// そのワークスペースの decune-managed ボリュームのラベルを持つ。
+// `mounts`、`workspaceMount`、Feature の `mounts`、`[[mounts]]` のどれに書いた volume も同じである
+#[test]
+fn up_labels_named_volumes_it_creates_for_every_mount_source() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let volume = |source: &str| format!("decune-mount-label-{workspace_id}-{source}");
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace.create_dir(".decune").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            format!(
+                r#"
+                {{
+                  "image": "alpine:3.20",
+                  "workspaceMount": "source={},target=/workspaces/project,type=volume",
+                  "workspaceFolder": "/workspaces/project",
+                  "mounts": ["source={},target=/data/mounts,type=volume"],
+                  "features": {{ "./features/volume-tool": {{}} }}
+                }}
+                "#,
+                volume("workspace"),
+                volume("mounts"),
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/features/volume-tool/devcontainer-feature.json",
+            format!(
+                r#"
+                {{
+                  "id": "volume-tool",
+                  "version": "1.0.0",
+                  "name": "Volume Tool",
+                  "mounts": [
+                    {{ "source": "{}", "target": "/data/feature", "type": "volume" }}
+                  ]
+                }}
+                "#,
+                volume("feature"),
+            ),
+        )
+        .unwrap();
+    workspace
+        .write_file(".devcontainer/features/volume-tool/install.sh", "set -eu\n")
+        .unwrap();
+    workspace
+        .write_file(
+            ".decune/config.toml",
+            format!(
+                r#"
+version = 1
+
+[[mounts]]
+source = "{}"
+target = "/data/config"
+type = "volume"
+"#,
+                volume("config"),
+            ),
+        )
+        .unwrap();
+    let expected = HashMap::from([
+        ("decune.managed".to_owned(), "true".to_owned()),
+        (
+            "decune.workspace".to_owned(),
+            workspace_root.display().to_string(),
+        ),
+        ("decune.workspace_id".to_owned(), workspace_id.clone()),
+    ]);
+
+    with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
+        for source in ["workspace", "mounts", "feature", "config"] {
+            assert!(!volume_exists(&volume(source)), "{}", volume(source));
+        }
+
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+            .assert()
+            .success();
+
+        for source in ["workspace", "mounts", "feature", "config"] {
+            assert_eq!(decune_labels(&volume(source)), expected, "{source}");
+        }
+    });
+}
+
+// ラベルの無い既存 volume と匿名 volume には、`up` で decune のラベルを付けない。
+// `status` は、同時に新しく作った named volume だけを数える
+#[test]
+fn up_does_not_label_existing_or_anonymous_volumes() {
+    let workspace = support::TempWorkspace::new().unwrap();
+    let container_tools_dir = fake_container_tools_bundle(&workspace);
+    let workspace_root = workspace.path().canonicalize().unwrap();
+    let workspace_id = workspace_id(&workspace_root);
+    let existing_volume = format!("decune-mount-existing-{workspace_id}");
+    let created_volume = format!("decune-mount-created-{workspace_id}");
+    workspace.create_dir(".devcontainer").unwrap();
+    workspace
+        .write_file(
+            ".devcontainer/devcontainer.json",
+            format!(
+                r#"
+                {{
+                  "image": "alpine:3.20",
+                  "mounts": [
+                    "source={existing_volume},target=/data/existing,type=volume",
+                    "source={created_volume},target=/data/created,type=volume",
+                    "target=/data/anonymous,type=volume"
+                  ]
+                }}
+                "#
+            ),
+        )
+        .unwrap();
+    let _existing = UnlabeledVolume::create(&existing_volume).unwrap();
+
+    with_clean_workspace_containers_images_and_volumes(&workspace_root, || {
+        decune()
+            .args(["up", "--detach"])
+            .arg(&workspace_root)
+            .env("DECUNE_CONTAINER_TOOLS_DIR", &container_tools_dir)
+            .assert()
+            .success();
+
+        let container = inspect_single_workspace_container(&workspace_root).unwrap();
+        let anonymous_volume = container
+            .mounts
+            .unwrap_or_default()
+            .into_iter()
+            .find(|mount| mount.destination.as_deref() == Some("/data/anonymous"))
+            .and_then(|mount| mount.name)
+            .unwrap();
+        assert!(decune_labels(&existing_volume).is_empty());
+        assert!(decune_labels(&anonymous_volume).is_empty());
+        assert_eq!(
+            workspace_volumes(&workspace_root).unwrap(),
+            vec![created_volume.clone()]
+        );
+
+        let output = decune()
+            .arg("status")
+            .arg(&workspace_root)
+            .assert()
+            .success()
+            .get_output()
+            .clone();
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let volume_counts = stdout
+            .lines()
+            .filter_map(|line| line.trim().strip_prefix("Volumes: "))
+            .collect::<Vec<_>>();
+        assert!(!volume_counts.is_empty(), "{stdout}");
+        assert!(
+            volume_counts
+                .iter()
+                .all(|count| count.split_whitespace().next() == Some("1")),
+            "{stdout}"
+        );
+        assert!(!stdout.contains(&existing_volume), "{stdout}");
+        assert!(!stdout.contains(&anonymous_volume), "{stdout}");
+    });
 }
