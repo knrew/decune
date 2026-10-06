@@ -815,7 +815,6 @@ pub(crate) fn docker_create_command(spec: &ContainerCreateSpec) -> RuntimeComman
     command
 }
 
-/// named volume の mount に `labels` を足す。
 /// Docker は `volume-label` を、その mount のために volume を新しく作るときにだけ付け、
 /// 既にある volume には付けない。
 /// 匿名 volume は `source` が無いか空であり、コンテナと一緒に消えるので、ラベルを付けない。
