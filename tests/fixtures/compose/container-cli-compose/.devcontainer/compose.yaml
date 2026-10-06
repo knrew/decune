@@ -5,6 +5,7 @@ services:
       dockerfile: Dockerfile
     volumes:
       - ../..:/workspace
+      - data:/data
   worker:
     image: alpine:3.20
     command: sleep infinity
@@ -13,3 +14,5 @@ services:
     command: sleep infinity
     ports:
       - 127.0.0.1:__PUBLISHED_HOST_PORT__:3000
+volumes:
+  data: {}

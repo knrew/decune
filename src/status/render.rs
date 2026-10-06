@@ -9,7 +9,8 @@ use crate::{
 };
 
 use super::types::{
-    EnvironmentStatus, LifecycleStatus, StatusInventory, WorkspaceMode, WorkspaceStatus,
+    EnvironmentStatus, LifecycleStatus, StatusInventory, VolumeStatusSummary, WorkspaceMode,
+    WorkspaceStatus,
 };
 
 pub(super) fn render_status_summary(
@@ -208,8 +209,31 @@ fn write_workspace_ports(output: &mut String, ports: &[PortInventoryEntry]) {
 fn write_workspace_resources(output: &mut String, status: &WorkspaceStatus) {
     output.push_str("Resources\n");
     _ = writeln!(output, "  Containers: {}", status.containers.len());
-    _ = writeln!(output, "  Volumes: {}", status.volumes.len());
+    write_volume_resources(output, &status.volumes);
     output.push('\n');
+}
+
+/// ホストとコンテナの `status` で、ボリューム数と一覧の表示形式を揃えるために共有する。
+pub(super) fn write_volume_resources(output: &mut String, volumes: &[VolumeStatusSummary]) {
+    _ = writeln!(
+        output,
+        "  Volumes: {} (removed by decune remove)",
+        volumes.len()
+    );
+    let mut rows = volumes
+        .iter()
+        .map(|volume| {
+            (
+                volume.name.as_deref().unwrap_or("<unknown>"),
+                volume.origin.as_str(),
+            )
+        })
+        .collect::<Vec<_>>();
+    rows.sort_unstable();
+    let width = rows.iter().map(|(name, _)| name.len()).max().unwrap_or(0);
+    for (name, origin) in rows {
+        _ = writeln!(output, "    {name:<width$}  {origin}");
+    }
 }
 
 fn write_workspace_lifecycle(output: &mut String, status: &WorkspaceStatus) {
@@ -369,7 +393,7 @@ mod tests {
         state::LifecycleState,
         status::types::{
             ConfigStatus, EnvironmentStatus, HealthStatus, LifecycleStatus, StatusInventory,
-            StatusIssue, StatusIssueSeverity, WorkspaceStatus,
+            StatusIssue, StatusIssueSeverity, VolumeOrigin, VolumeStatusSummary, WorkspaceStatus,
         },
     };
 
@@ -478,6 +502,37 @@ mod tests {
         assert!(!output.contains("TOKEN="));
         assert!(!output.contains("build.args"));
         assert!(!output.contains("raw-compose"));
+    }
+
+    // `Resources` はボリュームの数と、名前と出どころの一覧を示す。
+    // decune-managed ボリュームを名前の辞書順に並べ、出どころの列を揃える
+    #[test]
+    fn detail_renderer_lists_volumes_by_name_with_aligned_origin() {
+        let mut status = rendered_status(WORKSPACE_ID, Some("/workspace"));
+        status.volumes = vec![
+            volume("project_postgres-data", VolumeOrigin::Compose),
+            volume("cache", VolumeOrigin::Mounts),
+            volume("project_redis", VolumeOrigin::Compose),
+        ];
+
+        let output = render_workspace_detail(&status, &[]);
+
+        assert!(
+            output.contains(
+                "Resources\n  Containers: 0\n  Volumes: 3 (removed by decune remove)\n    \
+                 cache                  mounts\n    \
+                 project_postgres-data  compose\n    \
+                 project_redis          compose\n\n"
+            ),
+            "{output}"
+        );
+    }
+
+    fn volume(name: &str, origin: VolumeOrigin) -> VolumeStatusSummary {
+        VolumeStatusSummary {
+            name: Some(name.to_owned()),
+            origin,
+        }
     }
 
     fn issue(

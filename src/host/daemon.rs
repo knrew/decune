@@ -1273,6 +1273,7 @@ mod tests {
         });
     }
 
+    // コンテナ内 `status` が有効なら、daemon はホスト側のパスを含まない応答を返す
     #[test]
     fn daemon_executes_status_query_when_enabled() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1288,7 +1289,7 @@ mod tests {
                 temp.path().join("state"),
                 runtime_dir.clone(),
             );
-            let query_runner = empty_docker_query_runner(2);
+            let query_runner = empty_docker_query_runner(3);
             let daemon = HostDaemon::start_with_cli_query_runner(
                 &runtime_dir,
                 policy,
@@ -1413,6 +1414,7 @@ mod tests {
         });
     }
 
+    // 受付に失敗した daemon は新規接続を拒み、処理中の接続に応答して終了する
     #[test]
     fn daemon_accept_loop_exit_drains_in_flight_connections() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1436,23 +1438,22 @@ mod tests {
 
             let mut in_flight = UnixStream::connect(&socket_path).await.unwrap();
             in_flight.write_all(b"{").await.unwrap();
-            tokio::task::yield_now().await;
-            tokio::task::yield_now().await;
+            assert_eq!(
+                send_raw_request(&socket_path, b"{}").await["error"]["code"],
+                "invalid_request"
+            );
 
             // Closing the semaphore fails the next admission, which exits the accept
             // loop through the same path as an accept failure. The connection accepted
             // with the already-held permit triggers that next admission.
             active_connections.close();
-            let last_accepted = UnixStream::connect(&socket_path).await.unwrap();
-            let mut accept_loop_exited = false;
-            for _ in 0..10 {
-                tokio::task::yield_now().await;
-                if UnixStream::connect(&socket_path).await.is_err() {
-                    accept_loop_exited = true;
-                    break;
-                }
-            }
-            assert!(accept_loop_exited);
+            // current_thread では、最後に受け付けた接続への応答は
+            // listener を閉じた後に返る。
+            assert_eq!(
+                send_raw_request(&socket_path, b"{}").await["error"]["code"],
+                "invalid_request"
+            );
+            assert!(UnixStream::connect(&socket_path).await.is_err());
 
             in_flight
                 .write_all(br#""version":1,"type":"credential"}"#)
@@ -1465,7 +1466,6 @@ mod tests {
             assert_eq!(response["ok"], false);
             assert_eq!(response["error"]["code"], "invalid_request");
 
-            drop(last_accepted);
             daemon_task.await.unwrap();
         });
     }
@@ -1581,6 +1581,7 @@ mod tests {
         });
     }
 
+    // daemon は外部セッションの転送を集約し、停止したセッションを次のクエリから除く
     #[test]
     fn daemon_aggregates_forwarding_sessions_owned_outside_daemon() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1606,7 +1607,7 @@ mod tests {
                 temp.path().join("state"),
                 runtime_dir.clone(),
             );
-            let query_runner = empty_docker_query_runner(4);
+            let query_runner = empty_docker_query_runner(6);
             // The forwarding registries belong to independent session servers and are not
             // injected into the daemon. The daemon discovers every session through status_dir.
             let daemon = HostDaemon::start_with_cli_query_runner(
@@ -1827,7 +1828,7 @@ mod tests {
 
     fn assert_empty_docker_query_commands(runner: &FakeRuntimeCommand) {
         let commands = runner.commands();
-        assert_eq!(commands.len(), 2);
+        assert_eq!(commands.len(), 3);
         assert!(commands.iter().all(|command| command.program() == "docker"));
         assert!(
             commands

@@ -135,7 +135,7 @@ decune up [OPTIONS] [WORKSPACE]
 
 - `--config <PATH>`: `devcontainer.json` を明示する。相対パスは workspace root 相対。
 - `--detach`: シェルに接続せず起動だけ行う。
-- `--rebuild`: 既存のコンテナ / プロジェクトを破棄または再作成する。decune が管理するボリュームは保持する。
+- `--rebuild`: 既存のコンテナ / プロジェクトを破棄または再作成する。decune-managed ボリュームは保持する。
 - `--no-cache`: Dockerfile のビルド、Compose サービスのビルド、Feature レイヤーのビルドでキャッシュを使わない。
 - `--pull`: ベースイメージまたは Compose サービスのイメージを pull してからビルド / 作成する。Compose モードでは reuse hash が一致する実行中のコンテナでも再利用の高速経路に入らず、pull したイメージを反映するため `docker compose up -d --force-recreate` まで進む。
 - `--no-global-config`: global decune config を適用しない。
@@ -167,7 +167,7 @@ automatic published port relocation のポリシーは、後続の Compose autom
 decune rebuild [OPTIONS] [WORKSPACE]
 ```
 
-`up --rebuild` と同等の明示的なコマンドである。既存のコンテナ / プロジェクトを停止・削除するか force recreate し、再度ビルド / 作成 / 起動する。decune が管理するボリュームは保持する。
+`up --rebuild` と同等の明示的なコマンドである。既存のコンテナ / プロジェクトを停止・削除するか force recreate し、再度ビルド / 作成 / 起動する。decune-managed ボリュームは保持する。
 
 主なオプション:
 
@@ -212,7 +212,7 @@ decune status [WORKSPACE]
 
 summary:
 
-- 対象は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` の有効な状態ファイル、および `decune.managed=true` と有効な `decune.workspace_id` ラベルを持つ Docker のコンテナ / ボリュームである。
+- 対象は `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` の有効な状態ファイル、および `decune.managed=true` と有効な `decune.workspace_id` ラベルを持つ Docker のコンテナ / ボリュームである。各ワークスペースの decune-managed ボリュームには、detail と同じく、Compose プロジェクトの volume も含める。
 - ランタイムディレクトリや port status ディレクトリだけが残っているワークスペースは summary の対象に含めない。
 - 対象が 0 件の場合も成功とし、`No decune-managed workspace environments found` を表示する。
 - 1 件以上の場合は集計行と表を表示する。表の列は `ID WORKSPACE RUNTIME CONFIG HEALTH FWD/PUB ISSUES LAST_USED` とする。
@@ -228,8 +228,18 @@ detail:
 - detail はヘッダー (`Workspace`, `ID`, `Mode`) と、`Summary`、`Config`、問題がある場合の `Issues`、Compose モードの `Services`、`Runtime`、`Ports`、`Resources`、未完了の lifecycle がある場合の `Lifecycle`、必要な場合の `Action` を表示する。`Issues` は `code [severity]: message`、`Action` は対処を持つ全問題を `code: action` 形式で表示する。
 - lifecycle が正常完了している場合は、lifecycle の各段階の詳細を表示しない。
 - `Ports` 節は `decune ports` の単一ワークスペースの表と同じ形式を使う。active なポートがない場合は `No active ports for this workspace` を表示する。
+- `Resources` 節は、コンテナの数と、そのワークスペースの decune-managed ボリュームの数と、名前と出どころの一覧を次の形で表示する。`Summary` 節の `Volumes` も同じ数え方とする。
+
+    ```text
+    Resources
+      Containers: <数>
+      Volumes: <数> (removed by decune remove)
+        <volume の名前>  <compose|mounts>
+    ```
+
+    出どころは、Compose プロジェクトのラベル (`com.docker.compose.project`) を持つ volume なら `compose`、decune のラベル (10.2 節) を持つ volume なら `mounts` とする。一覧は名前の辞書順とし、出どころの列を揃える。Compose プロジェクトの名前は、状態に記録したプロジェクト名(削除時に残したものを含む)と、そのワークスペースの decune-managed コンテナの `com.docker.compose.project` ラベルから得る。Compose ファイルは読まない。ラベルの無い volume、プロジェクトのラベルを持たない external の volume、匿名 volume は数えず、一覧にも出さない。
 - 現在の reuse hash は、ワークスペースパスと設定が読める場合に read-only で計算し、状態または Docker ラベル由来の reuse hash と比較して `current` / `needs-rebuild` を判定する。`[[mounts]].create = "directory"` および Dev Container bind mount の `bind-create-src` は、存在しないホスト側パスを作成せず、既存の祖先ディレクトリを正規化して存在しない末尾を合成したパスでハッシュを計算する。計算できない場合は `unreadable` または `unknown` の問題として表示し、状態、ホスト側パス、Docker リソースは変更しない。
-- 出力には秘密情報の値、生のラベル、生の Compose モデル、コンテナの環境変数、ビルド引数、マウント元の過剰な列挙、reuse hash の値を出してはならない。
+- 出力には秘密情報の値、生のラベル、生の Compose モデル、コンテナの環境変数、ビルド引数、マウント元の過剰な列挙、reuse hash の値を出してはならない。`Resources` 節の decune-managed ボリュームの名前と出どころの一覧は、`remove` が削除するものを示すためのもので、ここでいうマウント元の過剰な列挙に当たらない。ホスト側のパスや、decune-managed ボリュームでない volume は一覧に出さない。
 - JSON 出力、`--ports`、`--resources` などの status のオプションは提供しない。
 
 ### 3.6 `ports`
@@ -281,10 +291,10 @@ decune remove [--no-confirm] [--images] --all-workspaces
 decune rm     [--no-confirm] [--images] --all-workspaces
 ```
 
-- image/Dockerfile モード: decune が管理するコンテナ、decune が管理するボリューム、状態 / ランタイムデータを削除する。`--images` 指定時だけ生成イメージを削除する。
+- image/Dockerfile モード: decune が管理するコンテナ、decune-managed ボリューム、状態 / ランタイムデータを削除する。`--images` 指定時だけ生成イメージを削除する。
 - Compose モード: decune が管理する Compose プロジェクトを `docker compose down --volumes --remove-orphans` 相当で削除し、状態 / ランタイムデータを削除する。`docker compose down` が成功した後も、プロジェクトのラベル (`com.docker.compose.project`) を持つ named volume が残っていれば、ラベルから探して削除する。今の Compose ファイルが宣言していない volume と、今の Compose ファイルで `external` と宣言し直した volume も、プロジェクトのラベルを持てば削除する。この判定は Compose ファイルを読まずにラベルだけで行い、`docker compose down` で削除するときと Docker のラベルから削除するときとで、削除する volume を揃える。プロジェクトのラベルを持たない external なボリューム / ネットワークは削除しない。`--images` 指定時だけ decune が生成したイメージを削除する。利用者が Compose ファイルで指定したイメージを `--rmi all` で削除してはならない。
 - Compose モードで現在の `devcontainer.json` / `dockerComposeFile` が削除、移動、またはサービス名の変更等で既存のリソースと一致しない場合も、状態または Docker ラベルから decune が管理する Compose プロジェクトを特定して削除する。
-- 現在の設定が Compose モードでも、同じワークスペースに過去の image/Dockerfile モード由来で decune が管理するコンテナやボリュームが残っている場合は削除する。
+- 現在の設定が Compose モードでも、同じワークスペースに過去の image/Dockerfile モード由来で decune が管理するコンテナや decune-managed ボリュームが残っている場合は削除する。
 - `--all-workspaces` は、すべてのワークスペースで decune が管理する Dev Container 環境を削除する。`WORKSPACE` とは排他である。
 - `--all-workspaces` の探索対象は `decune.managed=true` と有効な `decune.workspace_id` を持つ Docker のコンテナ / ボリューム、および `$XDG_STATE_HOME/decune/<workspace_id>/state.toml` の有効な状態ファイルとする。有効な workspace id は、Docker ラベル由来・状態ディレクトリ名由来のいずれも 12 桁の小文字 16 進 (`[0-9a-f]{12}`) に完全一致する値だけである。無効なラベル値や状態ディレクトリ名は対象外として無視し、状態 / ランタイムパスの組み立てに使わない。読み込めない状態ファイルは警告を出して無視する。
 - `--all-workspaces` で Compose プロジェクトを削除する場合は、decune が管理するコンテナの `com.docker.compose.project` ラベルまたは decune の状態に記録した Compose プロジェクト名から所有を確認できるプロジェクトだけを対象にする。プロジェクト名の前方一致だけでは、利用者が管理する Compose プロジェクトを対象にしない。
@@ -297,7 +307,7 @@ decune rm     [--no-confirm] [--images] --all-workspaces
 
 削除対象がある状態で TTY でない環境から `remove` を `--no-confirm` なしで実行した場合は、確認不能としてエラーにする。ワークスペースを指定した `remove` では、この拒否を Docker と状態に触れる前に行う。`--all-workspaces` で削除対象が 0 件の場合は、TTY でない環境でも確認せず成功とする。
 
-TTY で `--no-confirm` なしで実行した場合は、`[y/N]` の確認より前に、削除する volume(decune のラベルを持つ volume と、Compose プロジェクトのラベルを持つ volume)の名前を表示する。`--all-workspaces` では、ワークスペースごとに表示する。この一覧のために確認より前に行う処理は Docker と状態を読むだけとし、削除と、GitHub CLI のトークンファイルの削除などの副作用は確認の後に行う。
+TTY で `--no-confirm` なしで実行した場合は、`[y/N]` の確認より前に、削除する decune-managed ボリューム(decune のラベルを持つ volume と、Compose プロジェクトのラベルを持つ volume)の名前を表示する。`--all-workspaces` では、ワークスペースごとに表示する。この一覧のために確認より前に行う処理は Docker と状態を読むだけとし、削除と、GitHub CLI のトークンファイルの削除などの副作用は確認の後に行う。
 
 ### 3.8 `clean`
 
@@ -324,7 +334,7 @@ decune clean --include-feature-cache [--dry-run] [--no-confirm] [--json]
 - 設定された XDG のルートと、仕様で定義したフォールバック配下の、decune が管理しているパスだけを探索する。
 - symlink は辿らない。削除対象自体または配下のエントリに symlink がある対象は `unsafe_path` としてスキップする。
 - decune が管理しているルート外のパスは削除しない。
-- Docker のラベルから `decune.managed=true` と有効な `decune.workspace_id` を持つコンテナ / ボリュームが見つかるワークスペースは、decune が管理している再利用可能なリソースとみなしてスキップする。
+- Docker のラベルから `decune.managed=true` と有効な `decune.workspace_id` を持つコンテナ / ボリューム(decune が管理するコンテナと decune-managed ボリューム)が見つかるワークスペースは、再利用可能なリソースが残っているとみなしてスキップする。
 - 状態に記録した Compose プロジェクト名と `com.docker.compose.project` ラベルの値が一致する volume が残るワークスペースも、コンテナが無くても同じくスキップし、状態を削除しない。この判定は Compose ファイルを読まずにラベルだけで行う。
 - ランタイムディレクトリまたは port status ディレクトリ配下に接続可能な Unix ソケット、または取得できないロックファイルがあるワークスペースは active とみなしてスキップする。
 - Docker リソースの探索に失敗した場合、削除の実行は安全性を判定できないためエラーにする。`--dry-run` ではファイルシステム上の候補を `docker_unavailable` としてスキップ表示できる。
@@ -381,6 +391,7 @@ container-side tools bundle はコンテナ内 CLI を artifact 名 `decune` と
 - 記録済みの primary container が Docker evidence に存在しない場合、または identity を持つ decune-managed コンテナのいずれかが記録済みの identity と一致しない場合は `runtime-mismatch` とする。既知の identity 不一致がなく、primary container の identity を取得できない場合、または状態 / Docker evidence 自体を取得できない場合は `unavailable` とし、ホスト側 status の `current` / `needs-rebuild` とは区別する。identity を持たない primary 以外のコンテナは比較から除外する。
 - ヘルスの集計が `mixed` でも、実際に `unhealthy` な decune-managed コンテナがなければ `unhealthy-container` の問題は表示しない。この問題の条件と重大度(`error`)はホスト側 status と同じにする。
 - ホストのワークスペース / 設定パス、生のハッシュ / ラベルは表示せず、ホストで実行する対処は `Action (run on host)` 節に表示する。
+- `Resources` 節は、ホスト側 status の detail と同じ対象と形で、decune-managed ボリュームの数と、名前と出どころの一覧を表示する(3.5 節)。Compose プロジェクトの名前は、状態に記録した値と、そのワークスペースの decune-managed コンテナのラベルだけから得る(12.5 節)。
 - コンテナ内 `ports` のテキスト出力はホストの単一ワークスペースの表と同じ列、意味、並び順を使い、JSON 出力はホストの単一ワークスペースの JSON スキーマと同じにする。JSON の各エントリで `workspace` / `workspace_id` は省略する。ポートのスナップショットは、ワークスペースパスと workspace id のフィールドを構造上持たない。
 - テキスト / JSON とも末尾の改行はちょうど 1 個とする。
 
@@ -1432,6 +1443,8 @@ Compose モードでは上記のラベルを primary service に追加する。�
 
 image/Dockerfile モードでは、decune がコンテナを作るとき(`docker create`)に Docker が `--mount` の named volume を新しく作る場合、その volume に `decune.managed=true`、`decune.workspace=<canonical_workspace_path>`、`decune.workspace_id=<workspace_id>` を付ける。対象は、`devcontainer.json` の `mounts`、`type=volume` の `workspaceMount`、Feature の `mounts`、`type = "volume"` の `[[mounts]]` の named volume であり、出どころで扱いを変えない。ラベルは `--mount` の `volume-label` で渡す。Docker は既にある volume にはこれを適用せず、既存のラベルを変更しない。`source` の無い mount から Docker が作る匿名 volume、`source` が空文字の mount、bind mount、tmpfs にはラベルを付けない。利用者が `mounts` に `volume-label` を書くと、キーによらずエラーにするので、利用者の設定から decune のラベルを volume に付ける経路は無い。
 
+これらのラベルを持つ volume と、decune が所有する Compose プロジェクトのラベル (`com.docker.compose.project`) を持つ volume が、そのワークスペースの decune-managed ボリュームである。Compose モードでは decune は volume にラベルを付けず、Compose がトップレベルの `volumes` から作る volume に付けるプロジェクトのラベルで確かめる。Compose はサービスの匿名 volume と、自分で作っていない external の volume にはプロジェクトのラベルを付けない。`status` はこれを表示し(3.5 節)、`remove` はこれを削除し(3.7 節)、`down` と `rebuild` は保持する。
+
 ### 10.3 reuse hash
 
 reuse hash に含める入力:
@@ -1588,9 +1601,10 @@ daemon の再利用とバージョン:
 
 クエリが扱う情報:
 
-- decune container CLI query 用のモデルは、検証済みの workspace id、起動時のモード、コンテナの ID / 名前 / サービス、実行状態 / ヘルス、decune-managed ボリューム名、lifecycle / タイムスタンプ、サニタイズ済みのポートだけを保持する。
+- decune container CLI query 用のモデルは、検証済みの workspace id、起動時のモード、コンテナの ID / 名前 / サービス、実行状態 / ヘルス、decune-managed ボリュームの名前と出どころ(`compose` / `mounts`)、lifecycle / タイムスタンプ、サニタイズ済みのポートだけを保持する。
 - 生の `ContainerInspect`、Docker/Compose のラベルマップ、ワークスペース / 設定のパス、生の reuse hash、環境変数、ビルド引数、秘密情報、マウント元、外部コマンドの生の stderr、他のワークスペースのリソースはモデル、キャッシュ、renderer へ渡さない。
 - daemon query context は検証済みの workspace id とそこから導出する固定サーバーパスのコンテキストだけを保持し、live な設定やクライアント入力からホスト側パスを再解決しない。request のコマンド、format、パス、リソース名を Docker のフィルタやホスト側パスに使わない。
+- Compose プロジェクトのコンテナと volume を探す Compose プロジェクトの名前は、固定の状態に記録した値と、固定 workspace id の decune-managed コンテナのラベルの値に限る。Compose ファイルは読まない。
 - 成功時の出力 / 警告とエラーの response には、秘密情報、生の reuse hash / ラベル、ホスト側パス、他のワークスペースの情報、外部コマンドの生の stderr を含めない。縮退し得る状態、forwarding、Docker の診断は、プレフィックスと末尾の改行を持たないサニタイズ済みのメッセージとして成功 response の `warnings` に格納する。テキスト / JSON の完成済みの出力は `output` だけに格納し、特に `ports` の JSON へ警告を混在させない。
 
 認可と生存期間:

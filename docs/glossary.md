@@ -35,7 +35,8 @@
 - workspace id: workspace root から導出する decune の安定した識別子。Docker リソース名と decune-managed data の単位に使う([specification.md 10.1 節](specification.md#101-workspace-id-とリソース名))。
 - decune config: `devcontainer.json` に重ねる decune の TOML オーバーレイ設定。global decune config(`$XDG_CONFIG_HOME/decune/config.toml` または `~/.config/decune/config.toml`)と project decune config(`<workspace>/.decune/config.toml`)の総称([specification.md 5 章](specification.md#5-decune-config))。
 - reuse hash: 構成内容から決定的に導出し、decune が管理する既存のコンテナまたは Compose プロジェクトを再利用できるか判定するハッシュ([specification.md 10.3 節](specification.md#103-reuse-hash))。
-- decune-managed data: decune が XDG の cache/state/runtime 配下に生成し、管理しているデータ。ワークスペース単位のキャッシュ / 状態 / ランタイムデータと共有 Feature archive cache を含み、ワークスペース側のファイルである `.decune/config.toml` や `.decune/features.lock.toml` は含めない。
+- decune-managed data: decune が XDG の cache/state/runtime 配下に生成し、管理しているデータ。ワークスペース単位のキャッシュ / 状態 / ランタイムデータと共有 Feature archive cache を含み、`.decune/config.toml` や `.decune/features.lock.toml` などのワークスペース側のファイルと、decune-managed ボリュームは含めない。
+- decune-managed ボリューム: ワークスペースの環境の一部として decune の操作で作られ、作られたときに付いたラベルから、どのワークスペースのものかを確かめられる Docker のボリューム。image/Dockerfile モードでは decune が作成時に付ける `decune.managed` と `decune.workspace_id` のラベルで、Compose モードでは decune が所有する Compose プロジェクトのラベルで確かめる。decune の操作より前からあったボリューム、Compose が作っていない `external` のボリューム、匿名ボリュームは含めない。XDG 配下のファイルである decune-managed data とは別の物である。`remove` はこれを削除し、`down` と `rebuild` は保持する([specification.md 10.2 節](specification.md#102-ラベルと再利用))。
 - Feature archive cache: OCI Feature のアーカイブを再利用するための共有キャッシュ。`$XDG_CACHE_HOME/decune/features` または `~/.cache/decune/features`。
 - Feature lock: OCI Feature の解決結果を `<workspace>/.decune/features.lock.toml` に digest lock として記録・固定する仕組み([specification.md 7.1 節](specification.md#71-ビルドと-feature))。
 

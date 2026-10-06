@@ -177,7 +177,7 @@ decune up
 
 ### `decune rebuild`
 
-開発コンテナまたは Compose プロジェクトを再作成します。設定変更を反映するときや、イメージを作り直したいときに使います。decune が管理するボリュームは保持されます。
+開発コンテナまたは Compose プロジェクトを再作成します。設定変更を反映するときや、イメージを作り直したいときに使います。decune-managed ボリュームは保持されます。
 
 ```sh
 decune rebuild
@@ -221,7 +221,19 @@ decune status                    # 全ワークスペースの summary
 decune status path/to/workspace  # 指定ワークスペースの detail
 ```
 
-summary 表示ではワークスペースごとの実行状態、設定状態、ヘルス、ポート数、問題の数を確認できます。detail 表示では問題の内訳と、必要な操作(`decune rebuild` の要否など)が `Action` として表示されます。表示内容の契約は [specification.md 3.5 節](specification.md#35-status) を参照してください。
+summary 表示ではワークスペースごとの実行状態、設定状態、ヘルス、ポート数、問題の数を確認できます。detail 表示では問題の内訳と、必要な操作(`decune rebuild` の要否など)が `Action` として表示されます。
+
+detail 表示の `Resources` には、`decune remove` で削除される decune-managed ボリュームが、名前と出どころとともに名前の順で表示されます。出どころは、Compose プロジェクトの volume なら `compose`、image/Dockerfile モードでコンテナの作成時に decune のラベルが付いた named volume なら `mounts` です。
+
+```text
+Resources
+  Containers: 3
+  Volumes: 2 (removed by decune remove)
+    decune-app-123456abcdef_postgres-data  compose
+    decune-app-123456abcdef_redis          compose
+```
+
+表示内容の契約は [specification.md 3.5 節](specification.md#35-status) を参照してください。
 
 ### `decune ports`
 
@@ -264,7 +276,7 @@ decune remove --all-workspaces --no-confirm  # すべてのワークスペース
 
 `--no-confirm` は確認プロンプトだけを省略し、decune が管理するリソースに限定する安全境界は迂回しません。
 
-削除する volume の名前は `[y/N]` の確認の前に表示し、残した named volume の名前と理由は削除後に表示します。他のコンテナが使っている volume は残して処理を続け、Compose プロジェクトの volume を残す場合は、次の削除に必要な状態も保存します。
+削除する decune-managed ボリュームの名前は `[y/N]` の確認の前に表示し、残した named volume の名前と理由は削除後に表示します。他のコンテナが使っている volume は残して処理を続け、Compose プロジェクトの volume を残す場合は、次の削除に必要な状態も保存します。
 
 使用中のために残した volume を削除するには、それを使うコンテナを削除してから、もう一度 `decune remove` を実行してください。
 

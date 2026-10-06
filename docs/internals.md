@@ -70,7 +70,9 @@ daemon query context の fingerprint は、`decune-cli-query-context-v1` で dom
 
 decune container CLI query の collector は、daemon 起動時に固定したサーバー側コンテキストだけを入力にします。状態は固定の状態ディレクトリの `state.toml` をクエリごとに 1 回だけ読み、ワークスペースパスや設定パスを参照先として使いません。forwarding status も固定の status ディレクトリの全セッションのソケットをクエリごとに 1 回だけ集約します(8.4 節)。decune host daemon は `ForwardStatusRegistry` を所有または注入されず、daemon の所有者と forwarding セッションの所有者が異なる場合も共有の status ディレクトリから全セッションを検出します。1 つのセッションが停止した場合は、残るセッションだけが次のクエリに反映されます。`Workspace::resolve`、設定の探索、read-only の up 計画、ビルドコンテキストのハッシュは呼び出しません。
 
-Docker のコンテナ evidence は、固定 workspace id の `decune.managed=true` リソースと、固定の状態または同リソースから導出した同一 Compose プロジェクトだけを列挙 / inspect / 重複排除します。Compose プロジェクトのラベルの候補は、固定の状態に記録された値、または `decune.managed=true` かつ `decune.workspace_id` が固定 workspace id と一致するリソースの値に限定します。ラベルの値は前後の空白を除いた後に空でないことだけを確認し、Compose プロジェクト名の形式検証は行いません。ここで確認しているのはラベルの文字列形式ではなく、固定の daemon query context または同一ワークスペースに帰属する decune-managed リソースから得た値であることです。request のコマンド、format、パス、リソース名は Docker のフィルタやホスト側パスに使いません。生の inspect、生のラベルマップ、stdout / stderr は decune container CLI query の許可リスト型へ直ちに射影し、キャッシュへ保存しません。status と ports はコンテナ / サービス / 実行状態 / ヘルス / 設定の identity / published port を含む同じコンテナ evidence のスナップショットを共有し、decune-managed ボリュームの evidence は別のエントリとして取得します。
+Docker のコンテナ evidence は、固定 workspace id の `decune.managed=true` リソースと、固定の状態または同リソースから導出した同一 Compose プロジェクトだけを列挙 / inspect / 重複排除します。Compose プロジェクト名の候補は、固定の状態に記録された値、または `decune.managed=true` かつ `decune.workspace_id` が固定 workspace id と一致するコンテナのラベルの値に限定します。ラベルの値は前後の空白を除いた後に空でないことだけを確認し、Compose プロジェクト名の形式検証は行いません。ここで確認しているのはラベルの文字列形式ではなく、固定の daemon query context または同一ワークスペースに帰属する decune-managed コンテナから得た値であることです。request のコマンド、format、パス、リソース名は Docker のフィルタやホスト側パスに使いません。生の inspect、生のラベルマップ、stdout / stderr は decune container CLI query の許可リスト型へ直ちに射影し、キャッシュへ保存しません。status と ports はコンテナ / サービス / 実行状態 / ヘルス / 設定の identity / published port を含む同じコンテナ evidence のスナップショットを共有し、decune-managed ボリュームの evidence は別のエントリとして取得します。
+
+decune-managed ボリュームの evidence は、固定 workspace id の decune のラベルを持つ volume と、同じワークスペースの Compose プロジェクトの volume を列挙し、名前と出どころ(`mounts` / `compose`)だけに射影します。Compose プロジェクト名の候補は、コンテナ evidence のエントリに依存せず、このエントリの読み込みで、固定の状態に記録された値と、固定 workspace id の decune-managed コンテナのラベルから集めます。Compose プロジェクトの volume は、その候補と `com.docker.compose.project` ラベルが一致するものを列挙します。
 
 Docker evidence のキャッシュのキーはサーバー側だけで次の値から作ります。
 
@@ -82,7 +84,7 @@ QueryEvidenceKey {
 }
 ```
 
-クライアント入力、ワークスペースパス、Docker のリソース名、出力の format はキーに含めません。`Containers` はワークスペースのコンテナと同一ワークスペースの Compose プロジェクトのコンテナの意味単位の読み込み全体、`Volumes` は decune-managed ボリュームの evidence を表します。状態と forwarding status はキャッシュしません。
+クライアント入力、ワークスペースパス、Docker のリソース名、出力の format はキーに含めません。`Containers` はワークスペースのコンテナと同一ワークスペースの Compose プロジェクトのコンテナの意味単位の読み込み全体、`Volumes` は decune-managed ボリュームの evidence の読み込み全体を表します。状態と forwarding status はキャッシュしません。
 
 キャッシュとクエリ専用の Docker 実行の内部固定値は次のとおりです(`src/host/query.rs` の実装定数)。
 
@@ -257,7 +259,7 @@ GitHub トークンの旧形式のランタイムパス `gh-token/token`(コン�
 
 アトミックな書き込みは、状態ディレクトリに `state.toml.tmp.<pid>.<nanos>` を排他的に作成(モード 0600)し、内容の書き込みと fsync の後に `state.toml` へ rename し、最後に親ディレクトリを fsync する実装です。コンテナが存在しないワークスペースの状態は起動時の整合処理で削除します。
 
-`remove` は Compose のコンテナを削除する前に、発見したプロジェクト名を `retained_compose_projects` に記録します。使用中で volume を残した場合は、この一覧にそのプロジェクト名だけを残し、既存の起動と利用のメタデータは保持します。起動時の状態が無い場合は、ワークスペースの表示用パスとプロジェクト名を持つ状態を作り、コンテナ ID、イメージ、reuse hash、作成時刻、最終起動時刻の値は空、最終利用時刻は未記録とします。`remove` と `clean` は、`compose_project_name` とこの一覧を合わせて volume の所有を判断します。
+`remove` は Compose のコンテナを削除する前に、発見したプロジェクト名を `retained_compose_projects` に記録します。使用中で volume を残した場合は、この一覧にそのプロジェクト名だけを残し、既存の起動と利用のメタデータは保持します。起動時の状態が無い場合は、ワークスペースの表示用パスとプロジェクト名を持つ状態を作り、コンテナ ID、イメージ、reuse hash、作成時刻、最終起動時刻の値は空、最終利用時刻は未記録とします。`remove`、`clean`、ホストとコンテナの中の `status` は、`compose_project_name` とこの一覧を合わせて volume の所有を判断します。
 
 ## 10. reuse hash 入力の実装構成
 
